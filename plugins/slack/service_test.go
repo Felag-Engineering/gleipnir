@@ -94,7 +94,7 @@ func setupAll(t *testing.T, slackBackend *httptest.Server, hostOpts ...plugintes
 		t.Fatalf("listen for trigger: %v", err)
 	}
 	triggerSrv := grpc.NewServer()
-	triggerv1.RegisterTriggerServiceServer(triggerSrv, NewTriggerService(hostClient, registry))
+	triggerv1.RegisterTriggerServiceServer(triggerSrv, NewTriggerService(hostClient, registry, nil, ""))
 	go func() { _ = triggerSrv.Serve(triggerLis) }()
 	triggerConn, err := grpc.NewClient(triggerLis.Addr().String(),
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -250,7 +250,7 @@ func setupAllWithFactory(t *testing.T, factory socketModeFactory, cfgJSON string
 		t.Fatalf("listen for trigger: %v", err)
 	}
 	triggerSrv := grpc.NewServer()
-	triggerSvc := newTriggerServiceWithRegistry(hostClient, registry)
+	triggerSvc := newTriggerServiceWithRegistry(hostClient, registry, nil, "")
 	triggerv1.RegisterTriggerServiceServer(triggerSrv, triggerSvc)
 	go func() { _ = triggerSrv.Serve(triggerLis) }()
 
@@ -590,7 +590,7 @@ func TestTriggerStartEmitsEventOnFakeSocketModeMessage(t *testing.T) {
 	}
 	triggerSrv := grpc.NewServer()
 	triggerv1.RegisterTriggerServiceServer(triggerSrv,
-		newTriggerServiceWithRegistry(hostClient, registry))
+		newTriggerServiceWithRegistry(hostClient, registry, nil, ""))
 	go func() { _ = triggerSrv.Serve(triggerLis) }()
 	t.Cleanup(triggerSrv.Stop)
 
@@ -721,6 +721,321 @@ func TestTriggerStartHealthUnhealthyOnInvalidAuth(t *testing.T) {
 	}
 	if detail != "auth_expired" {
 		t.Errorf("health detail: want %q, got %q", "auth_expired", detail)
+	}
+}
+
+// TestTriggerStartEmitsDMEventOnImMessage asserts that a socketmode MessageEvent
+// with channel_type=="im" causes Start to call host.EmitEvent with kind=direct_message
+// when the subscription scope has direct_messages=true.
+func TestTriggerStartEmitsDMEventOnImMessage(t *testing.T) {
+	const (
+		channelID = "D05DMCHAN"
+		ts        = "1700030000.000100"
+		teamID    = "T01TEAM"
+		userID    = "U01USER"
+		msgText   = "what's on my calendar?"
+	)
+
+	fake := &fakeSocketModeRunner{
+		events: []socketmode.Event{
+			eventsAPISocketEvent(channelID, "im", userID, msgText, ts, teamID),
+		},
+	}
+
+	emitCh := make(chan plugintest.Event, 1)
+
+	host := plugintest.NewFakeHost(
+		plugintest.WithInstanceConfigJSON(`{"app_level_token":"xapp-test-token"}`),
+		plugintest.OnEmitEvent(func(ev plugintest.Event) {
+			select {
+			case emitCh <- ev:
+			default:
+			}
+		}),
+	)
+
+	hostLis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for host: %v", err)
+	}
+	hostSrv := grpc.NewServer()
+	host.Register(hostSrv)
+	go func() { _ = hostSrv.Serve(hostLis) }()
+	t.Cleanup(hostSrv.Stop)
+
+	hostConn, err := grpc.NewClient(hostLis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial host: %v", err)
+	}
+	t.Cleanup(func() { hostConn.Close() })
+	hostClient := hostv1.NewHostServiceClient(hostConn)
+
+	registry := newHubRegistry(func(_ string) (socketModeRunner, error) {
+		return fake, nil
+	})
+
+	triggerLis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for trigger: %v", err)
+	}
+	triggerSrv := grpc.NewServer()
+	triggerv1.RegisterTriggerServiceServer(triggerSrv,
+		newTriggerServiceWithRegistry(hostClient, registry, nil, ""))
+	go func() { _ = triggerSrv.Serve(triggerLis) }()
+	t.Cleanup(triggerSrv.Stop)
+
+	triggerConn, err := grpc.NewClient(triggerLis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial trigger: %v", err)
+	}
+	t.Cleanup(func() { triggerConn.Close() })
+
+	svcs := &services{trigger: triggerv1.NewTriggerServiceClient(triggerConn)}
+	cancel, done := startTriggerInBackground(t, svcs, `{"direct_messages":true}`)
+
+	var ev plugintest.Event
+	select {
+	case ev = <-emitCh:
+	case <-time.After(3 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("timed out waiting for EmitEvent")
+	}
+	cancel()
+	<-done
+
+	if ev.EventKind != "direct_message" {
+		t.Errorf("event kind: want direct_message, got %q", ev.EventKind)
+	}
+	var p SlackChannelMessagePayload
+	if err := json.Unmarshal([]byte(ev.PayloadJSON), &p); err != nil {
+		t.Fatalf("payload unmarshal: %v", err)
+	}
+	if p.ChannelID != channelID {
+		t.Errorf("payload channel_id: want %q, got %q", channelID, p.ChannelID)
+	}
+	if p.ChannelType != "im" {
+		t.Errorf("payload channel_type: want im, got %q", p.ChannelType)
+	}
+}
+
+// TestTriggerStartDMSuppressedWithoutDirectMessages asserts that a DM event
+// is NOT emitted when the subscription scope does not set direct_messages=true.
+func TestTriggerStartDMSuppressedWithoutDirectMessages(t *testing.T) {
+	const (
+		channelID = "D05DMCHAN"
+		ts        = "1700031000.000100"
+	)
+
+	fake := &fakeSocketModeRunner{
+		events: []socketmode.Event{
+			eventsAPISocketEvent(channelID, "im", "U01USER", "hello bot", ts, "T01TEAM"),
+		},
+	}
+
+	svcs, host, cleanup := setupAllWithFactory(t,
+		func(_ string) (socketModeRunner, error) { return fake, nil },
+		`{"app_level_token":"xapp-test-token"}`,
+	)
+	defer cleanup()
+
+	// Scope has no direct_messages=true — DM events must be suppressed.
+	cancel, done := startTriggerInBackground(t, svcs, `{}`)
+
+	pollUntil(t, 3*time.Second, func() bool { return fake.AckCount() >= 1 })
+	cancel()
+	<-done
+
+	if events := host.Events(); len(events) != 0 {
+		t.Errorf("EmitEvent call count: want 0 (DM filtered by scope), got %d", len(events))
+	}
+}
+
+// TestTriggerStartFetchesBotUserIDOnStart verifies that Start fetches the bot
+// user ID via auth.test and uses it for mention detection. Concretely: a
+// MessageEvent whose text contains <@U07BOT> must arrive with mentioned=true in
+// the emitted payload when auth.test returns user_id="U07BOT".
+func TestTriggerStartFetchesBotUserIDOnStart(t *testing.T) {
+	const botID = "U07BOT"
+	const channelID = "C01CHAN"
+	const ts = "1700032000.000100"
+
+	// The auth.test endpoint returns the known bot user ID. We serve it on
+	// the injected Slack API backend (same httptest.Server as ToolService tests).
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth.test", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"ok":true,"url":"https://example.slack.com/","team":"T","user":"slackbot","team_id":"T01TEAM","user_id":%q}`, botID)
+	})
+	slackSrv := httptest.NewServer(mux)
+	t.Cleanup(slackSrv.Close)
+
+	// A message event whose text contains the bot mention tag.
+	fake := &fakeSocketModeRunner{
+		events: []socketmode.Event{
+			eventsAPISocketEvent(channelID, "channel", "U01USER",
+				"<@"+botID+"> deploy staging", ts, "T01TEAM"),
+		},
+	}
+
+	emitCh := make(chan plugintest.Event, 1)
+
+	// FakeHost provides credentials (bot token) and the xapp- instance config.
+	host := plugintest.NewFakeHost(
+		plugintest.WithInstanceConfigJSON(`{"app_level_token":"xapp-test-token"}`),
+		plugintest.WithCredentialsJSON(credJSON("xoxb-test-token")),
+		plugintest.OnEmitEvent(func(ev plugintest.Event) {
+			select {
+			case emitCh <- ev:
+			default:
+			}
+		}),
+	)
+
+	hostLis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for host: %v", err)
+	}
+	hostSrv := grpc.NewServer()
+	host.Register(hostSrv)
+	go func() { _ = hostSrv.Serve(hostLis) }()
+	t.Cleanup(hostSrv.Stop)
+
+	hostConn, err := grpc.NewClient(hostLis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial host: %v", err)
+	}
+	t.Cleanup(func() { hostConn.Close() })
+	hostClient := hostv1.NewHostServiceClient(hostConn)
+
+	registry := newHubRegistry(func(_ string) (socketModeRunner, error) {
+		return fake, nil
+	})
+
+	triggerLis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for trigger: %v", err)
+	}
+	triggerSrv := grpc.NewServer()
+	// Inject the httptest.Server client + URL so auth.test calls go to our stub.
+	triggerv1.RegisterTriggerServiceServer(triggerSrv,
+		newTriggerServiceWithRegistry(hostClient, registry, slackSrv.Client(), slackSrv.URL+"/"))
+	go func() { _ = triggerSrv.Serve(triggerLis) }()
+	t.Cleanup(triggerSrv.Stop)
+
+	triggerConn, err := grpc.NewClient(triggerLis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial trigger: %v", err)
+	}
+	t.Cleanup(func() { triggerConn.Close() })
+
+	svcs := &services{trigger: triggerv1.NewTriggerServiceClient(triggerConn)}
+	cancel, done := startTriggerInBackground(t, svcs, `{}`)
+
+	var ev plugintest.Event
+	select {
+	case ev = <-emitCh:
+	case <-time.After(3 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("timed out waiting for EmitEvent")
+	}
+	cancel()
+	<-done
+
+	if ev.EventKind != "channel_message" {
+		t.Errorf("event kind: want channel_message, got %q", ev.EventKind)
+	}
+	var p SlackChannelMessagePayload
+	if err := json.Unmarshal([]byte(ev.PayloadJSON), &p); err != nil {
+		t.Fatalf("payload unmarshal: %v", err)
+	}
+	// The bot ID was fetched via auth.test and threaded into translate, so the
+	// mention tag in the text must have been detected.
+	if !p.Mentioned {
+		t.Error("payload mentioned: want true (bot tag in text, bot ID fetched via auth.test)")
+	}
+}
+
+// TestTriggerStartSelfTriggerGuard asserts that a message posted by the bot
+// itself is not emitted as a trigger event (self-trigger guard).
+func TestTriggerStartSelfTriggerGuard(t *testing.T) {
+	const botID = "U07BOT"
+	const channelID = "C01CHAN"
+	const ts = "1700033000.000100"
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth.test", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"ok":true,"url":"https://example.slack.com/","team":"T","user":"slackbot","team_id":"T01TEAM","user_id":%q}`, botID)
+	})
+	slackSrv := httptest.NewServer(mux)
+	t.Cleanup(slackSrv.Close)
+
+	// The event's User is the bot itself — must be dropped.
+	fake := &fakeSocketModeRunner{
+		events: []socketmode.Event{
+			eventsAPISocketEvent(channelID, "channel", botID, "I said something", ts, "T01TEAM"),
+		},
+	}
+
+	host := plugintest.NewFakeHost(
+		plugintest.WithInstanceConfigJSON(`{"app_level_token":"xapp-test-token"}`),
+		plugintest.WithCredentialsJSON(credJSON("xoxb-test-token")),
+	)
+
+	hostLis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for host: %v", err)
+	}
+	hostSrv := grpc.NewServer()
+	host.Register(hostSrv)
+	go func() { _ = hostSrv.Serve(hostLis) }()
+	t.Cleanup(hostSrv.Stop)
+
+	hostConn, err := grpc.NewClient(hostLis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial host: %v", err)
+	}
+	t.Cleanup(func() { hostConn.Close() })
+	hostClient := hostv1.NewHostServiceClient(hostConn)
+
+	registry := newHubRegistry(func(_ string) (socketModeRunner, error) {
+		return fake, nil
+	})
+
+	triggerLis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for trigger: %v", err)
+	}
+	triggerSrv := grpc.NewServer()
+	triggerv1.RegisterTriggerServiceServer(triggerSrv,
+		newTriggerServiceWithRegistry(hostClient, registry, slackSrv.Client(), slackSrv.URL+"/"))
+	go func() { _ = triggerSrv.Serve(triggerLis) }()
+	t.Cleanup(triggerSrv.Stop)
+
+	triggerConn, err := grpc.NewClient(triggerLis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial trigger: %v", err)
+	}
+	t.Cleanup(func() { triggerConn.Close() })
+
+	svcs := &services{trigger: triggerv1.NewTriggerServiceClient(triggerConn)}
+	cancel, done := startTriggerInBackground(t, svcs, `{}`)
+
+	// Wait for the fake runner to deliver and ack the event, then cancel.
+	pollUntil(t, 3*time.Second, func() bool { return fake.AckCount() >= 1 })
+	cancel()
+	<-done
+
+	if events := host.Events(); len(events) != 0 {
+		t.Errorf("EmitEvent call count: want 0 (self-trigger guard), got %d", len(events))
 	}
 }
 

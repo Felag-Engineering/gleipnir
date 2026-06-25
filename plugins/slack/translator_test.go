@@ -13,10 +13,13 @@ import (
 // All inner.Data values are POINTER types to match what slackevents.ParseEvent
 // produces at runtime via reflect.New (see slackevents/parsers.go:122-143).
 func TestTranslate(t *testing.T) {
+	const botID = "U07BOT"
+
 	cases := []struct {
 		name     string
 		inner    slackevents.EventsAPIInnerEvent
 		teamID   string
+		botID    string // empty string tests the degraded path
 		wantEmit bool
 		wantKind string
 		wantErr  bool
@@ -37,6 +40,7 @@ func TestTranslate(t *testing.T) {
 				},
 			},
 			teamID:   "T01TEAM",
+			botID:    botID,
 			wantEmit: true,
 			wantKind: "channel_message",
 			checkPayload: func(t *testing.T, payload []byte) {
@@ -58,23 +62,29 @@ func TestTranslate(t *testing.T) {
 					t.Errorf("team_id: want T01TEAM, got %q", p.TeamID)
 				}
 				if p.Mentioned {
-					t.Error("mentioned: want false for plain message")
+					t.Error("mentioned: want false for plain message (no bot tag in text)")
 				}
 			},
 		},
 		{
-			name: "AppMentionEvent sets mentioned=true",
+			// Mention via text-scan: MessageEvent whose text contains <@botID>.
+			// Previously Mentioned was hardcoded false for MessageEvent; now it
+			// is computed via text-scan so both the message and app_mention twins
+			// for the same event carry the same value (fixing the dedup race).
+			name: "MessageEvent with bot mention tag sets mentioned=true",
 			inner: slackevents.EventsAPIInnerEvent{
-				Type: "app_mention",
-				Data: &slackevents.AppMentionEvent{
+				Type: "message",
+				Data: &slackevents.MessageEvent{
 					Channel:        "C09INCIDENT",
+					ChannelType:    "channel",
 					User:           "U01USER",
-					Text:           "<@U07BOT> help",
-					TimeStamp:      "1700001000.000100",
-					EventTimeStamp: "1700001000.000100",
+					Text:           "<@" + botID + "> the database is degraded",
+					TimeStamp:      "1700001000.000200",
+					EventTimeStamp: "1700001000.000200",
 				},
 			},
 			teamID:   "T01TEAM",
+			botID:    botID,
 			wantEmit: true,
 			wantKind: "channel_message",
 			checkPayload: func(t *testing.T, payload []byte) {
@@ -84,10 +94,159 @@ func TestTranslate(t *testing.T) {
 					t.Fatalf("unmarshal payload: %v", err)
 				}
 				if !p.Mentioned {
-					t.Error("mentioned: want true for app_mention")
+					t.Error("mentioned: want true for MessageEvent with bot tag in text")
+				}
+			},
+		},
+		{
+			// AppMentionEvent: text-scan replaces the hardcoded true, but a real
+			// app_mention will always contain the tag so the result is still true.
+			// The critical property is that this twin carries the SAME value as
+			// the MessageEvent twin above — fixing the host dedup race.
+			name: "AppMentionEvent with bot mention tag sets mentioned=true (text-scan)",
+			inner: slackevents.EventsAPIInnerEvent{
+				Type: "app_mention",
+				Data: &slackevents.AppMentionEvent{
+					Channel:        "C09INCIDENT",
+					User:           "U01USER",
+					Text:           "<@" + botID + "> the database is degraded",
+					TimeStamp:      "1700001000.000200",
+					EventTimeStamp: "1700001000.000200",
+				},
+			},
+			teamID:   "T01TEAM",
+			botID:    botID,
+			wantEmit: true,
+			wantKind: "channel_message",
+			checkPayload: func(t *testing.T, payload []byte) {
+				t.Helper()
+				var p SlackChannelMessagePayload
+				if err := json.Unmarshal(payload, &p); err != nil {
+					t.Fatalf("unmarshal payload: %v", err)
+				}
+				// Both the MessageEvent twin and AppMentionEvent twin for the same
+				// Slack mention must carry Mentioned=true so dedup is deterministic.
+				if !p.Mentioned {
+					t.Error("mentioned: want true for AppMentionEvent with bot tag in text")
 				}
 				if p.ChannelType != "channel" {
 					t.Errorf("channel_type: want channel, got %q", p.ChannelType)
+				}
+			},
+		},
+		{
+			// DM (channel_type=="im") routes to direct_message kind, not channel_message.
+			name: "MessageEvent with channel_type=im emits direct_message",
+			inner: slackevents.EventsAPIInnerEvent{
+				Type: "message",
+				Data: &slackevents.MessageEvent{
+					Channel:        "D05DMCHAN",
+					ChannelType:    "im",
+					User:           "U01USER",
+					Text:           "what's on my calendar?",
+					TimeStamp:      "1700002000.000100",
+					EventTimeStamp: "1700002000.000100",
+				},
+			},
+			teamID:   "T01TEAM",
+			botID:    botID,
+			wantEmit: true,
+			wantKind: "direct_message",
+			checkPayload: func(t *testing.T, payload []byte) {
+				t.Helper()
+				var p SlackChannelMessagePayload
+				if err := json.Unmarshal(payload, &p); err != nil {
+					t.Fatalf("unmarshal payload: %v", err)
+				}
+				if p.ChannelType != "im" {
+					t.Errorf("channel_type: want im, got %q", p.ChannelType)
+				}
+				if p.ChannelID != "D05DMCHAN" {
+					t.Errorf("channel_id: want D05DMCHAN, got %q", p.ChannelID)
+				}
+			},
+		},
+		{
+			// channel/group events still go to channel_message.
+			name: "MessageEvent with channel_type=group emits channel_message",
+			inner: slackevents.EventsAPIInnerEvent{
+				Type: "message",
+				Data: &slackevents.MessageEvent{
+					Channel:        "C01PRIVATE",
+					ChannelType:    "group",
+					User:           "U01USER",
+					Text:           "private channel message",
+					TimeStamp:      "1700002001.000100",
+					EventTimeStamp: "1700002001.000100",
+				},
+			},
+			teamID:   "T01TEAM",
+			botID:    botID,
+			wantEmit: true,
+			wantKind: "channel_message",
+		},
+		{
+			// Self-trigger guard for MessageEvent: bot's own posts must be dropped.
+			name: "MessageEvent from bot user is dropped (self-trigger guard)",
+			inner: slackevents.EventsAPIInnerEvent{
+				Type: "message",
+				Data: &slackevents.MessageEvent{
+					Channel:        "C01ABC",
+					ChannelType:    "channel",
+					User:           botID, // the bot itself
+					Text:           "I just posted something",
+					TimeStamp:      "1700003000.000001",
+					EventTimeStamp: "1700003000.000001",
+				},
+			},
+			teamID:   "T01TEAM",
+			botID:    botID,
+			wantEmit: false,
+		},
+		{
+			// Self-trigger guard for AppMentionEvent.
+			name: "AppMentionEvent from bot user is dropped (self-trigger guard)",
+			inner: slackevents.EventsAPIInnerEvent{
+				Type: "app_mention",
+				Data: &slackevents.AppMentionEvent{
+					Channel:        "C01ABC",
+					User:           botID, // the bot itself
+					Text:           "<@" + botID + "> self-mention",
+					TimeStamp:      "1700003001.000001",
+					EventTimeStamp: "1700003001.000001",
+				},
+			},
+			teamID:   "T01TEAM",
+			botID:    botID,
+			wantEmit: false,
+		},
+		{
+			// Degraded path: when botID is "", Mentioned must be false and the
+			// self-trigger guard must be inert — strictly no worse than before.
+			name: "empty botID: Mentioned false, self-trigger guard inert",
+			inner: slackevents.EventsAPIInnerEvent{
+				Type: "message",
+				Data: &slackevents.MessageEvent{
+					Channel:        "C01ABC",
+					ChannelType:    "channel",
+					User:           "U01USER",
+					Text:           "<@SOMEBOT> hello",
+					TimeStamp:      "1700004000.000001",
+					EventTimeStamp: "1700004000.000001",
+				},
+			},
+			teamID:   "T01TEAM",
+			botID:    "", // degraded: no bot ID cached
+			wantEmit: true,
+			wantKind: "channel_message",
+			checkPayload: func(t *testing.T, payload []byte) {
+				t.Helper()
+				var p SlackChannelMessagePayload
+				if err := json.Unmarshal(payload, &p); err != nil {
+					t.Fatalf("unmarshal payload: %v", err)
+				}
+				if p.Mentioned {
+					t.Error("mentioned: want false when botID is empty (degraded path)")
 				}
 			},
 		},
@@ -103,12 +262,13 @@ func TestTranslate(t *testing.T) {
 					ChannelType:     "channel",
 					User:            "U01USER",
 					Text:            "rolling back now",
-					TimeStamp:       "1700002000.000300",
-					ThreadTimeStamp: "1700002000.000100",
-					EventTimeStamp:  "1700002000.000300",
+					TimeStamp:       "1700005000.000300",
+					ThreadTimeStamp: "1700005000.000100",
+					EventTimeStamp:  "1700005000.000300",
 				},
 			},
 			teamID:   "T01TEAM",
+			botID:    botID,
 			wantEmit: false,
 		},
 		{
@@ -119,12 +279,13 @@ func TestTranslate(t *testing.T) {
 					Channel:        "C01ABC",
 					User:           "U01USER",
 					Text:           "bot says hi",
-					TimeStamp:      "1700003000.000001",
-					EventTimeStamp: "1700003000.000001",
+					TimeStamp:      "1700006000.000001",
+					EventTimeStamp: "1700006000.000001",
 					SubType:        "bot_message",
 				},
 			},
 			teamID:   "T01TEAM",
+			botID:    botID,
 			wantEmit: false,
 		},
 		{
@@ -135,12 +296,13 @@ func TestTranslate(t *testing.T) {
 					Channel:        "C01ABC",
 					User:           "U01USER",
 					Text:           "edited message",
-					TimeStamp:      "1700004000.000001",
-					EventTimeStamp: "1700004000.000001",
+					TimeStamp:      "1700007000.000001",
+					EventTimeStamp: "1700007000.000001",
 					SubType:        "message_changed",
 				},
 			},
 			teamID:   "T01TEAM",
+			botID:    botID,
 			wantEmit: false,
 		},
 		{
@@ -150,6 +312,7 @@ func TestTranslate(t *testing.T) {
 				Data: nil,
 			},
 			teamID:   "T01TEAM",
+			botID:    botID,
 			wantEmit: false,
 		},
 		{
@@ -166,6 +329,7 @@ func TestTranslate(t *testing.T) {
 				},
 			},
 			teamID:   "T01TEAM",
+			botID:    botID,
 			wantEmit: true,
 			wantKind: "channel_message",
 			// No specific payload check; we just confirm no error and emit=true.
@@ -179,13 +343,14 @@ func TestTranslate(t *testing.T) {
 				Data: new(string),
 			},
 			teamID:   "T01TEAM",
+			botID:    botID,
 			wantEmit: false,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			kind, eventID, payload, emit, err := translate(tc.inner, tc.teamID)
+			kind, eventID, payload, emit, err := translate(tc.inner, tc.teamID, tc.botID)
 
 			if tc.wantErr && err == nil {
 				t.Fatal("expected error, got nil")
@@ -299,7 +464,7 @@ func TestTranslateEventIDMatchesDeriveEventID(t *testing.T) {
 		},
 	}
 
-	_, eventID, _, emit, err := translate(inner, "T01TEAM")
+	_, eventID, _, emit, err := translate(inner, "T01TEAM", "U07BOT")
 	if err != nil || !emit {
 		t.Fatalf("translate: emit=%v err=%v", emit, err)
 	}
@@ -325,7 +490,7 @@ func TestTranslate_SkipsThreadedReplies(t *testing.T) {
 			EventTimeStamp:  "1700010000.000200",
 		},
 	}
-	_, _, _, emit, err := translate(inner, "T01TEAM")
+	_, _, _, emit, err := translate(inner, "T01TEAM", "U07BOT")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -348,7 +513,7 @@ func TestTranslate_SkipsThreadedMentions(t *testing.T) {
 			EventTimeStamp:  "1700011000.000200",
 		},
 	}
-	_, _, _, emit, err := translate(inner, "T01TEAM")
+	_, _, _, emit, err := translate(inner, "T01TEAM", "U07BOT")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -371,7 +536,7 @@ func TestTranslatePayloadChannelForMessage(t *testing.T) {
 			EventTimeStamp: "1700000000.000001",
 		},
 	}
-	_, _, payload, emit, err := translate(inner, "")
+	_, _, payload, emit, err := translate(inner, "", "")
 	if err != nil || !emit {
 		t.Fatalf("translate: emit=%v err=%v", emit, err)
 	}

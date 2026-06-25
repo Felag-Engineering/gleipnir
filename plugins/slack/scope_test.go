@@ -23,6 +23,9 @@ func TestDecodeSubscriptionScope(t *testing.T) {
 				if s.MentionOnly {
 					t.Error("mention_only: want false")
 				}
+				if s.DirectMessages {
+					t.Error("direct_messages: want false")
+				}
 			},
 		},
 		{
@@ -52,6 +55,16 @@ func TestDecodeSubscriptionScope(t *testing.T) {
 				t.Helper()
 				if !s.MentionOnly {
 					t.Error("mention_only: want true")
+				}
+			},
+		},
+		{
+			name:  "direct_messages decoded correctly",
+			input: `{"direct_messages":true}`,
+			check: func(t *testing.T, s SlackSubscriptionScope) {
+				t.Helper()
+				if !s.DirectMessages {
+					t.Error("direct_messages: want true")
 				}
 			},
 		},
@@ -88,13 +101,15 @@ func TestSlackSubscriptionScopeMatches(t *testing.T) {
 		scope     SlackSubscriptionScope
 		channelID string
 		isMention bool
+		isDM      bool
 		want      bool
 	}{
 		{
-			name:      "empty scope matches everything",
+			name:      "empty scope matches everything (non-DM)",
 			scope:     SlackSubscriptionScope{},
 			channelID: "C01ANY",
 			isMention: false,
+			isDM:      false,
 			want:      true,
 		},
 		{
@@ -102,6 +117,7 @@ func TestSlackSubscriptionScopeMatches(t *testing.T) {
 			scope:     SlackSubscriptionScope{},
 			channelID: "C01ANY",
 			isMention: true,
+			isDM:      false,
 			want:      true,
 		},
 		{
@@ -109,6 +125,7 @@ func TestSlackSubscriptionScopeMatches(t *testing.T) {
 			scope:     SlackSubscriptionScope{Channels: []SlackChannelID{"C01ALLOWED"}},
 			channelID: "C01ALLOWED",
 			isMention: false,
+			isDM:      false,
 			want:      true,
 		},
 		{
@@ -116,6 +133,7 @@ func TestSlackSubscriptionScopeMatches(t *testing.T) {
 			scope:     SlackSubscriptionScope{Channels: []SlackChannelID{"C01INC"}},
 			channelID: "C99OTHER",
 			isMention: false,
+			isDM:      false,
 			want:      false,
 		},
 		{
@@ -123,6 +141,7 @@ func TestSlackSubscriptionScopeMatches(t *testing.T) {
 			scope:     SlackSubscriptionScope{MentionOnly: true},
 			channelID: "C01ANY",
 			isMention: false,
+			isDM:      false,
 			want:      false,
 		},
 		{
@@ -130,6 +149,7 @@ func TestSlackSubscriptionScopeMatches(t *testing.T) {
 			scope:     SlackSubscriptionScope{MentionOnly: true},
 			channelID: "C01ANY",
 			isMention: true,
+			isDM:      false,
 			want:      true,
 		},
 		{
@@ -140,6 +160,7 @@ func TestSlackSubscriptionScopeMatches(t *testing.T) {
 			},
 			channelID: "C01INC",
 			isMention: true,
+			isDM:      false,
 			want:      true,
 		},
 		{
@@ -150,6 +171,7 @@ func TestSlackSubscriptionScopeMatches(t *testing.T) {
 			},
 			channelID: "C99OTHER",
 			isMention: true,
+			isDM:      false,
 			want:      false,
 		},
 		{
@@ -160,16 +182,61 @@ func TestSlackSubscriptionScopeMatches(t *testing.T) {
 			},
 			channelID: "C01INC",
 			isMention: false,
+			isDM:      false,
+			want:      false,
+		},
+		// ── DM cases ──────────────────────────────────────────────────────────────
+		{
+			name:      "DM + DirectMessages=true matches",
+			scope:     SlackSubscriptionScope{DirectMessages: true},
+			channelID: "D05DMCHAN",
+			isMention: false,
+			isDM:      true,
+			want:      true,
+		},
+		{
+			name:      "DM + DirectMessages=false does not match",
+			scope:     SlackSubscriptionScope{DirectMessages: false},
+			channelID: "D05DMCHAN",
+			isMention: false,
+			isDM:      true,
+			want:      false,
+		},
+		{
+			// Regression test: isDM short-circuit means MentionOnly and a non-empty
+			// Channels allow-list must NOT block a DM even when both are set. This
+			// is the footgun the isDM-first ordering prevents.
+			name: "DM + DirectMessages=true overrides MentionOnly and Channels",
+			scope: SlackSubscriptionScope{
+				DirectMessages: true,
+				MentionOnly:    true,
+				Channels:       []SlackChannelID{"C01INC"},
+			},
+			channelID: "D05DMCHAN",
+			isMention: false,
+			isDM:      true,
+			want:      true,
+		},
+		{
+			// A channel event is unaffected by DirectMessages.
+			name: "channel event with DirectMessages=true still uses channel logic",
+			scope: SlackSubscriptionScope{
+				DirectMessages: true,
+				Channels:       []SlackChannelID{"C01INC"},
+			},
+			channelID: "C99OTHER",
+			isMention: false,
+			isDM:      false,
 			want:      false,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := tc.scope.matches(tc.channelID, tc.isMention)
+			got := tc.scope.matches(tc.channelID, tc.isMention, tc.isDM)
 			if got != tc.want {
-				t.Errorf("matches(%q, %v): want %v, got %v",
-					tc.channelID, tc.isMention, tc.want, got)
+				t.Errorf("matches(%q, isMention=%v, isDM=%v): want %v, got %v",
+					tc.channelID, tc.isMention, tc.isDM, tc.want, got)
 			}
 		})
 	}
