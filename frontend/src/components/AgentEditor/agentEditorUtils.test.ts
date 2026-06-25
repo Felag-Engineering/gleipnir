@@ -756,6 +756,37 @@ describe('defaultFormState', () => {
   })
 })
 
+describe('formStateToYaml — plugin-sourced tool serialization', () => {
+  it('serializes a plugin-sourced AssignedTool as tool: <instance>.<tool> unchanged', () => {
+    // A plugin tool added via the picker has source:'plugin' and serverName=instance_name.
+    // formStateToYaml emits `${serverName}.${name}` — identical to the MCP path.
+    const state = yamlToFormState('name: p\n')!
+    const modified = {
+      ...state,
+      capabilities: {
+        ...state.capabilities,
+        tools: [
+          {
+            toolId: 'slack-e2e.send_message',
+            serverId: 'inst-slack-1',
+            serverName: 'slack-e2e',
+            name: 'send_message',
+            description: 'Send a message to a Slack channel',
+            source: 'plugin' as const,
+            approvalRequired: false,
+            approvalTimeout: '',
+          },
+        ],
+      },
+    }
+    const yaml = formStateToYaml(modified)
+    expect(yaml).toContain('tool: slack-e2e.send_message')
+    // No MCP-specific UUID or source field should appear in the output
+    expect(yaml).not.toContain('source:')
+    expect(yaml).not.toContain('inst-slack-1')
+  })
+})
+
 describe('yamlToFormState — zero limits preserved as unlimited', () => {
   it('keeps explicit 0 for max_tokens_per_run and max_tool_calls_per_run', () => {
     const yaml = `

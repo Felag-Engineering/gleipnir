@@ -19,6 +19,7 @@ function valid(): FormState {
           serverName: 'srv',
           name: 'do_thing',
           description: '',
+          source: 'mcp' as const,
           approvalRequired: false,
           approvalTimeout: '',
         },
@@ -165,8 +166,8 @@ describe('validateFormState — capabilities', () => {
   it('reports duplicate tool', () => {
     const s = valid()
     s.capabilities.tools = [
-      { toolId: 'srv.t', serverId: 'srv', serverName: 'srv', name: 't', description: '', approvalRequired: false, approvalTimeout: '' },
-      { toolId: 'srv.t', serverId: 'srv', serverName: 'srv', name: 't', description: '', approvalRequired: false, approvalTimeout: '' },
+      { toolId: 'srv.t', serverId: 'srv', serverName: 'srv', name: 't', description: '', source: 'mcp' as const, approvalRequired: false, approvalTimeout: '' },
+      { toolId: 'srv.t', serverId: 'srv', serverName: 'srv', name: 't', description: '', source: 'mcp' as const, approvalRequired: false, approvalTimeout: '' },
     ]
     const issues = validateFormState(s)
     expect(findIssue(issues, 'capabilities.tools[1].tool', 'duplicate')).toBe(true)
@@ -174,7 +175,7 @@ describe('validateFormState — capabilities', () => {
   it('reports invalid approval timeout', () => {
     const s = valid()
     s.capabilities.tools = [
-      { toolId: 'srv.t', serverId: 'srv', serverName: 'srv', name: 't', description: '', approvalRequired: true, approvalTimeout: 'badtime' },
+      { toolId: 'srv.t', serverId: 'srv', serverName: 'srv', name: 't', description: '', source: 'mcp' as const, approvalRequired: true, approvalTimeout: 'badtime' },
     ]
     const issues = validateFormState(s)
     expect(findIssue(issues, 'capabilities.tools[0].timeout', 'not a valid duration')).toBe(true)
@@ -258,7 +259,7 @@ describe('validateFormState — replace + approval cross-field rule', () => {
     const s = valid()
     s.concurrency = { concurrency: 'replace', queueDepth: 0 }
     s.capabilities.tools = [
-      { toolId: 'srv.t', serverId: 'srv', serverName: 'srv', name: 't', description: '', approvalRequired: true, approvalTimeout: '' },
+      { toolId: 'srv.t', serverId: 'srv', serverName: 'srv', name: 't', description: '', source: 'mcp' as const, approvalRequired: true, approvalTimeout: '' },
     ]
     const issues = validateFormState(s)
     expect(findIssue(issues, 'agent.concurrency', '"replace" is not valid')).toBe(true)
@@ -267,7 +268,7 @@ describe('validateFormState — replace + approval cross-field rule', () => {
     const s = valid()
     s.concurrency = { concurrency: 'replace', queueDepth: 0 }
     s.capabilities.tools = [
-      { toolId: 'srv.t', serverId: 'srv', serverName: 'srv', name: 't', description: '', approvalRequired: false, approvalTimeout: '' },
+      { toolId: 'srv.t', serverId: 'srv', serverName: 'srv', name: 't', description: '', source: 'mcp' as const, approvalRequired: false, approvalTimeout: '' },
     ]
     const issues = validateFormState(s)
     expect(findIssue(issues, 'agent.concurrency', '"replace"')).toBe(false)

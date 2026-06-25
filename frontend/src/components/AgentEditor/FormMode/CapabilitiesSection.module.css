@@ -73,6 +73,28 @@
   flex-shrink: 0;
 }
 
+/* Source label shown on assigned-tool rows and search results to indicate
+   whether the tool comes from an MCP server or a plugin instance.
+   e.g. "mcp:Filesystem Tools" or "plugin:slack-e2e". */
+.sourceLabel {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  flex-shrink: 0;
+  margin-left: var(--space-1);
+}
+
+/* Badge for grants whose serverName matches neither a known MCP server nor a
+   known plugin instance. The grant is preserved (never dropped silently) but
+   flagged so the operator knows the source is missing. Composes shared amber
+   badge shape from badges.module.css. */
+.unknownBadge {
+  composes: badgeRect from '@/styles/badges.module.css';
+  composes: colorAmber from '@/styles/badges.module.css';
+  margin-left: var(--space-2);
+  flex-shrink: 0;
+}
+
 /* Approval toggle */
 
 .approvalToggle {
