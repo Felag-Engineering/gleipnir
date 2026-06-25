@@ -23,7 +23,8 @@ func main() {
 			return NewToolService(host, http.DefaultClient, "")
 		}),
 		serve.WithTriggerService(func(host hostv1.HostServiceClient) triggerv1.TriggerServiceServer {
-			return NewTriggerService(host, registry)
+			// Production: use the default HTTP client and Slack's production API URL.
+			return NewTriggerService(host, registry, http.DefaultClient, "")
 		}),
 		serve.WithChannelService(func(host hostv1.HostServiceClient) channelv1.ChannelServiceServer {
 			cs := NewChannelService(host, registry, http.DefaultClient)

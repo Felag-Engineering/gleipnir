@@ -184,6 +184,101 @@ event_kinds:
         - channel_type
         - mentioned
       type: object
+  - binding_schema:
+      additionalProperties: false
+      properties:
+        text:
+          description: Case-sensitive substring; matches anywhere in the message body (not anchored to the start).
+          format: contains
+          title: Text contains
+          type: string
+        text_regex:
+          description: Go RE2 regular expression matched against the message text. Case-sensitivity is controlled by the pattern (e.g. (?i) flag); use ^ to anchor to the start. RE2 syntax — no lookbehind or backreferences.
+          format: regex
+          title: Text matches (regex)
+          type: string
+        user:
+          description: Exact match (case-sensitive) on the sender's Slack user ID (e.g. U012AB3CD). Leave empty to match all users.
+          title: User
+          type: string
+      type: object
+    description: A direct message was sent to the bot
+    examples:
+      - name: DM to bot
+        payload:
+          channel: D05DMCHAN
+          channel_id: D05DMCHAN
+          channel_type: im
+          event_ts: "1700003000.000100"
+          mentioned: false
+          team_id: T03TEAM001
+          text: what's on my calendar today?
+          ts: "1700003000.000100"
+          user: U01USER001
+      - name: DM with command
+        payload:
+          channel: D05DMCHAN
+          channel_id: D05DMCHAN
+          channel_type: im
+          event_ts: "1700003001.000100"
+          mentioned: false
+          team_id: T03TEAM001
+          text: 'deploy: staging'
+          ts: "1700003001.000100"
+          user: U01USER002
+    kind: direct_message
+    payload_schema:
+      additionalProperties: false
+      properties:
+        channel:
+          description: 'Channel display name (e.g. #incidents) or channel ID when the name is unknown'
+          title: Channel
+          type: string
+        channel_id:
+          description: Stable Slack channel identifier (e.g. C01ABC)
+          title: Channel ID
+          type: string
+        channel_type:
+          description: 'Slack channel kind: channel (public), group (private), im (DM), mpim (multi-party DM)'
+          title: Channel type
+          type: string
+        event_ts:
+          description: Timestamp of the event itself
+          title: Event timestamp
+          type: string
+        mentioned:
+          description: True when the bot was explicitly mentioned in the message
+          title: Mentioned
+          type: boolean
+        team_id:
+          description: Slack workspace ID (best-effort; may be empty for some event shapes)
+          title: Team ID
+          type: string
+        text:
+          description: Plain-text message body
+          title: Text
+          type: string
+        thread_ts:
+          description: Parent thread timestamp (present only for threaded replies)
+          title: Thread timestamp
+          type: string
+        ts:
+          description: Slack message timestamp (uniquely identifies the message within a channel)
+          title: Timestamp
+          type: string
+        user:
+          description: Slack user ID of the sender (empty for bot/system messages)
+          title: User
+          type: string
+      required:
+        - channel
+        - channel_id
+        - text
+        - ts
+        - event_ts
+        - channel_type
+        - mentioned
+      type: object
 name: slack
 schema_version: v1
 services:
@@ -200,6 +295,10 @@ subscription_schema:
         type: string
       title: Channels
       type: array
+    direct_messages:
+      description: Watch 1:1 DMs to the bot. Channel IDs are not required (DM channel IDs are D…).
+      title: Direct messages
+      type: boolean
     mention_only:
       description: Only emit when bot is mentioned.
       title: Mention-only

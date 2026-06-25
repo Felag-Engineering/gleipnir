@@ -188,6 +188,11 @@ type SlackSubscriptionScope struct {
 	Channels []SlackChannelID `json:"channels,omitempty" jsonschema:"title=Channels,description=Slack channel IDs (e.g. C012ABCDEF). Empty = watch all. Find IDs in channel settings → About → Channel ID."`
 	// MentionOnly limits delivery to messages where the bot is mentioned.
 	MentionOnly bool `json:"mention_only,omitempty" jsonschema:"title=Mention-only,description=Only emit when bot is mentioned."`
+	// DirectMessages enables delivery of 1:1 DMs sent to the bot. DM channel
+	// IDs (D…) are not accepted by the Channels allow-list pattern, so this
+	// flag is the only way to route DM events. When true, direct_message events
+	// are emitted regardless of the Channels and MentionOnly settings.
+	DirectMessages bool `json:"direct_messages,omitempty" jsonschema:"title=Direct messages,description=Watch 1:1 DMs to the bot. Channel IDs are not required (DM channel IDs are D…)."`
 }
 
 // SlackChannelMessageBinding is the per-policy binding struct for the
@@ -216,6 +221,18 @@ type SlackChannelMessageBinding struct {
 	// The json key must be `channel_type` so the evaluator's payload[name]
 	// lookup aligns with SlackChannelMessagePayload.channel_type (line 241).
 	ChannelType manifest.EqualsField `json:"channel_type,omitempty" jsonschema:"title=Channel type,description=Exact match on the Slack channel kind: channel (public)\\, group (private)\\, im (DM)\\, mpim (multi-party DM). Leave empty to match any."`
+}
+
+// SlackDirectMessageBinding is the per-policy binding struct for the direct_message
+// event kind. Only fields meaningful for a 1:1 DM are included — channel,
+// channel_type, and mention_only have no meaning in a DM conversation.
+type SlackDirectMessageBinding struct {
+	// Text is a substring matched against the DM text.
+	Text manifest.ContainsField `json:"text,omitempty" jsonschema:"title=Text contains,description=Case-sensitive substring; matches anywhere in the message body (not anchored to the start)."`
+	// TextRegex matches the DM text against a Go RE2 regular expression.
+	TextRegex manifest.RegexField `json:"text_regex,omitempty" jsonschema:"title=Text matches (regex),description=Go RE2 regular expression matched against the message text. Case-sensitivity is controlled by the pattern (e.g. (?i) flag); use ^ to anchor to the start. RE2 syntax — no lookbehind or backreferences."`
+	// User restricts the policy to DMs from a specific Slack user ID.
+	User manifest.EqualsField `json:"user,omitempty" jsonschema:"title=User,description=Exact match (case-sensitive) on the sender's Slack user ID (e.g. U012AB3CD). Leave empty to match all users."`
 }
 
 // SlackChannelMessagePayload is the JSON payload emitted for each channel_message
@@ -319,6 +336,48 @@ func init() {
 				EventTs:     "1700002000.000300",
 				TeamID:      "T03TEAM001",
 				ChannelType: "channel",
+				Mentioned:   false,
+			},
+		},
+	)
+
+	// direct_message is the event kind emitted when the bot receives a 1:1 DM.
+	// Reuses SlackChannelMessagePayload as the payload schema (channel_type="im",
+	// mentioned=false for DMs); a dedicated DM payload struct is a possible later
+	// refinement. The binding schema omits channel, channel_type, and mention_only
+	// because those are meaningless for a 1:1 DM conversation.
+	// EventKinds are appended in code order — direct_message AFTER channel_message
+	// for a stable canonical YAML diff (TestManifestYAMLIsCanonical enforces it).
+	pluginManifest.MustAddEventKindWithExamples(
+		"direct_message",
+		"A direct message was sent to the bot",
+		SlackDirectMessageBinding{},
+		manifest.MustReflectSchema(SlackChannelMessagePayload{}),
+		manifest.Example{
+			Name: "DM to bot",
+			Payload: SlackChannelMessagePayload{
+				Channel:     "D05DMCHAN",
+				ChannelID:   "D05DMCHAN",
+				Text:        "what's on my calendar today?",
+				User:        "U01USER001",
+				Ts:          "1700003000.000100",
+				EventTs:     "1700003000.000100",
+				TeamID:      "T03TEAM001",
+				ChannelType: "im",
+				Mentioned:   false,
+			},
+		},
+		manifest.Example{
+			Name: "DM with command",
+			Payload: SlackChannelMessagePayload{
+				Channel:     "D05DMCHAN",
+				ChannelID:   "D05DMCHAN",
+				Text:        "deploy: staging",
+				User:        "U01USER002",
+				Ts:          "1700003001.000100",
+				EventTs:     "1700003001.000100",
+				TeamID:      "T03TEAM001",
+				ChannelType: "im",
 				Mentioned:   false,
 			},
 		},

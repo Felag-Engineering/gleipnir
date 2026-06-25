@@ -339,30 +339,45 @@ type TriggerService struct {
 	triggerv1.UnimplementedTriggerServiceServer
 	host        hostv1.HostServiceClient
 	hubRegistry *hubRegistry
+	httpClient  *http.Client           // outbound Slack auth.test client
+	apiURL      string                 // empty = Slack production default; tests pass httptest.Server URL + "/"
+	botUserID   atomic.Pointer[string] // cached bot user ID; nil until first auth.test
 }
 
 // NewTriggerService creates a TriggerService that uses hostClient for host RPCs
-// and the shared hubRegistry for the Socket Mode connection.
-func NewTriggerService(hostClient hostv1.HostServiceClient, registry *hubRegistry) *TriggerService {
+// and the shared hubRegistry for the Socket Mode connection. httpClient is used
+// for outbound auth.test calls (nil = http.DefaultClient). apiURL overrides the
+// Slack API base URL (empty = production default; tests pass httptest.Server URL + "/").
+func NewTriggerService(hostClient hostv1.HostServiceClient, registry *hubRegistry, httpClient *http.Client, apiURL string) *TriggerService {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
 	return &TriggerService{
 		host:        hostClient,
 		hubRegistry: registry,
+		httpClient:  httpClient,
+		apiURL:      apiURL,
 	}
 }
 
 // newTriggerServiceWithRegistry is an internal constructor for tests that use
 // a hub registry (backed by a fake socketModeFactory).
-func newTriggerServiceWithRegistry(hostClient hostv1.HostServiceClient, registry *hubRegistry) *TriggerService {
+func newTriggerServiceWithRegistry(hostClient hostv1.HostServiceClient, registry *hubRegistry, httpClient *http.Client, apiURL string) *TriggerService {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
 	return &TriggerService{
 		host:        hostClient,
 		hubRegistry: registry,
+		httpClient:  httpClient,
+		apiURL:      apiURL,
 	}
 }
 
 // newTriggerServiceWithFactory is kept for the in-test setup path that creates
 // a registry on the fly. Tests that only care about TriggerService use this.
-func newTriggerServiceWithFactory(hostClient hostv1.HostServiceClient, factory socketModeFactory) *TriggerService {
-	return newTriggerServiceWithRegistry(hostClient, newHubRegistry(factory))
+func newTriggerServiceWithFactory(hostClient hostv1.HostServiceClient, factory socketModeFactory, httpClient *http.Client, apiURL string) *TriggerService {
+	return newTriggerServiceWithRegistry(hostClient, newHubRegistry(factory), httpClient, apiURL)
 }
 
 // Start is a server-streaming RPC that opens a Slack Socket Mode connection and
@@ -393,6 +408,12 @@ func (s *TriggerService) Start(req *triggerv1.StartRequest, stream grpc.ServerSt
 	if err != nil {
 		return status.Errorf(codes.InvalidArgument, "invalid watch_scope_json: %v", err)
 	}
+
+	// Best-effort: fetch and cache the bot user ID for mention detection and
+	// self-trigger filtering. A failure here must not tear down the trigger stream
+	// — the plugin degrades gracefully (Mentioned always false, self-trigger guard
+	// inert), which is strictly no worse than pre-fix behavior.
+	s.fetchAndCacheBotUserID(hostCtx)
 
 	// Acquire the shared socketHub for this xapp-token. The hub is created on
 	// first use and shared with ChannelService's interactive handler.
@@ -425,7 +446,16 @@ func (s *TriggerService) Start(req *triggerv1.StartRequest, stream grpc.ServerSt
 			return
 		}
 
-		kind, eventID, payload, emit, err := translate(eventsAPIEvent.InnerEvent, eventsAPIEvent.TeamID)
+		// Load the cached bot user ID. The cache is nil until the first successful
+		// auth.test (fetchAndCacheBotUserID above); nil → empty string → degraded
+		// path (Mentioned always false, self-trigger guard inert). Mirrors the
+		// verifiedToken nil-check at service.go (ToolService.Call).
+		var botID string
+		if p := s.botUserID.Load(); p != nil {
+			botID = *p
+		}
+
+		kind, eventID, payload, emit, err := translate(eventsAPIEvent.InnerEvent, eventsAPIEvent.TeamID, botID)
 		if err != nil {
 			log.Printf("slack: translate error: %v", err)
 			return
@@ -442,10 +472,14 @@ func (s *TriggerService) Start(req *triggerv1.StartRequest, stream grpc.ServerSt
 			log.Printf("slack: scope check unmarshal: %v", jsonErr)
 			return
 		}
-		// p.ChannelID is the real Slack channel ID (e.g. C012ABCDEF). The
-		// subscription_schema rejects non-ID values at save time (SlackChannelID
-		// in manifest.go), so this scope check is ID-only.
-		if !scope.matches(p.ChannelID, p.Mentioned) {
+		// isDM is true when the event was routed to the direct_message kind.
+		// The scope check short-circuits on isDM (DirectMessages flag only)
+		// and never applies Channels or MentionOnly to DM events.
+		isDM := kind == "direct_message"
+		// p.ChannelID is the real Slack channel ID (e.g. C012ABCDEF for channels,
+		// D… for DMs). The subscription_schema rejects non-ID values at save time
+		// (SlackChannelID in manifest.go), so the channel scope check is ID-only.
+		if !scope.matches(p.ChannelID, p.Mentioned, isDM) {
 			return
 		}
 
@@ -540,6 +574,48 @@ func (s *TriggerService) setTriggerHealth(ctx context.Context, h healthHint) {
 		State:  hostv1.PluginHealthState_PLUGIN_HEALTH_STATE_UNHEALTHY,
 		Detail: detail,
 	})
+}
+
+// fetchAndCacheBotUserID fetches the bot user ID via GetCredentials + auth.test
+// and stores it in s.botUserID for use in translate(). All errors are logged and
+// swallowed — missing creds or a failed auth.test must not tear down the trigger
+// stream (degraded path: Mentioned always false, self-trigger guard inert).
+//
+// The Supervisor restarts the stream on each subscription-scope / token change,
+// so each Start call re-fetches and re-caches the user ID automatically.
+func (s *TriggerService) fetchAndCacheBotUserID(ctx context.Context) {
+	credResp, err := s.host.GetCredentials(ctx, &hostv1.GetCredentialsRequest{})
+	if err != nil {
+		log.Printf("slack: TriggerService: GetCredentials for bot user ID: %v", err)
+		return
+	}
+	raw := credResp.GetCredentialsJson()
+	if raw == "" || raw == "{}" {
+		// No credentials configured yet — degraded but not an error.
+		return
+	}
+	var creds slackCreds
+	if err := json.Unmarshal([]byte(raw), &creds); err != nil {
+		log.Printf("slack: TriggerService: parse credentials for bot user ID: %v", err)
+		return
+	}
+	if creds.Token.AccessToken == "" {
+		return
+	}
+	opts := []slack.Option{slack.OptionHTTPClient(s.httpClient)}
+	if s.apiURL != "" {
+		opts = append(opts, slack.OptionAPIURL(s.apiURL))
+	}
+	sc := slack.New(creds.Token.AccessToken, opts...)
+	resp, authErr := sc.AuthTestContext(ctx)
+	if authErr != nil {
+		log.Printf("slack: TriggerService: auth.test for bot user ID: %v", authErr)
+		return
+	}
+	// Store a copy of the user ID (not the pointer into resp) so the atomic
+	// store owns the memory. Mirrors the verifiedToken pattern (ToolService.Call).
+	uid := resp.UserID
+	s.botUserID.Store(&uid)
 }
 
 // extractAppLevelToken parses the instance config JSON and returns the

@@ -132,6 +132,42 @@ func TestChannelMessageTextRegexBinding(t *testing.T) {
 	}
 }
 
+// TestDirectMessageBindingSchema asserts that the reflected binding_schema for
+// direct_message carries text, text_regex, and user — and does NOT carry
+// channel, channel_type, or mention_only (meaningless for a 1:1 DM).
+func TestDirectMessageBindingSchema(t *testing.T) {
+	node := manifest.MustReflectSchema(SlackDirectMessageBinding{})
+
+	findMappingValue := func(mapping *yaml.Node, key string) *yaml.Node {
+		for i := 0; i+1 < len(mapping.Content); i += 2 {
+			if mapping.Content[i].Value == key {
+				return mapping.Content[i+1]
+			}
+		}
+		return nil
+	}
+
+	properties := findMappingValue(node, "properties")
+	if properties == nil {
+		t.Fatal("binding schema has no 'properties' key")
+	}
+
+	// Fields that MUST be present in the DM binding schema.
+	for _, field := range []string{"text", "text_regex", "user"} {
+		if findMappingValue(properties, field) == nil {
+			t.Errorf("direct_message binding schema missing expected field %q", field)
+		}
+	}
+
+	// Fields that must NOT appear in the DM binding schema: they are
+	// channel-surface concepts with no meaning in a 1:1 DM.
+	for _, field := range []string{"channel", "channel_type", "mention_only"} {
+		if findMappingValue(properties, field) != nil {
+			t.Errorf("direct_message binding schema should not contain field %q", field)
+		}
+	}
+}
+
 // TestChannelMessageChannelTypeBinding asserts that:
 //  1. The reflected binding_schema declares channel_type as {type: string} with
 //     NO format key — the shape the host binding engine requires for OpEquals

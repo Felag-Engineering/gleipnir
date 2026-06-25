@@ -9,7 +9,9 @@ reference).
 ## What this plugin declares
 
 - **ToolService v1** — `post_message`, `list_channels`, `react`, `set_topic` (implemented by #233)
-- **TriggerService v1** — `channel_message` event kind via Slack Socket Mode (#234). Note: subscription-scope channel filtering matches by **channel ID** only (e.g. `C012ABCDEF`); name-based filtering (e.g. `#incidents`) silently does not match because Socket Mode events carry only IDs. Resolving names is future work.
+- **TriggerService v1** — two event kinds via Slack Socket Mode (#234, #621):
+  - `channel_message` — any human message in a watched channel; `mention_only: true` binding selects mentions. Note: subscription-scope channel filtering matches by **channel ID** only (e.g. `C012ABCDEF`); name-based filtering (e.g. `#incidents`) silently does not match because Socket Mode events carry only IDs. Resolving names is future work.
+  - `direct_message` — a 1:1 DM sent directly to the bot. Enable via `direct_messages: true` in the instance subscription scope.
 - **ChannelService v1** — `Notify` and `Request` via Slack DMs and posts (#235)
 - **Auth strategy** — `oauth2_authcode` with Slack's authorization and token endpoints
 
@@ -47,15 +49,38 @@ following binding fields (all optional; fields are ANDed together):
 | Field         | Match          | Notes |
 |---------------|----------------|-------|
 | `channel`     | contains       | Substring of the channel display name or ID (e.g. `incidents`) |
-| `channel_type`| equals         | Slack channel kind: `channel` (public), `group` (private), `im` (DM), `mpim` (multi-party DM). E.g. `channel_type: im` for DM-only. Empty matches any kind. |
+| `channel_type`| equals         | Slack channel kind: `channel` (public), `group` (private), `mpim` (multi-party DM). Empty matches any kind. Note: 1:1 DMs (`im`) now route to `direct_message`, not `channel_message`. |
 | `text`        | contains       | Substring anywhere in the message text |
 | `text_regex`  | regex (RE2)    | Go RE2 expression matched against the message text. Use `^(?i)recipe:` for anchored, case-insensitive command routing — fires on `Recipe: find dinner` but NOT on `got a great Recipe: idea`. RE2 only: no lookbehind or backreferences. |
-| `mention_only`| flag           | Only fire when the bot is mentioned |
+| `mention_only`| flag           | Only fire when the bot is @-mentioned (detected via text-scan for both `message` and `app_mention` events). Never fires for DMs. |
 | `user`        | equals         | Exact Slack user ID (e.g. `U012AB3CD`) |
 
 `text` and `text_regex` are independent siblings: most policies set one or the
 other. See [§"Triggering runs from Slack messages"](#triggering-runs-from-slack-messages)
 for worked examples and routing behaviour.
+
+## Trigger binding (`direct_message`)
+
+Policies that use the `direct_message` trigger can filter events using:
+
+| Field       | Match       | Notes |
+|-------------|-------------|-------|
+| `text`      | contains    | Substring anywhere in the DM text |
+| `text_regex`| regex (RE2) | Same RE2 semantics as `channel_message` |
+| `user`      | equals      | Exact Slack user ID of the sender |
+
+`channel`, `channel_type`, and `mention_only` are absent: they have no meaning
+in a 1:1 DM conversation.
+
+**Prerequisites** for `direct_message` events to arrive:
+
+1. Enable `direct_messages: true` in the instance subscription scope (Admin → Plugins → your Slack instance → Subscription Scope).
+2. The Slack app must subscribe to the `message.im` bot event (already in the one-click app manifest below).
+3. **App Home → Messages Tab → "Allow users to send Slash commands and messages"** must be enabled in your Slack app settings (api.slack.com/apps → your app → App Home → Show Tabs → Messages Tab). This is a Slack product setting outside Gleipnir's control.
+
+The `im:history` OAuth scope is already included in `oauth_defaults` — no re-authorization is needed.
+
+**Self-trigger guard:** the bot's own messages (in channels or DMs) are never emitted as trigger events. This is enforced by checking `user == botUserID` (fetched via `auth.test` at stream open). The bot user ID is cached per stream; if `auth.test` fails at startup, the guard is inert (no worse than pre-#621 behavior).
 
 ## Triggering runs from Slack messages
 
@@ -106,31 +131,17 @@ Note: this no-arbitration statement is cross-policy. A single policy's own
 concurrency setting (`concurrency: skip` / `queue` / `parallel`) still governs
 how many runs that policy starts for its own repeated matches.
 
-### DM gotchas
+### DM troubleshooting
 
-DMing the bot directly works — but is silently broken by several common
-configurations. Check all of the following when a DM produces no run:
+With the `direct_message` event kind (#621), DMs now have a dedicated routing
+surface. If a DM produces no run, check the following:
 
-**Instance-level subscription scope (`channels` field)**
+**`direct_messages` flag in subscription scope**
 
 The instance subscription scope (Admin → Plugins → your Slack instance →
-Subscription Scope) has a `channels` allow-list. When it is non-empty, only
-channels whose IDs appear in the list are processed. DM channel IDs start with
-`D…`, but the schema only accepts IDs matching `^C[A-Z0-9]+$`. This means a
-non-empty `channels` scope silently excludes all DMs regardless of policy
-bindings. **Leave `channels` empty for a DM bot** (empty = match all channels).
-
-Distinguish this instance-level scope — a coarse pre-filter that happens before
-any policy is evaluated — from per-policy binding fields, which are evaluated
-after the scope admits the event.
-
-**`mention_only` in binding or scope**
-
-Setting `mention_only: true` in a policy binding (or in the instance subscription
-scope) excludes DMs. A DM message is never a "mention" — `@Gleipnir` has no
-meaning inside a DM conversation. This flag only fires on `app_mention` events in
-public/private channels. Ensure both the instance scope **and** the policy binding
-have `mention_only` off (or omitted) for DM routing.
+Subscription Scope) must have `direct_messages: true`. Without it, DM events
+are suppressed before any policy is evaluated. The `channels` allow-list does
+not affect DMs — the `direct_messages` flag is the sole gate.
 
 **Slack-side prerequisites**
 
@@ -177,16 +188,15 @@ prefix so messages reach exactly one policy.
 
 #### Example 2 — DM-only bot
 
-Fires on any direct message to the bot. `mention_only` is off (omitted).
+Fires on any direct message to the bot using the `direct_message` event kind.
+Enable `direct_messages: true` in the instance subscription scope first.
 
 ```yaml
 name: slack-dm-assistant
 trigger:
   type: subscribed
   source: slack-prod
-  event_kind: channel_message
-  binding:
-    channel_type: im        # DM-only; mention_only omitted (off)
+  event_kind: direct_message   # dedicated DM surface; 1:1 DMs only
 capabilities:
   tools:
     - tool: slack-prod.post_message
@@ -199,13 +209,16 @@ agent:
 Matching Slack message: any DM, e.g. `what's on my calendar today?`
 
 Prerequisites:
-- Instance subscription scope `channels` **must be empty** (non-empty scope
-  blocks DMs — see §"DM gotchas").
-- `mention_only` must be off in both the instance scope and this binding.
+- Set `direct_messages: true` in the instance subscription scope (Admin →
+  Plugins → your Slack instance → Subscription Scope).
 - Slack app must subscribe to `message.im` (already in the one-click manifest)
   and the **App Home → Messages Tab → "Allow users to send Slash commands and
   messages"** toggle must be enabled in your Slack app settings (external Slack
   setting).
+
+Note: policies that previously used `channel_message` + `channel_type: im`
+to route DMs should migrate to `direct_message`. The old approach required an
+empty `channels` scope and was silently broken when `mention_only` was set.
 
 #### Example 3 — Mention-in-channel
 

@@ -43,18 +43,30 @@ func deriveEventID(channelID, ts string) string {
 	return id.String()
 }
 
-// translate converts a Slack EventsAPIInnerEvent into a channel_message payload.
+// translate converts a Slack EventsAPIInnerEvent into a trigger event payload.
 // Returns emit=false (with no error) for events that should be silently dropped:
-// non-message/mention inner event types, and message events with a non-empty
-// SubType (bot_message, message_changed, etc.).
+// non-message/mention inner event types, message events with a non-empty
+// SubType (bot_message, message_changed, etc.), and events where the sender
+// is the bot itself (self-trigger guard).
 //
 // The teamID parameter is sourced from the outer EventsAPIEvent.TeamID and is
 // best-effort — it may be empty for some Slack event shapes.
 //
+// The botUserID parameter is the bot's own Slack user ID, used to:
+//   - Compute Mentioned via text-scan (`<@botUserID>` in message text) for both
+//     MessageEvent and AppMentionEvent, replacing the old hardcoded false/true.
+//     This makes the two dedup twins (message + app_mention for the same event)
+//     carry the same Mentioned value so whichever survives dedup is correct.
+//   - Guard against self-triggers: events posted by the bot are dropped.
+//
+// Pass "" when the bot user ID is not yet known (degraded path). In that case
+// Mentioned is always false and the self-trigger guard is inert — strictly no
+// worse than the pre-fix behavior.
+//
 // IMPORTANT: slackevents.ParseEvent populates InnerEvent.Data via reflect.New,
 // which returns a pointer. The type switch MUST use pointer cases (*MessageEvent,
 // *AppMentionEvent) or the default case will always match.
-func translate(inner slackevents.EventsAPIInnerEvent, teamID string) (kind, eventID string, payload []byte, emit bool, err error) {
+func translate(inner slackevents.EventsAPIInnerEvent, teamID, botUserID string) (kind, eventID string, payload []byte, emit bool, err error) {
 	switch ev := inner.Data.(type) {
 	case *slackevents.MessageEvent:
 		// Drop subtypes: bot_message, message_changed, message_deleted, etc.
@@ -65,11 +77,28 @@ func translate(inner slackevents.EventsAPIInnerEvent, teamID string) (kind, even
 		// Skip threaded replies — they must not fire trigger events.
 		// Feedback thread replies are handled by ChannelService's handleThreadReply,
 		// not the trigger pipeline.
-		// Known limitation: all threaded replies are suppressed here.  If threaded
+		// Known limitation: all threaded replies are suppressed here. If threaded
 		// trigger events are needed in the future, a separate event kind (e.g.
 		// "thread_reply") should be added rather than removing this filter.
 		if ev.ThreadTimeStamp != "" {
 			return "", "", nil, false, nil
+		}
+		// Self-trigger guard: drop events posted by the bot itself. The bot_message
+		// subtype filter above catches most cases, but a bot can also post with its
+		// human-like user ID (e.g. in DMs), so we check user == botUserID explicitly.
+		if botUserID != "" && ev.User == botUserID {
+			return "", "", nil, false, nil
+		}
+		// Compute Mentioned via text-scan rather than hardcoding false. This makes
+		// the MessageEvent and AppMentionEvent twins for the same Slack mention carry
+		// the same Mentioned value, so whichever wins the host dedup check is correct.
+		mentioned := botUserID != "" && strings.Contains(ev.Text, "<@"+botUserID+">")
+
+		// Route by channel type: 1:1 DMs (channel_type=="im") go to direct_message;
+		// everything else (channel, group, mpim, or unset) goes to channel_message.
+		eventKind := "channel_message"
+		if ev.ChannelType == "im" {
+			eventKind = "direct_message"
 		}
 		p := SlackChannelMessagePayload{
 			Channel:     ev.Channel,
@@ -81,13 +110,13 @@ func translate(inner slackevents.EventsAPIInnerEvent, teamID string) (kind, even
 			EventTs:     ev.EventTimeStamp,
 			TeamID:      teamID,
 			ChannelType: ev.ChannelType,
-			Mentioned:   false,
+			Mentioned:   mentioned,
 		}
 		b, err := json.Marshal(p)
 		if err != nil {
 			return "", "", nil, false, fmt.Errorf("translate: marshal message payload: %w", err)
 		}
-		return "channel_message", deriveEventID(ev.Channel, ev.TimeStamp), b, true, nil
+		return eventKind, deriveEventID(ev.Channel, ev.TimeStamp), b, true, nil
 
 	case *slackevents.AppMentionEvent:
 		// Skip threaded mentions for the same reason as MessageEvent above.
@@ -95,6 +124,15 @@ func translate(inner slackevents.EventsAPIInnerEvent, teamID string) (kind, even
 		if ev.ThreadTimeStamp != "" {
 			return "", "", nil, false, nil
 		}
+		// Self-trigger guard: symmetry with MessageEvent — drop if bot mentions itself.
+		if botUserID != "" && ev.User == botUserID {
+			return "", "", nil, false, nil
+		}
+		// Compute Mentioned via text-scan (same logic as MessageEvent) so both twins
+		// carry the same value. A real app_mention will contain the tag, so in
+		// practice this is still deterministically true — but the text-scan makes it
+		// explicit and consistent with the MessageEvent twin, fixing the dedup race.
+		mentioned := botUserID != "" && strings.Contains(ev.Text, "<@"+botUserID+">")
 		p := SlackChannelMessagePayload{
 			Channel:     ev.Channel,
 			ChannelID:   ev.Channel, // AppMentionEvent has no separate channel_id field
@@ -105,7 +143,7 @@ func translate(inner slackevents.EventsAPIInnerEvent, teamID string) (kind, even
 			EventTs:     ev.EventTimeStamp,
 			TeamID:      teamID,
 			ChannelType: "channel", // app_mention only fires in channels
-			Mentioned:   true,
+			Mentioned:   mentioned,
 		}
 		b, err := json.Marshal(p)
 		if err != nil {
