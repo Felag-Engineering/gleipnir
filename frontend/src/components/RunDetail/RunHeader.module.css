@@ -73,6 +73,12 @@
   line-height: 1;
 }
 
+.capabilityRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 .capabilityBar {
   display: inline-flex;
   align-items: center;
@@ -85,6 +91,18 @@
   border: none;
   cursor: pointer;
   transition: color var(--duration-fast) var(--ease-out);
+}
+
+.feedbackChip {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--color-feedback);
+  background: color-mix(in srgb, var(--color-feedback) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-feedback) 25%, transparent);
+  border-radius: 4px;
 }
 
 .capabilityBar:hover {

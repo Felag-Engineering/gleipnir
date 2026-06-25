@@ -95,3 +95,40 @@ export const FailedWithRetry: Story = {
     onRetry: fn(),
   },
 }
+
+export const WithFeedbackEnabled: Story = {
+  name: 'With feedback capability (ask_operator excluded from tool count)',
+  args: {
+    run: BASE_RUN,
+    toolCallCount: 3,
+    tokenTotal: 1200,
+    duration: 90_000,
+    capabilitySnapshot: {
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      toolCount: 2,
+      tools: [
+        { server_name: 'fs-server', tool_name: 'read_file', approval: 'none' },
+        { server_name: 'fs-server', tool_name: 'write_file', approval: 'required' },
+      ],
+      feedbackEnabled: true,
+    },
+  },
+}
+
+export const WithFeedbackOnly: Story = {
+  name: 'With feedback only (zero granted tools)',
+  args: {
+    run: BASE_RUN,
+    toolCallCount: 0,
+    tokenTotal: 200,
+    duration: 15_000,
+    capabilitySnapshot: {
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      toolCount: 0,
+      tools: [],
+      feedbackEnabled: true,
+    },
+  },
+}
