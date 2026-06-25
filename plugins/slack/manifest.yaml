@@ -472,16 +472,19 @@ subscription_schema:
       type: boolean
   type: object
 tools:
-  - description: Post a plain-text message to a Slack channel or DM.
+  - description: Post a message to a Slack channel or DM. Supports optional Block Kit blocks alongside plain text.
     input_schema:
       additionalProperties: false
       properties:
+        blocks:
+          description: JSON array of Slack Block Kit block objects, e.g. [{\"type\":\"section\"
+          title: Blocks
         channel:
           description: Channel ID (C…) or name (#general)
           title: Channel
           type: string
         text:
-          description: Plain-text message body. Block Kit not supported in v0.1.
+          description: Message text. Used as the notification / fallback text when blocks are present, or as the message body when blocks are absent.
           title: Text
           type: string
         thread_ts:
@@ -490,7 +493,6 @@ tools:
           type: string
       required:
         - channel
-        - text
       type: object
     name: post_message
   - description: List Slack channels visible to the bot user.
@@ -552,4 +554,110 @@ tools:
         - topic
       type: object
     name: set_topic
+  - description: Read messages in a Slack thread (conversations.replies). Returns messages in chronological order.
+    input_schema:
+      additionalProperties: false
+      properties:
+        channel:
+          description: Channel ID (C…) containing the thread
+          title: Channel
+          type: string
+        cursor:
+          description: Pagination cursor from a previous response
+          title: Cursor
+          type: string
+        limit:
+          description: Max messages to return (1-200). Defaults to 200
+          maximum: 200
+          minimum: 1
+          title: Limit
+          type: integer
+        ts:
+          description: Parent message timestamp (ts) that identifies the thread
+          title: Thread TS
+          type: string
+      required:
+        - channel
+        - ts
+      type: object
+    name: read_thread
+  - description: Read recent messages from a Slack channel (conversations.history). Requires a *:history scope for the channel type.
+    input_schema:
+      additionalProperties: false
+      properties:
+        channel:
+          description: Channel ID (C…) to read history from
+          title: Channel
+          type: string
+        cursor:
+          description: Pagination cursor from a previous response
+          title: Cursor
+          type: string
+        limit:
+          description: Max messages to return (1-200). Defaults to 100
+          maximum: 200
+          minimum: 1
+          title: Limit
+          type: integer
+        oldest:
+          description: Return messages after this Unix timestamp (exclusive)
+          title: Oldest
+          type: string
+      required:
+        - channel
+      type: object
+    name: read_history
+  - description: Update (edit) a previously posted Slack message. Supports optional Block Kit blocks alongside plain text.
+    input_schema:
+      additionalProperties: false
+      properties:
+        blocks:
+          description: JSON array of Slack Block Kit block objects, e.g. [{\"type\":\"section\"
+          title: Blocks
+        channel:
+          description: Channel ID containing the message to update
+          title: Channel
+          type: string
+        text:
+          description: Message text. Used as the notification / fallback text when blocks are present, or as the message body when blocks are absent.
+          title: Text
+          type: string
+        ts:
+          description: Timestamp of the message to update
+          title: Message TS
+          type: string
+      required:
+        - channel
+        - ts
+      type: object
+    name: update_message
+  - description: Delete a Slack message posted by the bot.
+    input_schema:
+      additionalProperties: false
+      properties:
+        channel:
+          description: Channel ID containing the message to delete
+          title: Channel
+          type: string
+        ts:
+          description: Timestamp of the message to delete
+          title: Message TS
+          type: string
+      required:
+        - channel
+        - ts
+      type: object
+    name: delete_message
+  - description: Look up a Slack user by ID (U… format). Returns id, name, real_name, and tz.
+    input_schema:
+      additionalProperties: false
+      properties:
+        user:
+          description: Slack user ID (U… format) to look up
+          title: User ID
+          type: string
+      required:
+        - user
+      type: object
+    name: lookup_user
 version: 0.1.1

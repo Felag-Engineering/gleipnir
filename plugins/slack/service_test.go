@@ -1041,8 +1041,8 @@ func TestTriggerStartSelfTriggerGuard(t *testing.T) {
 
 // ── Tool tests ────────────────────────────────────────────────────────────────
 
-// TestToolListToolsAdvertisesAll asserts that ListTools returns exactly the four
-// Slack tools by name and that each InputSchema parses as a JSON object.
+// TestToolListToolsAdvertisesAll asserts that ListTools returns exactly the
+// expected Slack tools by name and that each InputSchema parses as a JSON object.
 func TestToolListToolsAdvertisesAll(t *testing.T) {
 	svcs, cleanup := setupAll(t, nil)
 	defer cleanup()
@@ -1052,7 +1052,10 @@ func TestToolListToolsAdvertisesAll(t *testing.T) {
 		t.Fatalf("ListTools: %v", err)
 	}
 
-	wantNames := []string{"post_message", "list_channels", "react", "set_topic"}
+	wantNames := []string{
+		"post_message", "list_channels", "react", "set_topic",
+		"read_thread", "read_history", "update_message", "delete_message", "lookup_user",
+	}
 	tools := resp.GetTools()
 	if len(tools) != len(wantNames) {
 		t.Fatalf("want %d tools, got %d", len(wantNames), len(tools))

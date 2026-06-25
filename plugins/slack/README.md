@@ -8,7 +8,7 @@ reference).
 
 ## What this plugin declares
 
-- **ToolService v1** — `post_message`, `list_channels`, `react`, `set_topic` (implemented by #233)
+- **ToolService v1** — `post_message` (with Block Kit), `list_channels`, `react`, `set_topic`, `read_thread`, `read_history`, `update_message`, `delete_message`, `lookup_user` (implemented by #233, #626)
 - **TriggerService v1** — five event kinds via Slack Socket Mode (#234, #621, #623):
   - `channel_message` — any human message in a watched channel; `mention_only: true` binding selects mentions. Note: subscription-scope channel filtering matches by **channel ID** only (e.g. `C012ABCDEF`); name-based filtering (e.g. `#incidents`) silently does not match because Socket Mode events carry only IDs. Resolving names is future work.
   - `direct_message` — a 1:1 DM sent directly to the bot. Enable via `direct_messages: true` in the instance subscription scope.
@@ -608,14 +608,18 @@ replace github.com/felag-engineering/gleipnir/plugin-sdk => ../path/to/plugin-sd
 
 ## Tools
 
-The Slack plugin exposes four tools through the `ToolService`. At runtime the host
+The Slack plugin exposes tools through the `ToolService`. At runtime the host
 prefixes each name with the instance name, so they appear as
 `<instance>.post_message`, `<instance>.list_channels`, etc. (e.g.
 `slack-prod.post_message`).
 
+Each tool is independently grantable — a policy grants only the names it needs
+(per ADR-001 hard capability enforcement).
+
 ### `post_message`
 
-Post a plain-text message to a Slack channel or DM.
+Post a message to a Slack channel or DM. Supports optional Block Kit blocks for
+rich formatting alongside plain text.
 
 **Input:**
 ```json
@@ -626,7 +630,23 @@ Post a plain-text message to a Slack channel or DM.
 }
 ```
 
-`thread_ts` is optional — omit it to post to the channel root.
+`thread_ts` is optional — omit it to post to the channel root. `text` and `blocks`
+are both optional, but at least one must be provided. When `blocks` is set, `text`
+is used as the notification fallback (shown in push notifications and clients that
+don't render Block Kit).
+
+**Block Kit example:**
+```json
+{
+  "channel": "C1234567890",
+  "text": "Status update",
+  "blocks": [
+    {"type": "section", "text": {"type": "mrkdwn", "text": "*Deployment complete* :white_check_mark:"}}
+  ]
+}
+```
+
+`blocks` must be a JSON **array**, not an object.
 
 **Output:**
 ```json
@@ -693,6 +713,120 @@ Set the topic of a Slack channel.
 {"ok": true, "topic": "Deployment in progress — do not merge"}
 ```
 
+### `read_thread`
+
+Read messages in a Slack thread (`conversations.replies`). Returns messages in
+chronological order. Requires the `*:history` scope for the channel type
+(e.g. `channels:history` for public channels — already in `oauth_defaults`).
+
+**Input:**
+```json
+{
+  "channel": "C1234567890",
+  "ts": "1700000001.000000",
+  "limit": 200
+}
+```
+
+`ts` is the parent thread timestamp. `limit` defaults to 200 (max 200). `cursor`
+supports pagination.
+
+**Output:**
+```json
+{
+  "messages": [
+    {"text": "Original message", "user": "U001", "ts": "1700000001.000000", "thread_ts": "1700000001.000000"},
+    {"text": "Reply from colleague", "user": "U002", "ts": "1700000002.000000", "thread_ts": "1700000001.000000"}
+  ],
+  "next_cursor": "",
+  "has_more": false
+}
+```
+
+### `read_history`
+
+Read recent messages from a Slack channel (`conversations.history`). Requires
+the `*:history` scope for the channel type (already in `oauth_defaults`).
+
+**Input:**
+```json
+{
+  "channel": "C1234567890",
+  "limit": 100,
+  "oldest": "1700000000.000000"
+}
+```
+
+`limit` defaults to 100 (max 200). `oldest` restricts to messages after that
+timestamp (exclusive). `cursor` supports pagination.
+
+**Output:**
+```json
+{
+  "messages": [
+    {"text": "Recent message", "user": "U001", "ts": "1700000010.000000"}
+  ],
+  "next_cursor": "",
+  "has_more": false
+}
+```
+
+### `update_message`
+
+Update (edit) a previously posted Slack message. Supports optional Block Kit
+blocks. Same `text`/`blocks` rules as `post_message`.
+
+**Input:**
+```json
+{
+  "channel": "C1234567890",
+  "ts": "1700000001.000000",
+  "text": "Updated message text"
+}
+```
+
+**Output:**
+```json
+{"channel": "C1234567890", "ts": "1700000001.000000", "text": "Updated message text"}
+```
+
+The `text` key is always present in the output even when Slack echoes an empty string.
+
+### `delete_message`
+
+Delete a Slack message posted by the bot.
+
+**Input:**
+```json
+{"channel": "C1234567890", "ts": "1700000001.000000"}
+```
+
+**Output:**
+```json
+{"channel": "C1234567890", "ts": "1700000001.000000"}
+```
+
+### `lookup_user`
+
+Look up a Slack user by ID. Returns display fields for personalization.
+
+**Input:**
+```json
+{"user": "U012AB3CD"}
+```
+
+**Output:**
+```json
+{"id": "U012AB3CD", "name": "alice", "real_name": "Alice Smith", "tz": "America/New_York"}
+```
+
+### Planned
+
+- **`upload_file`** (`files:write`) — share logs, reports, and images. Deferred
+  to a follow-up PR because it is the only new tool requiring the `files:write`
+  scope, which would force existing installs to re-authorize. All other tools
+  above require no new scopes.
+
 ## Required Slack scopes
 
 The following OAuth 2.0 bot token scopes must be granted when installing the
@@ -701,26 +835,19 @@ and shown in the admin UI during install.
 
 | Scope             | Used by |
 |-------------------|---------|
-| `channels:history` | **Reserved; no current tool uses it** |
+| `channels:history` | `read_thread`, `read_history` (public channels) |
 | `channels:read`   | `list_channels` (public channels) |
-| `chat:write`      | `post_message` |
-| `groups:history`  | **Reserved; no current tool uses it** |
-| `im:history`      | **Reserved; no current tool uses it** |
+| `chat:write`      | `post_message`, `update_message`, `delete_message` |
+| `groups:history`  | `read_thread`, `read_history` (private channels) |
+| `im:history`      | `read_thread`, `read_history` (DMs) |
 | `im:write`        | `post_message` to DMs |
-| `mpim:history`    | **Reserved; no current tool uses it** |
-| `users:read`      | user lookup in various responses |
+| `mpim:history`    | `read_thread`, `read_history` (multi-party DMs) |
+| `users:read`      | `lookup_user` and user lookup in various responses |
 
-> **Note on `*:history` scopes:** The four `*:history` scopes (`channels:history`,
-> `groups:history`, `im:history`, `mpim:history`) are reserved for future
-> history-reading tools (e.g., a `read_recent_messages` tool that calls
-> `conversations.history`). The current plugin code does **not** call these
-> endpoints at runtime. Socket Mode event delivery (TriggerService) uses the
-> app-level `xapp-` token and does **not** require these bot-token scopes.
-> Operators who decline these scopes at OAuth time will still get a working
-> installation for the currently-implemented tools (`post_message`,
-> `list_channels`, `react`, `set_topic`) and the
-> `channel_message` trigger; they are requested up-front per the issue AC so the
-> same OAuth grant covers planned tools without a re-authorize round trip.
+All scopes listed above were already in `oauth_defaults` before this feature
+shipped — existing installs do **not** need to re-authorize to use the new tools.
+The only planned scope addition (`files:write` for `upload_file`) is deferred to
+a separate PR to keep re-auth impact isolated.
 
 ## Token refresh
 

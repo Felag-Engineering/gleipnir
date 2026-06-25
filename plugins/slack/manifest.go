@@ -34,12 +34,10 @@ var pluginManifest = manifest.Manifest{
 			// TestManifestYAMLIsCanonical.
 			//
 			// The four *:history scopes (channels:history, groups:history,
-			// im:history, mpim:history) are reserved for future history-reading
-			// tools (e.g. conversations.history). The current plugin code does NOT
-			// call these endpoints. Socket Mode delivery (TriggerService) uses the
-			// app-level xapp- token and does NOT require these bot-token scopes.
-			// They are requested up-front so the same OAuth grant covers planned
-			// tools without a re-authorize round trip.
+			// im:history, mpim:history) are used by read_thread and read_history
+			// to call conversations.replies and conversations.history respectively.
+			// Socket Mode delivery (TriggerService) uses the app-level xapp- token
+			// and does NOT require these bot-token scopes.
 			Scopes: []string{
 				"channels:history",
 				"channels:read",
@@ -127,17 +125,20 @@ properties:
 	},
 }
 
-// buildToolDecls returns the four Slack tool declarations for the manifest.
+// buildToolDecls returns the Slack tool declarations for the manifest.
 // InputSchema is a *yaml.Node (manifest.ToolDecl.InputSchema, manifest.go:237)
 // produced by manifest.MustReflectSchema — distinct from the JSON-string form
 // used by ToolService.ListTools on the wire (see tools.go:reflectInputSchemaJSON).
 // Tool names are unqualified; the host prepends the instance name at runtime
 // (internal/plugin/tools/registrar.go:72).
+//
+// Append order matters: manifest.Marshal preserves code order, and
+// TestManifestYAMLIsCanonical asserts byte-exact YAML. New tools go at the end.
 func buildToolDecls() []manifest.ToolDecl {
 	return []manifest.ToolDecl{
 		{
 			Name:        "post_message",
-			Description: "Post a plain-text message to a Slack channel or DM.",
+			Description: "Post a message to a Slack channel or DM. Supports optional Block Kit blocks alongside plain text.",
 			InputSchema: manifest.MustReflectSchema(PostMessageParams{}),
 		},
 		{
@@ -154,6 +155,31 @@ func buildToolDecls() []manifest.ToolDecl {
 			Name:        "set_topic",
 			Description: "Set the topic of a Slack channel.",
 			InputSchema: manifest.MustReflectSchema(SetTopicParams{}),
+		},
+		{
+			Name:        "read_thread",
+			Description: "Read messages in a Slack thread (conversations.replies). Returns messages in chronological order.",
+			InputSchema: manifest.MustReflectSchema(ReadThreadParams{}),
+		},
+		{
+			Name:        "read_history",
+			Description: "Read recent messages from a Slack channel (conversations.history). Requires a *:history scope for the channel type.",
+			InputSchema: manifest.MustReflectSchema(ReadHistoryParams{}),
+		},
+		{
+			Name:        "update_message",
+			Description: "Update (edit) a previously posted Slack message. Supports optional Block Kit blocks alongside plain text.",
+			InputSchema: manifest.MustReflectSchema(UpdateMessageParams{}),
+		},
+		{
+			Name:        "delete_message",
+			Description: "Delete a Slack message posted by the bot.",
+			InputSchema: manifest.MustReflectSchema(DeleteMessageParams{}),
+		},
+		{
+			Name:        "lookup_user",
+			Description: "Look up a Slack user by ID (U… format). Returns id, name, real_name, and tz.",
+			InputSchema: manifest.MustReflectSchema(LookupUserParams{}),
 		},
 	}
 }
