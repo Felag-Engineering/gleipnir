@@ -1093,8 +1093,8 @@ func TestHumanizeSlackErrForTool(t *testing.T) {
 		name         string
 		err          error
 		toolName     string
-		wantContains []string    // all substrings must appear
-		wantAbsent   []string    // none of these substrings may appear
+		wantContains []string // all substrings must appear
+		wantAbsent   []string // none of these substrings may appear
 	}{
 		// Single-scope tools: message must include the specific scope and the raw code.
 		{

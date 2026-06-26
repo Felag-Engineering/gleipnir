@@ -232,15 +232,15 @@ func humanizeSlackErr(err error) string {
 // API response, so this static table is the authoritative source of truth for
 // surfacing actionable scope hints to operators.
 var toolRequiredScopes = map[string][]string{
-	"post_message":   {"chat:write"},                                                             // chat.postMessage
-	"update_message": {"chat:write"},                                                             // chat.update
-	"delete_message": {"chat:write"},                                                             // chat.delete
-	"react":          {"reactions:write"},                                                        // reactions.add
-	"lookup_user":    {"users:read"},                                                             // users.info
-	"list_channels":  {"channels:read", "groups:read"},                                          // conversations.list (public/private)
-	"set_topic":      {"channels:manage", "groups:write", "im:write", "mpim:write"},             // conversations.setTopic
-	"read_history":   {"channels:history", "groups:history", "im:history", "mpim:history"},      // conversations.history
-	"read_thread":    {"channels:history", "groups:history", "im:history", "mpim:history"},      // conversations.replies
+	"post_message":   {"chat:write"},                                                       // chat.postMessage
+	"update_message": {"chat:write"},                                                       // chat.update
+	"delete_message": {"chat:write"},                                                       // chat.delete
+	"react":          {"reactions:write"},                                                  // reactions.add
+	"lookup_user":    {"users:read"},                                                       // users.info
+	"list_channels":  {"channels:read", "groups:read"},                                     // conversations.list (public/private)
+	"set_topic":      {"channels:manage", "groups:write", "im:write", "mpim:write"},        // conversations.setTopic
+	"read_history":   {"channels:history", "groups:history", "im:history", "mpim:history"}, // conversations.history
+	"read_thread":    {"channels:history", "groups:history", "im:history", "mpim:history"}, // conversations.replies
 }
 
 // humanizeSlackErrForTool enriches a missing_scope error with the specific
