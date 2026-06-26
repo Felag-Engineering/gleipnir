@@ -41,8 +41,8 @@ type optionsCacheKey struct {
 
 // optionsCacheEntry holds a cached response and the wall-clock time it was stored.
 type optionsCacheEntry struct {
-	resp      *pluginOptionsResponse
-	storedAt  time.Time
+	resp     *pluginOptionsResponse
+	storedAt time.Time
 }
 
 // pluginOptionsResponse is the JSON body returned by GetInstanceOptions.

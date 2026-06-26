@@ -224,4 +224,3 @@ func (s *OptionsService) listUsers(ctx context.Context, sc *slack.Client, query,
 		NextCursor: "", // no cursor pagination in this implementation
 	}, nil
 }
-

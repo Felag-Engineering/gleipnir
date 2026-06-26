@@ -109,12 +109,12 @@ func slackCh(id, name string, isMember, isArchived bool) map[string]any {
 // slackUser builds a minimal Slack user map for usersPage.
 func slackUser(id, name, realName string, isBot, isDeleted bool) map[string]any {
 	return map[string]any{
-		"id":          id,
-		"name":        name,
-		"real_name":   realName,
-		"is_bot":      isBot,
-		"deleted":     isDeleted,
-		"profile":     map[string]any{"real_name": realName},
+		"id":        id,
+		"name":      name,
+		"real_name": realName,
+		"is_bot":    isBot,
+		"deleted":   isDeleted,
+		"profile":   map[string]any{"real_name": realName},
 	}
 }
 
@@ -427,11 +427,11 @@ func TestOptionsListUsersSkipDeletedAndBots(t *testing.T) {
 	mux.HandleFunc("/users.list", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(usersPage([]map[string]any{
-			slackUser("U001", "alice", "Alice Smith", false, false),                  // kept
-			slackUser("U002", "ex-employee", "Ex Employee", false, true),             // deleted → skip
-			slackUser("U003", "mybot", "My Bot", true, false),                        // bot → skip
-			slackUser("USLACKBOT", "slackbot", "Slackbot", false, false),             // USLACKBOT → skip
-			slackUser("U004", "carol", "Carol White", false, false),                  // kept
+			slackUser("U001", "alice", "Alice Smith", false, false),      // kept
+			slackUser("U002", "ex-employee", "Ex Employee", false, true), // deleted → skip
+			slackUser("U003", "mybot", "My Bot", true, false),            // bot → skip
+			slackUser("USLACKBOT", "slackbot", "Slackbot", false, false), // USLACKBOT → skip
+			slackUser("U004", "carol", "Carol White", false, false),      // kept
 		}))
 	})
 	srv := httptest.NewServer(mux)
