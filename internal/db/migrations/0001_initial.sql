@@ -261,7 +261,8 @@ CREATE TABLE users (
     username        TEXT    NOT NULL UNIQUE,
     password_hash   TEXT    NOT NULL,
     created_at      TEXT    NOT NULL,     -- ISO 8601 UTC
-    deactivated_at  TEXT                  -- nullable, ISO 8601 UTC
+    deactivated_at  TEXT,                 -- nullable, ISO 8601 UTC
+    slack_user_id   TEXT    UNIQUE        -- nullable; one Slack workspace user id ↔ at most one Gleipnir user
 );
 
 -- ---------------------------------------------------------------------------

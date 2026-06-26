@@ -50,6 +50,7 @@ type AuthQuerier interface {
 	UpdateUserPassword(ctx context.Context, arg db.UpdateUserPasswordParams) error
 	ListSessionsByUser(ctx context.Context, arg db.ListSessionsByUserParams) ([]db.ListSessionsByUserRow, error)
 	DeleteSessionByID(ctx context.Context, arg db.DeleteSessionByIDParams) error
+	SetUserSlackUserID(ctx context.Context, arg db.SetUserSlackUserIDParams) error
 }
 
 // Handler handles the authentication flow: login, logout, setup check, initial

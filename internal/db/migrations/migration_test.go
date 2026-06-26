@@ -361,3 +361,66 @@ func seedPreReauthorizeBaseline(t *testing.T, db *sql.DB) {
 		}
 	}
 }
+
+// TestAddUserSlackUserID verifies that migration 0041 adds slack_user_id to the
+// users table with a UNIQUE index, allows set+read round-trips, and rejects
+// duplicate Slack ids.
+func TestAddUserSlackUserID(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	applyInitialSchema(t, db)
+
+	// Seed two users using the initial schema (no slack_user_id column yet).
+	for _, u := range []struct{ id, username string }{
+		{"u1", "alice"},
+		{"u2", "bob"},
+	} {
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO users(id, username, password_hash, created_at) VALUES (?, ?, 'x', '2024-01-01T00:00:00Z')`,
+			u.id, u.username,
+		); err != nil {
+			t.Fatalf("seed user %s: %v", u.id, err)
+		}
+	}
+
+	m := &migrations.AddUserSlackUserID{}
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	// Set alice's Slack id.
+	if _, err := db.ExecContext(ctx,
+		`UPDATE users SET slack_user_id = 'U-alice-slack' WHERE id = 'u1'`,
+	); err != nil {
+		t.Fatalf("set alice slack_user_id: %v", err)
+	}
+
+	// Read it back.
+	var slackID string
+	if err := db.QueryRowContext(ctx, `SELECT slack_user_id FROM users WHERE id = 'u1'`).Scan(&slackID); err != nil {
+		t.Fatalf("read slack_user_id: %v", err)
+	}
+	if slackID != "U-alice-slack" {
+		t.Errorf("slack_user_id = %q, want %q", slackID, "U-alice-slack")
+	}
+
+	// Try to assign the same Slack id to bob — must fail (UNIQUE).
+	_, err := db.ExecContext(ctx,
+		`UPDATE users SET slack_user_id = 'U-alice-slack' WHERE id = 'u2'`,
+	)
+	if err == nil {
+		t.Fatal("expected UNIQUE constraint error assigning duplicate slack_user_id, got nil")
+	}
+	if !strings.Contains(err.Error(), "UNIQUE") {
+		t.Errorf("expected UNIQUE error, got: %v", err)
+	}
+
+	// NULL (cleared) slack_user_id does not violate the unique index; both users
+	// can have NULL simultaneously (SQLite NULLs are distinct in UNIQUE indexes).
+	if _, err := db.ExecContext(ctx, `UPDATE users SET slack_user_id = NULL WHERE id = 'u1'`); err != nil {
+		t.Fatalf("clear alice slack_user_id: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE users SET slack_user_id = NULL WHERE id = 'u2'`); err != nil {
+		t.Fatalf("clear bob slack_user_id: %v", err)
+	}
+}

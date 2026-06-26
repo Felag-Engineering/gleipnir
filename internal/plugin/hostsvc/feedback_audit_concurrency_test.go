@@ -280,5 +280,11 @@ func (f *fakeInstanceQuerier) ListActiveUsersByRole(ctx context.Context, role st
 	return f.q.ListActiveUsersByRole(ctx, role)
 }
 
+// GetUserBySlackUserID always returns no rows — concurrency tests do not
+// exercise external-actor authorization (empty actor_external_id → passthrough).
+func (f *fakeInstanceQuerier) GetUserBySlackUserID(_ context.Context, _ *string) ([]db.GetUserBySlackUserIDRow, error) {
+	return nil, nil
+}
+
 // compile-time check that fakeInstanceQuerier satisfies Querier.
 var _ hostsvc.Querier = (*fakeInstanceQuerier)(nil)

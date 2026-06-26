@@ -18,6 +18,78 @@ import (
 	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
 )
 
+// authorizedActorRoles are the roles that may resolve a channel Request via an
+// external identity (e.g. Slack user.id). Auditor is intentionally excluded.
+var authorizedActorRoles = map[model.Role]bool{
+	model.RoleApprover: true,
+	model.RoleOperator: true,
+	model.RoleAdmin:    true,
+}
+
+// authorizeExternalActor checks whether actorExternalID (a Slack user.id or
+// other external identity) maps to a Gleipnir user with an authorized role.
+//
+// When actorExternalID is empty the call is authorized by default (non-external
+// path; §8.5 ownership check is the sole gate).
+//
+// On rejection the function writes a high-severity audit event and returns
+// the rejection response. The caller must NOT proceed with the resolution.
+func (s *Server) authorizeExternalActor(
+	ctx context.Context,
+	inst db.PluginInstance,
+	requestID, runID, actorExternalID, rpcMethod string,
+) (authorized bool, reject *hostv1.WriteAuditStepResponse, err error) {
+	if actorExternalID == "" {
+		return true, nil, nil
+	}
+
+	rows, qerr := s.q.GetUserBySlackUserID(ctx, &actorExternalID)
+	if qerr != nil {
+		return false, nil, status.Errorf(codes.Internal, "look up actor external id: %v", qerr)
+	}
+	if len(rows) == 0 {
+		// Unknown Slack id or user has no roles (S6: treated identically).
+		s.writeAuditEvent(ctx, inst.ID, EventTypeUnauthorizedApproval, "high", map[string]string{
+			"request_id":        requestID,
+			"run_id":            runID,
+			"actor_external_id": actorExternalID,
+			"rpc_method":        rpcMethod,
+		})
+		return false, &hostv1.WriteAuditStepResponse{
+			Ok:           false,
+			Unauthorized: true,
+			Error: &commonv1.ErrorEnvelope{
+				// ERROR_CODE_PERMISSION is the closest fit; the plugin branches on
+				// Unauthorized=true rather than inspecting the code.
+				Code:    commonv1.ErrorCode_ERROR_CODE_PERMISSION,
+				Message: "unauthorized_approval_attempt",
+			},
+		}, nil
+	}
+
+	for _, row := range rows {
+		if authorizedActorRoles[model.Role(row.Role)] {
+			return true, nil, nil
+		}
+	}
+
+	// User exists but holds only auditor (or no authorized) role.
+	s.writeAuditEvent(ctx, inst.ID, EventTypeUnauthorizedApproval, "high", map[string]string{
+		"request_id":        requestID,
+		"run_id":            runID,
+		"actor_external_id": actorExternalID,
+		"rpc_method":        rpcMethod,
+	})
+	return false, &hostv1.WriteAuditStepResponse{
+		Ok:           false,
+		Unauthorized: true,
+		Error: &commonv1.ErrorEnvelope{
+			Code:    commonv1.ErrorCode_ERROR_CODE_PERMISSION,
+			Message: "unauthorized_approval_attempt",
+		},
+	}, nil
+}
+
 // maxPayloadJSONBytes is the per-RPC hard cap on payload_json fields in
 // WriteAuditStep and EmitEvent. 64 KiB is generous for a feedback_response or
 // event payload; anything larger is a sign of misuse or a bug in the plugin.
@@ -76,6 +148,11 @@ func (s *Server) WriteAuditStep(ctx context.Context, req *hostv1.WriteAuditStepR
 				"rpc_method": rpcMethod,
 			})
 			return nil, status.Error(codes.PermissionDenied, "unauthorized_request_id")
+		}
+
+		// Authz gate: check external actor role AFTER ownership, BEFORE resolution.
+		if ok, reject, aerr := s.authorizeExternalActor(ctx, inst, requestID, pendingReq.RunID, req.GetActorExternalId(), rpcMethod); !ok {
+			return reject, aerr
 		}
 
 		if s.channels == nil {
@@ -182,6 +259,11 @@ func (s *Server) WriteAuditStep(ctx context.Context, req *hostv1.WriteAuditStepR
 			"rpc_method": rpcMethod,
 		})
 		return nil, status.Error(codes.PermissionDenied, "unauthorized_request_id")
+	}
+
+	// Authz gate: check external actor role AFTER ownership, BEFORE resolution.
+	if ok, reject, aerr := s.authorizeExternalActor(ctx, inst, requestID, fr.RunID, req.GetActorExternalId(), rpcMethod); !ok {
+		return reject, aerr
 	}
 
 	// Ownership confirmed. Now check whether the request is still actionable.

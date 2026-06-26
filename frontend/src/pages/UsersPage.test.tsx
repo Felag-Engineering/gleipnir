@@ -24,6 +24,7 @@ const USER_ADMIN: ApiUser = {
   roles: ['admin'],
   created_at: '2026-01-01T00:00:00Z',
   deactivated_at: null,
+  slack_user_id: null,
 }
 
 const USER_OPERATOR: ApiUser = {
@@ -32,6 +33,7 @@ const USER_OPERATOR: ApiUser = {
   roles: ['operator'],
   created_at: '2026-01-02T00:00:00Z',
   deactivated_at: null,
+  slack_user_id: null,
 }
 
 const USER_DEACTIVATED: ApiUser = {
@@ -40,6 +42,16 @@ const USER_DEACTIVATED: ApiUser = {
   roles: [],
   created_at: '2026-01-03T00:00:00Z',
   deactivated_at: '2026-02-01T00:00:00Z',
+  slack_user_id: null,
+}
+
+const USER_WITH_SLACK: ApiUser = {
+  id: 'u4',
+  username: 'diana',
+  roles: ['approver'],
+  created_at: '2026-01-04T00:00:00Z',
+  deactivated_at: null,
+  slack_user_id: 'U01ABCSLACK',
 }
 
 // --- Helpers ---
@@ -467,5 +479,85 @@ describe('UsersPage — edit user modal', () => {
     await waitFor(() => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     })
+  })
+
+  it('shows Slack user ID field in edit mode', () => {
+    mockUsersLoaded([USER_OPERATOR])
+    mockNoopMutations()
+
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }))
+
+    expect(screen.getByLabelText(/slack user id/i)).toBeInTheDocument()
+  })
+
+  it('pre-seeds Slack user ID from the user record', () => {
+    mockUsersLoaded([USER_WITH_SLACK])
+    mockNoopMutations()
+
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }))
+
+    const input = screen.getByLabelText(/slack user id/i) as HTMLInputElement
+    expect(input.value).toBe('U01ABCSLACK')
+  })
+
+  it('passes slack_user_id to updateMutation on save', () => {
+    mockUsersLoaded([USER_OPERATOR])
+    const mutateMock = vi.fn()
+    vi.mocked(useUpdateUser).mockReturnValue({
+      mutate: mutateMock,
+      isPending: false,
+      error: null,
+      reset: vi.fn(),
+    } as unknown as ReturnType<typeof useUpdateUser>)
+    vi.mocked(useCreateUser).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+      error: null,
+      reset: vi.fn(),
+    } as unknown as ReturnType<typeof useCreateUser>)
+
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }))
+
+    fireEvent.change(screen.getByLabelText(/slack user id/i), {
+      target: { value: 'U99NEWSLACK' },
+    })
+    fireEvent.submit(document.querySelector('#user-modal-form') as HTMLFormElement)
+
+    expect(mutateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'u2', slack_user_id: 'U99NEWSLACK' }),
+      expect.any(Object),
+    )
+  })
+
+  it('passes slack_user_id as null when field is cleared', () => {
+    mockUsersLoaded([USER_WITH_SLACK])
+    const mutateMock = vi.fn()
+    vi.mocked(useUpdateUser).mockReturnValue({
+      mutate: mutateMock,
+      isPending: false,
+      error: null,
+      reset: vi.fn(),
+    } as unknown as ReturnType<typeof useUpdateUser>)
+    vi.mocked(useCreateUser).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+      error: null,
+      reset: vi.fn(),
+    } as unknown as ReturnType<typeof useCreateUser>)
+
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }))
+
+    // Clear the field (empty string → null)
+    fireEvent.change(screen.getByLabelText(/slack user id/i), { target: { value: '' } })
+    fireEvent.submit(document.querySelector('#user-modal-form') as HTMLFormElement)
+
+    expect(mutateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'u4', slack_user_id: null }),
+      expect.any(Object),
+    )
   })
 })

@@ -248,6 +248,7 @@ type User struct {
 	PasswordHash  string  `json:"password_hash"`
 	CreatedAt     string  `json:"created_at"`
 	DeactivatedAt *string `json:"deactivated_at"`
+	SlackUserID   *string `json:"slack_user_id"`
 }
 
 type UserPreference struct {

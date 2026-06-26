@@ -24,7 +24,7 @@ const createFirstUser = `-- name: CreateFirstUser :one
 INSERT INTO users (id, username, password_hash, created_at)
 SELECT ?1, ?2, ?3, ?4
 WHERE (SELECT COUNT(*) FROM users WHERE deactivated_at IS NULL) = 0
-RETURNING id, username, password_hash, created_at, deactivated_at
+RETURNING id, username, password_hash, created_at, deactivated_at, slack_user_id
 `
 
 type CreateFirstUserParams struct {
@@ -49,6 +49,7 @@ func (q *Queries) CreateFirstUser(ctx context.Context, arg CreateFirstUserParams
 		&i.PasswordHash,
 		&i.CreatedAt,
 		&i.DeactivatedAt,
+		&i.SlackUserID,
 	)
 	return i, err
 }
@@ -56,7 +57,7 @@ func (q *Queries) CreateFirstUser(ctx context.Context, arg CreateFirstUserParams
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (id, username, password_hash, created_at)
 VALUES (?1, ?2, ?3, ?4)
-RETURNING id, username, password_hash, created_at, deactivated_at
+RETURNING id, username, password_hash, created_at, deactivated_at, slack_user_id
 `
 
 type CreateUserParams struct {
@@ -80,6 +81,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.PasswordHash,
 		&i.CreatedAt,
 		&i.DeactivatedAt,
+		&i.SlackUserID,
 	)
 	return i, err
 }
@@ -99,7 +101,7 @@ func (q *Queries) DeactivateUser(ctx context.Context, arg DeactivateUserParams) 
 }
 
 const getUser = `-- name: GetUser :one
-SELECT id, username, password_hash, created_at, deactivated_at FROM users WHERE id = ?1
+SELECT id, username, password_hash, created_at, deactivated_at, slack_user_id FROM users WHERE id = ?1
 `
 
 func (q *Queries) GetUser(ctx context.Context, id string) (User, error) {
@@ -111,12 +113,54 @@ func (q *Queries) GetUser(ctx context.Context, id string) (User, error) {
 		&i.PasswordHash,
 		&i.CreatedAt,
 		&i.DeactivatedAt,
+		&i.SlackUserID,
 	)
 	return i, err
 }
 
+const getUserBySlackUserID = `-- name: GetUserBySlackUserID :many
+SELECT u.id, u.username, ur.role
+FROM users u
+JOIN user_roles ur ON ur.user_id = u.id
+WHERE u.slack_user_id = ?1
+  AND u.deactivated_at IS NULL
+ORDER BY ur.role
+`
+
+type GetUserBySlackUserIDRow struct {
+	ID       string `json:"id"`
+	Username string `json:"username"`
+	Role     string `json:"role"`
+}
+
+// Returns one row per role for the active user mapped to the given slack_user_id.
+// A user with zero roles in user_roles produces no rows; such a user is treated
+// as unmapped (same rejection path as "unknown Slack id"). See plan S6.
+func (q *Queries) GetUserBySlackUserID(ctx context.Context, slackUserID *string) ([]GetUserBySlackUserIDRow, error) {
+	rows, err := q.db.QueryContext(ctx, getUserBySlackUserID, slackUserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetUserBySlackUserIDRow
+	for rows.Next() {
+		var i GetUserBySlackUserIDRow
+		if err := rows.Scan(&i.ID, &i.Username, &i.Role); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getUserByUsername = `-- name: GetUserByUsername :one
-SELECT id, username, password_hash, created_at, deactivated_at FROM users WHERE username = ?1
+SELECT id, username, password_hash, created_at, deactivated_at, slack_user_id FROM users WHERE username = ?1
 `
 
 func (q *Queries) GetUserByUsername(ctx context.Context, username string) (User, error) {
@@ -128,12 +172,13 @@ func (q *Queries) GetUserByUsername(ctx context.Context, username string) (User,
 		&i.PasswordHash,
 		&i.CreatedAt,
 		&i.DeactivatedAt,
+		&i.SlackUserID,
 	)
 	return i, err
 }
 
 const listUsers = `-- name: ListUsers :many
-SELECT id, username, created_at, deactivated_at FROM users ORDER BY created_at
+SELECT id, username, created_at, deactivated_at, slack_user_id FROM users ORDER BY created_at
 `
 
 type ListUsersRow struct {
@@ -141,6 +186,7 @@ type ListUsersRow struct {
 	Username      string  `json:"username"`
 	CreatedAt     string  `json:"created_at"`
 	DeactivatedAt *string `json:"deactivated_at"`
+	SlackUserID   *string `json:"slack_user_id"`
 }
 
 func (q *Queries) ListUsers(ctx context.Context) ([]ListUsersRow, error) {
@@ -157,6 +203,7 @@ func (q *Queries) ListUsers(ctx context.Context) ([]ListUsersRow, error) {
 			&i.Username,
 			&i.CreatedAt,
 			&i.DeactivatedAt,
+			&i.SlackUserID,
 		); err != nil {
 			return nil, err
 		}
@@ -169,6 +216,20 @@ func (q *Queries) ListUsers(ctx context.Context) ([]ListUsersRow, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const setUserSlackUserID = `-- name: SetUserSlackUserID :exec
+UPDATE users SET slack_user_id = ?1 WHERE id = ?2
+`
+
+type SetUserSlackUserIDParams struct {
+	SlackUserID *string `json:"slack_user_id"`
+	ID          string  `json:"id"`
+}
+
+func (q *Queries) SetUserSlackUserID(ctx context.Context, arg SetUserSlackUserIDParams) error {
+	_, err := q.db.ExecContext(ctx, setUserSlackUserID, arg.SlackUserID, arg.ID)
+	return err
 }
 
 const updateUserPassword = `-- name: UpdateUserPassword :exec

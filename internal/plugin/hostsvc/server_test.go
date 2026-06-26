@@ -93,6 +93,11 @@ type fakeQuerier struct {
 	pluginPendingRequest    db.PluginPendingRequest
 	pluginPendingRequestErr error
 
+	// userBySlackUserID is returned by GetUserBySlackUserID.
+	// Empty slice = unknown Slack id (no authorized user found).
+	userBySlackUserID    []db.GetUserBySlackUserIDRow
+	userBySlackUserIDErr error
+
 	mu sync.Mutex
 }
 
@@ -165,6 +170,10 @@ func (f *fakeQuerier) ListActiveUsersByRole(_ context.Context, _ string) ([]db.L
 
 func (f *fakeQuerier) GetPluginPendingRequest(_ context.Context, _ string) (db.PluginPendingRequest, error) {
 	return f.pluginPendingRequest, f.pluginPendingRequestErr
+}
+
+func (f *fakeQuerier) GetUserBySlackUserID(_ context.Context, _ *string) ([]db.GetUserBySlackUserIDRow, error) {
+	return f.userBySlackUserID, f.userBySlackUserIDErr
 }
 
 func (f *fakeQuerier) ListRunsByPolicies(_ context.Context, arg db.ListRunsByPoliciesParams) ([]db.ListRunsByPoliciesRow, error) {

@@ -41,15 +41,17 @@ export default function UsersPage() {
     )
   }
 
+  // S7: create-mode onSubmit ignores the second arg; the signature matches the unified type.
+
   function handleCreateClose() {
     setShowCreateModal(false)
     createMutation.reset()
   }
 
-  function handleEditSubmit(roles: string[]) {
+  function handleEditSubmit(roles: string[], slackUserId: string | null) {
     if (!editingUser) return
     updateMutation.mutate(
-      { id: editingUser.id, roles },
+      { id: editingUser.id, roles, slack_user_id: slackUserId },
       {
         onSuccess: () => {
           setEditingUser(null)
@@ -173,6 +175,7 @@ export default function UsersPage() {
         <CreateUserModal
           mode="edit"
           initialRole={highestRoleFromArray(editingUser.roles)}
+          initialSlackUserId={editingUser.slack_user_id}
           onClose={handleEditClose}
           onSubmit={handleEditSubmit}
           isPending={updateMutation.isPending}

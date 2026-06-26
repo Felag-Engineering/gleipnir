@@ -725,6 +725,7 @@ func extractAppLevelToken(configJSON string) (string, error) {
 type slackWebAPI interface {
 	PostMessageContext(ctx context.Context, channelID string, opts ...slack.MsgOption) (string, string, error)
 	UpdateMessageContext(ctx context.Context, channelID, timestamp string, opts ...slack.MsgOption) (string, string, string, error)
+	PostEphemeralContext(ctx context.Context, channelID, userID string, opts ...slack.MsgOption) (string, error)
 }
 
 // ChannelService implements channelv1.ChannelServiceServer. It posts Slack
@@ -1123,14 +1124,34 @@ func (s *ChannelService) handleInteractive(evt socketmode.Event, cb slack.Intera
 		}
 
 		// No call_id needed: spec §8.5 request_id exemption — the host authorizes
-		// via plugin_pending_requests ownership.
+		// via plugin_pending_requests ownership. ActorExternalId carries the Slack
+		// user.id so the host can verify the role before accepting the resolution.
 		resp, err := s.host.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
-			StepType:    "feedback_response",
-			RequestId:   requestID,
-			PayloadJson: string(payloadJSON),
+			StepType:        "feedback_response",
+			RequestId:       requestID,
+			PayloadJson:     string(payloadJSON),
+			ActorExternalId: cb.User.ID,
 		})
 		if err != nil {
 			log.Printf("slack: handleInteractive: WriteAuditStep: %v", err)
+			return
+		}
+
+		// Unauthorized: the clicker is not mapped to an authorized Gleipnir role.
+		// Restore the correlation (B1 — so a later authorized click can still
+		// resolve the request) and post an ephemeral explanation to the clicker.
+		if resp.GetUnauthorized() {
+			s.correlations.put(requestID, corr)
+			sc, credErr := s.webClientFromCredentials(context.Background())
+			if credErr != nil {
+				log.Printf("slack: handleInteractive: credentials for ephemeral: %v", credErr)
+				return
+			}
+			if _, ephErr := sc.PostEphemeralContext(context.Background(), corr.channel, cb.User.ID,
+				slack.MsgOptionText("You're not authorized to approve this request.", false),
+			); ephErr != nil {
+				log.Printf("slack: handleInteractive: PostEphemeralContext: %v", ephErr)
+			}
 			return
 		}
 
@@ -1235,13 +1256,45 @@ func (s *ChannelService) handleThreadReply(evt socketmode.Event) {
 
 	// No call_id needed: spec §8.5 request_id exemption — the host authorizes
 	// via plugin_pending_requests ownership (same pattern as handleInteractive).
-	_, err = s.host.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
-		StepType:    "feedback_response",
-		RequestId:   requestID,
-		PayloadJson: string(payloadJSON),
+	// ActorExternalId carries msg.User so the host can verify the role.
+	resp, err := s.host.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
+		StepType:        "feedback_response",
+		RequestId:       requestID,
+		PayloadJson:     string(payloadJSON),
+		ActorExternalId: msg.User,
 	})
 	if err != nil {
 		log.Printf("slack: handleThreadReply: WriteAuditStep: %v", err)
+		return
+	}
+
+	// Unauthorized: restore the correlation so a later authorized reply can
+	// resolve the request, then post an ephemeral to the sender.
+	if resp.GetUnauthorized() {
+		s.correlations.put(requestID, corr)
+		sc, credErr := s.webClientFromCredentials(context.Background())
+		if credErr != nil {
+			log.Printf("slack: handleThreadReply: credentials for ephemeral: %v", credErr)
+			return
+		}
+		if _, ephErr := sc.PostEphemeralContext(context.Background(), msg.Channel, msg.User,
+			slack.MsgOptionText("You're not authorized to approve this request.", false),
+		); ephErr != nil {
+			log.Printf("slack: handleThreadReply: PostEphemeralContext: %v", ephErr)
+		}
+		return
+	}
+
+	if !resp.GetOk() {
+		errMsg := ""
+		if resp.GetError() != nil {
+			errMsg = resp.GetError().GetMessage()
+		}
+		if errMsg == "feedback_response_late" {
+			log.Printf("slack: handleThreadReply: request already resolved")
+		} else {
+			log.Printf("slack: handleThreadReply: WriteAuditStep returned ok=false: %s", errMsg)
+		}
 		return
 	}
 

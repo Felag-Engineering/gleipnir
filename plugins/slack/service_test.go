@@ -2644,10 +2644,10 @@ func TestTriggerEmitsSlashCommandWithRestrictiveSubscriptionScope(t *testing.T) 
 
 // ── Block Kit + UpdateMessageContext tests ────────────────────────────────────
 
-// captureWebAPI is a fake slackWebAPI that records PostMessageContext and
-// UpdateMessageContext calls so tests can assert on block/text content without
-// standing up a real HTTP server. It is safe for concurrent use from multiple
-// goroutines (all fields are accessed under mu).
+// captureWebAPI is a fake slackWebAPI that records PostMessageContext,
+// UpdateMessageContext, and PostEphemeralContext calls so tests can assert on
+// block/text content without standing up a real HTTP server. It is safe for
+// concurrent use from multiple goroutines (all fields are accessed under mu).
 type captureWebAPI struct {
 	mu sync.Mutex
 
@@ -2658,6 +2658,10 @@ type captureWebAPI struct {
 	updateTS      string
 	updateOpts    []slack.MsgOption
 	updateCount   int
+
+	ephemeralChannel string
+	ephemeralUser    string
+	ephemeralCount   int
 }
 
 func (c *captureWebAPI) PostMessageContext(_ context.Context, channelID string, _ ...slack.MsgOption) (string, string, error) {
@@ -2676,6 +2680,15 @@ func (c *captureWebAPI) UpdateMessageContext(_ context.Context, channelID, times
 	c.updateOpts = append(c.updateOpts, opts...)
 	c.updateCount++
 	return channelID, timestamp, "", nil
+}
+
+func (c *captureWebAPI) PostEphemeralContext(_ context.Context, channelID, userID string, _ ...slack.MsgOption) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ephemeralChannel = channelID
+	c.ephemeralUser = userID
+	c.ephemeralCount++
+	return "ephemeral-ts", nil
 }
 
 // buildCaptureChannelService creates a *ChannelService for unit tests with an
@@ -2933,5 +2946,312 @@ func TestRequestTerminated_UnknownRequestID(t *testing.T) {
 
 	if updCount != 0 {
 		t.Errorf("UpdateMessageContext must not be called for unknown request_id, got %d calls", updCount)
+	}
+}
+
+// ── unauthorizedAuditHost ─────────────────────────────────────────────────────
+
+// unauthorizedAuditHost is an inline hostv1.HostServiceServer that returns
+// Unauthorized=true + Ok=false for WriteAuditStep, simulating the host-side
+// external-actor authorization rejection (issue #624).
+type unauthorizedAuditHost struct {
+	hostv1.UnimplementedHostServiceServer
+	credJSON string
+
+	mu         sync.Mutex
+	auditSteps []*hostv1.WriteAuditStepRequest
+}
+
+func (h *unauthorizedAuditHost) GetCredentials(_ context.Context, _ *hostv1.GetCredentialsRequest) (*hostv1.GetCredentialsResponse, error) {
+	return &hostv1.GetCredentialsResponse{CredentialsJson: h.credJSON}, nil
+}
+
+func (h *unauthorizedAuditHost) GetInstanceConfig(_ context.Context, _ *hostv1.GetInstanceConfigRequest) (*hostv1.GetInstanceConfigResponse, error) {
+	return &hostv1.GetInstanceConfigResponse{ConfigJson: `{"app_level_token":"xapp-test"}`}, nil
+}
+
+func (h *unauthorizedAuditHost) SetHealthState(_ context.Context, _ *hostv1.SetHealthStateRequest) (*hostv1.SetHealthStateResponse, error) {
+	return &hostv1.SetHealthStateResponse{Ok: true}, nil
+}
+
+func (h *unauthorizedAuditHost) WriteAuditStep(_ context.Context, req *hostv1.WriteAuditStepRequest) (*hostv1.WriteAuditStepResponse, error) {
+	h.mu.Lock()
+	h.auditSteps = append(h.auditSteps, req)
+	h.mu.Unlock()
+	return &hostv1.WriteAuditStepResponse{
+		Ok:           false,
+		Unauthorized: true,
+		Error: &commonv1.ErrorEnvelope{
+			Code:    commonv1.ErrorCode_ERROR_CODE_PERMISSION,
+			Message: "unauthorized_approval_attempt",
+		},
+	}, nil
+}
+
+func (h *unauthorizedAuditHost) steps() []*hostv1.WriteAuditStepRequest {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]*hostv1.WriteAuditStepRequest, len(h.auditSteps))
+	copy(out, h.auditSteps)
+	return out
+}
+
+// buildUnauthorizedChannelService creates a *ChannelService wired against an
+// unauthorizedAuditHost, using the captureWebAPI for all Slack Web API calls.
+func buildUnauthorizedChannelService(t *testing.T, capAPI *captureWebAPI, token string) (*ChannelService, *unauthorizedAuditHost) {
+	t.Helper()
+
+	fakeHostImpl := &unauthorizedAuditHost{credJSON: credJSON(token)}
+
+	hostLis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen host: %v", err)
+	}
+	hostSrv := grpc.NewServer()
+	hostv1.RegisterHostServiceServer(hostSrv, fakeHostImpl)
+	go func() { _ = hostSrv.Serve(hostLis) }()
+	t.Cleanup(hostSrv.Stop)
+
+	hostConn, err := grpc.NewClient(hostLis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial host: %v", err)
+	}
+	t.Cleanup(func() { hostConn.Close() })
+
+	registry := newHubRegistry(func(_ string) (socketModeRunner, error) {
+		return newChannelFakeRunner(), nil
+	})
+
+	svc := newChannelServiceForTest(
+		hostv1.NewHostServiceClient(hostConn),
+		registry,
+		func(_ string) slackWebAPI { return capAPI },
+		http.DefaultClient,
+	)
+	return svc, fakeHostImpl
+}
+
+// TestHandleInteractive_Unauthorized verifies that when the host returns
+// Unauthorized=true:
+//   - ActorExternalId (cb.User.ID) is sent in WriteAuditStep.
+//   - UpdateMessageContext is NOT called (request stays open).
+//   - PostEphemeralContext IS called (user gets an explanation).
+//   - The correlation is STILL PRESENT afterward (B1: later authorized click
+//     can resolve it).
+func TestHandleInteractive_Unauthorized(t *testing.T) {
+	const (
+		channel   = "C01UNAUTH"
+		ts        = "1700300000.000100"
+		requestID = "req-unauth-interactive"
+		token     = "xoxb-unauth"
+		prompt    = "Deploy to prod?"
+		slackUser = "U-NOT-AUTHORIZED"
+	)
+
+	capAPI := &captureWebAPI{}
+	svc, fakeHost := buildUnauthorizedChannelService(t, capAPI, token)
+	defer svc.correlations.Stop()
+
+	corr := correlation{
+		channel: channel,
+		ts:      ts,
+		prompt:  prompt,
+		buttons: defaultResponseButtons(),
+		runID:   "run-unauth-1",
+		addedAt: time.Now(),
+	}
+	svc.correlations.put(requestID, corr)
+
+	cb := slack.InteractionCallback{
+		Type:        slack.InteractionTypeBlockActions,
+		ResponseURL: "",
+		User:        slack.User{ID: slackUser},
+		ActionCallback: slack.ActionCallbacks{
+			BlockActions: []*slack.BlockAction{
+				{ActionID: actionIDFor(requestID, "approve"), Value: "approve"},
+			},
+		},
+	}
+	svc.handleInteractive(socketmode.Event{Type: socketmode.EventTypeInteractive, Data: cb}, cb)
+
+	// WriteAuditStep must have been called with the Slack user's ID.
+	if !pollUntil(t, 3*time.Second, func() bool { return len(fakeHost.steps()) > 0 }) {
+		t.Fatal("timed out waiting for WriteAuditStep call")
+	}
+	steps := fakeHost.steps()
+	if len(steps) != 1 {
+		t.Fatalf("WriteAuditStep call count: want 1, got %d", len(steps))
+	}
+	if steps[0].GetActorExternalId() != slackUser {
+		t.Errorf("ActorExternalId = %q, want %q", steps[0].GetActorExternalId(), slackUser)
+	}
+
+	// UpdateMessageContext must NOT be called.
+	capAPI.mu.Lock()
+	updCount := capAPI.updateCount
+	ephCount := capAPI.ephemeralCount
+	ephUser := capAPI.ephemeralUser
+	capAPI.mu.Unlock()
+
+	if updCount != 0 {
+		t.Errorf("UpdateMessageContext called %d times on unauthorized path, want 0", updCount)
+	}
+
+	// PostEphemeralContext MUST be called.
+	if ephCount == 0 {
+		t.Error("PostEphemeralContext not called on unauthorized path")
+	}
+	if ephUser != slackUser {
+		t.Errorf("PostEphemeralContext user = %q, want %q", ephUser, slackUser)
+	}
+
+	// Correlation MUST still exist (B1 regression guard): take it and put it
+	// back to verify presence without permanently consuming it.
+	if _, stillPresent := svc.correlations.take(requestID); !stillPresent {
+		t.Error("correlation was consumed by unauthorized click (B1 violation); authorized click can no longer resolve it")
+	}
+}
+
+// TestHandleThreadReply_Unauthorized verifies that when the host returns
+// Unauthorized=true on a thread-reply path:
+//   - ActorExternalId (msg.User) is sent in WriteAuditStep.
+//   - UpdateMessageContext is NOT called.
+//   - PostEphemeralContext IS called.
+//   - The correlation is PUT BACK so a later authorized reply can resolve.
+func TestHandleThreadReply_Unauthorized(t *testing.T) {
+	const (
+		channel   = "C01UNAUTH-THREAD"
+		ts        = "1700310000.000200"
+		requestID = "req-unauth-thread"
+		token     = "xoxb-unauth-thread"
+		prompt    = "Approve the deployment?"
+		slackUser = "U-THREAD-NOT-AUTHORIZED"
+	)
+
+	capAPI := &captureWebAPI{}
+	svc, fakeHost := buildUnauthorizedChannelService(t, capAPI, token)
+	defer svc.correlations.Stop()
+
+	corr := correlation{
+		channel: channel,
+		ts:      ts,
+		prompt:  prompt,
+		mode:    "feedback",
+		runID:   "run-thread-unauth-1",
+		addedAt: time.Now(),
+	}
+	svc.correlations.put(requestID, corr)
+
+	// Build a thread-reply event whose thread_ts matches the correlation ts.
+	msgEvent := &slackevents.MessageEvent{
+		Channel:         channel,
+		ThreadTimeStamp: ts,
+		TimeStamp:       ts + ".001",
+		User:            slackUser,
+		Text:            "Approved!",
+	}
+	eventsAPIEvent := slackevents.EventsAPIEvent{
+		InnerEvent: slackevents.EventsAPIInnerEvent{Data: msgEvent},
+	}
+	evt := socketmode.Event{
+		Type: socketmode.EventTypeEventsAPI,
+		Data: eventsAPIEvent,
+	}
+	svc.handleThreadReply(evt)
+
+	// WriteAuditStep must have been called with the Slack user's ID.
+	if !pollUntil(t, 3*time.Second, func() bool { return len(fakeHost.steps()) > 0 }) {
+		t.Fatal("timed out waiting for WriteAuditStep call")
+	}
+	steps := fakeHost.steps()
+	if len(steps) != 1 {
+		t.Fatalf("WriteAuditStep call count: want 1, got %d", len(steps))
+	}
+	if steps[0].GetActorExternalId() != slackUser {
+		t.Errorf("ActorExternalId = %q, want %q", steps[0].GetActorExternalId(), slackUser)
+	}
+
+	// UpdateMessageContext must NOT be called.
+	capAPI.mu.Lock()
+	updCount := capAPI.updateCount
+	ephCount := capAPI.ephemeralCount
+	ephUser := capAPI.ephemeralUser
+	capAPI.mu.Unlock()
+
+	if updCount != 0 {
+		t.Errorf("UpdateMessageContext called %d times on unauthorized thread path, want 0", updCount)
+	}
+
+	// PostEphemeralContext MUST be called.
+	if ephCount == 0 {
+		t.Error("PostEphemeralContext not called on unauthorized thread-reply path")
+	}
+	if ephUser != slackUser {
+		t.Errorf("PostEphemeralContext user = %q, want %q", ephUser, slackUser)
+	}
+
+	// Correlation MUST be restored so a later authorized reply can resolve.
+	if _, _, stillPresent := svc.correlations.takeByThreadTS(channel, ts); !stillPresent {
+		t.Error("correlation was not restored after unauthorized thread-reply; later authorized reply cannot resolve it")
+	}
+}
+
+// TestHandleInteractive_AuthorizedSetsActorExternalId verifies that on the
+// authorized (ok=true) path:
+//   - ActorExternalId is set to cb.User.ID.
+//   - UpdateMessageContext IS called.
+//   - PostEphemeralContext is NOT called.
+func TestHandleInteractive_AuthorizedSetsActorExternalId(t *testing.T) {
+	const (
+		channel   = "C01AUTH"
+		ts        = "1700320000.000300"
+		requestID = "req-auth-interactive"
+		token     = "xoxb-auth"
+		prompt    = "Deploy?"
+		slackUser = "U-AUTHORIZED"
+	)
+
+	capAPI := &captureWebAPI{}
+	svc, host := buildCaptureChannelService(t, capAPI, credJSON(token), cfgWithToken("xapp-auth-token"))
+	defer svc.correlations.Stop()
+
+	svc.correlations.put(requestID, correlation{
+		channel: channel,
+		ts:      ts,
+		prompt:  prompt,
+		buttons: defaultResponseButtons(),
+		runID:   "run-auth-1",
+		addedAt: time.Now(),
+	})
+
+	cb := slack.InteractionCallback{
+		Type:        slack.InteractionTypeBlockActions,
+		ResponseURL: "",
+		User:        slack.User{ID: slackUser},
+		ActionCallback: slack.ActionCallbacks{
+			BlockActions: []*slack.BlockAction{
+				{ActionID: actionIDFor(requestID, "approve"), Value: "approve"},
+			},
+		},
+	}
+	svc.handleInteractive(socketmode.Event{Type: socketmode.EventTypeInteractive, Data: cb}, cb)
+
+	// WriteAuditStep must arrive with the actor's Slack id.
+	if !pollUntil(t, 3*time.Second, func() bool { return len(host.AuditSteps()) > 0 }) {
+		t.Fatal("timed out waiting for WriteAuditStep")
+	}
+
+	// PostEphemeralContext must NOT be called on the authorized path.
+	capAPI.mu.Lock()
+	ephCount := capAPI.ephemeralCount
+	updCount := capAPI.updateCount
+	capAPI.mu.Unlock()
+
+	if ephCount != 0 {
+		t.Errorf("PostEphemeralContext called %d times on authorized path, want 0", ephCount)
+	}
+	if updCount == 0 {
+		t.Error("UpdateMessageContext not called on authorized path, want 1")
 	}
 }
