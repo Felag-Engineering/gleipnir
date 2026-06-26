@@ -98,6 +98,12 @@ message WriteAuditStepRequest {
   // the calling instance (spec §8.4).
   string request_id = 4;
 
+  // actor_external_id is the external identity of the user who triggered this
+  // resolution (e.g. a Slack user.id).  The host maps it to a Gleipnir user
+  // and checks the role before accepting the resolution.  Empty = no external
+  // actor; the host accepts by default (backward-compatible).
+  string actor_external_id = 5;
+
   // Reserved for v2: user_id will carry end-user identity in user_credentials mode.
   reserved 100;
   reserved "user_id";
@@ -107,6 +113,12 @@ message WriteAuditStepRequest {
 message WriteAuditStepResponse {
   bool   ok    = 1;
   gleipnir.plugin.common.v1.ErrorEnvelope error = 2;
+
+  // unauthorized is true when the resolution was rejected because the
+  // actor_external_id does not map to a Gleipnir user with an authorized role
+  // (approver/operator/admin).  ok=false when unauthorized=true.  The request
+  // stays open; the plugin should inform the actor.
+  bool unauthorized = 3;
 }
 
 // EmitMetricRequest emits a plugin metric to Prometheus.

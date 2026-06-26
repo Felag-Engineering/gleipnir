@@ -145,6 +145,7 @@ export interface ApiUser {
   roles: string[]
   created_at: string
   deactivated_at: string | null
+  slack_user_id: string | null
 }
 
 // Matches mcp_handler.go → mcpToolResponse (GET /api/v1/mcp/servers/:id/tools)
@@ -271,6 +272,7 @@ export interface UpdateUserRequest {
   id: string
   deactivated?: boolean
   roles?: string[]
+  slack_user_id?: string | null
 }
 
 // --- Admin ---

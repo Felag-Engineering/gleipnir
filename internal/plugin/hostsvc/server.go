@@ -64,6 +64,8 @@ type Querier interface {
 	ListRunsByPolicies(ctx context.Context, arg db.ListRunsByPoliciesParams) ([]db.ListRunsByPoliciesRow, error)
 	ListAllActiveUsersWithRoles(ctx context.Context) ([]db.ListAllActiveUsersWithRolesRow, error)
 	ListActiveUsersByRole(ctx context.Context, role string) ([]db.ListActiveUsersByRoleRow, error)
+	// Authz support
+	GetUserBySlackUserID(ctx context.Context, slackUserID *string) ([]db.GetUserBySlackUserIDRow, error)
 }
 
 // CallContextResolver resolves (run_id, policy_id, instance_name) from a

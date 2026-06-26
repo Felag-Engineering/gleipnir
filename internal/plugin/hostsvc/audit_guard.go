@@ -42,6 +42,13 @@ const EventTypeFeedbackResponseLate = "feedback_response_late"
 // Severity is "warning".
 const EventTypeEventRateLimited = "event_rate_limited"
 
+// EventTypeUnauthorizedApproval is the plugin_audit_events.event_type value
+// written when a WriteAuditStep(feedback_response) is rejected because the
+// actor_external_id does not resolve to a Gleipnir user with an authorized
+// role (approver/operator/admin). Severity is always "high". The request
+// stays open; no state mutation occurs.
+const EventTypeUnauthorizedApproval = "unauthorized_approval_attempt"
+
 // AuditQuerier is the narrow DB interface this package needs. A *db.Queries
 // value satisfies it; the narrow interface makes tests cheaper to write.
 type AuditQuerier interface {

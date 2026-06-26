@@ -34,5 +34,6 @@ func All() []Migration {
 		&AddPluginPendingManifests{},
 		&AddPluginEventDedup{},
 		&AddHostEventRateLimit{},
+		&AddUserSlackUserID{},
 	}
 }

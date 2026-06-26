@@ -27,7 +27,8 @@ type CreateProps = BaseProps & {
 type EditProps = BaseProps & {
   mode: 'edit'
   initialRole: Role | null
-  onSubmit: (roles: string[]) => void
+  initialSlackUserId: string | null
+  onSubmit: (roles: string[], slackUserId: string | null) => void
 }
 
 type Props = CreateProps | EditProps
@@ -39,6 +40,9 @@ export function CreateUserModal(props: Props) {
   const [password, setPassword] = useState('')
   const [selectedRole, setSelectedRole] = useState<Role | null>(
     props.mode === 'edit' ? props.initialRole : null,
+  )
+  const [slackUserId, setSlackUserId] = useState<string>(
+    props.mode === 'edit' ? (props.initialSlackUserId ?? '') : '',
   )
   const [clientIssues, setClientIssues] = useState<BannerIssue[]>([])
   const [fieldErrors, setFieldErrors] = useState<{ username?: string; password?: string }>({})
@@ -69,7 +73,11 @@ export function CreateUserModal(props: Props) {
 
       props.onSubmit(username, password, selectedRole ? rolesForHighest(selectedRole) : [])
     } else {
-      props.onSubmit(selectedRole ? rolesForHighest(selectedRole) : [])
+      const trimmedSlackId = slackUserId.trim()
+      props.onSubmit(
+        selectedRole ? rolesForHighest(selectedRole) : [],
+        trimmedSlackId !== '' ? trimmedSlackId : null,
+      )
     }
   }
 
@@ -157,6 +165,23 @@ export function CreateUserModal(props: Props) {
             <PermissionsPanel key={selectedRole} role={selectedRole} />
           </div>
         </div>
+
+        {!isCreate && (
+          <div className={styles.fieldGroup}>
+            <label htmlFor="slack-user-id" className={styles.label}>
+              Slack user ID
+            </label>
+            <input
+              id="slack-user-id"
+              type="text"
+              className={styles.input}
+              value={slackUserId}
+              onChange={(e) => setSlackUserId(e.target.value)}
+              autoComplete="off"
+              placeholder="e.g. U01ABC123DE (leave empty to clear)"
+            />
+          </div>
+        )}
 
         <ErrorBanner issues={bannerIssues} />
       </form>

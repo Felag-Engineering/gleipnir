@@ -466,9 +466,14 @@ type WriteAuditStepRequest struct {
 	// request_id is the host-generated token from RequestRequest.  Must be set
 	// for step_type "feedback_response".  The host verifies it was routed to
 	// the calling instance (spec §8.4).
-	RequestId     string `protobuf:"bytes,4,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	RequestId string `protobuf:"bytes,4,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	// actor_external_id is the external identity of the user who triggered this
+	// resolution (e.g. a Slack user.id).  The host maps it to a Gleipnir user
+	// and checks the role before accepting the resolution.  Empty = no external
+	// actor; the host accepts by default (backward-compatible).
+	ActorExternalId string `protobuf:"bytes,5,opt,name=actor_external_id,json=actorExternalId,proto3" json:"actor_external_id,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *WriteAuditStepRequest) Reset() {
@@ -529,11 +534,23 @@ func (x *WriteAuditStepRequest) GetRequestId() string {
 	return ""
 }
 
+func (x *WriteAuditStepRequest) GetActorExternalId() string {
+	if x != nil {
+		return x.ActorExternalId
+	}
+	return ""
+}
+
 // WriteAuditStepResponse is returned after the step is persisted.
 type WriteAuditStepResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Ok            bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
-	Error         *v1.ErrorEnvelope      `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Ok    bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
+	Error *v1.ErrorEnvelope      `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	// unauthorized is true when the resolution was rejected because the
+	// actor_external_id does not map to a Gleipnir user with an authorized role
+	// (approver/operator/admin).  ok=false when unauthorized=true.  The request
+	// stays open; the plugin should inform the actor.
+	Unauthorized  bool `protobuf:"varint,3,opt,name=unauthorized,proto3" json:"unauthorized,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -580,6 +597,13 @@ func (x *WriteAuditStepResponse) GetError() *v1.ErrorEnvelope {
 		return x.Error
 	}
 	return nil
+}
+
+func (x *WriteAuditStepResponse) GetUnauthorized() bool {
+	if x != nil {
+		return x.Unauthorized
+	}
+	return false
 }
 
 // EmitMetricRequest emits a plugin metric to Prometheus.
@@ -1450,16 +1474,18 @@ const file_gleipnir_plugin_host_v1_host_proto_rawDesc = "" +
 	"\n" +
 	"started_at\x18\x03 \x01(\tR\tstartedAt\x12\x1d\n" +
 	"\n" +
-	"step_index\x18\x04 \x01(\x03R\tstepIndex\"\xca\x01\n" +
+	"step_index\x18\x04 \x01(\x03R\tstepIndex\"\xf6\x01\n" +
 	"\x15WriteAuditStepRequest\x12C\n" +
 	"\acontext\x18\x01 \x01(\v2).gleipnir.plugin.common.v1.RequestContextR\acontext\x12\x1b\n" +
 	"\tstep_type\x18\x02 \x01(\tR\bstepType\x12!\n" +
 	"\fpayload_json\x18\x03 \x01(\tR\vpayloadJson\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x04 \x01(\tR\trequestIdJ\x04\bd\x10eR\auser_id\"h\n" +
+	"request_id\x18\x04 \x01(\tR\trequestId\x12*\n" +
+	"\x11actor_external_id\x18\x05 \x01(\tR\x0factorExternalIdJ\x04\bd\x10eR\auser_id\"\x8c\x01\n" +
 	"\x16WriteAuditStepResponse\x12\x0e\n" +
 	"\x02ok\x18\x01 \x01(\bR\x02ok\x12>\n" +
-	"\x05error\x18\x02 \x01(\v2(.gleipnir.plugin.common.v1.ErrorEnvelopeR\x05error\"\x9c\x02\n" +
+	"\x05error\x18\x02 \x01(\v2(.gleipnir.plugin.common.v1.ErrorEnvelopeR\x05error\x12\"\n" +
+	"\funauthorized\x18\x03 \x01(\bR\funauthorized\"\x9c\x02\n" +
 	"\x11EmitMetricRequest\x12C\n" +
 	"\acontext\x18\x01 \x01(\v2).gleipnir.plugin.common.v1.RequestContextR\acontext\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x14\n" +
