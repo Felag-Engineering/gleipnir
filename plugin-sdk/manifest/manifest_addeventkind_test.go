@@ -155,6 +155,53 @@ func TestAddEventKindWithExamples_OrderingPreserved(t *testing.T) {
 	}
 }
 
+// TestAddEventKindWithGuidance_SetsGuidance verifies that
+// MustAddEventKindWithGuidance sets the Guidance field on the appended decl.
+func TestAddEventKindWithGuidance_SetsGuidance(t *testing.T) {
+	m := baseManifest()
+	const guidance = "A human posts a message in a watched channel."
+	m.MustAddEventKindWithGuidance("channel_message", "Channel message", guidance, eventKindFixture{}, nil)
+
+	if len(m.EventKinds) != 1 {
+		t.Fatalf("len(EventKinds) = %d, want 1", len(m.EventKinds))
+	}
+	decl := m.EventKinds[0]
+	if decl.Kind != "channel_message" {
+		t.Errorf("Kind = %q, want %q", decl.Kind, "channel_message")
+	}
+	if decl.Description != "Channel message" {
+		t.Errorf("Description = %q, want %q", decl.Description, "Channel message")
+	}
+	if decl.Guidance != guidance {
+		t.Errorf("Guidance = %q, want %q", decl.Guidance, guidance)
+	}
+}
+
+// TestAddEventKindWithGuidance_RoundTrip verifies that the Guidance field
+// survives a Marshal → Unmarshal round-trip.
+func TestAddEventKindWithGuidance_RoundTrip(t *testing.T) {
+	m := baseManifest()
+	const guidance = "Fires when a user sends a 1:1 DM to the bot."
+	m.MustAddEventKindWithGuidance("direct_message", "DM to bot", guidance, nil, nil)
+
+	out, err := manifest.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var m2 manifest.Manifest
+	if err := manifest.Unmarshal(out, &m2); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if len(m2.EventKinds) != 1 {
+		t.Fatalf("after round-trip: len(EventKinds) = %d, want 1", len(m2.EventKinds))
+	}
+	got := m2.EventKinds[0].Guidance
+	if got != guidance {
+		t.Errorf("round-trip Guidance = %q, want %q", got, guidance)
+	}
+}
+
 // TestAddEventKind_DeterministicAcrossMarshals builds two manifests with
 // identical AddEventKind calls and asserts that manifest.Marshal produces
 // byte-equal output for both.

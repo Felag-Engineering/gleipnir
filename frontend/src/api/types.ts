@@ -489,6 +489,8 @@ export interface ApiAudienceReferences {
 export interface ApiPluginEventKind {
   kind: string
   description: string
+  // guidance is the longer "how it fires" help string rendered in the subscribed-trigger dialog.
+  guidance?: string
   // binding_schema is the JSON Schema for per-policy binding fields.
   // Omitted when the plugin declares no binding constraints for this event kind.
   binding_schema?: unknown

@@ -132,6 +132,7 @@ event_kinds:
           thread_ts: "1700002000.000100"
           ts: "1700002000.000300"
           user: U01USER003
+    guidance: A human posts a message in a channel the instance is watching. The bot's own posts are dropped by the self-trigger guard. Uses the instance's channel watch scope — no extra subscription toggle.
     kind: channel_message
     payload_schema:
       additionalProperties: false
@@ -224,6 +225,7 @@ event_kinds:
           text: 'deploy: staging'
           ts: "1700003001.000100"
           user: U01USER002
+    guidance: A user sends a 1:1 direct message to the bot. Requires a DM scope and the 'Direct messages' toggle on the instance's Subscriptions tab.
     kind: direct_message
     payload_schema:
       additionalProperties: false
@@ -302,6 +304,7 @@ event_kinds:
           text: deploy staging
           trigger_id: trig-1.abc
           user: U01USER001
+    guidance: A user runs a registered /command in the workspace (the command must be configured in the Slack app). Not channel-scoped. Requires the 'Slash commands' toggle on the instance's Subscriptions tab. Bind on command (e.g. /deploy) and/or text.
     kind: slash_command
     payload_schema:
       additionalProperties: false
@@ -361,6 +364,7 @@ event_kinds:
           trigger_id: trig-2.def
           ts: "1700001000.000200"
           user: U01USER002
+    guidance: A user opens a message's ••• 'More actions' menu and picks this app's shortcut. Requires the 'Shortcuts' toggle on the instance's Subscriptions tab. Bind on callback_id (the shortcut's configured callback ID).
     kind: message_shortcut
     payload_schema:
       additionalProperties: false
@@ -410,6 +414,7 @@ event_kinds:
           team_id: T03TEAM001
           trigger_id: trig-3.ghi
           user: U01USER003
+    guidance: A user invokes the app's global shortcut from the composer's lightning menu (not tied to a message). Requires the 'Shortcuts' toggle on the instance's Subscriptions tab. Bind on callback_id.
     kind: global_shortcut
     payload_schema:
       additionalProperties: false

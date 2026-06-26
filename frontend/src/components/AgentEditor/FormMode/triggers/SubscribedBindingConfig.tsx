@@ -45,6 +45,21 @@ function resolveBindingSchema(
   return ek.binding_schema as BindingSchema;
 }
 
+// resolveGuidance extracts the guidance string for the selected instance + event
+// kind combination. Returns undefined when not present so callers can guard with
+// a truthy check before rendering.
+function resolveGuidance(
+  pluginInstances: ApiPluginInstanceForAudience[] | undefined,
+  source: string,
+  eventKind: string,
+): string | undefined {
+  if (!pluginInstances) return undefined;
+  const inst = pluginInstances.find((p) => p.instance_name === source);
+  if (!inst) return undefined;
+  const ek = inst.event_kinds?.find((e) => e.kind === eventKind);
+  return ek?.guidance || undefined;
+}
+
 // resolveExamples extracts example payloads for the selected event kind.
 function resolveExamples(
   pluginInstances: ApiPluginInstanceForAudience[] | undefined,
@@ -201,6 +216,7 @@ export function SubscribedBindingConfig({
 }: SubscribedBindingConfigProps) {
   const schema = resolveBindingSchema(pluginInstances, source, eventKind);
   const examples = resolveExamples(pluginInstances, source, eventKind);
+  const guidance = resolveGuidance(pluginInstances, source, eventKind);
 
   // Resolve instance details for the mutation and the options endpoint.
   const matchedInstance = pluginInstances?.find((p) => p.instance_name === source);
@@ -238,6 +254,13 @@ export function SubscribedBindingConfig({
 
   return (
     <div className={styles.container}>
+      {guidance && (
+        <div className={styles.guidance}>
+          <p className={styles.guidanceTitle}>How this fires</p>
+          <p className={styles.guidanceBody}>{guidance}</p>
+        </div>
+      )}
+
       {pluginId && instanceId && (
         <p className={styles.explainer}>
           This filters events the instance is already watching. The instance's{' '}

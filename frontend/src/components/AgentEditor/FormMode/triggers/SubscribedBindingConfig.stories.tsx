@@ -27,6 +27,7 @@ const SLACK_INSTANCE: ApiPluginInstanceForAudience = {
     {
       kind: 'channel_message',
       description: 'A message posted in a channel',
+      guidance: "A human posts a message in a channel the instance is watching. The bot's own posts are dropped by the self-trigger guard. Uses the instance's channel watch scope — no extra subscription toggle.",
       binding_schema: {
         type: 'object',
         properties: {

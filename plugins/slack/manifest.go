@@ -456,9 +456,10 @@ properties:
 	// a watched Slack channel. The binding_schema and payload_schema are derived
 	// by reflection so the policy editor renders the fields correctly.
 	// Three example payloads are provided for the "Test against sample" UI (spec §7.5).
-	pluginManifest.MustAddEventKindWithExamples(
+	pluginManifest.MustAddEventKindWithGuidance(
 		"channel_message",
 		"A message was posted to a Slack channel",
+		"A human posts a message in a channel the instance is watching. The bot's own posts are dropped by the self-trigger guard. Uses the instance's channel watch scope — no extra subscription toggle.",
 		SlackChannelMessageBinding{},
 		manifest.MustReflectSchema(SlackChannelMessagePayload{}),
 		manifest.Example{
@@ -513,9 +514,10 @@ properties:
 	// because those are meaningless for a 1:1 DM conversation.
 	// EventKinds are appended in code order — direct_message AFTER channel_message
 	// for a stable canonical YAML diff (TestManifestYAMLIsCanonical enforces it).
-	pluginManifest.MustAddEventKindWithExamples(
+	pluginManifest.MustAddEventKindWithGuidance(
 		"direct_message",
 		"A direct message was sent to the bot",
+		"A user sends a 1:1 direct message to the bot. Requires a DM scope and the 'Direct messages' toggle on the instance's Subscriptions tab.",
 		SlackDirectMessageBinding{},
 		manifest.MustReflectSchema(SlackChannelMessagePayload{}),
 		manifest.Example{
@@ -552,9 +554,10 @@ properties:
 	// Socket Mode delivery (no Request URL needed). Ack is handled at the hub
 	// within Slack's ~3s window; results post back via post_message or response_url.
 	// New event kinds are appended after direct_message for stable canonical YAML.
-	pluginManifest.MustAddEventKindWithExamples(
+	pluginManifest.MustAddEventKindWithGuidance(
 		"slash_command",
 		"A workspace slash command was invoked",
+		"A user runs a registered /command in the workspace (the command must be configured in the Slack app). Not channel-scoped. Requires the 'Slash commands' toggle on the instance's Subscriptions tab. Bind on command (e.g. /deploy) and/or text.",
 		SlackSlashCommandBinding{},
 		manifest.MustReflectSchema(SlackSlashCommandPayload{}),
 		manifest.Example{
@@ -575,9 +578,10 @@ properties:
 	// message_shortcut is emitted when a Slack message shortcut is invoked on a
 	// specific message. The payload carries the target message context (text, ts,
 	// channel_id) plus the invoking user and trigger_id for modal follow-up (#624).
-	pluginManifest.MustAddEventKindWithExamples(
+	pluginManifest.MustAddEventKindWithGuidance(
 		"message_shortcut",
 		"A message shortcut was invoked on a message",
+		"A user opens a message's ••• 'More actions' menu and picks this app's shortcut. Requires the 'Shortcuts' toggle on the instance's Subscriptions tab. Bind on callback_id (the shortcut's configured callback ID).",
 		SlackMessageShortcutBinding{},
 		manifest.MustReflectSchema(SlackMessageShortcutPayload{}),
 		manifest.Example{
@@ -597,9 +601,10 @@ properties:
 	// global_shortcut is emitted when a Slack global shortcut is invoked from
 	// anywhere (no message or channel context). Useful for "start a new agent run"
 	// actions accessible from any Slack surface.
-	pluginManifest.MustAddEventKindWithExamples(
+	pluginManifest.MustAddEventKindWithGuidance(
 		"global_shortcut",
 		"A global shortcut was invoked",
+		"A user invokes the app's global shortcut from the composer's lightning menu (not tied to a message). Requires the 'Shortcuts' toggle on the instance's Subscriptions tab. Bind on callback_id.",
 		SlackGlobalShortcutBinding{},
 		manifest.MustReflectSchema(SlackGlobalShortcutPayload{}),
 		manifest.Example{

@@ -53,6 +53,43 @@ func TestManifestYAMLIsCanonical(t *testing.T) {
 	}
 }
 
+// TestAllEventKindsHaveGuidance asserts that all 5 Slack event kinds have a
+// non-empty Guidance string and that Description is still the short label
+// (unchanged). This is the backstop that ensures MustAddEventKindWithGuidance
+// was used correctly for every event kind.
+func TestAllEventKindsHaveGuidance(t *testing.T) {
+	wantKinds := []struct {
+		kind            string
+		wantDescription string
+	}{
+		{"channel_message", "A message was posted to a Slack channel"},
+		{"direct_message", "A direct message was sent to the bot"},
+		{"slash_command", "A workspace slash command was invoked"},
+		{"message_shortcut", "A message shortcut was invoked on a message"},
+		{"global_shortcut", "A global shortcut was invoked"},
+	}
+
+	// Build an index from kind → EventKindDecl for O(1) lookups.
+	kindIndex := make(map[string]manifest.EventKindDecl, len(pluginManifest.EventKinds))
+	for _, ek := range pluginManifest.EventKinds {
+		kindIndex[ek.Kind] = ek
+	}
+
+	for _, tc := range wantKinds {
+		ek, ok := kindIndex[tc.kind]
+		if !ok {
+			t.Errorf("event kind %q not found in manifest", tc.kind)
+			continue
+		}
+		if ek.Description != tc.wantDescription {
+			t.Errorf("%s: Description = %q, want %q", tc.kind, ek.Description, tc.wantDescription)
+		}
+		if ek.Guidance == "" {
+			t.Errorf("%s: Guidance is empty, want a non-empty string", tc.kind)
+		}
+	}
+}
+
 // TestChannelMessageChannelIDBinding asserts that:
 //  1. The reflected binding_schema for channel_message declares channel_id as
 //     {type: string, x-gleipnir-options: {source: "channels"}} with NO format
