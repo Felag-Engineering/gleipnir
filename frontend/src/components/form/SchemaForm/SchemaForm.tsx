@@ -3,6 +3,15 @@ import { FieldError } from '@/components/form/FieldError/FieldError'
 import type { ApiPluginOption } from '@/api/types'
 import styles from './SchemaForm.module.css'
 
+// humanize converts a snake_case property name to "Title Case" for display.
+// Used as a fallback when the schema property has no explicit `title`.
+export function humanize(name: string): string {
+  return name
+    .split('_')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ')
+}
+
 // REDACTION_SENTINEL is the value the backend substitutes for secret fields on
 // GET (ADR-049). Bulk PUT rejects it — call sites strip such fields before
 // sending. Exported so payload builders can reference the same constant.
@@ -18,6 +27,7 @@ export interface OptionsAnnotation {
 export interface SchemaProperty {
   type?: string
   items?: { type?: string }
+  title?: string
   description?: string
   // ADR-049: fields annotated with x-gleipnir-secret: true are redacted on read
   // and must be submitted via a separate write (never round-tripped as "***").
@@ -40,6 +50,9 @@ export interface OptionsContext {
 
 export interface SchemaShape {
   properties?: Record<string, SchemaProperty>
+  // required lists property names that must be provided. When a property name
+  // is in this array, SchemaForm renders a required marker (*) next to its label.
+  required?: string[]
 }
 
 export interface SchemaFormProps {
@@ -77,6 +90,7 @@ export function SchemaForm({
   optionsContext,
 }: SchemaFormProps) {
   const properties = schema.properties ?? {}
+  const requiredSet = new Set(schema.required ?? [])
   const fields = Object.keys(properties)
 
   if (fields.length === 0) {
@@ -95,17 +109,25 @@ export function SchemaForm({
         const fieldErrId = `${idPrefix}-err-${name}`
         const err = fieldErrors[name]
         const isSecret = !!prop['x-gleipnir-secret']
+        const isRequired = requiredSet.has(name)
+        // Use the schema's explicit title, falling back to humanizing the property name.
+        const label = prop.title ?? humanize(name)
+
+        // CSS class for labels of required fields — ::after pseudo-element shows the '*'
+        // so the DOM textContent stays clean and getByLabelText() matches the plain label text.
+        const reqLabelClass = isRequired ? styles.fieldLabelRequired : undefined
+        const reqCheckboxClass = isRequired ? styles.checkboxLabelRequired : undefined
 
         if (prop.type === 'boolean') {
           return (
             <div key={name} className={styles.fieldRow}>
-              <label className={styles.checkboxLabel}>
+              <label className={[styles.checkboxLabel, reqCheckboxClass].filter(Boolean).join(' ')}>
                 <input
                   type="checkbox"
                   checked={!!value[name]}
                   onChange={(e) => handleChange(name, e.target.checked)}
                 />
-                <span>{name}</span>
+                <span>{label}</span>
               </label>
               {prop.description && <p className={styles.fieldDesc}>{prop.description}</p>}
               <FieldError id={fieldErrId} messages={err} />
@@ -116,8 +138,8 @@ export function SchemaForm({
         if (prop.type === 'number' || prop.type === 'integer') {
           return (
             <div key={name} className={styles.fieldRow}>
-              <label htmlFor={fieldId} className={styles.fieldLabel}>
-                {name}
+              <label htmlFor={fieldId} className={[styles.fieldLabel, reqLabelClass].filter(Boolean).join(' ')}>
+                {label}
               </label>
               {prop.description && <p className={styles.fieldDesc}>{prop.description}</p>}
               <input
@@ -152,8 +174,8 @@ export function SchemaForm({
           const singleVal = typeof currentVal === 'string' ? currentVal : ''
           return (
             <div key={name} className={styles.fieldRow}>
-              <label htmlFor={fieldId} className={styles.fieldLabel}>
-                {name}
+              <label htmlFor={fieldId} className={[styles.fieldLabel, reqLabelClass].filter(Boolean).join(' ')}>
+                {label}
               </label>
               {prop.description && <p className={styles.fieldDesc}>{prop.description}</p>}
               <AsyncCombobox
@@ -176,8 +198,8 @@ export function SchemaForm({
           const displayVal = Array.isArray(rawArr) ? (rawArr as string[]).join('\n') : ''
           return (
             <div key={name} className={styles.fieldRow}>
-              <label htmlFor={fieldId} className={styles.fieldLabel}>
-                {name}
+              <label htmlFor={fieldId} className={[styles.fieldLabel, reqLabelClass].filter(Boolean).join(' ')}>
+                {label}
                 <span className={styles.fieldHint}> (one per line)</span>
               </label>
               {prop.description && <p className={styles.fieldDesc}>{prop.description}</p>}
@@ -210,8 +232,8 @@ export function SchemaForm({
           const isSentinel = currentVal === REDACTION_SENTINEL
           return (
             <div key={name} className={styles.fieldRow}>
-              <label htmlFor={fieldId} className={styles.fieldLabel}>
-                {name}
+              <label htmlFor={fieldId} className={[styles.fieldLabel, reqLabelClass].filter(Boolean).join(' ')}>
+                {label}
                 <span className={styles.fieldHint}> (secret)</span>
               </label>
               {prop.description && <p className={styles.fieldDesc}>{prop.description}</p>}
@@ -233,8 +255,8 @@ export function SchemaForm({
         // Default: plain string input.
         return (
           <div key={name} className={styles.fieldRow}>
-            <label htmlFor={fieldId} className={styles.fieldLabel}>
-              {name}
+            <label htmlFor={fieldId} className={[styles.fieldLabel, reqLabelClass].filter(Boolean).join(' ')}>
+              {label}
             </label>
             {prop.description && <p className={styles.fieldDesc}>{prop.description}</p>}
             <input

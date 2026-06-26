@@ -573,21 +573,23 @@ describe('AdminPluginInstancePage — Config tab', () => {
     // Navigate to Config tab (it may not be active by default when subscription_schema is absent).
     const configTabBtn = screen.getByRole('button', { name: 'Config' })
     fireEvent.click(configTabBtn)
-    // workspace_name should appear as a text input.
-    expect(screen.getByLabelText(/workspace_name/i)).toBeInTheDocument()
+    // workspace_name humanizes to "Workspace Name" in SchemaForm (B1).
+    expect(screen.getByLabelText(/workspace name/i)).toBeInTheDocument()
   })
 
   it('renders secret fields as password inputs', () => {
     renderPage()
     fireEvent.click(screen.getByRole('button', { name: 'Config' }))
-    const secretInput = screen.getByLabelText(/app_level_token/i)
+    // app_level_token humanizes to "App Level Token" in SchemaForm (B1).
+    const secretInput = screen.getByLabelText(/app level token/i)
     expect(secretInput).toHaveAttribute('type', 'password')
   })
 
   it('shows sentinel placeholder for secret fields already set on server', () => {
     renderPage()
     fireEvent.click(screen.getByRole('button', { name: 'Config' }))
-    const secretInput = screen.getByLabelText(/app_level_token/i)
+    // app_level_token humanizes to "App Level Token" in SchemaForm (B1).
+    const secretInput = screen.getByLabelText(/app level token/i)
     // Sentinel "***" should be rendered as empty value with a placeholder.
     expect(secretInput).toHaveValue('')
     expect(secretInput).toHaveAttribute('placeholder', '(already set — leave blank to keep)')
@@ -620,8 +622,8 @@ describe('AdminPluginInstancePage — Config tab', () => {
     )
     renderPage()
     fireEvent.click(screen.getByRole('button', { name: 'Config' }))
-    // The instance-level secret field must appear even though the listing has null schema.
-    const secretInput = screen.getByLabelText(/app_level_token/i)
+    // app_level_token humanizes to "App Level Token" in SchemaForm (B1).
+    const secretInput = screen.getByLabelText(/app level token/i)
     expect(secretInput).toHaveAttribute('type', 'password')
   })
 

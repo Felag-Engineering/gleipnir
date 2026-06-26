@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { http, HttpResponse } from 'msw'
 import '@/tokens.css'
 import { AudienceEditor } from './AudienceEditor'
 import type {
@@ -18,13 +19,23 @@ const PLUGIN_SLACK: ApiPluginInstanceForAudience = {
   instance_name: 'slack-primary',
   state: 'healthy',
   implements_notify: true,
-  implements_request: false,
+  implements_request: true,
   version: 0,
   config_schema: {
     type: 'object',
     properties: {
-      channel: { type: 'string', title: 'Channel', description: 'Slack channel name (e.g. #ops)' },
+      channel: {
+        type: 'string',
+        title: 'Channel',
+        description: 'Slack channel name (e.g. #ops)',
+        'x-gleipnir-options': { source: 'channels' },
+      },
       mention: { type: 'string', title: 'Mention', description: 'User or group to @-mention' },
+      response_buttons: {
+        type: 'array',
+        items: { type: 'object' },
+        description: 'Action buttons shown to the recipient. Defaults to Approve/Reject when omitted.',
+      },
     },
     required: ['channel'],
   },
@@ -73,11 +84,53 @@ const AUDIENCE_SINGLE: ApiAudience = {
       plugin_instance_id: 'slack-primary',
       position: 0,
       notify: true,
-      request: false,
+      request: true,
       config: { channel: '#ops' },
     },
   ],
 }
+
+const AUDIENCE_WITH_RESPONSE_BUTTONS: ApiAudience = {
+  id: 'aud-rb',
+  name: 'approval-team',
+  disable_in_app_fallback: false,
+  version: 2,
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-04-01T12:00:00Z',
+  entries: [
+    {
+      id: 'e1',
+      plugin_instance_id: 'slack-primary',
+      position: 0,
+      notify: true,
+      request: true,
+      config: {
+        channel: '#approvals',
+        response_buttons: [
+          { option_id: 'approve', label: 'Approve', value: 'approved', style: 'primary' },
+          { option_id: 'reject', label: 'Reject', value: 'rejected', style: 'danger' },
+        ],
+      },
+    },
+  ],
+}
+
+// MSW handler for the Slack channels options provider.
+const SLACK_CHANNELS_HANDLER = http.get(
+  '/api/v1/admin/plugins/:pluginId/instances/:instanceId/options/channels',
+  () =>
+    HttpResponse.json({
+      data: {
+        options: [
+          { value: '#ops', label: '#ops' },
+          { value: '#incidents', label: '#incidents' },
+          { value: '#approvals', label: '#approvals' },
+          { value: '#general', label: '#general' },
+        ],
+        next_cursor: '',
+      },
+    }),
+)
 
 const AUDIENCE_MULTI: ApiAudience = {
   id: 'aud-2',
@@ -238,6 +291,74 @@ export const VersionConflict: Story = {
         onSave={async () => { throw new ApiError(409, 'run status transition lost to concurrent writer') }}
         onDelete={async () => {}}
         saveError={new ApiError(409, 'run status transition lost to concurrent writer')}
+        deleteError={null}
+      />,
+    ),
+}
+
+// SlackWithAsyncCombobox: channel renders as AsyncCombobox (searchable select).
+// MSW intercepts the options endpoint and returns sample channels.
+export const SlackWithAsyncCombobox: Story = {
+  parameters: {
+    msw: { handlers: [SLACK_CHANNELS_HANDLER] },
+  },
+  render: () =>
+    wrap(
+      <AudienceEditor
+        initial={AUDIENCE_SINGLE}
+        pluginInstances={[PLUGIN_SLACK, PLUGIN_PAGERDUTY]}
+        references={REFS_EMPTY}
+        canManage={true}
+        onSave={async (req) => { console.log('save', req); return AUDIENCE_SINGLE }}
+        onDelete={async () => { console.log('delete') }}
+        saveError={null}
+        deleteError={null}
+      />,
+    ),
+}
+
+// SlackWithResponseButtons: shows the response_buttons escape-hatch editor.
+export const SlackWithResponseButtons: Story = {
+  parameters: {
+    msw: { handlers: [SLACK_CHANNELS_HANDLER] },
+  },
+  render: () =>
+    wrap(
+      <AudienceEditor
+        initial={AUDIENCE_WITH_RESPONSE_BUTTONS}
+        pluginInstances={[PLUGIN_SLACK, PLUGIN_PAGERDUTY]}
+        references={REFS_EMPTY}
+        canManage={true}
+        onSave={async (req) => { console.log('save', req); return AUDIENCE_WITH_RESPONSE_BUTTONS }}
+        onDelete={async () => { console.log('delete') }}
+        saveError={null}
+        deleteError={null}
+      />,
+    ),
+}
+
+// SlackDegradedFreeText: options provider is unavailable — channel falls back to plain text.
+export const SlackDegradedFreeText: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get(
+          '/api/v1/admin/plugins/:pluginId/instances/:instanceId/options/channels',
+          () => HttpResponse.json({ data: { options: [], next_cursor: '', degraded: true } }),
+        ),
+      ],
+    },
+  },
+  render: () =>
+    wrap(
+      <AudienceEditor
+        initial={AUDIENCE_SINGLE}
+        pluginInstances={[PLUGIN_SLACK]}
+        references={REFS_EMPTY}
+        canManage={true}
+        onSave={async (req) => { console.log('save', req); return AUDIENCE_SINGLE }}
+        onDelete={async () => { console.log('delete') }}
+        saveError={null}
         deleteError={null}
       />,
     ),

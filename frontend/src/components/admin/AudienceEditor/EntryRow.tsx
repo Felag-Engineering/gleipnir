@@ -1,22 +1,12 @@
-import Form from '@rjsf/core'
-// The AJV8 validator type doesn't perfectly align with the strict generic
-// constraint on Form<Record<string,unknown>>; cast to any here — AJV is
-// UX-only, backend santhosh-tekuri/jsonschema is the contract (ADR spec §6).
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-import validatorRaw from '@rjsf/validator-ajv8'
-import type { RJSFSchema } from '@rjsf/utils'
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const validator = validatorRaw as any
 import { GripVertical, ChevronUp, ChevronDown, Trash2 } from 'lucide-react'
 import { PluginHealthChip } from '@/components/admin/PluginHealthChip/PluginHealthChip'
+import { SchemaForm } from '@/components/form/SchemaForm'
+import type { SchemaShape } from '@/components/form/SchemaForm'
+import { useOptionsContext } from '@/hooks/useOptionsContext'
+import { ResponseButtonsEditor } from './ResponseButtonsEditor'
+import type { ResponseButton } from './ResponseButtonsEditor'
 import type { ApiAudienceEntry, ApiPluginInstanceForAudience } from '@/api/types'
 import styles from './EntryRow.module.css'
-
-// Suppress the default rjsf submit button via uiSchema.
-const UI_SCHEMA_NO_SUBMIT = {
-  'ui:submitButtonOptions': { norender: true },
-}
 
 interface Props {
   entry: ApiAudienceEntry
@@ -33,6 +23,103 @@ interface Props {
   isDragging: boolean
   isDragOver: boolean
   disabled: boolean
+}
+
+// Returns true when the schema property declares an array-of-objects field,
+// which is the gate for rendering the ResponseButtonsEditor escape hatch (S4).
+function isArrayOfObjects(prop: unknown): boolean {
+  if (typeof prop !== 'object' || prop === null) return false
+  const p = prop as Record<string, unknown>
+  if (p['type'] !== 'array') return false
+  const items = p['items']
+  if (typeof items !== 'object' || items === null) return false
+  return (items as Record<string, unknown>)['type'] === 'object'
+}
+
+function EntryConfig({
+  selectedInstance,
+  entry,
+  onChange,
+  isDisabled,
+  index,
+}: {
+  selectedInstance: ApiPluginInstanceForAudience
+  entry: ApiAudienceEntry
+  onChange: (updated: ApiAudienceEntry) => void
+  isDisabled: boolean
+  index: number
+}) {
+  const rawSchema = selectedInstance.config_schema as SchemaShape | null | undefined
+  const hasSchema =
+    rawSchema != null &&
+    typeof rawSchema === 'object' &&
+    rawSchema.properties != null &&
+    Object.keys(rawSchema.properties).length > 0
+
+  const optionsCtx = useOptionsContext(selectedInstance.plugin_id, selectedInstance.id)
+
+  if (!hasSchema) {
+    return <p className={styles.noConfig}>No configuration required</p>
+  }
+
+  const schema = rawSchema!
+
+  // Detect the response_buttons property in the schema (S4 strict check).
+  const rbProp = schema.properties?.['response_buttons']
+  const hasResponseButtons = isArrayOfObjects(rbProp)
+
+  // Build a schema for SchemaForm that omits response_buttons — it is handled
+  // by ResponseButtonsEditor. We preserve all other properties.
+  const formProperties = { ...(schema.properties ?? {}) }
+  if (hasResponseButtons) {
+    delete formProperties['response_buttons']
+  }
+  const formSchema: SchemaShape = { ...schema, properties: formProperties }
+
+  // Split entry.config: SchemaForm value excludes response_buttons; the
+  // escape-hatch editor owns that key separately.
+  const rb = entry.config?.['response_buttons'] as ResponseButton[] | undefined
+  const schemaFormValue: Record<string, unknown> = { ...(entry.config ?? {}) }
+  delete schemaFormValue['response_buttons']
+
+  function handleSchemaFormChange(next: Record<string, unknown>) {
+    const merged: Record<string, unknown> = { ...next }
+    if (rb !== undefined) {
+      merged['response_buttons'] = rb
+    }
+    onChange({ ...entry, config: merged })
+  }
+
+  function handleResponseButtonsChange(nextRb: ResponseButton[] | undefined) {
+    const merged: Record<string, unknown> = { ...schemaFormValue }
+    if (nextRb !== undefined) {
+      merged['response_buttons'] = nextRb
+    }
+    onChange({ ...entry, config: merged })
+  }
+
+  return (
+    <div className={isDisabled ? styles.configReadOnly : undefined}>
+      <SchemaForm
+        schema={formSchema}
+        value={schemaFormValue}
+        onChange={handleSchemaFormChange}
+        fieldErrors={{}}
+        idPrefix={`entry-${index}-cfg`}
+        optionsContext={optionsCtx}
+      />
+      {hasResponseButtons && (
+        <div className={styles.responseButtonsSection}>
+          <ResponseButtonsEditor
+            value={rb}
+            onChange={handleResponseButtonsChange}
+            disabled={isDisabled}
+            idPrefix={`entry-${index}-rb`}
+          />
+        </div>
+      )}
+    </div>
+  )
 }
 
 export function EntryRow({
@@ -68,8 +155,6 @@ export function EntryRow({
     grouped.set(pi.plugin_id, group)
   }
 
-  const schema = selectedInstance?.config_schema as RJSFSchema | null | undefined
-
   function handlePluginChange(e: React.ChangeEvent<HTMLSelectElement>) {
     onChange({ ...entry, plugin_instance_id: e.target.value })
   }
@@ -80,10 +165,6 @@ export function EntryRow({
 
   function handleRequestChange(e: React.ChangeEvent<HTMLInputElement>) {
     onChange({ ...entry, request: e.target.checked })
-  }
-
-  function handleConfigChange({ formData }: { formData?: Record<string, unknown> }) {
-    onChange({ ...entry, config: formData ?? {} })
   }
 
   const rowClass = [
@@ -211,21 +292,16 @@ export function EntryRow({
         )}
       </div>
 
-      {/* Config form — rendered from plugin's JSON Schema via rjsf */}
+      {/* Config form — rendered via SchemaForm + ResponseButtonsEditor */}
       {!isAuto && selectedInstance && (
         <div className={styles.configSection}>
-          {schema && Object.keys(schema).length > 0 ? (
-            <Form
-              schema={schema}
-              validator={validator}
-              formData={entry.config}
-              uiSchema={UI_SCHEMA_NO_SUBMIT}
-              onChange={handleConfigChange}
-              disabled={isDisabled}
-            />
-          ) : (
-            <p className={styles.noConfig}>No configuration required</p>
-          )}
+          <EntryConfig
+            selectedInstance={selectedInstance}
+            entry={entry}
+            onChange={onChange}
+            isDisabled={isDisabled}
+            index={index}
+          />
         </div>
       )}
     </li>
