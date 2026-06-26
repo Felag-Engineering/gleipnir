@@ -1084,6 +1084,118 @@ func TestMapErr(t *testing.T) {
 	}
 }
 
+// TestHumanizeSlackErrForTool verifies that humanizeSlackErrForTool enriches
+// missing_scope errors with tool-specific scope guidance, falls back to the
+// generic message for unknown tools, and delegates non-missing_scope errors to
+// humanizeSlackErr unchanged.
+func TestHumanizeSlackErrForTool(t *testing.T) {
+	cases := []struct {
+		name         string
+		err          error
+		toolName     string
+		wantContains []string    // all substrings must appear
+		wantAbsent   []string    // none of these substrings may appear
+	}{
+		// Single-scope tools: message must include the specific scope and the raw code.
+		{
+			name:         "post_message missing_scope",
+			err:          slackAPIError("missing_scope"),
+			toolName:     "post_message",
+			wantContains: []string{"missing_scope", "chat:write"},
+		},
+		{
+			name:         "update_message missing_scope",
+			err:          slackAPIError("missing_scope"),
+			toolName:     "update_message",
+			wantContains: []string{"missing_scope", "chat:write"},
+		},
+		{
+			name:         "delete_message missing_scope",
+			err:          slackAPIError("missing_scope"),
+			toolName:     "delete_message",
+			wantContains: []string{"missing_scope", "chat:write"},
+		},
+		{
+			name:         "react missing_scope",
+			err:          slackAPIError("missing_scope"),
+			toolName:     "react",
+			wantContains: []string{"missing_scope", "reactions:write"},
+		},
+		{
+			name:         "lookup_user missing_scope",
+			err:          slackAPIError("missing_scope"),
+			toolName:     "lookup_user",
+			wantContains: []string{"missing_scope", "users:read"},
+		},
+		// Multi-scope tools: message must include the primary scope and the raw code.
+		{
+			name:         "list_channels missing_scope",
+			err:          slackAPIError("missing_scope"),
+			toolName:     "list_channels",
+			wantContains: []string{"missing_scope", "channels:read"},
+		},
+		{
+			name:         "set_topic missing_scope",
+			err:          slackAPIError("missing_scope"),
+			toolName:     "set_topic",
+			wantContains: []string{"missing_scope", "channels:manage"},
+		},
+		{
+			name:         "read_history missing_scope",
+			err:          slackAPIError("missing_scope"),
+			toolName:     "read_history",
+			wantContains: []string{"missing_scope", "channels:history"},
+		},
+		{
+			name:         "read_thread missing_scope",
+			err:          slackAPIError("missing_scope"),
+			toolName:     "read_thread",
+			wantContains: []string{"missing_scope", "channels:history"},
+		},
+		// Unknown tool + missing_scope → generic humanizeSlackErr fallback.
+		{
+			name:         "unknown tool missing_scope falls back to generic",
+			err:          slackAPIError("missing_scope"),
+			toolName:     "not_a_tool",
+			wantContains: []string{"missing_scope", "the bot's OAuth scopes do not include"},
+			wantAbsent:   []string{"reactions:write"},
+		},
+		// Known tool + non-missing_scope → humanizeSlackErr hint, not a scope hint.
+		{
+			name:         "react not_in_channel delegates to humanizeSlackErr",
+			err:          slackAPIError("not_in_channel"),
+			toolName:     "react",
+			wantContains: []string{"not_in_channel", "not a member of this channel"},
+		},
+		// nil error → empty string.
+		{
+			name:     "nil error",
+			err:      nil,
+			toolName: "react",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got := humanizeSlackErrForTool(tc.err, tc.toolName)
+			for _, want := range tc.wantContains {
+				if !strings.Contains(got, want) {
+					t.Errorf("humanizeSlackErrForTool(%q, %q) = %q; want it to contain %q", tc.err, tc.toolName, got, want)
+				}
+			}
+			for _, absent := range tc.wantAbsent {
+				if strings.Contains(got, absent) {
+					t.Errorf("humanizeSlackErrForTool(%q, %q) = %q; want it NOT to contain %q", tc.err, tc.toolName, got, absent)
+				}
+			}
+			if tc.err == nil && got != "" {
+				t.Errorf("humanizeSlackErrForTool(nil, %q) = %q; want empty string", tc.toolName, got)
+			}
+		})
+	}
+}
+
 // slackAPIError constructs a slack.SlackErrorResponse with the given Slack
 // API error code string. mapErr uses errors.As to match this type, so we
 // must use the real type from the slack-go library.

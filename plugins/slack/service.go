@@ -218,7 +218,7 @@ func (s *ToolService) Call(ctx context.Context, req *toolv1.CallRequest) (*toolv
 		if hint != healthNone {
 			s.setHealth(hostCtx, hint)
 		}
-		return errorResponse(code, humanizeSlackErr(callErr)), nil
+		return errorResponse(code, humanizeSlackErrForTool(callErr, toolName)), nil
 	}
 
 	return &toolv1.CallResponse{OutputJson: string(outputJSON)}, nil

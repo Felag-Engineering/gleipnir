@@ -223,6 +223,50 @@ func humanizeSlackErr(err error) string {
 	return raw
 }
 
+// toolRequiredScopes maps each tool name to the OAuth scope(s) it needs.
+// Multi-value entries mean the tool needs ONE of the listed scopes depending
+// on the target channel type (public channel, private channel, DM, or MPDM).
+// Single-value entries need exactly that one scope.
+//
+// slack-go v0.26.0 discards Slack's top-level needed/provided fields from the
+// API response, so this static table is the authoritative source of truth for
+// surfacing actionable scope hints to operators.
+var toolRequiredScopes = map[string][]string{
+	"post_message":   {"chat:write"},                                                             // chat.postMessage
+	"update_message": {"chat:write"},                                                             // chat.update
+	"delete_message": {"chat:write"},                                                             // chat.delete
+	"react":          {"reactions:write"},                                                        // reactions.add
+	"lookup_user":    {"users:read"},                                                             // users.info
+	"list_channels":  {"channels:read", "groups:read"},                                          // conversations.list (public/private)
+	"set_topic":      {"channels:manage", "groups:write", "im:write", "mpim:write"},             // conversations.setTopic
+	"read_history":   {"channels:history", "groups:history", "im:history", "mpim:history"},      // conversations.history
+	"read_thread":    {"channels:history", "groups:history", "im:history", "mpim:history"},      // conversations.replies
+}
+
+// humanizeSlackErrForTool enriches a missing_scope error with the specific
+// OAuth scope(s) required by toolName. For any other error code, or when
+// toolName is not in toolRequiredScopes, it delegates to humanizeSlackErr so
+// every caller gets a useful message regardless of context.
+func humanizeSlackErrForTool(err error, toolName string) string {
+	if err == nil {
+		return ""
+	}
+	if strings.Contains(err.Error(), "missing_scope") {
+		if scopes, ok := toolRequiredScopes[toolName]; ok {
+			raw := err.Error()
+			if len(scopes) == 1 {
+				return raw + fmt.Sprintf(" — the %q tool needs the %q OAuth scope; add it in the Slack app's OAuth & Permissions page, reinstall the app, and re-authorize", toolName, scopes[0])
+			}
+			quoted := make([]string, len(scopes))
+			for i, s := range scopes {
+				quoted[i] = fmt.Sprintf("%q", s)
+			}
+			return raw + fmt.Sprintf(" — the %q tool needs one of these OAuth scopes (depending on the channel type): %s; add the appropriate one in the Slack app's OAuth & Permissions page, reinstall the app, and re-authorize", toolName, strings.Join(quoted, ", "))
+		}
+	}
+	return humanizeSlackErr(err)
+}
+
 // ── Rate-limit retry helper ───────────────────────────────────────────────────
 
 // callWithRetry wraps a Slack call with a single retry on RateLimitedError
