@@ -61,6 +61,36 @@ export function ResponseButtonsEditor({ value, onChange, disabled = false, idPre
         <span className={styles.hint}>Defaults to Approve / Reject if omitted.</span>
       </div>
 
+      <p className={styles.description}>
+        These become interactive buttons on the routed Request message in the channel
+        (e.g. Slack Block Kit). The recipient&apos;s click is recorded as the response and
+        flows back to the agent and audit trail.
+      </p>
+
+      <dl className={styles.legend}>
+        <div className={styles.legendItem}>
+          <dt className={styles.legendTerm}>ID</dt>
+          <dd className={styles.legendDef}>
+            Stable option identifier (<code className={styles.legendCode}>option_id</code>) sent
+            back when the button is clicked.
+          </dd>
+        </div>
+        <div className={styles.legendItem}>
+          <dt className={styles.legendTerm}>Label</dt>
+          <dd className={styles.legendDef}>Button text the recipient sees.</dd>
+        </div>
+        <div className={styles.legendItem}>
+          <dt className={styles.legendTerm}>Value</dt>
+          <dd className={styles.legendDef}>
+            Response value recorded when clicked — what the agent and audit trail see.
+          </dd>
+        </div>
+        <div className={styles.legendItem}>
+          <dt className={styles.legendTerm}>Style</dt>
+          <dd className={styles.legendDef}>Visual treatment: default, primary, or danger.</dd>
+        </div>
+      </dl>
+
       {buttons.length > 0 && (
         <div className={styles.rows}>
           {buttons.map((btn, index) => {

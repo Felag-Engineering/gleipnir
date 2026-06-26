@@ -62,6 +62,19 @@ export const AllStyles: Story = {
   ),
 }
 
+// Explicitly shows the section description and field legend alongside populated rows.
+export const WithHelpLegend: Story = {
+  name: 'With help text / legend',
+  render: () => (
+    <Controlled
+      initial={[
+        { option_id: 'approve', label: 'Approve', value: 'approved', style: 'primary' },
+        { option_id: 'reject', label: 'Reject', value: 'rejected', style: 'danger' },
+      ]}
+    />
+  ),
+}
+
 export const Disabled: Story = {
   render: () => (
     <ResponseButtonsEditor

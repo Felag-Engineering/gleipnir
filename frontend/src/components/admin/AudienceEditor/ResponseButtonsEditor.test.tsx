@@ -103,6 +103,58 @@ describe('ResponseButtonsEditor — field editing', () => {
   })
 })
 
+describe('ResponseButtonsEditor — help text and field legend', () => {
+  it('shows the section description explaining where buttons render', () => {
+    render(<ResponseButtonsEditor value={undefined} onChange={vi.fn()} />)
+    expect(
+      screen.getByText(/interactive buttons on the routed request message/i),
+    ).toBeInTheDocument()
+  })
+
+  it('shows the channel example (Slack Block Kit) in the description', () => {
+    render(<ResponseButtonsEditor value={undefined} onChange={vi.fn()} />)
+    expect(screen.getByText(/slack block kit/i)).toBeInTheDocument()
+  })
+
+  it('shows the ID field definition', () => {
+    render(<ResponseButtonsEditor value={undefined} onChange={vi.fn()} />)
+    // getByText with selector:'dt' targets the <dt> element directly since
+    // the jsdom version used here does not compute accessible names for <dt>.
+    expect(screen.getByText('ID', { selector: 'dt' })).toBeInTheDocument()
+    expect(screen.getByText(/stable option identifier/i)).toBeInTheDocument()
+  })
+
+  it('shows the Label field definition', () => {
+    render(<ResponseButtonsEditor value={undefined} onChange={vi.fn()} />)
+    expect(screen.getByText('Label', { selector: 'dt' })).toBeInTheDocument()
+    expect(screen.getByText(/button text the recipient sees/i)).toBeInTheDocument()
+  })
+
+  it('shows the Value field definition', () => {
+    render(<ResponseButtonsEditor value={undefined} onChange={vi.fn()} />)
+    expect(screen.getByText('Value', { selector: 'dt' })).toBeInTheDocument()
+    expect(screen.getByText(/response value recorded when clicked/i)).toBeInTheDocument()
+  })
+
+  it('shows the Style field definition', () => {
+    render(<ResponseButtonsEditor value={undefined} onChange={vi.fn()} />)
+    expect(screen.getByText('Style', { selector: 'dt' })).toBeInTheDocument()
+    expect(screen.getByText(/visual treatment/i)).toBeInTheDocument()
+  })
+
+  it('renders the legend even when no buttons are present', () => {
+    render(<ResponseButtonsEditor value={undefined} onChange={vi.fn()} />)
+    const terms = screen.getAllByRole('term')
+    expect(terms).toHaveLength(4)
+  })
+
+  it('renders the legend alongside populated rows', () => {
+    render(<ResponseButtonsEditor value={ONE_BUTTON} onChange={vi.fn()} />)
+    expect(screen.getByText(/interactive buttons on the routed request message/i)).toBeInTheDocument()
+    expect(screen.getAllByRole('term')).toHaveLength(4)
+  })
+})
+
 describe('ResponseButtonsEditor — disabled state', () => {
   it('disables all inputs and buttons when disabled=true', () => {
     render(<ResponseButtonsEditor value={ONE_BUTTON} onChange={vi.fn()} disabled />)
