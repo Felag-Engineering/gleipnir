@@ -243,13 +243,14 @@ var PluginMap = plugin.PluginSet{
 // (GLEIPNIR_INSTANCE_ID, GLEIPNIR_PLUGIN_ID, GLEIPNIR_INSTANCE_TOKEN) are
 // injected separately via opts.Env by the caller (internal/plugin/process).
 var safeEnvKeys = []string{
-	"PATH",   // required for subprocess tool resolution
-	"HOME",   // expected by most Unix programs
-	"USER",   // expected by some runtimes
-	"TZ",     // timezone — affects log timestamps inside the plugin
-	"TMPDIR", // standard override for temp file location
-	"LANG",   // locale — affects string handling in some libraries
-	"LC_ALL", // locale override — takes precedence over LANG
+	"PATH",               // required for subprocess tool resolution
+	"HOME",               // expected by most Unix programs
+	"USER",               // expected by some runtimes
+	"TZ",                 // timezone — affects log timestamps inside the plugin
+	"TMPDIR",             // standard override for temp file location
+	"LANG",               // locale — affects string handling in some libraries
+	"LC_ALL",             // locale override — takes precedence over LANG
+	"GLEIPNIR_LOG_LEVEL", // passed through so plugins can match host log verbosity; not a secret
 }
 
 // safeEnv builds a minimal environment for plugin subprocesses by extracting
