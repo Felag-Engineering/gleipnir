@@ -35,6 +35,7 @@ type pluginToolDTO struct {
 type pluginEventKindDTO struct {
 	Kind          string                  `json:"kind"`
 	Description   string                  `json:"description"`
+	Guidance      string                  `json:"guidance,omitempty"`
 	BindingSchema interface{}             `json:"binding_schema,omitempty"`
 	Examples      []pluginEventExampleDTO `json:"examples,omitempty"`
 }
@@ -132,6 +133,7 @@ func (h *AudienceHandler) ListPluginInstances(w http.ResponseWriter, r *http.Req
 			dto := pluginEventKindDTO{
 				Kind:        ek.Kind,
 				Description: ek.Description,
+				Guidance:    ek.Guidance,
 			}
 
 			// Decode binding_schema into a plain map so it serializes as JSON.

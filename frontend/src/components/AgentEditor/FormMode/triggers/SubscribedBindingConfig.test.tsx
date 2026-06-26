@@ -21,6 +21,7 @@ vi.mock('@/hooks/usePluginOptions', () => ({
 //   - a plain text field (`text`) to keep the role="textbox" assertion valid
 //   - a channel_id field with x-gleipnir-options so it renders role="combobox"
 //   - title/description on both fields
+//   - a guidance string for the "How this fires" block
 const SLACK_INSTANCE: ApiPluginInstanceForAudience = {
   id: 'inst-slack',
   plugin_id: 'plugin-slack',
@@ -34,6 +35,7 @@ const SLACK_INSTANCE: ApiPluginInstanceForAudience = {
     {
       kind: 'channel_message',
       description: 'A message in a channel',
+      guidance: 'A human posts a message in a channel the instance is watching.',
       binding_schema: {
         type: 'object',
         properties: {
@@ -99,6 +101,55 @@ function mockMutationDefault() {
 beforeEach(() => {
   vi.clearAllMocks()
   mockMutationDefault()
+})
+
+describe('SubscribedBindingConfig — guidance block', () => {
+  it('renders "How this fires" heading and guidance text when guidance is present', () => {
+    render(
+      <SubscribedBindingConfig
+        source="slack-prod"
+        eventKind="channel_message"
+        binding={{}}
+        onChange={vi.fn()}
+        pluginInstances={[SLACK_INSTANCE]}
+      />,
+      { wrapper: makeWrapper() },
+    )
+
+    expect(screen.getByText('How this fires')).toBeInTheDocument()
+    expect(
+      screen.getByText('A human posts a message in a channel the instance is watching.'),
+    ).toBeInTheDocument()
+  })
+
+  it('does not render the guidance block when guidance is absent', () => {
+    const instanceNoGuidance: ApiPluginInstanceForAudience = {
+      ...SLACK_INSTANCE,
+      instance_name: 'no-guidance-inst',
+      event_kinds: [
+        {
+          kind: 'channel_message',
+          description: 'A message in a channel',
+          // no guidance field
+          binding_schema: SLACK_INSTANCE.event_kinds![0].binding_schema,
+          examples: [],
+        },
+      ],
+    }
+
+    render(
+      <SubscribedBindingConfig
+        source="no-guidance-inst"
+        eventKind="channel_message"
+        binding={{}}
+        onChange={vi.fn()}
+        pluginInstances={[instanceNoGuidance]}
+      />,
+      { wrapper: makeWrapper() },
+    )
+
+    expect(screen.queryByText('How this fires')).toBeNull()
+  })
 })
 
 describe('SubscribedBindingConfig — rendering', () => {

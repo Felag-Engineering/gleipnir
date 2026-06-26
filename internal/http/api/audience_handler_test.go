@@ -68,6 +68,7 @@ services:
 event_kinds:
   - kind: channel_message
     description: A message posted in a channel
+    guidance: A human posts a message in a watched channel.
   - kind: direct_message
     description: A direct message to the bot
 `
@@ -950,6 +951,7 @@ func TestListPluginInstances_WithEventKinds(t *testing.T) {
 		EventKinds   []struct {
 			Kind        string `json:"kind"`
 			Description string `json:"description"`
+			Guidance    string `json:"guidance"`
 		} `json:"event_kinds"`
 	}
 	parseData(t, w, &items)
@@ -972,8 +974,17 @@ func TestListPluginInstances_WithEventKinds(t *testing.T) {
 	if items[0].EventKinds[0].Kind != "channel_message" {
 		t.Errorf("event_kinds[0].kind = %q, want channel_message", items[0].EventKinds[0].Kind)
 	}
+	// Verify guidance is passed through from the manifest to the DTO.
+	wantGuidance := "A human posts a message in a watched channel."
+	if items[0].EventKinds[0].Guidance != wantGuidance {
+		t.Errorf("event_kinds[0].guidance = %q, want %q", items[0].EventKinds[0].Guidance, wantGuidance)
+	}
 	if items[0].EventKinds[1].Kind != "direct_message" {
 		t.Errorf("event_kinds[1].kind = %q, want direct_message", items[0].EventKinds[1].Kind)
+	}
+	// direct_message has no guidance in the fixture — must be empty.
+	if items[0].EventKinds[1].Guidance != "" {
+		t.Errorf("event_kinds[1].guidance = %q, want empty (not set in fixture)", items[0].EventKinds[1].Guidance)
 	}
 }
 

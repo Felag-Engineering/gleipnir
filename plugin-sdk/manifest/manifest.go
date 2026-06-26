@@ -269,8 +269,14 @@ type EventKindDecl struct {
 	Kind string `yaml:"kind"`
 
 	// Description is the human-readable description shown in the policy
-	// trigger picker.
+	// trigger picker. Keep it short — one line, operator-facing label.
 	Description string `yaml:"description,omitempty"`
+
+	// Guidance is a longer "how it fires" help string rendered in the
+	// subscribed-trigger dialog. Distinct from Description (which stays the
+	// short picker label). Optional — omitempty keeps unaffected manifests
+	// byte-stable.
+	Guidance string `yaml:"guidance,omitempty"`
 
 	// BindingSchema is a JSON Schema (as a raw YAML node) for the per-policy
 	// binding config block. Rendered as a structured form in the policy editor.
@@ -301,6 +307,7 @@ func (e *EventKindDecl) UnmarshalYAML(value *yaml.Node) error {
 	type plain struct {
 		Kind          string    `yaml:"kind"`
 		Description   string    `yaml:"description,omitempty"`
+		Guidance      string    `yaml:"guidance,omitempty"`
 		BindingSchema rawNode   `yaml:"binding_schema,omitempty"`
 		PayloadSchema rawNode   `yaml:"payload_schema,omitempty"`
 		Examples      []rawNode `yaml:"examples,omitempty"`
@@ -311,6 +318,7 @@ func (e *EventKindDecl) UnmarshalYAML(value *yaml.Node) error {
 	}
 	e.Kind = p.Kind
 	e.Description = p.Description
+	e.Guidance = p.Guidance
 	// Absent fields leave .Node == nil; an explicit null (~) yields a non-nil
 	// null ScalarNode — identical to the prior Kind != 0 behaviour.
 	e.BindingSchema = p.BindingSchema.Node
@@ -411,6 +419,33 @@ func (m *Manifest) AddEventKindWithExamples(kind, description string, filterStru
 // plugin authors can call it at package init time without error propagation.
 func (m *Manifest) MustAddEventKindWithExamples(kind, description string, filterStruct any, payloadSchema *yaml.Node, examples ...Example) {
 	if err := m.AddEventKindWithExamples(kind, description, filterStruct, payloadSchema, examples...); err != nil {
+		panic(err)
+	}
+}
+
+// AddEventKindWithGuidance is the guidance-aware variant of
+// AddEventKindWithExamples. It calls AddEventKindWithExamples and then sets
+// the Guidance field on the appended EventKindDecl. Use this when you want to
+// provide a longer "how it fires" help string in addition to the short
+// Description (the trigger-picker label). The guidance is rendered in the
+// subscribed-trigger dialog and is intentionally omitted from the material
+// diff (cosmetic change; must not block hot-reload).
+//
+// S1: err from AddEventKindWithExamples is checked before indexing so a failed
+// append cannot corrupt the last element or panic.
+func (m *Manifest) AddEventKindWithGuidance(kind, description, guidance string, filterStruct any, payloadSchema *yaml.Node, examples ...Example) error {
+	if err := m.AddEventKindWithExamples(kind, description, filterStruct, payloadSchema, examples...); err != nil {
+		return err
+	}
+	m.EventKinds[len(m.EventKinds)-1].Guidance = guidance
+	return nil
+}
+
+// MustAddEventKindWithGuidance is the panicking variant of
+// AddEventKindWithGuidance. It panics on any marshal or reflection error so
+// plugin authors can call it at package init time without error propagation.
+func (m *Manifest) MustAddEventKindWithGuidance(kind, description, guidance string, filterStruct any, payloadSchema *yaml.Node, examples ...Example) {
+	if err := m.AddEventKindWithGuidance(kind, description, guidance, filterStruct, payloadSchema, examples...); err != nil {
 		panic(err)
 	}
 }
