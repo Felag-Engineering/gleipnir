@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Button } from '@/components/Button'
+import { ClearCredentialsModal } from '@/components/admin/ClearCredentialsModal/ClearCredentialsModal'
 import { ReauthorizeButton } from '@/components/admin/ReauthorizeButton/ReauthorizeButton'
 import { usePluginInstanceCredentials } from '@/hooks/queries/plugins'
 import {
@@ -13,7 +14,6 @@ import {
 import { isOAuthRefreshFailure } from '@/utils/pluginHealth'
 import { formatTimestamp } from '@/utils/format'
 import { errMessage } from '@/api/fetch'
-import type { ApiError } from '@/api/fetch'
 import type { PluginAuthStrategy } from '@/api/types'
 import styles from './CredentialsTab.module.css'
 
@@ -602,12 +602,29 @@ export function CredentialsTab({
   const { data: creds, status } = usePluginInstanceCredentials(pluginId, instanceId)
   const clearMutation = useClearPluginCredentials()
   const [clearError, setClearError] = useState<string | null>(null)
+  const [showClearModal, setShowClearModal] = useState(false)
 
-  function handleClear() {
+  function openClearModal() {
+    setClearError(null)
+    setShowClearModal(true)
+  }
+
+  function closeClearModal() {
+    setShowClearModal(false)
+  }
+
+  // Clearing credentials is destructive with no undo (for OAuth it forces a full
+  // re-auth), so it is gated behind a confirmation modal — mirroring the
+  // already-confirmed "Delete instance" action (issue #659). The modal stays open
+  // on error so the operator sees the failure in context; it closes on success.
+  function handleConfirmClear() {
     setClearError(null)
     clearMutation.mutate(
       { pluginId, instanceId },
       {
+        onSuccess: () => {
+          setShowClearModal(false)
+        },
         onError: (err) => {
           setClearError(errMessage(err, 'Clear failed.'))
         },
@@ -702,13 +719,26 @@ export function CredentialsTab({
             type="button"
             variant="ghost"
             size="small"
-            onClick={handleClear}
+            onClick={openClearModal}
             disabled={clearMutation.isPending}
           >
-            {clearMutation.isPending ? 'Clearing…' : 'Clear credentials'}
+            Clear credentials
           </Button>
-          {clearError && <p className={styles.errorMsg} role="alert">{clearError}</p>}
+          {/* Error from a failed clear is shown inside the modal while it is open;
+              surface it here too once the modal closes so it is not lost. */}
+          {clearError && !showClearModal && (
+            <p className={styles.errorMsg} role="alert">{clearError}</p>
+          )}
         </div>
+      )}
+
+      {showClearModal && (
+        <ClearCredentialsModal
+          onClose={closeClearModal}
+          onConfirm={handleConfirmClear}
+          isPending={clearMutation.isPending}
+          error={clearError}
+        />
       )}
     </div>
   )
