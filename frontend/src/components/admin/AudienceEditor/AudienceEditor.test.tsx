@@ -179,6 +179,71 @@ describe('AudienceEditor — drag-reorder', () => {
     // Just verify no errors thrown and re-render happens
     expect(screen.getAllByRole('button', { name: /move up/i }).length).toBeGreaterThan(0)
   })
+
+  // jsdom does not implement DataTransfer; onDragStart writes effectAllowed, so
+  // every dragStart needs a minimal stub passed through the fireEvent init.
+  function fakeDataTransfer() {
+    return { effectAllowed: '', dropEffect: '', setData: vi.fn(), getData: vi.fn() }
+  }
+
+  it('shows the drop indicator on the hovered row but never on the dragged row itself', () => {
+    renderEditor()
+    const rows = screen.getAllByRole('listitem')
+    // rows = [e1 (slack-1), e2 (pd-1), auto in-app]
+    fireEvent.dragStart(rows[0], { dataTransfer: fakeDataTransfer() })
+
+    // Dragging over the OTHER row marks it as the drop target.
+    fireEvent.dragOver(rows[1], { dataTransfer: fakeDataTransfer() })
+    expect(rows[1].className).toMatch(/dragOver/)
+    expect(rows[0].className).toMatch(/dragging/)
+
+    // Dragging back over the dragged row never marks the source as a drop target.
+    fireEvent.dragOver(rows[0], { dataTransfer: fakeDataTransfer() })
+    expect(rows[0].className).not.toMatch(/dragOver/)
+    expect(rows[0].className).toMatch(/dragging/)
+  })
+
+  it('never shows the drop indicator on the auto gleipnir.in-app row', () => {
+    renderEditor()
+    const rows = screen.getAllByRole('listitem')
+    const autoRow = rows[2]
+    fireEvent.dragStart(rows[0], { dataTransfer: fakeDataTransfer() })
+    fireEvent.dragOver(autoRow, { dataTransfer: fakeDataTransfer() })
+    expect(autoRow.className).not.toMatch(/dragOver/)
+  })
+
+  it('clears all drag highlighting on dragEnd, even without a drop (aborted drag)', () => {
+    renderEditor()
+    const rows = screen.getAllByRole('listitem')
+    fireEvent.dragStart(rows[0], { dataTransfer: fakeDataTransfer() })
+    fireEvent.dragOver(rows[1], { dataTransfer: fakeDataTransfer() })
+    expect(rows[0].className).toMatch(/dragging/)
+    expect(rows[1].className).toMatch(/dragOver/)
+
+    // Released outside any row: no drop event fires, only dragEnd on the source.
+    fireEvent.dragEnd(rows[0], { dataTransfer: fakeDataTransfer() })
+
+    const after = screen.getAllByRole('listitem')
+    expect(after[0].className).not.toMatch(/dragging/)
+    expect(after[1].className).not.toMatch(/dragOver/)
+  })
+
+  it('reorders entries on a real drop', () => {
+    renderEditor()
+    const rows = screen.getAllByRole('listitem')
+    // Before: entry 1 = slack-1, entry 2 = pd-1
+    const before = screen.getAllByRole('combobox') as HTMLSelectElement[]
+    expect(before[0].value).toBe('slack-1')
+
+    fireEvent.dragStart(rows[0], { dataTransfer: fakeDataTransfer() })
+    fireEvent.dragOver(rows[1], { dataTransfer: fakeDataTransfer() })
+    fireEvent.drop(rows[1], { dataTransfer: fakeDataTransfer() })
+
+    // After: slack-1 moved past pd-1 → first select is now pd-1.
+    const after = screen.getAllByRole('combobox') as HTMLSelectElement[]
+    expect(after[0].value).toBe('pd-1')
+    expect(after[1].value).toBe('slack-1')
+  })
 })
 
 describe('AudienceEditor — SaveGuardDialog opens conditionally', () => {

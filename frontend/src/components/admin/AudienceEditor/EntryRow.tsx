@@ -20,6 +20,7 @@ interface Props {
   onDragStart: (e: React.DragEvent) => void
   onDragOver: (e: React.DragEvent) => void
   onDrop: (e: React.DragEvent) => void
+  onDragEnd: (e: React.DragEvent) => void
   isDragging: boolean
   isDragOver: boolean
   disabled: boolean
@@ -134,6 +135,7 @@ export function EntryRow({
   onDragStart,
   onDragOver,
   onDrop,
+  onDragEnd,
   isDragging,
   isDragOver,
   disabled,
@@ -183,6 +185,7 @@ export function EntryRow({
       onDragStart={onDragStart}
       onDragOver={onDragOver}
       onDrop={onDrop}
+      onDragEnd={onDragEnd}
     >
       <div className={styles.rowHeader}>
         {/* Drag handle */}

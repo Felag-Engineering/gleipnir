@@ -123,10 +123,19 @@ export function AudienceEditor({
   const handleDragOver = useCallback(
     (e: React.DragEvent, index: number) => {
       e.preventDefault()
+      // No drop target for the row being dragged itself — dropping onto it is a no-op.
+      if (dragIndex === null || index === dragIndex) return
       if (dragOverIndex !== index) setDragOverIndex(index)
     },
-    [dragOverIndex],
+    [dragIndex, dragOverIndex],
   )
+
+  // dragEnd fires on the source row whether the drag was dropped or aborted
+  // (released outside any row), so it is the guaranteed cleanup for both paths.
+  const handleDragEnd = useCallback(() => {
+    setDragIndex(null)
+    setDragOverIndex(null)
+  }, [])
 
   const handleDrop = useCallback(
     (e: React.DragEvent, dropIndex: number) => {
@@ -298,6 +307,7 @@ export function AudienceEditor({
               }}
               onDragOver={(e) => handleDragOver(e, index)}
               onDrop={(e) => handleDrop(e, index)}
+              onDragEnd={handleDragEnd}
               isDragging={dragIndex === index}
               isDragOver={dragOverIndex === index && dragIndex !== index}
               disabled={!canManage}
@@ -325,6 +335,7 @@ export function AudienceEditor({
               onDragStart={() => {}}
               onDragOver={() => {}}
               onDrop={() => {}}
+              onDragEnd={() => {}}
               isDragging={false}
               isDragOver={false}
               disabled={true}
