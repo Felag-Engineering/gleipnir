@@ -7,7 +7,7 @@ const COLLAPSED_STORAGE_KEY = 'gleipnir-setup-collapsed'
 
 export interface SetupChecklistProps {
   hasModel: boolean
-  hasServer: boolean
+  hasToolSource: boolean
   hasAgent: boolean
   hasFirstRun: boolean
   isLoading: boolean
@@ -20,16 +20,16 @@ interface Step {
   cta: string
 }
 
-export function SetupChecklist({ hasModel, hasServer, hasAgent, hasFirstRun, isLoading }: SetupChecklistProps) {
+export function SetupChecklist({ hasModel, hasToolSource, hasAgent, hasFirstRun, isLoading }: SetupChecklistProps) {
   const [collapsed, setCollapsed] = useLocalStorage(COLLAPSED_STORAGE_KEY, false)
 
-  const allDone = hasModel && hasServer && hasAgent && hasFirstRun
+  const allDone = hasModel && hasToolSource && hasAgent && hasFirstRun
 
   if (allDone && !isLoading) return null
 
   const steps: Step[] = [
     { label: 'Add a model API key', done: hasModel, href: '/admin/models', cta: 'Go to Models' },
-    { label: 'Register an MCP server', done: hasServer, href: '/tools', cta: 'Go to Tools' },
+    { label: 'Add an MCP server or tool plugin', done: hasToolSource, href: '/tools', cta: 'Go to Tools' },
     { label: 'Create an agent', done: hasAgent, href: '/agents/new', cta: 'New Agent' },
     { label: 'Trigger your first run', done: hasFirstRun, href: '/agents', cta: 'Go to Agents' },
   ]

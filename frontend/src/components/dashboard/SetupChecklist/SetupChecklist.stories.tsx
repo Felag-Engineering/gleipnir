@@ -27,7 +27,7 @@ type Story = StoryObj<typeof SetupChecklist>
 export const AllIncomplete: Story = {
   args: {
     hasModel: false,
-    hasServer: false,
+    hasToolSource: false,
     hasAgent: false,
     hasFirstRun: false,
     isLoading: false,
@@ -37,17 +37,28 @@ export const AllIncomplete: Story = {
 export const ModelDone: Story = {
   args: {
     hasModel: true,
-    hasServer: false,
+    hasToolSource: false,
     hasAgent: false,
     hasFirstRun: false,
     isLoading: false,
   },
 }
 
-export const ServerDone: Story = {
+export const ToolSourceDone: Story = {
   args: {
     hasModel: true,
-    hasServer: true,
+    hasToolSource: true,
+    hasAgent: false,
+    hasFirstRun: false,
+    isLoading: false,
+  },
+}
+
+// Demonstrates that a tool-providing plugin (no MCP server) satisfies the tools step.
+export const ToolPluginDone: Story = {
+  args: {
+    hasModel: true,
+    hasToolSource: true,
     hasAgent: false,
     hasFirstRun: false,
     isLoading: false,
@@ -57,7 +68,7 @@ export const ServerDone: Story = {
 export const AgentDone: Story = {
   args: {
     hasModel: true,
-    hasServer: true,
+    hasToolSource: true,
     hasAgent: true,
     hasFirstRun: false,
     isLoading: false,
@@ -67,7 +78,7 @@ export const AgentDone: Story = {
 export const Loading: Story = {
   args: {
     hasModel: false,
-    hasServer: false,
+    hasToolSource: false,
     hasAgent: false,
     hasFirstRun: false,
     isLoading: true,

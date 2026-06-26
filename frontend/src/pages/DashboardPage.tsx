@@ -26,7 +26,7 @@ export default function DashboardPage() {
       <PageHeader title="Control Center" />
       <SetupChecklist
         hasModel={readiness.hasModel}
-        hasServer={readiness.hasServer}
+        hasToolSource={readiness.hasToolSource}
         hasAgent={readiness.hasAgent}
         hasFirstRun={hasFirstRun}
         isLoading={readiness.isLoading || recentRuns.isLoading}

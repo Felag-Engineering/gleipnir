@@ -21,9 +21,9 @@ const EMPTY_STATE_BY_STEP = {
     ctaLabel: 'Go to Models',
     ctaTo: '/admin/models',
   },
-  server: {
-    headline: 'Add an MCP server to give agents tools',
-    subtext: 'MCP servers expose the tools your agents can call.',
+  tools: {
+    headline: 'Add an MCP server or tool plugin to give agents tools',
+    subtext: 'MCP servers and tool-providing plugins both expose tools your agents can call.',
     ctaLabel: 'Go to Tools',
     ctaTo: '/tools',
   },

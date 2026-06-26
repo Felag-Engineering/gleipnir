@@ -28,10 +28,10 @@ export default function AgentsPage() {
         ctaLabel="Go to Models"
         ctaTo="/admin/models"
       />
-    : readiness.nextStep === 'server'
+    : readiness.nextStep === 'tools'
     ? <EmptyState
-        headline="Add an MCP server to give agents tools"
-        subtext="Agents use MCP tools to do their work. Register a server first."
+        headline="Add an MCP server or tool plugin to give agents tools"
+        subtext="Agents use tools to do their work. Register an MCP server or install a tool-providing plugin first."
         ctaLabel="Go to Tools"
         ctaTo="/tools"
       />
