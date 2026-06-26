@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft } from 'lucide-react'
@@ -9,10 +9,13 @@ import type { SchemaShape, SchemaProperty } from '@/components/form/SchemaForm'
 import { useOptionsContext } from '@/hooks/useOptionsContext'
 import { ReauthorizeButton } from '@/components/admin/ReauthorizeButton/ReauthorizeButton'
 import { CredentialsTab } from '@/components/admin/CredentialsTab/CredentialsTab'
+import { InstanceSetupSteps } from '@/components/admin/InstanceSetupSteps/InstanceSetupSteps'
 import { DeletePluginInstanceModal } from '@/components/admin/DeletePluginInstanceModal'
 import { AcceptManifestModal } from '@/components/admin/AcceptManifestModal'
 import { usePluginInstancesForAudience, usePluginInstanceDetail } from '@/hooks/queries/admin'
+import { usePluginInstanceCredentials } from '@/hooks/queries/plugins'
 import { useCurrentUser } from '@/hooks/queries/users'
+import { deriveSetupSteps, firstIncompleteBlockingStep, humanizeHealthDetail } from '@/utils/instanceSetup'
 import {
   useSetInstanceSubscriptionScope,
   useDeletePluginInstance,
@@ -31,6 +34,13 @@ import styles from './AdminPluginInstancePage.module.css'
 // ── tab type ─────────────────────────────────────────────────────────────────
 
 type Tab = 'subscriptions' | 'config' | 'credentials'
+
+// SETUP_RELEVANT_STATES are the health states where the "Steps to healthy"
+// onboarding checklist is meaningful — i.e. the instance still needs operator
+// setup. Healthy/inactive/terminal-error states get their own treatment and are
+// not nagged with a setup checklist (#658). pending_reauthorize already has a
+// dedicated Re-authorize banner.
+const SETUP_RELEVANT_STATES = new Set(['unhealthy', 'pending_config_migration'])
 
 // ── SubscriptionsTab ──────────────────────────────────────────────────────────
 
@@ -422,13 +432,80 @@ export default function AdminPluginInstancePage() {
 
   const hasSubscriptionSchema = !!instance?.subscription_schema
 
-  // If the plugin has no subscription_schema, default to the config tab.
-  // The Subscriptions tab is only rendered when subscription_schema is present.
+  // ── Onboarding-step derivation (#658) ────────────────────────────────────────
+  //
+  // The instance detail (config schema + redacted config values) and the
+  // redacted credentials power the "Steps to healthy" checklist, the tab badges,
+  // and the blocking-tab default. All three endpoints are admin-only, so the
+  // onboarding surface is gated on canManage; the underlying queries share their
+  // cache keys with the Config/Credentials tabs (no extra network round-trips).
+  const { data: detail, status: detailStatus } = usePluginInstanceDetail(
+    canManage ? pluginId : undefined,
+    canManage ? instanceId : undefined,
+  )
+  const { data: creds, status: credsStatus } = usePluginInstanceCredentials(
+    canManage ? pluginId : undefined,
+    canManage ? instanceId : undefined,
+  )
+
+  const configSchema = (detail?.config_schema ?? null) as SchemaShape | null
+  const instanceConfig = useMemo<Record<string, unknown>>(() => {
+    if (!detail?.config_json) return {}
+    try {
+      return JSON.parse(detail.config_json) as Record<string, unknown>
+    } catch {
+      return {}
+    }
+  }, [detail?.config_json])
+
+  const setupSteps = useMemo(() => {
+    if (!instance) return []
+    return deriveSetupSteps({
+      authStrategy: instance.auth_strategy,
+      credentials: creds,
+      configSchema,
+      config: instanceConfig,
+      hasSubscriptionSchema,
+      subscriptionScope: instance.subscription_scope,
+    })
+  }, [instance, creds, configSchema, instanceConfig, hasSubscriptionSchema])
+
+  // Tabs that still have an incomplete BLOCKING step get an information-scent dot.
+  const incompleteTabs = useMemo(
+    () => new Set(setupSteps.filter((s) => s.blocking && !s.done).map((s) => s.tab)),
+    [setupSteps],
+  )
+
+  const healthDetailCopy = humanizeHealthDetail(instance?.health_detail)
+
+  const showSetupSteps =
+    canManage &&
+    !!instance &&
+    SETUP_RELEVANT_STATES.has(instance.state) &&
+    setupSteps.length > 0
+
+  // One-time default tab. When the instance is mid-setup, open the first
+  // incomplete blocking step's tab (so the operator lands where the work is)
+  // instead of always defaulting to Subscriptions. Falls back to the old rule:
+  // Config when there is no subscription schema, else Subscriptions. Runs once,
+  // after the data needed to compute the blocker has settled, and never fights a
+  // manual tab click thereafter.
+  const didDefaultTab = useRef(false)
   useEffect(() => {
-    if (status === 'success' && !hasSubscriptionSchema && activeTab === 'subscriptions') {
+    if (didDefaultTab.current) return
+    if (status !== 'success' || !instance) return
+    // Wait for the admin-only detail/credentials queries to settle so the
+    // derived blocker is accurate before we commit to a default tab.
+    if (canManage && (detailStatus === 'pending' || credsStatus === 'pending')) return
+    didDefaultTab.current = true
+
+    const blocker = canManage ? firstIncompleteBlockingStep(setupSteps) : null
+    if (blocker) {
+      setActiveTab(blocker.tab)
+    } else if (!hasSubscriptionSchema) {
       setActiveTab('config')
     }
-  }, [status, hasSubscriptionSchema, activeTab])
+  }, [status, instance, canManage, detailStatus, credsStatus, setupSteps, hasSubscriptionSchema])
 
   // After a successful OAuth authcode round-trip the callback handler redirects
   // the browser back here with ?oauth_ok=1. Invalidate the instance list and
@@ -589,6 +666,14 @@ export default function AdminPluginInstancePage() {
         <div className={alertStyles.alertError} role="alert">{activateError}</div>
       )}
 
+      {showSetupSteps && (
+        <InstanceSetupSteps
+          steps={setupSteps}
+          healthDetail={healthDetailCopy}
+          onNavigate={setActiveTab}
+        />
+      )}
+
       <nav className={styles.tabs} aria-label="Instance settings">
         {hasSubscriptionSchema && (
           <button
@@ -605,6 +690,13 @@ export default function AdminPluginInstancePage() {
           onClick={() => setActiveTab('config')}
         >
           Config
+          {incompleteTabs.has('config') && (
+            <span
+              className={styles.tabBadge}
+              aria-label="required setup incomplete"
+              title="Required configuration is missing"
+            />
+          )}
         </button>
         <button
           type="button"
@@ -612,6 +704,13 @@ export default function AdminPluginInstancePage() {
           onClick={() => setActiveTab('credentials')}
         >
           Credentials
+          {incompleteTabs.has('credentials') && (
+            <span
+              className={styles.tabBadge}
+              aria-label="required setup incomplete"
+              title="Credentials are missing"
+            />
+          )}
         </button>
       </nav>
 
