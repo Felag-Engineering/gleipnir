@@ -1,10 +1,19 @@
+import { AsyncCombobox } from '@/components/form/AsyncCombobox'
 import { FieldError } from '@/components/form/FieldError/FieldError'
+import type { ApiPluginOption } from '@/api/types'
 import styles from './SchemaForm.module.css'
 
 // REDACTION_SENTINEL is the value the backend substitutes for secret fields on
 // GET (ADR-049). Bulk PUT rejects it — call sites strip such fields before
 // sending. Exported so payload builders can reference the same constant.
 export const REDACTION_SENTINEL = '***'
+
+// OptionsAnnotation mirrors manifest.OptionsAnnotation in the plugin-sdk.
+// Present on schema properties that have a dynamic options provider.
+export interface OptionsAnnotation {
+  source: string
+  multi?: boolean
+}
 
 export interface SchemaProperty {
   type?: string
@@ -13,6 +22,20 @@ export interface SchemaProperty {
   // ADR-049: fields annotated with x-gleipnir-secret: true are redacted on read
   // and must be submitted via a separate write (never round-tripped as "***").
   'x-gleipnir-secret'?: boolean
+  // x-gleipnir-options: present on properties backed by a plugin options provider.
+  // When present and optionsContext is provided, SchemaForm renders an AsyncCombobox.
+  'x-gleipnir-options'?: OptionsAnnotation
+}
+
+// OptionsContext provides the async search function used by AsyncCombobox.
+// SchemaForm does not own the plugin/instance ID — callers inject this context
+// so that each form use-site can construct the right search closure.
+export interface OptionsContext {
+  // search is called with (source, query) and must return matching options.
+  search: (source: string, query: string) => Promise<ApiPluginOption[]>
+  // degraded is true when the options provider is unavailable; AsyncCombobox
+  // falls back to a plain text input.
+  degraded?: boolean
 }
 
 export interface SchemaShape {
@@ -28,6 +51,9 @@ export interface SchemaFormProps {
   idPrefix?: string
   // emptyMessage is shown when the schema declares no properties.
   emptyMessage?: string
+  // optionsContext provides async option search for properties annotated with
+  // x-gleipnir-options. When absent, annotated properties fall back to text inputs.
+  optionsContext?: OptionsContext
 }
 
 function isStringArrayProp(prop: SchemaProperty): boolean {
@@ -48,6 +74,7 @@ export function SchemaForm({
   fieldErrors,
   idPrefix = 'field',
   emptyMessage = 'No fields declared in schema.',
+  optionsContext,
 }: SchemaFormProps) {
   const properties = schema.properties ?? {}
   const fields = Object.keys(properties)
@@ -100,6 +127,43 @@ export function SchemaForm({
                 value={typeof value[name] === 'number' ? (value[name] as number) : ''}
                 onChange={(e) => handleChange(name, e.target.valueAsNumber)}
                 aria-describedby={err ? fieldErrId : undefined}
+              />
+              <FieldError id={fieldErrId} messages={err} />
+            </div>
+          )
+        }
+
+        // x-gleipnir-options: async combobox for plugin-backed dynamic options.
+        // This check must precede isStringArrayProp so that array fields with
+        // x-gleipnir-options (e.g. channels: multi:true) render an AsyncCombobox
+        // instead of falling through to the textarea branch.
+        const optionsAnnotation = prop['x-gleipnir-options']
+        if (optionsAnnotation && optionsContext) {
+          const { source, multi } = optionsAnnotation
+          // Treat the field as multi-select when the annotation says so, or when
+          // the schema type is 'array' (the annotation is the authoritative signal).
+          const isMulti = multi ?? prop.type === 'array'
+          const currentVal = value[name]
+          const multiVal = Array.isArray(currentVal)
+            ? (currentVal as string[])
+            : typeof currentVal === 'string' && currentVal !== ''
+              ? [currentVal]
+              : []
+          const singleVal = typeof currentVal === 'string' ? currentVal : ''
+          return (
+            <div key={name} className={styles.fieldRow}>
+              <label htmlFor={fieldId} className={styles.fieldLabel}>
+                {name}
+              </label>
+              {prop.description && <p className={styles.fieldDesc}>{prop.description}</p>}
+              <AsyncCombobox
+                id={fieldId}
+                value={isMulti ? multiVal : singleVal}
+                onChange={(v) => handleChange(name, v)}
+                onSearch={(q) => optionsContext.search(source, q)}
+                multi={isMulti}
+                degraded={optionsContext.degraded}
+                describedBy={err ? fieldErrId : undefined}
               />
               <FieldError id={fieldErrId} messages={err} />
             </div>

@@ -63,6 +63,7 @@ type HandlerBundle struct {
 	PluginAdminHandler       *admin.PluginHandler
 	PluginOAuthHandler       *admin.PluginOAuthHandler
 	PluginCredentialsHandler *admin.PluginCredentialsHandler
+	PluginOptionsHandler     *admin.PluginOptionsHandler
 	AudienceHandler          *AudienceHandler
 	BindingTestHandler       *BindingTestHandler
 	WebhookHandler           *trigger.WebhookHandler
@@ -314,6 +315,9 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 				r.Put("/plugins/{id}/instances/{iid}/credentials/basic-auth", h.SetBasicAuth)
 				r.Put("/plugins/{id}/instances/{iid}/credentials/oauth-client", h.SetOAuthClient)
 				r.Put("/plugins/{id}/instances/{iid}/credentials/oauth-token", h.SetOAuthToken)
+			}
+			if h := cfg.Handlers.PluginOptionsHandler; h != nil {
+				r.Get("/plugins/{id}/instances/{iid}/options/{source}", h.GetInstanceOptions)
 			}
 
 			r.Route("/openai-providers", func(r chi.Router) {

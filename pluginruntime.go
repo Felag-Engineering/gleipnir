@@ -52,6 +52,11 @@ type pluginRuntime struct {
 	// cached gRPC connections (channel-path analogue of Pool.Close).
 	ChannelDispatcher *dispatch.Dispatcher
 
+	// OptionsClient proxies ConfigOptionsService.ListOptions calls to plugin
+	// instances for the admin options endpoint. shutdown() closes its cached
+	// gRPC connections alongside ChannelDispatcher.
+	OptionsClient *dispatch.OptionsClient
+
 	// auditWriter is the long-lived AuditWriter that backs the channel
 	// dispatcher's WriteRunStep callback (#573). It records dispatcher-level
 	// error steps (feedback_dispatch_error, plugin_request_timeout) into the run
@@ -89,6 +94,12 @@ type pluginRuntime struct {
 	// TriggerSupervisor manages per-instance trigger stream goroutines. Populated
 	// by wireTriggerSupervisor; nil until that method has been called.
 	TriggerSupervisor *plugintrigger.Supervisor
+
+	// OptionsHandler is the admin HTTP handler for the plugin options proxy
+	// endpoint. Always non-nil after startPluginRuntime returns; the underlying
+	// OptionsClient is nil when the plugin subprocess system is unavailable, in
+	// which case every response degrades gracefully.
+	OptionsHandler *admin.PluginOptionsHandler
 
 	// OAuthHandler handles plugin OAuth2 token flows. nil when encryptionKey is absent.
 	OAuthHandler *admin.PluginOAuthHandler
@@ -280,9 +291,13 @@ func startPluginRuntime(
 	}
 	toolClassifier := &manifestClassifier{snap: pluginManifestSnap, q: store.Queries()}
 
+	optionsClient := dispatch.NewOptionsClient(connFactory.Connect, cfg.MCPTimeout)
+	optionsHandler := admin.NewPluginOptionsHandler(store.Queries(), optionsClient, 0)
+
 	rt := &pluginRuntime{
 		Pool:              pool,
 		ChannelDispatcher: pluginDispatcher,
+		OptionsClient:     optionsClient,
 		auditWriter:       auditWriter,
 		DispatchAdapter:   dispatchAdapter,
 		ApprovalAdapter:   approvalAdapter,
@@ -292,6 +307,7 @@ func startPluginRuntime(
 		ToolClassifier:    toolClassifier,
 		ManifestSnap:      pluginManifestSnap,
 		HostSvc:           hostSvc,
+		OptionsHandler:    optionsHandler,
 		loader:            loader,
 	}
 
@@ -545,6 +561,14 @@ func (rt *pluginRuntime) shutdown() {
 	if rt.ChannelDispatcher != nil {
 		if err := rt.ChannelDispatcher.Close(); err != nil {
 			slog.Warn("plugin channel dispatcher close error", "err", err)
+		}
+	}
+
+	// Close the options client's cached gRPC connections. Same benign re-close
+	// rationale as ChannelDispatcher above.
+	if rt.OptionsClient != nil {
+		if err := rt.OptionsClient.Close(); err != nil {
+			slog.Warn("plugin options client close error", "err", err)
 		}
 	}
 

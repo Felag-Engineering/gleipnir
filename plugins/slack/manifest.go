@@ -83,6 +83,9 @@ properties:
 			ImplementsRequest: true,
 			// channel_config_schema: per-audience-entry config operators set when
 			// adding a Slack audience entry to a policy.
+			// x-gleipnir-options on channel is metadata for the audience editor (#627):
+			// when that editor is replaced with SchemaForm, it will render a channel
+			// picker combobox. No UI effect in this PR.
 			ConfigSchema: mustParseYAML(`
 type: object
 required:
@@ -90,6 +93,9 @@ required:
 properties:
   channel:
     type: string
+    x-gleipnir-options:
+      source: channels
+      multi: false
     description: 'Slack channel or user DM target (e.g. #general or @username)'
   mention:
     type: string
@@ -255,7 +261,9 @@ type SlackChannelMessageBinding struct {
 	// MentionOnly restricts the policy to events where the bot was mentioned.
 	MentionOnly bool `json:"mention_only,omitempty" jsonschema:"title=Mention-only,description=Fire only when the bot is explicitly @-mentioned. Note: a DM is never a mention\\, so this excludes DMs."`
 	// User restricts the policy to messages from a specific Slack user ID.
-	User manifest.EqualsField `json:"user,omitempty" jsonschema:"title=User,description=Exact match (case-sensitive) on the sender's Slack user ID (e.g. U012AB3CD). Leave empty to match all users."`
+	// optionsUserField emits x-gleipnir-options: {source: users} at the property
+	// level so the admin UI renders an async user picker combobox (#622).
+	User optionsUserField `json:"user,omitempty" jsonschema:"title=User,description=Exact match (case-sensitive) on the sender's Slack user ID (e.g. U012AB3CD). Leave empty to match all users."`
 	// ChannelType restricts the policy to a single Slack channel kind.
 	// EqualsField emits {type:string} with no format key, which the host binding
 	// evaluator maps to OpEquals (internal/plugin/binding/binding.go:238).
@@ -273,7 +281,9 @@ type SlackDirectMessageBinding struct {
 	// TextRegex matches the DM text against a Go RE2 regular expression.
 	TextRegex manifest.RegexField `json:"text_regex,omitempty" jsonschema:"title=Text matches (regex),description=Go RE2 regular expression matched against the message text. Case-sensitivity is controlled by the pattern (e.g. (?i) flag); use ^ to anchor to the start. RE2 syntax — no lookbehind or backreferences."`
 	// User restricts the policy to DMs from a specific Slack user ID.
-	User manifest.EqualsField `json:"user,omitempty" jsonschema:"title=User,description=Exact match (case-sensitive) on the sender's Slack user ID (e.g. U012AB3CD). Leave empty to match all users."`
+	// optionsUserField emits x-gleipnir-options: {source: users} so the admin
+	// UI renders an async user picker combobox (#622).
+	User optionsUserField `json:"user,omitempty" jsonschema:"title=User,description=Exact match (case-sensitive) on the sender's Slack user ID (e.g. U012AB3CD). Leave empty to match all users."`
 }
 
 // SlackSlashCommandBinding is the per-policy binding struct for the slash_command
@@ -409,7 +419,45 @@ func init() {
 	// SubscriptionSchema defines the instance-level coarse filter passed in
 	// TriggerService.Start as watch_scope_json. Operators configure this once
 	// per plugin instance to limit which channels are watched.
-	pluginManifest.SubscriptionSchema = manifest.MustReflectSchema(SlackSubscriptionScope{})
+	//
+	// Hand-authored as a YAML literal (not reflected) because the `channels`
+	// array property needs x-gleipnir-options at the PROPERTY level, not the
+	// items level. The invopop/jsonschema reflector places SchemaCustomizer
+	// annotations at the item type level for array fields — incorrect for the
+	// host's property-level annotation check (R2 in issue #622 plan review).
+	//
+	// The shape must match SlackSubscriptionScope exactly so JSON round-trips
+	// (scope.go, JSON serialisation) continue to work correctly.
+	pluginManifest.SubscriptionSchema = mustParseYAML(`
+type: object
+properties:
+  channels:
+    type: array
+    x-gleipnir-options:
+      source: channels
+      multi: true
+    title: Channels
+    description: Slack channel IDs (e.g. C012ABCDEF). Empty = watch all. Find IDs in channel settings - About - Channel ID.
+    items:
+      type: string
+      pattern: ^C[A-Z0-9]+$
+  mention_only:
+    type: boolean
+    title: Mention-only
+    description: Only emit when bot is mentioned.
+  direct_messages:
+    type: boolean
+    title: Direct messages
+    description: Watch 1:1 DMs to the bot. Channel IDs are not required (DM channel IDs are D...).
+  slash_commands:
+    type: boolean
+    title: Slash commands
+    description: Open the trigger stream so /slash-command invocations are delivered. Required for slash_command policies on instances that watch no channels. Slash commands are never channel-scoped.
+  shortcuts:
+    type: boolean
+    title: Shortcuts
+    description: Open the trigger stream so message and global shortcut invocations are delivered. Required for message_shortcut / global_shortcut policies on instances that watch no channels.
+`)
 
 	// channel_message is the event kind emitted whenever a message is posted to
 	// a watched Slack channel. The binding_schema and payload_schema are derived

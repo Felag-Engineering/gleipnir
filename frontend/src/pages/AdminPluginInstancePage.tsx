@@ -1,11 +1,13 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { Button } from '@/components/Button'
 import { SchemaForm, REDACTION_SENTINEL } from '@/components/form/SchemaForm'
-import type { SchemaShape, SchemaProperty } from '@/components/form/SchemaForm'
+import type { SchemaShape, SchemaProperty, OptionsContext } from '@/components/form/SchemaForm'
+import { apiFetch } from '@/api/fetch'
+import type { ApiPluginOptionsResponse } from '@/api/types'
 import { ReauthorizeButton } from '@/components/admin/ReauthorizeButton/ReauthorizeButton'
 import { CredentialsTab } from '@/components/admin/CredentialsTab/CredentialsTab'
 import { DeletePluginInstanceModal } from '@/components/admin/DeletePluginInstanceModal'
@@ -31,6 +33,39 @@ import styles from './AdminPluginInstancePage.module.css'
 
 type Tab = 'subscriptions' | 'config' | 'credentials'
 
+// useOptionsContext returns an OptionsContext that calls the plugin options
+// endpoint via apiFetch (bypasses TanStack Query — the server-side 30s cache
+// handles request deduplication). The `degraded` flag is tracked from the
+// latest successful response so AsyncCombobox can fall back to free-text
+// input when the plugin's ConfigOptionsService is unavailable.
+function useOptionsContext(pluginId: string, instanceId: string): OptionsContext {
+  const [degraded, setDegraded] = useState<boolean | undefined>(undefined)
+
+  const search = useCallback(
+    async (source: string, query: string) => {
+      const params = new URLSearchParams()
+      if (query) params.set('query', query)
+      const qs = params.toString()
+      const path =
+        `/admin/plugins/${encodeURIComponent(pluginId)}/instances/${encodeURIComponent(instanceId)}/options/${encodeURIComponent(source)}` +
+        (qs ? `?${qs}` : '')
+      try {
+        const res = await apiFetch<ApiPluginOptionsResponse>(path)
+        // Surface the degraded flag from the response so the combobox can
+        // fall back to free-text when the host returns degraded:true.
+        setDegraded(res.degraded ?? false)
+        return res.options ?? []
+      } catch {
+        // On network/auth error, mark degraded so the user can still type a value.
+        setDegraded(true)
+        return []
+      }
+    },
+    [pluginId, instanceId],
+  )
+  return { search, degraded }
+}
+
 // ── SubscriptionsTab ──────────────────────────────────────────────────────────
 
 interface SubscriptionsTabProps {
@@ -49,6 +84,7 @@ function SubscriptionsTab({
   currentVersion,
 }: SubscriptionsTabProps) {
   const [scope, setScope] = useState<Record<string, unknown>>(initialScope)
+  const optionsCtx = useOptionsContext(pluginId, instanceId)
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
   const [globalError, setGlobalError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
@@ -98,7 +134,7 @@ function SubscriptionsTab({
         establishes (e.g. which Slack channels to watch).
       </p>
 
-      <SchemaForm schema={schema} value={scope} onChange={setScope} fieldErrors={fieldErrors} />
+      <SchemaForm schema={schema} value={scope} onChange={setScope} fieldErrors={fieldErrors} optionsContext={optionsCtx} />
 
       {globalError && <p className={styles.globalError}>{globalError}</p>}
 
@@ -129,6 +165,7 @@ interface ConfigTabProps {
 
 function ConfigTab({ pluginId, instanceId }: ConfigTabProps) {
   const queryClient = useQueryClient()
+  const optionsCtx = useOptionsContext(pluginId, instanceId)
 
   // Fetch the per-instance detail to get both the current (redacted) config values
   // AND the instance-level config_schema. Previously the schema came from the
@@ -287,6 +324,7 @@ function ConfigTab({ pluginId, instanceId }: ConfigTabProps) {
           onChange={setConfig}
           fieldErrors={fieldErrors}
           idPrefix="config-field"
+          optionsContext={optionsCtx}
         />
       ) : (
         <p className={styles.noFields}>No config fields declared in manifest.</p>

@@ -138,6 +138,7 @@ queryKeys.plugins.detail(id)    // ['plugins', id, 'detail']          — plugin
 queryKeys.plugins.rss           // ['admin', 'plugins', 'rss']        — aggregate plugin process RSS (30s refetch)
 queryKeys.plugins.instances(id) // ['plugins', id, 'instances']      — instances of one plugin (invalidated on instance create)
 queryKeys.plugins.credentials(p, i) // ['plugins', p, 'instances', i, 'credentials'] — redacted credentials view
+queryKeys.plugins.options(p, i, src, q, cur) // per-query cache for AsyncCombobox (pluginId, instanceId, source, query, cursor)
 ```
 
 ### Data fetching
@@ -227,6 +228,7 @@ GET    /api/v1/admin/plugins/:id/instances/:iid                                (
 PUT    /api/v1/admin/plugins/:id/instances/:iid/config                         (admin; CAS-guarded instance config blob; validates against manifest config_schema when declared)
 PUT    /api/v1/admin/plugins/:id/instances/:iid/credentials/oauth-token        (admin; advanced seed for oauth2_* strategies — escape hatch for E2E/manual recovery)
 PUT    /api/v1/admin/settings/default-model                                    (admin; set system default LLM model {provider, name}; 400 on missing key for known providers, 422 on disabled model)
+GET    /api/v1/admin/plugins/:id/instances/:iid/options/:source                (admin; dynamic options from plugin ConfigOptionsService; ?query=&cursor=; {data:{options,next_cursor,degraded?}})
 ```
 
 Response envelope: `{ data: T }` for success, `{ error: string, detail?: string }` for failure.
@@ -249,7 +251,7 @@ Organized by feature area:
 - **RunDetail/** — RunHeader, StepTimeline, FilterBar, MetadataGrid, CapabilitySnapshotCard, ThoughtBlock, ThinkingBlock, ToolBlock, CompleteBlock, ErrorBlock, FeedbackBlock, ApprovalActions, FeedbackActions
 - **MCPPage/** — ServerCard, ToolList, ToolRow, MCPStatsBar, HealthIndicator, AddServerModal, DeleteServerModal, ServerDetailModal (per-header auth editor: existing name fields are read-only, value field is empty with placeholder; save fans out via `useSetMcpServerHeader`/`useDeleteMcpServerHeader`; no sentinel; see ADR-039), ArcadeAuthSection (toolkit-level OAuth pre-authorization for Arcade gateways; renders only when `server.is_arcade_gateway && canManage`; see ADR-040)
 - **admin/** — EncryptionKeyNotice (persistent warning banner on the Models page about encryption key backup requirements), PluginHealthChip (colored chip — green/yellow/red/gray — for the 11 plugin-instance health states including `inactive`; pairs with `utils/pluginHealth.ts` for the worst-across-instances aggregate), PluginCard (clickable card for the `/admin/plugins` two-pane list: name, version, service badges Tool/Trigger/Channel, instance count, aggregate health chip; `isSelected` prop for visual selection state), PluginMemoryBar (aggregate plugin RSS display in the plugins page header; shows total bytes + instance count; click-to-expand per-instance breakdown table sorted by RSS descending; 30s polling via `usePluginRSS`), PluginReviewCard (consent surface for pending-review plugins: services, tier-2 capabilities, auth strategy, pubkey fingerprint, SBOM badge, author/license; Approve/Reject buttons), RejectPluginModal (confirmation modal before rejecting a pending-review plugin; follows UninstallPluginModal pattern), InstallPluginButton (file-picker upload of a plugin tarball; persistent success card with "Review & approve" link for `pending_review` status or "Add instance" CTA for `active` status), AddInstanceModal (form to instantiate an installed plugin by name; reused as a standalone modal on the plugins page AND inline from the install-success card; client-side validation + per-status error mapping)
-- **form/** — FieldError (inline message under a field), ErrorBanner (top-of-form bulleted summary with scroll-to-field). Shared primitives for surfacing validation/save errors.
+- **form/** — FieldError (inline message under a field), ErrorBanner (top-of-form bulleted summary with scroll-to-field), AsyncCombobox (searchable single-select dropdown backed by plugin ConfigOptionsService; degrades to plain text input when `degraded=true`; controlled via `value`/`onChange`/`onSearch`). SchemaForm accepts an optional `optionsContext` prop (`{search, degraded}`) that wires AsyncCombobox for any property annotated with `x-gleipnir-options` in the JSON Schema. Shared primitives for surfacing validation/save errors.
 - **Shared** — Button, Modal, ModalFooter, ContactTray, EmptyState, ErrorBoundary, QueryBoundary, CopyBlock, CollapsibleJSON, SkeletonBlock, PageHeader, ApprovalBanner, ConnectionBanner, TriggerRunModal
 
 ### Hooks (`src/hooks/`)

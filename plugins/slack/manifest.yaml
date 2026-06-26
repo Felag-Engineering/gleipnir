@@ -19,6 +19,9 @@ channels:
         channel:
           description: 'Slack channel or user DM target (e.g. #general or @username)'
           type: string
+          x-gleipnir-options:
+            multi: false
+            source: channels
         mention:
           description: Slack user or group to mention in the message (e.g. @oncall)
           type: string
@@ -94,6 +97,8 @@ event_kinds:
           description: Exact match (case-sensitive) on the sender's Slack user ID (e.g. U012AB3CD). Leave empty to match all users.
           title: User
           type: string
+          x-gleipnir-options:
+            source: users
       type: object
     description: A message was posted to a Slack channel
     examples:
@@ -201,6 +206,8 @@ event_kinds:
           description: Exact match (case-sensitive) on the sender's Slack user ID (e.g. U012AB3CD). Leave empty to match all users.
           title: User
           type: string
+          x-gleipnir-options:
+            source: users
       type: object
     description: A direct message was sent to the bot
     examples:
@@ -445,17 +452,19 @@ services:
   tool: v1
   trigger: v1
 subscription_schema:
-  additionalProperties: false
   properties:
     channels:
-      description: Slack channel IDs (e.g. C012ABCDEF). Empty = watch all. Find IDs in channel settings → About → Channel ID.
+      description: Slack channel IDs (e.g. C012ABCDEF). Empty = watch all. Find IDs in channel settings - About - Channel ID.
       items:
         pattern: ^C[A-Z0-9]+$
         type: string
       title: Channels
       type: array
+      x-gleipnir-options:
+        multi: true
+        source: channels
     direct_messages:
-      description: Watch 1:1 DMs to the bot. Channel IDs are not required (DM channel IDs are D…).
+      description: Watch 1:1 DMs to the bot. Channel IDs are not required (DM channel IDs are D...).
       title: Direct messages
       type: boolean
     mention_only:
