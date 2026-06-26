@@ -30,6 +30,7 @@ const POLICIES: ApiPolicyListItem[] = [
 
 const STUB_MODEL_RESPONSE = [{ provider: 'anthropic', models: [{ name: 'm1', display_name: 'Claude' }] }]
 const STUB_SERVER_RESPONSE = [{ id: 's1', name: 'my-server', url: 'http://localhost:9000', tool_count: 1 }]
+const EMPTY_PLUGINS = { data: [] }
 
 function makeClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -54,6 +55,7 @@ describe('AgentsPage', () => {
       }),
       http.get('/api/v1/models', () => HttpResponse.json({ data: STUB_MODEL_RESPONSE })),
       http.get('/api/v1/mcp/servers', () => HttpResponse.json({ data: STUB_SERVER_RESPONSE })),
+      http.get('/api/v1/admin/plugin-instances', () => HttpResponse.json(EMPTY_PLUGINS)),
     )
 
     const qc = makeClient()
@@ -72,6 +74,7 @@ describe('AgentsPage', () => {
       http.get('/api/v1/policies', () => HttpResponse.json({ data: [] })),
       http.get('/api/v1/models', () => HttpResponse.json({ data: STUB_MODEL_RESPONSE })),
       http.get('/api/v1/mcp/servers', () => HttpResponse.json({ data: STUB_SERVER_RESPONSE })),
+      http.get('/api/v1/admin/plugin-instances', () => HttpResponse.json(EMPTY_PLUGINS)),
     )
 
     const qc = makeClient()
@@ -96,6 +99,7 @@ describe('AgentsPage', () => {
         HttpResponse.json({ data: [{ provider: 'anthropic', models: [] }] }),
       ),
       http.get('/api/v1/mcp/servers', () => HttpResponse.json({ data: [] })),
+      http.get('/api/v1/admin/plugin-instances', () => HttpResponse.json(EMPTY_PLUGINS)),
     )
 
     const qc = makeClient()
@@ -107,18 +111,19 @@ describe('AgentsPage', () => {
     expect(screen.getByRole('link', { name: 'Go to Models' })).toHaveAttribute('href', '/admin/models')
   })
 
-  it('shows "Add an MCP server" empty state when model is set but no server', async () => {
+  it('shows "Add an MCP server or tool plugin" empty state when model is set but no tool source', async () => {
     server.use(
       http.get('/api/v1/policies', () => HttpResponse.json({ data: [] })),
       http.get('/api/v1/models', () => HttpResponse.json({ data: STUB_MODEL_RESPONSE })),
       http.get('/api/v1/mcp/servers', () => HttpResponse.json({ data: [] })),
+      http.get('/api/v1/admin/plugin-instances', () => HttpResponse.json(EMPTY_PLUGINS)),
     )
 
     const qc = makeClient()
     renderPage(qc)
 
     await waitFor(() => {
-      expect(screen.getByText('Add an MCP server to give agents tools')).toBeInTheDocument()
+      expect(screen.getByText('Add an MCP server or tool plugin to give agents tools')).toBeInTheDocument()
     })
     expect(screen.getByRole('link', { name: 'Go to Tools' })).toHaveAttribute('href', '/tools')
   })
@@ -128,6 +133,7 @@ describe('AgentsPage', () => {
       http.get('/api/v1/policies', () => HttpResponse.json({ data: POLICIES })),
       http.get('/api/v1/models', () => HttpResponse.json({ data: STUB_MODEL_RESPONSE })),
       http.get('/api/v1/mcp/servers', () => HttpResponse.json({ data: STUB_SERVER_RESPONSE })),
+      http.get('/api/v1/admin/plugin-instances', () => HttpResponse.json(EMPTY_PLUGINS)),
     )
 
     const qc = makeClient()
@@ -144,6 +150,7 @@ describe('AgentsPage', () => {
       http.get('/api/v1/policies', () => HttpResponse.json({ data: POLICIES })),
       http.get('/api/v1/models', () => HttpResponse.json({ data: STUB_MODEL_RESPONSE })),
       http.get('/api/v1/mcp/servers', () => HttpResponse.json({ data: STUB_SERVER_RESPONSE })),
+      http.get('/api/v1/admin/plugin-instances', () => HttpResponse.json(EMPTY_PLUGINS)),
     )
 
     const qc = makeClient()
@@ -163,6 +170,7 @@ describe('AgentsPage', () => {
       }),
       http.get('/api/v1/models', () => HttpResponse.json({ data: STUB_MODEL_RESPONSE })),
       http.get('/api/v1/mcp/servers', () => HttpResponse.json({ data: STUB_SERVER_RESPONSE })),
+      http.get('/api/v1/admin/plugin-instances', () => HttpResponse.json(EMPTY_PLUGINS)),
     )
 
     const qc = makeClient()
@@ -187,6 +195,7 @@ describe('AgentsPage', () => {
       }),
       http.get('/api/v1/models', () => HttpResponse.json({ data: STUB_MODEL_RESPONSE })),
       http.get('/api/v1/mcp/servers', () => HttpResponse.json({ data: STUB_SERVER_RESPONSE })),
+      http.get('/api/v1/admin/plugin-instances', () => HttpResponse.json(EMPTY_PLUGINS)),
     )
 
     const qc = makeClient()

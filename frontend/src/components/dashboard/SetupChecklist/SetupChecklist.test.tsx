@@ -6,7 +6,7 @@ import { SetupChecklist } from './SetupChecklist'
 
 function renderChecklist(props: {
   hasModel?: boolean
-  hasServer?: boolean
+  hasToolSource?: boolean
   hasAgent?: boolean
   hasFirstRun?: boolean
   isLoading?: boolean
@@ -15,7 +15,7 @@ function renderChecklist(props: {
     <MemoryRouter>
       <SetupChecklist
         hasModel={props.hasModel ?? false}
-        hasServer={props.hasServer ?? false}
+        hasToolSource={props.hasToolSource ?? false}
         hasAgent={props.hasAgent ?? false}
         hasFirstRun={props.hasFirstRun ?? false}
         isLoading={props.isLoading ?? false}
@@ -33,7 +33,7 @@ describe('SetupChecklist', () => {
     renderChecklist({})
 
     expect(screen.getByText('Add a model API key')).toBeInTheDocument()
-    expect(screen.getByText('Register an MCP server')).toBeInTheDocument()
+    expect(screen.getByText('Add an MCP server or tool plugin')).toBeInTheDocument()
     expect(screen.getByText('Create an agent')).toBeInTheDocument()
     expect(screen.getByText('Trigger your first run')).toBeInTheDocument()
   })
@@ -58,7 +58,7 @@ describe('SetupChecklist', () => {
   })
 
   it('does not show a CTA for completed steps', () => {
-    renderChecklist({ hasModel: true, hasServer: true })
+    renderChecklist({ hasModel: true, hasToolSource: true })
 
     expect(screen.queryByRole('link', { name: 'Go to Models' })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'Go to Tools' })).not.toBeInTheDocument()
@@ -69,7 +69,7 @@ describe('SetupChecklist', () => {
   it('returns null when every step is done and not loading', () => {
     const { container } = renderChecklist({
       hasModel: true,
-      hasServer: true,
+      hasToolSource: true,
       hasAgent: true,
       hasFirstRun: true,
       isLoading: false,
@@ -81,7 +81,7 @@ describe('SetupChecklist', () => {
   it('does not return null when loading even if all steps would be done', () => {
     renderChecklist({
       hasModel: true,
-      hasServer: true,
+      hasToolSource: true,
       hasAgent: true,
       hasFirstRun: true,
       isLoading: true,

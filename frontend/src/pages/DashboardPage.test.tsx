@@ -100,6 +100,9 @@ function setupDefaultHandlers() {
     http.get('/api/v1/policies', () =>
       HttpResponse.json({ data: [STUB_POLICY] }),
     ),
+    http.get('/api/v1/admin/plugin-instances', () =>
+      HttpResponse.json({ data: [] }),
+    ),
   )
 }
 
@@ -196,6 +199,9 @@ describe('DashboardPage', () => {
       http.get('/api/v1/policies', () =>
         HttpResponse.json({ data: [STUB_POLICY] }),
       ),
+      http.get('/api/v1/admin/plugin-instances', () =>
+        HttpResponse.json({ data: [] }),
+      ),
     )
 
     renderDashboard(makeClient())
@@ -216,6 +222,9 @@ describe('DashboardPage', () => {
         HttpResponse.json({ data: [{ provider: 'anthropic', models: [] }] }),
       ),
       http.get('/api/v1/policies', () => HttpResponse.json({ data: [] })),
+      http.get('/api/v1/admin/plugin-instances', () =>
+        HttpResponse.json({ data: [] }),
+      ),
     )
 
     renderDashboard(makeClient())
@@ -229,7 +238,7 @@ describe('DashboardPage', () => {
     expect(modelsLinks.every(l => l.getAttribute('href') === '/admin/models')).toBe(true)
   })
 
-  it('RecentRunsFeed empty state shows "Add an MCP server" when model is set but no server', async () => {
+  it('RecentRunsFeed empty state shows "Add an MCP server or tool plugin" when model is set but no tool source', async () => {
     server.use(
       http.get('/api/v1/stats', () => HttpResponse.json({ data: STATS })),
       http.get('/api/v1/stats/timeseries', () => HttpResponse.json({ data: TIMESERIES })),
@@ -240,12 +249,15 @@ describe('DashboardPage', () => {
         HttpResponse.json({ data: [{ provider: 'anthropic', models: [{ name: 'm1', display_name: 'Claude' }] }] }),
       ),
       http.get('/api/v1/policies', () => HttpResponse.json({ data: [] })),
+      http.get('/api/v1/admin/plugin-instances', () =>
+        HttpResponse.json({ data: [] }),
+      ),
     )
 
     renderDashboard(makeClient())
 
     await waitFor(() => {
-      expect(screen.getByText('Add an MCP server to give agents tools')).toBeInTheDocument()
+      expect(screen.getByText('Add an MCP server or tool plugin to give agents tools')).toBeInTheDocument()
     })
     const toolsLinks = screen.getAllByRole('link', { name: 'Go to Tools' })
     expect(toolsLinks.every(l => l.getAttribute('href') === '/tools')).toBe(true)
@@ -264,6 +276,9 @@ describe('DashboardPage', () => {
         HttpResponse.json({ data: [{ provider: 'anthropic', models: [{ name: 'm1', display_name: 'Claude' }] }] }),
       ),
       http.get('/api/v1/policies', () => HttpResponse.json({ data: [] })),
+      http.get('/api/v1/admin/plugin-instances', () =>
+        HttpResponse.json({ data: [] }),
+      ),
     )
 
     renderDashboard(makeClient())
@@ -295,6 +310,9 @@ describe('DashboardPage', () => {
       http.get('/api/v1/mcp/servers', () => HttpResponse.json({ data: [] })),
       http.get('/api/v1/models', () => HttpResponse.json({ data: [] })),
       http.get('/api/v1/policies', () => HttpResponse.json({ data: [] })),
+      http.get('/api/v1/admin/plugin-instances', () =>
+        HttpResponse.json({ data: [] }),
+      ),
     )
 
     renderDashboard(makeClient())
@@ -320,6 +338,9 @@ describe('DashboardPage', () => {
       ),
       http.get('/api/v1/policies', () =>
         HttpResponse.json({ data: [STUB_POLICY] }),
+      ),
+      http.get('/api/v1/admin/plugin-instances', () =>
+        HttpResponse.json({ data: [] }),
       ),
     )
 

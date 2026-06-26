@@ -258,7 +258,7 @@ Organized by feature area:
 
 ~29 custom hooks. Data-fetching hooks follow the pattern: `use{Resource}` wraps a TanStack `useQuery`, `use{Action}` wraps a `useMutation`. All query keys go through `queryKeys.ts`.
 
-`useSetupReadiness` — composes `useModels`, `useMcpServers`, and `usePolicies` to derive system readiness state (`hasModel`, `hasServer`, `hasAgent`, `nextStep`). Used by the dashboard and agents page empty states.
+`useSetupReadiness` — composes `useModels`, `useMcpServers`, `usePolicies`, and `usePluginInstancesForAudience` to derive system readiness state (`hasModel`, `hasToolSource`, `hasAgent`, `nextStep`). The tools step (`hasToolSource`) is satisfied by an MCP server OR a tool-providing plugin instance (one whose `services` includes `tool`); the plugin read degrades to `false` on error and is intentionally excluded from `isError` so a 403 (e.g. the `approver` role) never breaks the checklist. Used by the dashboard and agents page empty states.
 
 `useOptionsContext` — builds the `optionsContext` (`{search, degraded}`) passed to SchemaForm for plugin dynamic-option dropdowns; calls `/admin/plugins/{id}/instances/{iid}/options/{source}` via `apiFetch` (not TanStack Query) and tracks the `degraded` fallback flag. Shared by the plugin instance config tab and the audience editor (#622/#627).
 
