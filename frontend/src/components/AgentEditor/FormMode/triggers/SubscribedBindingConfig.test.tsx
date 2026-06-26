@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import type { ApiPluginInstanceForAudience } from '@/api/types'
 import { SubscribedBindingConfig } from './SubscribedBindingConfig'
 
@@ -8,8 +9,18 @@ import { SubscribedBindingConfig } from './SubscribedBindingConfig'
 vi.mock('@/hooks/mutations/bindingTest')
 import { useTestBindingAgainstSamples } from '@/hooks/mutations/bindingTest'
 
+// Mock usePluginOptions so OptionsBindingField (AsyncCombobox) never fires
+// real requests. Tests that assert combobox rendering don't need real data.
+vi.mock('@/hooks/usePluginOptions', () => ({
+  usePluginOptions: vi.fn().mockReturnValue({ data: undefined, isLoading: false }),
+}))
+
 // --- Fixtures ---
 
+// SLACK_INSTANCE has:
+//   - a plain text field (`text`) to keep the role="textbox" assertion valid
+//   - a channel_id field with x-gleipnir-options so it renders role="combobox"
+//   - title/description on both fields
 const SLACK_INSTANCE: ApiPluginInstanceForAudience = {
   id: 'inst-slack',
   plugin_id: 'plugin-slack',
@@ -26,13 +37,24 @@ const SLACK_INSTANCE: ApiPluginInstanceForAudience = {
       binding_schema: {
         type: 'object',
         properties: {
-          channel: { type: 'string' },
-          mention_only: { type: 'boolean' },
+          channel_id: {
+            type: 'string',
+            title: 'Channel',
+            description: 'Exact match on the Slack channel. Pick from the searchable list.',
+            'x-gleipnir-options': { source: 'channels' },
+          },
+          text: {
+            type: 'string',
+            format: 'contains',
+            title: 'Text contains',
+            description: 'Case-sensitive substring anywhere in the message body.',
+          },
+          mention_only: { type: 'boolean', title: 'Mention-only', description: 'Fire only when the bot is @-mentioned.' },
         },
       },
       examples: [
-        { name: 'incident-channel', payload: { channel: '#incidents', text: 'alert' } },
-        { name: 'general-channel', payload: { channel: '#general', text: 'hello' } },
+        { name: 'incident-channel', payload: { channel_id: 'C09INCIDENT', text: 'alert' } },
+        { name: 'general-channel', payload: { channel_id: 'C012ABCDEF', text: 'hello' } },
       ],
     },
   ],
@@ -55,7 +77,11 @@ const NO_EXAMPLES_INSTANCE: ApiPluginInstanceForAudience = {
 function makeWrapper() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   function Wrapper({ children }: { children: React.ReactNode }) {
-    return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    return (
+      <MemoryRouter>
+        <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+      </MemoryRouter>
+    )
   }
   return Wrapper
 }
@@ -76,7 +102,7 @@ beforeEach(() => {
 })
 
 describe('SubscribedBindingConfig — rendering', () => {
-  it('renders binding field inputs from the schema', () => {
+  it('renders the text field as a textbox and channel_id as a combobox', () => {
     render(
       <SubscribedBindingConfig
         source="slack-prod"
@@ -88,8 +114,81 @@ describe('SubscribedBindingConfig — rendering', () => {
       { wrapper: makeWrapper() },
     )
 
+    // The plain `text` field renders a text input.
     expect(screen.getByRole('textbox')).toBeInTheDocument()
-    expect(screen.getByLabelText(/channel/i)).toBeInTheDocument()
+    // The `channel_id` field with x-gleipnir-options renders a combobox.
+    expect(screen.getByRole('combobox')).toBeInTheDocument()
+  })
+
+  it('renders prop.title as the label (not the raw key)', () => {
+    render(
+      <SubscribedBindingConfig
+        source="slack-prod"
+        eventKind="channel_message"
+        binding={{}}
+        onChange={vi.fn()}
+        pluginInstances={[SLACK_INSTANCE]}
+      />,
+      { wrapper: makeWrapper() },
+    )
+
+    // The `text` field has title "Text contains" — should appear, not "text".
+    expect(screen.getByText('Text contains')).toBeInTheDocument()
+    // The `channel_id` field has title "Channel" — should appear.
+    expect(screen.getAllByText('Channel').length).toBeGreaterThan(0)
+  })
+
+  it('renders prop.description as a caption below the field', () => {
+    render(
+      <SubscribedBindingConfig
+        source="slack-prod"
+        eventKind="channel_message"
+        binding={{}}
+        onChange={vi.fn()}
+        pluginInstances={[SLACK_INSTANCE]}
+      />,
+      { wrapper: makeWrapper() },
+    )
+
+    expect(
+      screen.getByText('Case-sensitive substring anywhere in the message body.'),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText('Exact match on the Slack channel. Pick from the searchable list.'),
+    ).toBeInTheDocument()
+  })
+
+  it('does not render the (contains) or (regex) format suffix', () => {
+    render(
+      <SubscribedBindingConfig
+        source="slack-prod"
+        eventKind="channel_message"
+        binding={{}}
+        onChange={vi.fn()}
+        pluginInstances={[SLACK_INSTANCE]}
+      />,
+      { wrapper: makeWrapper() },
+    )
+
+    expect(screen.queryByText(/\(contains\)/)).toBeNull()
+    expect(screen.queryByText(/\(regex\)/)).toBeNull()
+  })
+
+  it('renders the scope↔binding explainer with a link to the plugin instance page', () => {
+    render(
+      <SubscribedBindingConfig
+        source="slack-prod"
+        eventKind="channel_message"
+        binding={{}}
+        onChange={vi.fn()}
+        pluginInstances={[SLACK_INSTANCE]}
+      />,
+      { wrapper: makeWrapper() },
+    )
+
+    const link = screen.getByRole('link', { name: /subscription scope/i })
+    expect(link).toBeInTheDocument()
+    expect(link.getAttribute('href')).toContain('/admin/plugins/plugin-slack/instances/inst-slack')
   })
 
   it('renders example names in the results area after a test', () => {
@@ -105,7 +204,7 @@ describe('SubscribedBindingConfig — rendering', () => {
       <SubscribedBindingConfig
         source="slack-prod"
         eventKind="channel_message"
-        binding={{ channel: '#incidents' }}
+        binding={{ channel_id: 'C09INCIDENT' }}
         onChange={vi.fn()}
         pluginInstances={[SLACK_INSTANCE]}
       />,
@@ -163,7 +262,7 @@ describe('SubscribedBindingConfig — click sends all payloads', () => {
       data: undefined,
     } as unknown as ReturnType<typeof useTestBindingAgainstSamples>)
 
-    const binding = { channel: '#incidents' }
+    const binding = { channel_id: 'C09INCIDENT' }
     render(
       <SubscribedBindingConfig
         source="slack-prod"
@@ -181,8 +280,8 @@ describe('SubscribedBindingConfig — click sends all payloads', () => {
       expect(mutate).toHaveBeenCalledWith({
         binding,
         payloads: [
-          { channel: '#incidents', text: 'alert' },
-          { channel: '#general', text: 'hello' },
+          { channel_id: 'C09INCIDENT', text: 'alert' },
+          { channel_id: 'C012ABCDEF', text: 'hello' },
         ],
       })
     })
@@ -210,7 +309,7 @@ describe('SubscribedBindingConfig — 400 compile error surfacing', () => {
       <SubscribedBindingConfig
         source="slack-prod"
         eventKind="channel_message"
-        binding={{ pattern: '[bad(' }}
+        binding={{ text: '[bad(' }}
         onChange={vi.fn()}
         pluginInstances={[SLACK_INSTANCE]}
       />,

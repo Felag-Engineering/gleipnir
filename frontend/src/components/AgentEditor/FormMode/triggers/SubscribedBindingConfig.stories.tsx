@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { fn } from 'storybook/test';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import { http, HttpResponse } from 'msw';
 import '@/tokens.css';
 import { SubscribedBindingConfig } from './SubscribedBindingConfig';
@@ -29,15 +30,29 @@ const SLACK_INSTANCE: ApiPluginInstanceForAudience = {
       binding_schema: {
         type: 'object',
         properties: {
-          channel: { type: 'string', description: 'Channel name (exact match)' },
-          pattern: { type: 'string', format: 'regex', description: 'Text pattern (RE2)' },
-          mention_only: { type: 'boolean', description: 'Only fire when mentioned' },
+          channel_id: {
+            type: 'string',
+            title: 'Channel',
+            description: 'Exact match on the Slack channel. Pick a channel from the searchable list; matches the message\'s stable channel ID (e.g. C012AB3CD).',
+            'x-gleipnir-options': { source: 'channels' },
+          },
+          text: {
+            type: 'string',
+            format: 'contains',
+            title: 'Text contains',
+            description: 'Case-sensitive substring; matches anywhere in the message body (not anchored to the start).',
+          },
+          mention_only: {
+            type: 'boolean',
+            title: 'Mention-only',
+            description: 'Fire only when the bot is explicitly @-mentioned.',
+          },
         },
       },
       examples: [
-        { name: 'incident-alert', payload: { channel: '#incidents', text: 'P1 fire', mentioned: false } },
-        { name: 'mentions-bot', payload: { channel: '#general', text: 'hey @bot', mentioned: true } },
-        { name: 'no-match', payload: { channel: '#random', text: 'hello' } },
+        { name: 'incident-alert', payload: { channel_id: 'C09INCIDENT', text: 'P1 fire', mentioned: false } },
+        { name: 'mentions-bot', payload: { channel_id: 'C012ABCDEF', text: 'hey @bot', mentioned: true } },
+        { name: 'no-match', payload: { channel_id: 'CRANDOM123', text: 'hello' } },
       ],
     },
   ],
@@ -58,6 +73,7 @@ const SLACK_NO_EXAMPLES: ApiPluginInstanceForAudience = {
 };
 
 const TEST_ENDPOINT = '/api/v1/admin/plugin-instances/inst-slack/event-kinds/channel_message/test-binding';
+const OPTIONS_ENDPOINT = '/api/v1/admin/plugins/plugin-slack/instances/inst-slack/options/channels';
 
 // --- Meta ---
 
@@ -66,11 +82,13 @@ const meta: Meta<typeof SubscribedBindingConfig> = {
   component: SubscribedBindingConfig,
   decorators: [
     (Story) => (
-      <QueryClientProvider client={makeQueryClient()}>
-        <div className={decoratorStyles.decorator}>
-          <Story />
-        </div>
-      </QueryClientProvider>
+      <MemoryRouter>
+        <QueryClientProvider client={makeQueryClient()}>
+          <div className={decoratorStyles.decorator}>
+            <Story />
+          </div>
+        </QueryClientProvider>
+      </MemoryRouter>
     ),
   ],
 };
@@ -96,13 +114,24 @@ export const Default: Story = {
             },
           }),
         ),
+        http.get(OPTIONS_ENDPOINT, () =>
+          HttpResponse.json({
+            data: {
+              options: [
+                { value: 'C09INCIDENT', label: '#incidents' },
+                { value: 'C012ABCDEF', label: '#general' },
+              ],
+              next_cursor: '',
+            },
+          }),
+        ),
       ],
     },
   },
   args: {
     source: 'slack-prod',
     eventKind: 'channel_message',
-    binding: { channel: '#incidents' },
+    binding: { channel_id: 'C09INCIDENT' },
     onChange: fn(),
     pluginInstances: [SLACK_INSTANCE],
   },
@@ -124,6 +153,17 @@ export const AllMatch: Story = {
             },
           }),
         ),
+        http.get(OPTIONS_ENDPOINT, () =>
+          HttpResponse.json({
+            data: {
+              options: [
+                { value: 'C09INCIDENT', label: '#incidents' },
+                { value: 'C012ABCDEF', label: '#general' },
+              ],
+              next_cursor: '',
+            },
+          }),
+        ),
       ],
     },
   },
@@ -139,12 +179,20 @@ export const AllMatch: Story = {
 // NoExamples: button is disabled, tooltip visible.
 export const NoExamples: Story = {
   parameters: {
-    msw: { handlers: [] },
+    msw: {
+      handlers: [
+        http.get(OPTIONS_ENDPOINT, () =>
+          HttpResponse.json({
+            data: { options: [], next_cursor: '' },
+          }),
+        ),
+      ],
+    },
   },
   args: {
     source: 'slack-no-examples',
     eventKind: 'channel_message',
-    binding: { channel: '#incidents' },
+    binding: { channel_id: 'C09INCIDENT' },
     onChange: fn(),
     pluginInstances: [SLACK_NO_EXAMPLES],
   },
@@ -157,9 +205,14 @@ export const CompileError: Story = {
       handlers: [
         http.post(TEST_ENDPOINT, () =>
           HttpResponse.json(
-            { error: 'binding compile error', detail: 'binding: invalid regular expression (Go RE2 required): field "pattern": error parsing regexp' },
+            { error: 'binding compile error', detail: 'binding: invalid regular expression (Go RE2 required): field "text": error parsing regexp' },
             { status: 400 },
           ),
+        ),
+        http.get(OPTIONS_ENDPOINT, () =>
+          HttpResponse.json({
+            data: { options: [], next_cursor: '' },
+          }),
         ),
       ],
     },
@@ -167,7 +220,7 @@ export const CompileError: Story = {
   args: {
     source: 'slack-prod',
     eventKind: 'channel_message',
-    binding: { pattern: '[invalid(' },
+    binding: { text: '[invalid(' },
     onChange: fn(),
     pluginInstances: [SLACK_INSTANCE],
   },
@@ -182,13 +235,21 @@ export const LoadingResults: Story = {
           await new Promise((r) => setTimeout(r, 60_000));
           return HttpResponse.json({ data: { results: [] } });
         }),
+        http.get(OPTIONS_ENDPOINT, () =>
+          HttpResponse.json({
+            data: {
+              options: [{ value: 'C012ABCDEF', label: '#incidents' }],
+              next_cursor: '',
+            },
+          }),
+        ),
       ],
     },
   },
   args: {
     source: 'slack-prod',
     eventKind: 'channel_message',
-    binding: { channel: '#incidents' },
+    binding: { channel_id: 'C09INCIDENT' },
     onChange: fn(),
     pluginInstances: [SLACK_INSTANCE],
   },

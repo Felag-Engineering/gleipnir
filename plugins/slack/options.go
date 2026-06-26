@@ -36,6 +36,25 @@ func (optionsUserField) JSONSchema() *jsonschema.Schema {
 	}
 }
 
+// optionsChannelField is an EqualsField variant that carries the
+// x-gleipnir-options annotation for the "channels" source. The host admin UI
+// renders an async combobox (single-select) for this field instead of a plain
+// text input. The binding evaluator uses OpEquals semantics (no format key) —
+// the annotation is purely a UI hint. Used for the channel_id binding field so
+// operators pick a stable Slack channel ID from a searchable list.
+type optionsChannelField string
+
+// JSONSchema implements jsonschema.SchemaCustomizer so that ReflectSchema emits
+// {type: string, x-gleipnir-options: {source: channels}} for this field.
+func (optionsChannelField) JSONSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{
+		Type: "string",
+		Extras: map[string]any{
+			manifest.OptionsAnnotationKey: manifest.OptionsAnnotation{Source: "channels", Multi: false},
+		},
+	}
+}
+
 // OptionsService implements ConfigOptionsService.ListOptions for the Slack plugin.
 // It returns dynamic, searchable option lists for schema fields annotated with
 // x-gleipnir-options. Currently supports two sources:

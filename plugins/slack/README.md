@@ -10,7 +10,7 @@ reference).
 
 - **ToolService v1** — `post_message` (with Block Kit), `list_channels`, `react`, `set_topic`, `read_thread`, `read_history`, `update_message`, `delete_message`, `lookup_user` (implemented by #233, #626)
 - **TriggerService v1** — five event kinds via Slack Socket Mode (#234, #621, #623):
-  - `channel_message` — any human message in a watched channel; `mention_only: true` binding selects mentions. Note: subscription-scope channel filtering matches by **channel ID** only (e.g. `C012ABCDEF`); name-based filtering (e.g. `#incidents`) silently does not match because Socket Mode events carry only IDs. Resolving names is future work.
+  - `channel_message` — any human message in a watched channel; `mention_only: true` binding selects mentions. Use `channel_id` (exact channel ID, e.g. `C012ABCDEF`) in the binding to restrict to a specific channel — the searchable channel picker in the policy editor shows available IDs. Name-based filtering is not supported because Socket Mode events carry only IDs.
   - `direct_message` — a 1:1 DM sent directly to the bot. Enable via `direct_messages: true` in the instance subscription scope.
   - `slash_command` — a workspace slash command (e.g. `/gleipnir deploy staging`). Enable via `slash_commands: true` in the instance subscription scope.
   - `message_shortcut` — a message shortcut invoked on a specific message (carries message text, ts, channel). Enable via `shortcuts: true` in the instance subscription scope.
@@ -73,28 +73,25 @@ shortcuts are explicit user intent from any surface.
 Policies that use the `channel_message` trigger can filter events using the
 following binding fields (all optional; fields are ANDed together):
 
-| Field         | Match          | Notes |
-|---------------|----------------|-------|
-| `channel`     | contains       | Substring of the channel display name or ID (e.g. `incidents`) |
-| `channel_type`| equals         | Slack channel kind: `channel` (public), `group` (private), `mpim` (multi-party DM). Empty matches any kind. Note: 1:1 DMs (`im`) now route to `direct_message`, not `channel_message`. |
-| `text`        | contains       | Substring anywhere in the message text |
-| `text_regex`  | regex (RE2)    | Go RE2 expression matched against the message text. Use `^(?i)recipe:` for anchored, case-insensitive command routing — fires on `Recipe: find dinner` but NOT on `got a great Recipe: idea`. RE2 only: no lookbehind or backreferences. |
-| `mention_only`| flag           | Only fire when the bot is @-mentioned (detected via text-scan for both `message` and `app_mention` events). Never fires for DMs. |
-| `user`        | equals         | Exact Slack user ID (e.g. `U012AB3CD`) |
+| Field          | Match  | Notes |
+|----------------|--------|-------|
+| `channel_id`   | equals | Exact Slack channel ID (e.g. `C012ABCDEF`). Pick from the searchable channel list in the policy editor. Matches the message's stable channel ID — never the display name. |
+| `channel_type` | equals | Slack channel kind: `channel` (public), `group` (private), `mpim` (multi-party DM). Empty matches any kind. Note: 1:1 DMs (`im`) now route to `direct_message`, not `channel_message`. |
+| `text`         | contains | Substring anywhere in the message text |
+| `mention_only` | flag   | Only fire when the bot is @-mentioned (detected via text-scan for both `message` and `app_mention` events). Never fires for DMs. |
+| `user`         | equals | Exact Slack user ID (e.g. `U012AB3CD`). Pick from the searchable user list in the policy editor. |
 
-`text` and `text_regex` are independent siblings: most policies set one or the
-other. See [§"Triggering runs from Slack messages"](#triggering-runs-from-slack-messages)
+See [§"Triggering runs from Slack messages"](#triggering-runs-from-slack-messages)
 for worked examples and routing behaviour.
 
 ## Trigger binding (`direct_message`)
 
 Policies that use the `direct_message` trigger can filter events using:
 
-| Field       | Match       | Notes |
-|-------------|-------------|-------|
-| `text`      | contains    | Substring anywhere in the DM text |
-| `text_regex`| regex (RE2) | Same RE2 semantics as `channel_message` |
-| `user`      | equals      | Exact Slack user ID of the sender |
+| Field  | Match    | Notes |
+|--------|----------|-------|
+| `text` | contains | Substring anywhere in the DM text |
+| `user` | equals   | Exact Slack user ID of the sender. Pick from the searchable user list in the policy editor. |
 
 `channel`, `channel_type`, and `mention_only` are absent: they have no meaning
 in a 1:1 DM conversation.
@@ -103,11 +100,10 @@ in a 1:1 DM conversation.
 
 Policies that use the `slash_command` trigger can filter events using:
 
-| Field        | Match       | Notes |
-|--------------|-------------|-------|
-| `command`    | equals      | Exact slash command name, e.g. `/gleipnir`. Leave empty to match any command. |
-| `text`       | contains    | Substring anywhere in the command arguments |
-| `text_regex` | regex (RE2) | Go RE2 expression matched against the command arguments |
+| Field     | Match    | Notes |
+|-----------|----------|-------|
+| `command` | equals   | Exact slash command name, e.g. `/gleipnir`. Leave empty to match any command. |
+| `text`    | contains | Substring anywhere in the command arguments |
 
 Example — route `/gleipnir deploy …` to a deployment policy:
 
@@ -119,7 +115,7 @@ trigger:
   event_kind: slash_command
   binding:
     command: "/gleipnir"
-    text_regex: "^deploy "
+    text: "deploy"
 capabilities:
   tools:
     - tool: slack-prod.post_message
@@ -209,7 +205,7 @@ trigger:
   source: slack-prod          # the plugin INSTANCE NAME (not a ULID)
   event_kind: channel_message
   binding:                    # optional; all fields ANDed; omit to match every message
-    text_regex: "^(?i)recipe:"
+    text: "recipe:"
 capabilities:
   tools:
     - tool: slack-prod.post_message
@@ -232,11 +228,11 @@ fires its own independent run. There is no "route to exactly one policy", no
 default/else policy, and no arbitration across policies.
 
 Two policies with overlapping bindings will both fire. Design bindings with
-mutually exclusive anchored `text_regex` prefixes so messages reach exactly the
+distinct `text` substrings or `channel_id` filters so messages reach exactly the
 policy you intend:
 
-- `"^(?i)recipe:"` — fires on `Recipe: find dinner`; does **not** fire on `"got a great Recipe: idea"` (not anchored)
-- `"^(?i)deploy:"` — a distinct non-overlapping prefix
+- `text: "recipe:"` — fires on any message containing "recipe:"
+- `text: "deploy:"` — a distinct non-overlapping substring
 
 Note: this no-arbitration statement is cross-policy. A single policy's own
 concurrency setting (`concurrency: skip` / `queue` / `parallel`) still governs
@@ -271,9 +267,9 @@ These are external Slack settings, not Gleipnir config:
 
 ### Worked examples
 
-#### Example 1 — Keyword routing via anchored regex
+#### Example 1 — Keyword routing with channel filter
 
-Fires when a message starts with `Recipe:` (case-insensitive).
+Fires when a message in a specific channel contains the word "recipe:".
 
 ```yaml
 name: recipe-finder
@@ -282,20 +278,21 @@ trigger:
   source: slack-prod          # your Slack plugin instance name
   event_kind: channel_message
   binding:
-    text_regex: "^(?i)recipe:"   # fires on "Recipe: ..."/"recipe: ..."; NOT "got a great Recipe: idea"
+    channel_id: "C012ABCDEF"  # pick from the searchable channel list in the policy editor
+    text: "recipe:"           # case-sensitive substring anywhere in the message
 capabilities:
   tools:
     - tool: slack-prod.post_message
 agent:
   task: |
     The trigger payload is a Slack channel_message. Treat everything after
-    "Recipe:" as a recipe request and reply in-thread with suggestions.
+    "recipe:" as a recipe request and reply in-thread with suggestions.
 ```
 
-Matching Slack message: `Recipe: something with chickpeas`
+Matching Slack message: `recipe: something with chickpeas`
 
-Because routing is fan-out, give any sibling policy a non-overlapping anchored
-prefix so messages reach exactly one policy.
+Because routing is fan-out, combine `channel_id` and/or `text` filters to
+keep policies from overlapping.
 
 #### Example 2 — DM-only bot
 

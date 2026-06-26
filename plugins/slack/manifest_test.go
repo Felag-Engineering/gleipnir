@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"os"
-	"regexp"
 	"testing"
 
 	"github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
@@ -54,29 +53,19 @@ func TestManifestYAMLIsCanonical(t *testing.T) {
 	}
 }
 
-// TestChannelMessageTextRegexBinding asserts that:
-//  1. The reflected binding_schema for channel_message declares text_regex
-//     as {type: string, format: regex} — the shape the host binding engine
-//     requires to select OpRegex (internal/plugin/binding/binding.go:327).
-//  2. A regex derived from that field behaves as documented: `^(?i)recipe:`
-//     fires only when the message text *starts* with "Recipe:" or "recipe:",
-//     not when the keyword appears mid-string.
-//
-// The slack module cannot import internal/plugin/binding (separate module,
-// internal/ boundary), so we prove the AC by:
-//   - Walking the reflected YAML schema to assert the format tag (schema
-//     shape is what the host reads at policy-save time).
-//   - Compiling and running the regex ourselves (RE2 behavior is stdlib
-//     regexp; the host uses the same engine).
-func TestChannelMessageTextRegexBinding(t *testing.T) {
-	// --- Part 1: assert the reflected schema declares text_regex correctly ---
-
+// TestChannelMessageChannelIDBinding asserts that:
+//  1. The reflected binding_schema for channel_message declares channel_id as
+//     {type: string, x-gleipnir-options: {source: "channels"}} with NO format
+//     key — the shape the host binding engine requires for OpEquals semantics
+//     (internal/plugin/binding/binding.go:238), where the annotation is a UI hint.
+//  2. The old `channel` (contains) and `text_regex` fields are absent, confirming
+//     they were removed (#646, #654).
+func TestChannelMessageChannelIDBinding(t *testing.T) {
 	node := manifest.MustReflectSchema(SlackChannelMessageBinding{})
 
 	// findMappingValue walks a YAML mapping node looking for the given key and
 	// returns its value node. Returns nil when not found.
 	findMappingValue := func(mapping *yaml.Node, key string) *yaml.Node {
-		// Mapping content is interleaved [key, value, key, value, ...].
 		for i := 0; i+1 < len(mapping.Content); i += 2 {
 			if mapping.Content[i].Value == key {
 				return mapping.Content[i+1]
@@ -85,49 +74,40 @@ func TestChannelMessageTextRegexBinding(t *testing.T) {
 		return nil
 	}
 
-	// Drill into: <root>.properties.text_regex
 	properties := findMappingValue(node, "properties")
 	if properties == nil {
 		t.Fatal("binding schema has no 'properties' key")
 	}
-	textRegex := findMappingValue(properties, "text_regex")
-	if textRegex == nil {
-		t.Fatal("binding schema has no 'text_regex' property; was manifest.go updated and manifest.yaml regenerated?")
+
+	// channel_id must be present with type:string, no format, and x-gleipnir-options.source==channels.
+	channelID := findMappingValue(properties, "channel_id")
+	if channelID == nil {
+		t.Fatal("binding schema has no 'channel_id' property; was manifest.go updated and manifest.yaml regenerated?")
 	}
 
-	typ := findMappingValue(textRegex, "type")
+	typ := findMappingValue(channelID, "type")
 	if typ == nil || typ.Value != "string" {
-		t.Errorf("text_regex: want type=string, got %v", typ)
+		t.Errorf("channel_id: want type=string, got %v", typ)
 	}
-	format := findMappingValue(textRegex, "format")
-	if format == nil || format.Value != "regex" {
-		t.Errorf("text_regex: want format=regex, got %v", format)
+	// No format key is the OpEquals discriminator.
+	format := findMappingValue(channelID, "format")
+	if format != nil {
+		t.Errorf("channel_id: want no format key (OpEquals), got format=%q", format.Value)
 	}
-
-	// --- Part 2: prove the acceptance criteria with the regex itself ---
-	//
-	// The host selects OpRegex for format:regex and calls regexp.MatchString
-	// (RE2). We reproduce that here to document the expected routing behavior
-	// without importing the host engine.
-	re := regexp.MustCompile(`^(?i)recipe:`)
-
-	should := []string{
-		"Recipe: find dinner tonight",
-		"recipe: pasta ideas",
+	// x-gleipnir-options must be present with source: channels.
+	opts := findMappingValue(channelID, "x-gleipnir-options")
+	if opts == nil {
+		t.Fatal("channel_id: missing x-gleipnir-options annotation")
 	}
-	shouldNot := []string{
-		"got a great Recipe: idea", // keyword not at start — not anchored
-		"Lunch order is in.",       // no keyword at all
+	source := findMappingValue(opts, "source")
+	if source == nil || source.Value != "channels" {
+		t.Errorf("channel_id: want x-gleipnir-options.source=channels, got %v", source)
 	}
 
-	for _, msg := range should {
-		if !re.MatchString(msg) {
-			t.Errorf("expected regex to match %q but it did not", msg)
-		}
-	}
-	for _, msg := range shouldNot {
-		if re.MatchString(msg) {
-			t.Errorf("expected regex NOT to match %q but it did", msg)
+	// The old `channel` (contains) and `text_regex` fields must be absent.
+	for _, absent := range []string{"channel", "text_regex"} {
+		if findMappingValue(properties, absent) != nil {
+			t.Errorf("channel_message binding schema should not contain removed field %q", absent)
 		}
 	}
 }
@@ -153,7 +133,7 @@ func TestDirectMessageBindingSchema(t *testing.T) {
 	}
 
 	// Fields that MUST be present in the DM binding schema.
-	for _, field := range []string{"text", "text_regex", "user"} {
+	for _, field := range []string{"text", "user"} {
 		if findMappingValue(properties, field) == nil {
 			t.Errorf("direct_message binding schema missing expected field %q", field)
 		}

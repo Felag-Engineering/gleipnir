@@ -246,18 +246,15 @@ type SlackSubscriptionScope struct {
 // channel_message event kind. Fields drive the binding_schema shown in the
 // policy trigger editor.
 type SlackChannelMessageBinding struct {
-	// Channel is a substring matched against the Slack channel name or ID.
-	// ContainsField is used here rather than GlobField: the host binding evaluator
-	// rejects format:glob (binding.go:230), but accepts format:contains.
-	Channel manifest.ContainsField `json:"channel,omitempty" jsonschema:"title=Channel,description=Case-sensitive substring matched against the channel name or ID (e.g. incidents matches #incidents or C012…). Matches anywhere — not anchored."`
+	// ChannelID is an exact match on the stable Slack channel ID (e.g. C012ABCDEF).
+	// optionsChannelField emits x-gleipnir-options: {source: channels} at the
+	// property level so the admin UI renders an async channel picker combobox.
+	// OpEquals semantics (no format key) — the annotation is a UI hint only.
+	// The json key is channel_id so the evaluator's payload[name] lookup aligns
+	// with SlackChannelMessagePayload.channel_id (always present, stable ID).
+	ChannelID optionsChannelField `json:"channel_id,omitempty" jsonschema:"title=Channel,description=Exact match on the Slack channel. Pick a channel from the searchable list; matches the message's stable channel ID (e.g. C012AB3CD)."`
 	// Text is a substring matched against the message text.
 	Text manifest.ContainsField `json:"text,omitempty" jsonschema:"title=Text contains,description=Case-sensitive substring; matches anywhere in the message body (not anchored to the start)."`
-	// TextRegex matches the message text against a Go RE2 regular expression.
-	// Anchored, case-insensitive command routing is the primary use:
-	// `^(?i)recipe:` fires only on messages that start with "Recipe:"/"recipe:".
-	// RE2, not PCRE — no lookbehind/backrefs. Evaluated with implicit AND
-	// alongside Text; most policies set one or the other, not both.
-	TextRegex manifest.RegexField `json:"text_regex,omitempty" jsonschema:"title=Text matches (regex),description=Go RE2 regular expression matched against the message text. Case-sensitivity is controlled by the pattern (e.g. (?i) flag); use ^ to anchor to the start. RE2 syntax — no lookbehind or backreferences."`
 	// MentionOnly restricts the policy to events where the bot was mentioned.
 	MentionOnly bool `json:"mention_only,omitempty" jsonschema:"title=Mention-only,description=Fire only when the bot is explicitly @-mentioned. Note: a DM is never a mention\\, so this excludes DMs."`
 	// User restricts the policy to messages from a specific Slack user ID.
@@ -278,8 +275,6 @@ type SlackChannelMessageBinding struct {
 type SlackDirectMessageBinding struct {
 	// Text is a substring matched against the DM text.
 	Text manifest.ContainsField `json:"text,omitempty" jsonschema:"title=Text contains,description=Case-sensitive substring; matches anywhere in the message body (not anchored to the start)."`
-	// TextRegex matches the DM text against a Go RE2 regular expression.
-	TextRegex manifest.RegexField `json:"text_regex,omitempty" jsonschema:"title=Text matches (regex),description=Go RE2 regular expression matched against the message text. Case-sensitivity is controlled by the pattern (e.g. (?i) flag); use ^ to anchor to the start. RE2 syntax — no lookbehind or backreferences."`
 	// User restricts the policy to DMs from a specific Slack user ID.
 	// optionsUserField emits x-gleipnir-options: {source: users} so the admin
 	// UI renders an async user picker combobox (#622).
@@ -295,8 +290,6 @@ type SlackSlashCommandBinding struct {
 	Command manifest.EqualsField `json:"command,omitempty" jsonschema:"title=Command,description=Exact match on the slash command name (e.g. /gleipnir). Leave empty to match any command."`
 	// Text is a substring matched against the command arguments.
 	Text manifest.ContainsField `json:"text,omitempty" jsonschema:"title=Text contains,description=Case-sensitive substring matched anywhere in the command arguments."`
-	// TextRegex matches the command arguments against a Go RE2 regular expression.
-	TextRegex manifest.RegexField `json:"text_regex,omitempty" jsonschema:"title=Text matches (regex),description=Go RE2 regular expression matched against the command arguments. Use ^ to anchor to the start; (?i) for case-insensitive matching."`
 }
 
 // SlackMessageShortcutBinding is the per-policy binding struct for the
