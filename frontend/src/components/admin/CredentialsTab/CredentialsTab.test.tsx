@@ -369,7 +369,7 @@ describe('clear credentials', () => {
     expect(screen.getByRole('button', { name: /clear credentials/i })).toBeInTheDocument()
   })
 
-  it('calls DELETE /credentials on clear', async () => {
+  it('opens a confirmation modal without mutating on first click', async () => {
     let called = false
     server.use(
       http.delete(BASE_URL, () => {
@@ -382,7 +382,48 @@ describe('clear credentials', () => {
       strategy: 'static_api_key',
     })
     await userEvent.click(screen.getByRole('button', { name: /clear credentials/i }))
+    // The confirmation modal explains the re-auth consequence and no DELETE fires.
+    expect(screen.getByText(/you'll need to re-authorize/i)).toBeInTheDocument()
+    expect(called).toBe(false)
+  })
+
+  it('calls DELETE /credentials only after confirming in the modal', async () => {
+    let called = false
+    server.use(
+      http.delete(BASE_URL, () => {
+        called = true
+        return HttpResponse.json({ data: {} })
+      }),
+    )
+    renderTab({
+      creds: { strategy: 'static_api_key', has_api_key: true },
+      strategy: 'static_api_key',
+    })
+    await userEvent.click(screen.getByRole('button', { name: /clear credentials/i }))
+    // Confirm button lives in the modal footer (second "Clear credentials" button).
+    const confirmButtons = screen.getAllByRole('button', { name: /clear credentials/i })
+    await userEvent.click(confirmButtons[confirmButtons.length - 1])
     await waitFor(() => expect(called).toBe(true))
+  })
+
+  it('cancel closes the modal without mutating', async () => {
+    let called = false
+    server.use(
+      http.delete(BASE_URL, () => {
+        called = true
+        return HttpResponse.json({ data: {} })
+      }),
+    )
+    renderTab({
+      creds: { strategy: 'static_api_key', has_api_key: true },
+      strategy: 'static_api_key',
+    })
+    await userEvent.click(screen.getByRole('button', { name: /clear credentials/i }))
+    await userEvent.click(screen.getByRole('button', { name: /cancel/i }))
+    await waitFor(() =>
+      expect(screen.queryByText(/you'll need to re-authorize/i)).not.toBeInTheDocument(),
+    )
+    expect(called).toBe(false)
   })
 
   it('auditor: Clear button is hidden', () => {
