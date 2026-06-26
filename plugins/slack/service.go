@@ -279,8 +279,6 @@ func (s *ToolService) setHealth(ctx context.Context, h healthHint) {
 		detail = "auth_expired"
 	case healthAuthMissing:
 		detail = "auth_missing"
-	case healthMissingScope:
-		detail = "missing_scope"
 	default:
 		return
 	}
@@ -650,8 +648,6 @@ func (s *TriggerService) setTriggerHealth(ctx context.Context, h healthHint) {
 		detail = "auth_expired"
 	case healthConfigMissing:
 		detail = "config_missing"
-	case healthMissingScope:
-		detail = "missing_scope"
 	default:
 		return
 	}
@@ -1357,8 +1353,6 @@ func (s *ChannelService) setChannelHealth(ctx context.Context, h healthHint) {
 		detail = "auth_expired"
 	case healthAuthMissing:
 		detail = "auth_missing"
-	case healthMissingScope:
-		detail = "missing_scope"
 	default:
 		return
 	}

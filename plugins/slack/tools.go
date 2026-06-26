@@ -123,7 +123,6 @@ const (
 	healthAuthExpired                     // persistent auth failure — set UNHEALTHY
 	healthAuthMissing                     // no credentials configured — set UNHEALTHY
 	healthConfigMissing                   // required instance config field missing — set UNHEALTHY
-	healthMissingScope                    // bot OAuth scope grant insufficient — set UNHEALTHY
 )
 
 // mapErr maps a Slack API error to an ErrorCode and optional health hint.
@@ -168,9 +167,11 @@ func mapErr(err error) (commonv1.ErrorCode, healthHint) {
 }
 
 // classifySlackErrCode maps a Slack API error-code string to an ErrorCode and
-// health hint. Auth-class errors are split so the operator sees an actionable
-// distinction in the admin UI: "auth_expired" (re-authorize) vs "missing_scope"
-// (fix the Slack app scope grants).
+// health hint. Auth-class errors are classified by scope of impact: instance-wide
+// failures (invalid_auth, auth_expired, connection loss) drive a health-state update
+// so the admin UI surfaces an actionable badge; per-tool failures (missing_scope)
+// surface only in the tool's error response, which humanizeSlackErr decorates with
+// actionable remediation text, leaving instance health unchanged.
 func classifySlackErrCode(code string) (commonv1.ErrorCode, healthHint) {
 	switch code {
 	case "channel_not_found", "not_in_channel", "user_not_found", "message_not_found", "thread_not_found":
@@ -180,12 +181,14 @@ func classifySlackErrCode(code string) (commonv1.ErrorCode, healthHint) {
 		return commonv1.ErrorCode_ERROR_CODE_INVALID_ARG, healthNone
 
 	case "missing_scope":
-		// Distinct from the auth_expired bucket: re-authorizing with the same
-		// Slack app will NOT help — the operator must add the missing scope in
-		// the Slack app's OAuth & Permissions page, reinstall the app, then
-		// re-authorize. Surfacing this as "auth_expired" misled operators into
-		// clicking Re-authorize forever.
-		return commonv1.ErrorCode_ERROR_CODE_PERMISSION, healthMissingScope
+		// A scope gap is per-tool, not an instance-wide auth or connection failure.
+		// Other tools, the trigger stream, and channel ops keep working — downgrading
+		// the whole instance to UNHEALTHY is misleading and breaks the #622
+		// ConfigOptionsService dropdowns. Surface as a per-tool PERMISSION error;
+		// humanizeSlackErr already appends the actionable "add scope + reinstall"
+		// hint to the error message. Health downgrade is reserved for
+		// invalid_auth / auth_expired / connection loss.
+		return commonv1.ErrorCode_ERROR_CODE_PERMISSION, healthNone
 
 	case "invalid_auth", "account_inactive", "token_revoked", "not_authed":
 		// Persistent auth failures. The operator UI shows UNHEALTHY + "auth_expired"
