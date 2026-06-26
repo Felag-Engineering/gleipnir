@@ -1,9 +1,11 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import styles from './SubscribedBindingConfig.module.css';
 import type { ApiPluginInstanceForAudience } from '@/api/types';
 import { AsyncCombobox } from '@/components/form/AsyncCombobox';
 import { usePluginOptions } from '@/hooks/usePluginOptions';
 import { useTestBindingAgainstSamples } from '@/hooks/mutations/bindingTest';
+import { humanize } from '@/components/form/SchemaForm/SchemaForm';
 
 export interface SubscribedBindingConfigProps {
   source: string;       // instance_name — used to find the matching plugin instance
@@ -18,6 +20,7 @@ export interface SubscribedBindingConfigProps {
 interface SchemaProperty {
   type?: string;
   format?: string;
+  title?: string;
   description?: string;
   // x-gleipnir-options: present when the field has a dynamic options provider.
   'x-gleipnir-options'?: { source: string; multi?: boolean };
@@ -60,6 +63,8 @@ function resolveExamples(
 // hooks are called at the top level of a component (Rules of Hooks).
 function OptionsBindingField({
   name,
+  title,
+  description,
   source,
   pluginId,
   instanceId,
@@ -67,6 +72,8 @@ function OptionsBindingField({
   onChange,
 }: {
   name: string;
+  title?: string;
+  description?: string;
   source: string;
   pluginId: string;
   instanceId: string;
@@ -98,7 +105,7 @@ function OptionsBindingField({
   return (
     <div className={styles.row}>
       <label htmlFor={inputId} className={styles.label}>
-        {name}
+        {title ?? humanize(name)}
       </label>
       <AsyncCombobox
         id={inputId}
@@ -108,6 +115,7 @@ function OptionsBindingField({
         degraded={degraded}
         placeholder="Search…"
       />
+      {description && <p className={styles.caption}>{description}</p>}
     </div>
   );
 }
@@ -130,10 +138,10 @@ function BindingField({
   pluginId?: string;
   instanceId?: string;
 }) {
-  const isMentionOnly = name === 'mention_only' && prop.type === 'boolean';
   const isBool = prop.type === 'boolean';
+  const label = prop.title ?? humanize(name);
 
-  if (isMentionOnly || isBool) {
+  if (isBool) {
     return (
       <div className={styles.row}>
         <label className={styles.checkbox}>
@@ -142,11 +150,9 @@ function BindingField({
             checked={!!value}
             onChange={(e) => onChange(e.target.checked)}
           />
-          {name}
-          {isMentionOnly && (
-            <span className={styles.testTooltip}>(mention-only: only fire when @mentioned)</span>
-          )}
+          {label}
         </label>
+        {prop.description && <p className={styles.caption}>{prop.description}</p>}
       </div>
     );
   }
@@ -156,6 +162,8 @@ function BindingField({
     return (
       <OptionsBindingField
         name={name}
+        title={prop.title}
+        description={prop.description}
         source={optionsAnnotation.source}
         pluginId={pluginId}
         instanceId={instanceId}
@@ -169,10 +177,7 @@ function BindingField({
   return (
     <div className={styles.row}>
       <label htmlFor={inputId} className={styles.label}>
-        {name}
-        {prop.format && prop.format !== '' && (
-          <span className={styles.testTooltip}> ({prop.format})</span>
-        )}
+        {label}
       </label>
       <input
         id={inputId}
@@ -182,6 +187,7 @@ function BindingField({
         placeholder={prop.format === 'regex' ? 'RE2 regex…' : prop.format === 'contains' ? 'substring…' : 'exact value…'}
         onChange={(e) => onChange(e.target.value)}
       />
+      {prop.description && <p className={styles.caption}>{prop.description}</p>}
     </div>
   );
 }
@@ -232,6 +238,14 @@ export function SubscribedBindingConfig({
 
   return (
     <div className={styles.container}>
+      {pluginId && instanceId && (
+        <p className={styles.explainer}>
+          This filters events the instance is already watching. The instance's{' '}
+          <Link to={`/admin/plugins/${pluginId}/instances/${instanceId}`}>subscription scope</Link>{' '}
+          controls which channels and DMs are delivered.
+        </p>
+      )}
+
       {fieldNames.length > 0 && (
         <div className={styles.fields}>
           {fieldNames.map((name) => (

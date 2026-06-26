@@ -70,11 +70,12 @@ event_kinds:
   - binding_schema:
       additionalProperties: false
       properties:
-        channel:
-          description: 'Case-sensitive substring matched against the channel name or ID (e.g. incidents matches #incidents or C012…). Matches anywhere — not anchored.'
-          format: contains
+        channel_id:
+          description: Exact match on the Slack channel. Pick a channel from the searchable list; matches the message's stable channel ID (e.g. C012AB3CD).
           title: Channel
           type: string
+          x-gleipnir-options:
+            source: channels
         channel_type:
           description: 'Exact match on the Slack channel kind: channel (public), group (private), im (DM), mpim (multi-party DM). Leave empty to match any.'
           title: Channel type
@@ -87,11 +88,6 @@ event_kinds:
           description: Case-sensitive substring; matches anywhere in the message body (not anchored to the start).
           format: contains
           title: Text contains
-          type: string
-        text_regex:
-          description: Go RE2 regular expression matched against the message text. Case-sensitivity is controlled by the pattern (e.g. (?i) flag); use ^ to anchor to the start. RE2 syntax — no lookbehind or backreferences.
-          format: regex
-          title: Text matches (regex)
           type: string
         user:
           description: Exact match (case-sensitive) on the sender's Slack user ID (e.g. U012AB3CD). Leave empty to match all users.
@@ -197,11 +193,6 @@ event_kinds:
           format: contains
           title: Text contains
           type: string
-        text_regex:
-          description: Go RE2 regular expression matched against the message text. Case-sensitivity is controlled by the pattern (e.g. (?i) flag); use ^ to anchor to the start. RE2 syntax — no lookbehind or backreferences.
-          format: regex
-          title: Text matches (regex)
-          type: string
         user:
           description: Exact match (case-sensitive) on the sender's Slack user ID (e.g. U012AB3CD). Leave empty to match all users.
           title: User
@@ -297,11 +288,6 @@ event_kinds:
           description: Case-sensitive substring matched anywhere in the command arguments.
           format: contains
           title: Text contains
-          type: string
-        text_regex:
-          description: Go RE2 regular expression matched against the command arguments. Use ^ to anchor to the start; (?i) for case-insensitive matching.
-          format: regex
-          title: Text matches (regex)
           type: string
       type: object
     description: A workspace slash command was invoked
