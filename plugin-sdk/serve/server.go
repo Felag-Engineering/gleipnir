@@ -14,6 +14,7 @@ import (
 	channelv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/channel/v1"
 	handshakev1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/handshake/v1"
 	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
+	optionsv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/options/v1"
 	toolv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/tool/v1"
 	triggerv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/trigger/v1"
 )
@@ -47,6 +48,7 @@ type pluginGRPCPlugin struct {
 	channel *channelAdapter
 	tool    *toolAdapter
 	trigger *triggerAdapter
+	options *optionsAdapter
 }
 
 func newPluginGRPCPlugin(cfg *config) *pluginGRPCPlugin {
@@ -55,6 +57,7 @@ func newPluginGRPCPlugin(cfg *config) *pluginGRPCPlugin {
 		channel: &channelAdapter{},
 		tool:    &toolAdapter{},
 		trigger: &triggerAdapter{},
+		options: &optionsAdapter{},
 	}
 }
 
@@ -68,13 +71,19 @@ func (p *pluginGRPCPlugin) GRPCServer(broker *goplugin.GRPCBroker, s *grpc.Serve
 	handshakev1.RegisterHandshakeServiceServer(s, p)
 	bootstrapv1.RegisterBootstrapServiceServer(s, p)
 
-	// Always register adapters for all three services so the gRPC server
-	// exposes a stable surface. Adapters return codes.Unavailable until Bind
-	// installs the real impl. Services whose factory is nil will always return
-	// Unavailable — that is the documented zero-capability behaviour.
+	// Always register adapters for all services so the gRPC server exposes a
+	// stable surface. Adapters return codes.Unavailable until Bind installs the
+	// real impl. Services whose factory is nil will always return Unavailable
+	// (or Unimplemented for ConfigOptionsService after Bind) — that is the
+	// documented zero-capability behaviour.
 	channelv1.RegisterChannelServiceServer(s, p.channel)
 	toolv1.RegisterToolServiceServer(s, p.tool)
 	triggerv1.RegisterTriggerServiceServer(s, p.trigger)
+	// ConfigOptionsService is always registered so the host can detect support
+	// by calling ListOptions and inspecting the status code (R1: no handshake
+	// capability advertisement). The adapter returns codes.Unavailable before
+	// Bind and codes.Unimplemented after Bind when no factory is configured.
+	optionsv1.RegisterConfigOptionsServiceServer(s, p.options)
 
 	return nil
 }
@@ -144,6 +153,16 @@ func (p *pluginGRPCPlugin) Bind(_ context.Context, req *bootstrapv1.BindRequest)
 	if p.cfg.triggerFactory != nil {
 		p.trigger.install(p.cfg.triggerFactory(hostClient))
 	}
+	// Mark the options adapter as bound regardless of whether a factory was set.
+	// After bind, the adapter returns codes.Unimplemented (not Unavailable) when
+	// no factory is configured — the host treats Unimplemented as "no provider",
+	// triggering the free-text fallback (degraded: true).
+	p.options.bind(func() optionsv1.ConfigOptionsServiceServer {
+		if p.cfg.optionsFactory != nil {
+			return p.cfg.optionsFactory(hostClient)
+		}
+		return nil
+	}())
 
 	return &bootstrapv1.BindResponse{Ok: true}, nil
 }
@@ -260,4 +279,49 @@ func (a *triggerAdapter) Start(req *triggerv1.StartRequest, stream triggerv1.Tri
 		return status.Error(codes.Unavailable, "plugin not yet bound or TriggerService not registered")
 	}
 	return impl.Start(req, stream)
+}
+
+// optionsAdapter forwards ConfigOptionsService.ListOptions to the real
+// implementation installed by Bind.
+//
+// Before Bind: returns codes.Unavailable (host cannot yet distinguish "not
+// bound yet" from "not implemented" — Unavailable is the correct transient
+// signal).
+//
+// After Bind with no factory: returns codes.Unimplemented (the plugin has
+// declared no ConfigOptionsService; host treats this as "no provider" and
+// degrades to free-text input).
+//
+// After Bind with a factory: forwards to the real implementation.
+type optionsAdapter struct {
+	optionsv1.UnimplementedConfigOptionsServiceServer
+
+	mu    sync.RWMutex
+	real  optionsv1.ConfigOptionsServiceServer
+	bound bool // true once bind() has been called
+}
+
+// bind is called by Bind() with the real implementation (or nil when no factory
+// is configured). It atomically transitions the adapter from "not yet bound"
+// (Unavailable) to "bound" (Unimplemented or real impl).
+func (a *optionsAdapter) bind(impl optionsv1.ConfigOptionsServiceServer) {
+	a.mu.Lock()
+	a.real = impl
+	a.bound = true
+	a.mu.Unlock()
+}
+
+func (a *optionsAdapter) ListOptions(ctx context.Context, req *optionsv1.ListOptionsRequest) (*optionsv1.ListOptionsResponse, error) {
+	a.mu.RLock()
+	impl := a.real
+	isBound := a.bound
+	a.mu.RUnlock()
+	if !isBound {
+		return nil, status.Error(codes.Unavailable, "plugin not yet bound")
+	}
+	if impl == nil {
+		// Bound but no factory: plugin does not implement ConfigOptionsService.
+		return nil, status.Error(codes.Unimplemented, "ConfigOptionsService not implemented by this plugin")
+	}
+	return impl.ListOptions(ctx, req)
 }

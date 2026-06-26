@@ -70,6 +70,10 @@ export const queryKeys = {
       ['admin', 'plugins', pluginId, 'instances', instanceId] as const,
     credentials: (pluginId: string, instanceId: string) =>
       ['admin', 'plugins', pluginId, 'instances', instanceId, 'credentials'] as const,
+    // options() is keyed by (pluginId, instanceId, source, query, cursor) so
+    // each distinct async combobox query is independently cached by TanStack Query.
+    options: (pluginId: string, instanceId: string, source: string, query: string, cursor: string) =>
+      ['admin', 'plugins', pluginId, 'instances', instanceId, 'options', source, query, cursor] as const,
     // rss() is the aggregate memory usage across all running plugin subprocesses.
     rss: () => ['admin', 'plugins', 'rss'] as const,
   },

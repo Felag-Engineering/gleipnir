@@ -8,6 +8,7 @@ import (
 	"github.com/felag-engineering/gleipnir/plugin-sdk/channel"
 	channelv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/channel/v1"
 	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
+	optionsv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/options/v1"
 	toolv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/tool/v1"
 	triggerv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/trigger/v1"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
@@ -20,6 +21,7 @@ type config struct {
 	channelFactory func(hostv1.HostServiceClient) channelv1.ChannelServiceServer
 	toolFactory    func(hostv1.HostServiceClient) toolv1.ToolServiceServer
 	triggerFactory func(hostv1.HostServiceClient) triggerv1.TriggerServiceServer
+	optionsFactory func(hostv1.HostServiceClient) optionsv1.ConfigOptionsServiceServer
 	manifest       *manifest.Manifest
 	stopSignals    []os.Signal
 	logger         *slog.Logger
@@ -128,4 +130,18 @@ func WithTriggerHandler(f func(hostv1.HostServiceClient) trigger.Service) Option
 			return NewTriggerServer(f(h), h)
 		}
 	}
+}
+
+// WithOptionsService registers a ConfigOptionsService factory. The factory
+// receives the typed HostServiceClient after Bootstrap.Bind completes, so it
+// has access to GetCredentials and other host RPCs from the start of the first
+// call.
+//
+// The ConfigOptionsService enables the host to query the plugin for dynamic,
+// searchable option lists for schema fields annotated with x-gleipnir-options.
+// Plugins that do not provide dynamic options should omit this option; the
+// adapter returns codes.Unavailable before bind and codes.Unimplemented after
+// bind when no factory is set, causing the host to degrade to free-text input.
+func WithOptionsService(f func(hostv1.HostServiceClient) optionsv1.ConfigOptionsServiceServer) Option {
+	return func(c *config) { c.optionsFactory = f }
 }

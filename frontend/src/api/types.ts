@@ -720,6 +720,27 @@ export interface ApiRedactedCredentials {
   token_expires_at?: string
 }
 
+// ApiPluginOption is a single selectable item from a plugin's options provider.
+// Matches admin.apiOption → plugin_options.go.
+export interface ApiPluginOption {
+  value: string
+  label: string
+  group?: string
+  disabled?: boolean
+}
+
+// ApiPluginOptionsResponse is the payload returned by
+// GET /api/v1/admin/plugins/:id/instances/:iid/options/:source.
+// Matches admin.pluginOptionsResponse → plugin_options.go.
+export interface ApiPluginOptionsResponse {
+  options: ApiPluginOption[]
+  next_cursor: string
+  // degraded is true when the plugin subprocess is unhealthy, inactive, or has
+  // no ConfigOptionsService registered. The UI should fall back to a plain text
+  // input when degraded is true.
+  degraded?: boolean
+}
+
 // Matches admin.pluginRSSInstance → GetPluginRSS handler.
 export interface ApiPluginRSSInstance {
   instance_id: string

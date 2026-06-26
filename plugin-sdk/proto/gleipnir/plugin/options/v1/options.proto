@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package gleipnir.plugin.options.v1;
+
+option go_package = "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/options/v1;optionsv1";
+
+// ListOptionsRequest asks the plugin to return a paged list of selectable
+// options for the given source (e.g. "channels", "users").
+//
+// instance_id identifies the plugin instance; the plugin resolves its
+// credentials from the host via GetCredentials using its instance token
+// (no call_id context is needed — this is a config-time admin call).
+// source is an opaque string defined by the plugin manifest annotation
+// x-gleipnir-options.source.  query is an optional substring filter.
+// cursor is an opaque pagination token from a previous response's next_cursor.
+message ListOptionsRequest {
+  string instance_id = 1;
+  string source      = 2;
+  string query       = 3;
+  string cursor      = 4;
+}
+
+// Option is one selectable item returned by ListOptions.
+// value is the opaque ID stored in the config field.
+// label is the human-readable display string shown in the UI.
+// group is an optional grouping header (e.g. "Public channels").
+// disabled marks an option that exists but cannot be selected
+// (e.g. a channel the bot has not joined yet).
+message Option {
+  string value    = 1;
+  string label    = 2;
+  string group    = 3;
+  bool   disabled = 4;
+}
+
+// ListOptionsResponse carries the options page and an optional cursor for
+// fetching the next page.  An empty next_cursor means no more pages.
+message ListOptionsResponse {
+  repeated Option options     = 1;
+  string          next_cursor = 2;
+}
+
+// ConfigOptionsService is implemented by plugins that can provide dynamic,
+// searchable option lists for annotated schema fields.
+//
+// The host calls ListOptions in response to admin UI interactions (subscription
+// scope editor, instance config editor, policy binding editor).  No call_id is
+// needed: the plugin authenticates via its instance token attached by the SDK's
+// TokenInterceptorFromEnv.
+//
+// Plugins that do not implement this service return codes.Unimplemented; the
+// host degrades to free-text input (degraded: true in the proxy response).
+// The service is always registered on the plugin gRPC server — even when the
+// plugin does not implement it — because the host detects support by attempting
+// ListOptions and inspecting the status code.
+service ConfigOptionsService {
+  // ListOptions returns a paged list of selectable options for the given source.
+  // The host proxies this call from the admin UI with a short TTL cache.
+  rpc ListOptions(ListOptionsRequest) returns (ListOptionsResponse);
+}

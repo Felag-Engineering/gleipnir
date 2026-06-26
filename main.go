@@ -331,6 +331,7 @@ func run(cfg config.Config) error {
 	// by startPluginRuntime only when an encryption key is set; nil otherwise.
 	pluginOAuthHandler := rt.OAuthHandler
 	pluginCredHandler := rt.CredentialsHandler
+	pluginOptionsHandler := rt.OptionsHandler
 	if rt.OnPublicURLChanged != nil {
 		adminHandler.OnPublicURLChanged = rt.OnPublicURLChanged
 	}
@@ -414,6 +415,7 @@ func run(cfg config.Config) error {
 		PluginAdminHandler:       pluginAdmin,
 		PluginOAuthHandler:       pluginOAuthHandler,
 		PluginCredentialsHandler: pluginCredHandler,
+		PluginOptionsHandler:     pluginOptionsHandler,
 		AudienceHandler:          audienceH,
 		BindingTestHandler:       bindingTestH,
 		WebhookHandler:           webhookHandler,
