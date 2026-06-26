@@ -68,3 +68,17 @@
   font-size: var(--text-sm);
   color: var(--text-muted);
 }
+
+/* Required marker is rendered as a CSS ::after on the label, keeping the DOM
+ * text clean so that getByLabelText("Field Name") matches without the * suffix. */
+.fieldLabelRequired::after {
+  content: ' *';
+  color: var(--color-red);
+  font-weight: var(--weight-medium);
+}
+
+.checkboxLabelRequired::after {
+  content: ' *';
+  color: var(--color-red);
+  font-weight: var(--weight-medium);
+}

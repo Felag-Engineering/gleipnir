@@ -1,13 +1,12 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { Button } from '@/components/Button'
 import { SchemaForm, REDACTION_SENTINEL } from '@/components/form/SchemaForm'
-import type { SchemaShape, SchemaProperty, OptionsContext } from '@/components/form/SchemaForm'
-import { apiFetch } from '@/api/fetch'
-import type { ApiPluginOptionsResponse } from '@/api/types'
+import type { SchemaShape, SchemaProperty } from '@/components/form/SchemaForm'
+import { useOptionsContext } from '@/hooks/useOptionsContext'
 import { ReauthorizeButton } from '@/components/admin/ReauthorizeButton/ReauthorizeButton'
 import { CredentialsTab } from '@/components/admin/CredentialsTab/CredentialsTab'
 import { DeletePluginInstanceModal } from '@/components/admin/DeletePluginInstanceModal'
@@ -32,39 +31,6 @@ import styles from './AdminPluginInstancePage.module.css'
 // ── tab type ─────────────────────────────────────────────────────────────────
 
 type Tab = 'subscriptions' | 'config' | 'credentials'
-
-// useOptionsContext returns an OptionsContext that calls the plugin options
-// endpoint via apiFetch (bypasses TanStack Query — the server-side 30s cache
-// handles request deduplication). The `degraded` flag is tracked from the
-// latest successful response so AsyncCombobox can fall back to free-text
-// input when the plugin's ConfigOptionsService is unavailable.
-function useOptionsContext(pluginId: string, instanceId: string): OptionsContext {
-  const [degraded, setDegraded] = useState<boolean | undefined>(undefined)
-
-  const search = useCallback(
-    async (source: string, query: string) => {
-      const params = new URLSearchParams()
-      if (query) params.set('query', query)
-      const qs = params.toString()
-      const path =
-        `/admin/plugins/${encodeURIComponent(pluginId)}/instances/${encodeURIComponent(instanceId)}/options/${encodeURIComponent(source)}` +
-        (qs ? `?${qs}` : '')
-      try {
-        const res = await apiFetch<ApiPluginOptionsResponse>(path)
-        // Surface the degraded flag from the response so the combobox can
-        // fall back to free-text when the host returns degraded:true.
-        setDegraded(res.degraded ?? false)
-        return res.options ?? []
-      } catch {
-        // On network/auth error, mark degraded so the user can still type a value.
-        setDegraded(true)
-        return []
-      }
-    },
-    [pluginId, instanceId],
-  )
-  return { search, degraded }
-}
 
 // ── SubscriptionsTab ──────────────────────────────────────────────────────────
 

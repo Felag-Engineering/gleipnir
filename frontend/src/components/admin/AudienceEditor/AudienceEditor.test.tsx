@@ -3,6 +3,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
+import { http, HttpResponse } from 'msw'
+import { server } from '@/test/server'
 import { AudienceEditor } from './AudienceEditor'
 import type {
   ApiAudience,
@@ -294,5 +296,199 @@ describe('AudienceEditor — add entry', () => {
 
     const afterPositions = screen.getAllByRole('button', { name: /remove entry/i })
     expect(afterPositions.length).toBe(initialCount + 1)
+  })
+})
+
+// ── Slack-shaped channel schema fixture ───────────────────────────────────────
+
+const PLUGIN_SLACK_WITH_SCHEMA: ApiPluginInstanceForAudience = {
+  id: 'slack-1',
+  plugin_id: 'com.example.slack',
+  instance_name: 'slack-1',
+  state: 'healthy',
+  implements_notify: true,
+  implements_request: true,
+  version: 0,
+  config_schema: {
+    type: 'object',
+    properties: {
+      channel: {
+        type: 'string',
+        title: 'Channel',
+        description: 'Slack channel (e.g. #ops)',
+        'x-gleipnir-options': { source: 'channels' },
+      },
+      mention: {
+        type: 'string',
+        title: 'Mention',
+        description: 'User or group to @-mention',
+      },
+      response_buttons: {
+        type: 'array',
+        items: { type: 'object' },
+        description: 'Buttons to show the recipient',
+      },
+    },
+    required: ['channel'],
+  },
+}
+
+const AUDIENCE_WITH_SLACK: ApiAudience = {
+  id: 'aud-slack',
+  name: 'slack-team',
+  disable_in_app_fallback: false,
+  version: 1,
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-01T00:00:00Z',
+  entries: [
+    {
+      id: 'e1',
+      plugin_instance_id: 'slack-1',
+      position: 0,
+      notify: true,
+      request: true,
+      config: { channel: '#ops', mention: '@oncall' },
+    },
+  ],
+}
+
+const AUDIENCE_WITH_RESPONSE_BUTTONS: ApiAudience = {
+  ...AUDIENCE_WITH_SLACK,
+  entries: [
+    {
+      ...AUDIENCE_WITH_SLACK.entries[0],
+      config: {
+        channel: '#ops',
+        response_buttons: [
+          { option_id: 'yes', label: 'Yes', value: 'yes', style: 'primary' },
+          { option_id: 'no', label: 'No', value: 'no', style: 'danger' },
+        ],
+      },
+    },
+  ],
+}
+
+describe('AudienceEditor — SchemaForm rendering for Slack schema', () => {
+  it('renders channel and mention with humanized labels via SchemaForm (no RJSF)', () => {
+    renderEditor({
+      initial: AUDIENCE_WITH_SLACK,
+      pluginInstances: [PLUGIN_SLACK_WITH_SCHEMA],
+    })
+    // SchemaForm uses prop.title ('Channel', 'Mention') as labels.
+    // Use regex because labels also contain an aria-hidden ' *' required marker.
+    expect(screen.getByLabelText(/^channel$/i)).toBeInTheDocument()
+    expect(screen.getByLabelText(/^mention$/i)).toBeInTheDocument()
+    // RJSF is not present: no rjsf-specific data attributes or class names.
+    expect(document.querySelector('[class*="rjsf"]')).not.toBeInTheDocument()
+    expect(document.querySelector('form.rjsf')).not.toBeInTheDocument()
+  })
+
+  it('shows a required CSS class on the Channel label (::after renders the * marker)', () => {
+    renderEditor({
+      initial: AUDIENCE_WITH_SLACK,
+      pluginInstances: [PLUGIN_SLACK_WITH_SCHEMA],
+    })
+    // The required marker is applied as a CSS class (::after pseudo-element), keeping
+    // the DOM text clean. Verify the channel label has the required class.
+    const channelInput = screen.getByLabelText(/^channel$/i)
+    const channelLabel = document.querySelector(`label[for="${channelInput.id}"]`)
+    expect(channelLabel?.className).toMatch(/required/i)
+
+    // Mention is not required — no required class.
+    const mentionInput = screen.getByLabelText(/^mention$/i)
+    const mentionLabel = document.querySelector(`label[for="${mentionInput.id}"]`)
+    expect(mentionLabel?.className).not.toMatch(/required/i)
+  })
+})
+
+describe('AudienceEditor — channel AsyncCombobox via optionsContext (B3)', () => {
+  beforeEach(() => {
+    // MSW handler for the options endpoint — globally initialized via setup.ts.
+    server.use(
+      http.get('/api/v1/admin/plugins/:id/instances/:iid/options/channels', () =>
+        HttpResponse.json({
+          data: {
+            options: [
+              { value: '#ops', label: '#ops' },
+              { value: '#incidents', label: '#incidents' },
+            ],
+            next_cursor: '',
+          },
+        }),
+      ),
+    )
+  })
+
+  it('renders an AsyncCombobox (combobox role) for the channel field', async () => {
+    renderEditor({
+      initial: AUDIENCE_WITH_SLACK,
+      pluginInstances: [PLUGIN_SLACK_WITH_SCHEMA],
+    })
+    // AsyncCombobox renders an input with role="combobox" when the options context is wired.
+    const comboboxes = await screen.findAllByRole('combobox')
+    // At least one combobox should be present (the channel field).
+    expect(comboboxes.length).toBeGreaterThan(0)
+  })
+})
+
+describe('AudienceEditor — response_buttons escape hatch', () => {
+  it('preserves response_buttons in the save payload when set', async () => {
+    const onSave = vi.fn().mockResolvedValue(AUDIENCE_WITH_RESPONSE_BUTTONS)
+    renderEditor({
+      initial: AUDIENCE_WITH_RESPONSE_BUTTONS,
+      pluginInstances: [PLUGIN_SLACK_WITH_SCHEMA],
+      references: REFS_EMPTY,
+      onSave,
+    })
+
+    await userEvent.click(screen.getByRole('button', { name: /^save$/i }))
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce())
+    const req = onSave.mock.calls[0][0]
+    const configSaved = req.entries[0].config
+    expect(configSaved).toHaveProperty('response_buttons')
+    expect(configSaved.response_buttons).toHaveLength(2)
+    expect(configSaved.response_buttons[0]).toMatchObject({ option_id: 'yes', style: 'primary' })
+  })
+
+  it('omits response_buttons from payload when not set (backend default Approve/Reject)', async () => {
+    const onSave = vi.fn().mockResolvedValue(AUDIENCE_WITH_SLACK)
+    renderEditor({
+      initial: AUDIENCE_WITH_SLACK,
+      pluginInstances: [PLUGIN_SLACK_WITH_SCHEMA],
+      references: REFS_EMPTY,
+      onSave,
+    })
+
+    await userEvent.click(screen.getByRole('button', { name: /^save$/i }))
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce())
+    const req = onSave.mock.calls[0][0]
+    const configSaved = req.entries[0].config
+    expect(configSaved).not.toHaveProperty('response_buttons')
+  })
+
+  it('omits response_buttons after adding then removing all buttons', async () => {
+    const onSave = vi.fn().mockResolvedValue(AUDIENCE_WITH_SLACK)
+    renderEditor({
+      initial: AUDIENCE_WITH_SLACK,
+      pluginInstances: [PLUGIN_SLACK_WITH_SCHEMA],
+      references: REFS_EMPTY,
+      onSave,
+    })
+
+    // Add a button.
+    await userEvent.click(screen.getByRole('button', { name: /\+ add button/i }))
+
+    // Remove it — the only row removal should call onChange(undefined).
+    const removeBtn = await screen.findByRole('button', { name: /remove button 1/i })
+    await userEvent.click(removeBtn)
+
+    await userEvent.click(screen.getByRole('button', { name: /^save$/i }))
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce())
+    const req = onSave.mock.calls[0][0]
+    const configSaved = req.entries[0].config
+    expect(configSaved).not.toHaveProperty('response_buttons')
   })
 })
