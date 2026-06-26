@@ -59,7 +59,7 @@ export function RoutingPreview({ entries, disableInAppFallback, pluginInstances 
       </div>
       <div className={styles.routingRow}>
         <MessageSquare size={14} strokeWidth={1.5} aria-hidden className={styles.routingIcon} />
-        <span className={styles.routingLabel}>Requests routed to:</span>
+        <span className={styles.routingLabel}>Feedback requests routed to:</span>
         <span className={styles.routingValue}>
           {requestDisplay ?? <em className={styles.muted}>no Request-capable entry</em>}
         </span>

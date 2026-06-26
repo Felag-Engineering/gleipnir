@@ -267,7 +267,11 @@ export function EntryRow({
         {/* Request toggle */}
         <label
           className={styles.toggleLabel}
-          title={!canRequest ? 'This plugin does not implement Request' : undefined}
+          title={
+            !canRequest
+              ? 'This plugin does not implement Request'
+              : "Routes an agent's feedback request to this channel."
+          }
         >
           <input
             type="checkbox"

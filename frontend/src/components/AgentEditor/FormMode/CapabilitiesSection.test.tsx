@@ -259,9 +259,9 @@ describe('CapabilitiesSection — tool picker search filter', () => {
 })
 
 describe('CapabilitiesSection — feedback section', () => {
-  it('renders "Feedback" heading', () => {
+  it('renders "Feedback request" heading', () => {
     renderSection()
-    expect(screen.getByText('Feedback')).toBeInTheDocument()
+    expect(screen.getByText('Feedback request')).toBeInTheDocument()
   })
 
   it('toggling the feedback switch calls onChange with feedback.enabled flipped AND tools preserved', async () => {

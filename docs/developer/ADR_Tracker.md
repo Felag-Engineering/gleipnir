@@ -819,6 +819,8 @@ Two audit event types are emitted by the TOFU trust machinery (both at severity 
 **Date:** 2026-05
 **Supersedes (partially):** ADR-031 (native feedback as a Gleipnir runtime primitive) — the in-app dispatcher implementation detail is superseded; the first-class-feedback principle stands.
 
+**User-facing vocabulary (#656):** An audience entry's "Request" routing and the agent's "feedback" capability (ADR-031) are the **same** operator-visible flow. The UI standardizes on the noun **"Feedback request"**: the audience editor keeps the concise "Request" toggle but cross-references it ("Routes an agent's feedback request to this channel.") and the routing preview reads "Feedback requests routed to:". Internal identifiers (the audience `request` field, `RouteToPlugin`/`RouteToInApp`, the `feedback_request`/`feedback_response` step types) are intentionally **unchanged** — renaming them is a deferred follow-up.
+
 ### Context
 
 ADR-031 established that feedback is a first-class runtime primitive: the agent calls a synthetic `gleipnir.ask_operator` tool, `BoundAgent` intercepts it, the run pauses at `waiting_for_feedback`, and an operator supplies a response through the UI. The in-app UI was the only delivery surface. Notification dispatch lived in `internal/notify` as a separate fan-out concern.
@@ -2290,6 +2292,8 @@ user-visible text uses "Tools" and "source" vocabulary. Backend API routes are n
 **Date:** 2026-04
 **Supersedes (partially):** ADR-007 (sensor/actuator/feedback role model), ADR-008 (two approval modes), ADR-009 (feedback channel resolution)
 **Partially superseded by:** ADR-044 (Channel routing model) — the in-app dispatcher implementation detail is superseded; the first-class-feedback principle and `waiting_for_feedback` state machinery are preserved.
+
+**User-facing vocabulary (#656):** This agent-side "feedback" capability and the audience-side "Request" routing (ADR-044) are the **same** operator-visible flow. The UI standardizes on the noun **"Feedback request"** across both surfaces — the agent editor labels the capability "Feedback request", and the audience editor's Request toggle / routing preview ("Feedback requests routed to:") cross-reference it. Internal identifiers (`feedback_request`/`feedback_response` step types, `waiting_for_feedback` state, the `feedback` capability key, the audience `request` field, `RouteToPlugin`/`RouteToInApp`) are intentionally **unchanged** — renaming them is a deferred follow-up.
 
 ### Background
 

@@ -86,7 +86,7 @@ export function AudienceSection({ value, onChange, onNewAudienceClick, errors = 
     <section className={shared.section} data-field="audience">
       <div>
         <h3 className={shared.heading}>Audience</h3>
-        <p className={shared.label}>Optional — defines where notifications and requests are routed.</p>
+        <p className={shared.label}>Optional — defines where notifications and feedback requests are routed.</p>
       </div>
 
       <div className={styles.row}>
