@@ -280,14 +280,18 @@ export function CapabilitiesSection({ value, onChange, errors = [] }: Capabiliti
       )}
 
       <div className={styles.feedbackSection}>
-        <div className={shared.heading}>Feedback</div>
+        <div className={shared.heading}>Feedback request</div>
+        <p className={shared.label}>
+          Lets the agent pause and ask a human operator for input. The request is routed to the
+          channels in the policy&apos;s audience (the entries with Request enabled).
+        </p>
         <div className={styles.feedbackRow}>
           <button
             role="switch"
             aria-checked={value.feedback.enabled}
             className={styles.toggleButton}
             onClick={handleFeedbackToggle}
-            title={value.feedback.enabled ? 'Feedback enabled — click to disable' : 'Feedback disabled — click to enable'}
+            title={value.feedback.enabled ? 'Feedback request enabled — click to disable' : 'Feedback request disabled — click to enable'}
           >
             <span className={`${styles.toggleTrack} ${value.feedback.enabled ? styles.toggleTrackOn : styles.toggleTrackOff}`}>
               <span className={`${styles.toggleThumb} ${value.feedback.enabled ? styles.toggleThumbOn : styles.toggleThumbOff}`} />

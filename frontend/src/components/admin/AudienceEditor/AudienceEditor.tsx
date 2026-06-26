@@ -355,8 +355,8 @@ export function AudienceEditor({
         </div>
         {disableInAppFallback && noRequestCapable && (
           <p className={styles.fallbackWarning}>
-            Warning: no Request-capable entry and in-app fallback is disabled. Channel Requests
-            will have no handler.
+            Warning: no Request-capable entry and in-app fallback is disabled. Agent feedback
+            requests will have no handler.
           </p>
         )}
       </section>

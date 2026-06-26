@@ -287,7 +287,7 @@ describe('AudienceSection — preview area state machine', () => {
     // RoutingPreview renders these labels
     await waitFor(() => {
       expect(screen.getByText(/Notifications fan out to:/)).toBeInTheDocument()
-      expect(screen.getByText(/Requests routed to:/)).toBeInTheDocument()
+      expect(screen.getByText(/Feedback requests routed to:/)).toBeInTheDocument()
     })
   })
 
