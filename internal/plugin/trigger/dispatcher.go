@@ -163,6 +163,12 @@ func (d *Dispatcher) Handle(ctx context.Context, evt Event) error {
 		)
 	}
 	if seen {
+		d.log.DebugContext(ctx, "trigger dispatcher: dropping duplicate event",
+			"reason", "duplicate",
+			"instance_id", evt.InstanceID,
+			"event_id", evt.EventID,
+			"event_kind", evt.EventKind,
+		)
 		return nil
 	}
 
@@ -239,28 +245,50 @@ func (d *Dispatcher) Handle(ctx context.Context, evt Event) error {
 	// 3–5. For each policy: match source, compile binding, evaluate, launch.
 	// The deferred rollback above consumes anyTransientFailure once the loop
 	// completes (or returns early on ctx cancellation).
+	var evaluated, matched int
 	for _, pol := range policies {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if d.dispatchOne(ctx, pol, evt, provider, modelName, instance) {
+		outcome := d.dispatchOne(ctx, pol, evt, provider, modelName, instance)
+		if outcome.evaluated {
+			evaluated++
+		}
+		if outcome.matched {
+			matched++
+		}
+		if outcome.launchFailed {
 			rollbackClaim = true
 		}
 	}
+	d.log.DebugContext(ctx, "trigger dispatcher: event evaluated against policies",
+		"evaluated", evaluated,
+		"matched", matched,
+		"instance_id", evt.InstanceID,
+		"event_id", evt.EventID,
+		"event_kind", evt.EventKind,
+	)
 	return nil
+}
+
+// dispatchOutcome carries the per-policy result of a dispatchOne call.
+//
+//   - evaluated: true when the policy passed the source+kind filter and was
+//     submitted to binding evaluation. Used to build the per-event aggregate
+//     "evaluated N policies, matched M" debug log in Handle.
+//   - matched: true when the binding evaluated to true (implies evaluated).
+//   - launchFailed: true when the policy matched but its launch returned a
+//     transient error — the signal Handle uses to roll back the dedup claim
+//     (#585). Preserves the exact semantics of the previous bool return.
+type dispatchOutcome struct {
+	evaluated    bool
+	matched      bool
+	launchFailed bool
 }
 
 // dispatchOne runs steps 3–5 for a single policy row. All errors are logged
 // and isolated; dispatchOne never returns an error to the recv loop.
-//
-// It returns launchFailed=true only when this policy MATCHED the binding but its
-// launch returned a non-nil (transient) error — the signal the caller uses to
-// roll back the per-event dedup claim (#585). Every other path returns false:
-// a non-match (different instance/kind/binding), a non-launch skip (parse,
-// schema, or compile error), and a SUCCESSFUL launch of ANY outcome
-// (Launched/Queued/Skipped). A concurrency skip or successful enqueue is a
-// deliberate, successful consumption of the event and must keep the dedup slot.
-func (d *Dispatcher) dispatchOne(ctx context.Context, pol db.Policy, evt Event, provider, modelName string, instance db.PluginInstance) (launchFailed bool) {
+func (d *Dispatcher) dispatchOne(ctx context.Context, pol db.Policy, evt Event, provider, modelName string, instance db.PluginInstance) dispatchOutcome {
 	// 3. Parse and match source + event kind.
 	//
 	// trig.Source stores the human-readable instance name
@@ -273,16 +301,19 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, pol db.Policy, evt Event, 
 			"event_id", evt.EventID,
 			"err", err,
 		)
-		return false
+		return dispatchOutcome{}
 	}
 
 	trig := parsed.Trigger
 	if trig.Source != instance.InstanceName {
-		return false // policy watches a different instance
+		return dispatchOutcome{} // policy watches a different instance
 	}
 	if trig.EventKind != evt.EventKind {
-		return false // policy watches a different event kind
+		return dispatchOutcome{} // policy watches a different event kind
 	}
+
+	// Past the source+kind filter: this policy counts as evaluated regardless
+	// of what happens next (binding error, no-match, or successful launch).
 
 	// 4. Compile and evaluate binding.
 	schema, compErr := d.bindingSchema(ctx, instance.PluginID, evt.EventKind)
@@ -294,7 +325,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, pol db.Policy, evt Event, 
 			"err", compErr,
 		)
 		d.publishNoMatch(evt, pol.ID)
-		return false
+		return dispatchOutcome{evaluated: true}
 	}
 
 	compiled, compErr := binding.Compile(trig.Binding, schema)
@@ -305,7 +336,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, pol db.Policy, evt Event, 
 			"err", compErr,
 		)
 		d.publishNoMatch(evt, pol.ID)
-		return false
+		return dispatchOutcome{evaluated: true}
 	}
 
 	var payload map[string]any
@@ -327,8 +358,14 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, pol db.Policy, evt Event, 
 
 	match, _ := compiled.Evaluate(payload)
 	if !match {
+		d.log.DebugContext(ctx, "trigger dispatcher: binding did not match policy",
+			"reason", "binding_no_match",
+			"policy_id", pol.ID,
+			"event_id", evt.EventID,
+			"event_kind", evt.EventKind,
+		)
 		d.publishNoMatch(evt, pol.ID)
-		return false
+		return dispatchOutcome{evaluated: true}
 	}
 
 	d.publishMatch(evt, pol.ID)
@@ -363,7 +400,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, pol db.Policy, evt Event, 
 		// Every launch error here is transient (queue full, concurrency-check
 		// DB error, enqueue DB error, or a raw launch failure). Signal the
 		// caller to roll back the dedup claim so a redelivery can fire.
-		return true
+		return dispatchOutcome{evaluated: true, matched: true, launchFailed: true}
 	}
 
 	switch res.Outcome {
@@ -378,7 +415,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, pol db.Policy, evt Event, 
 	}
 	// Skip/queue/launched are all successful consumption of the event — keep
 	// the dedup slot.
-	return false
+	return dispatchOutcome{evaluated: true, matched: true}
 }
 
 // parsedPolicy returns a parsed policy, using a cache keyed on (id, updated_at).

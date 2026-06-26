@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -3253,5 +3254,190 @@ func TestHandleInteractive_AuthorizedSetsActorExternalId(t *testing.T) {
 	}
 	if updCount == 0 {
 		t.Error("UpdateMessageContext not called on authorized path, want 1")
+	}
+}
+
+// ── Debug-log tests ───────────────────────────────────────────────────────────
+
+// blockActionsSocketEvent builds a socketmode.Event of type EventTypeInteractive
+// carrying a block_actions InteractionCallback. The hub routes this to
+// onShortcut, which calls translateShortcut → emit=false (block_actions are
+// handled by ChannelService, not the trigger pipeline).
+func blockActionsSocketEvent() socketmode.Event {
+	cb := slack.InteractionCallback{
+		Type: slack.InteractionTypeBlockActions,
+		ActionCallback: slack.ActionCallbacks{
+			BlockActions: []*slack.BlockAction{
+				{ActionID: "approve-req-ignored-accept", Value: "accept"},
+			},
+		},
+	}
+	return socketmode.Event{
+		Type:    socketmode.EventTypeInteractive,
+		Data:    cb,
+		Request: &socketmode.Request{EnvelopeID: "env-block-actions-debug"},
+	}
+}
+
+// TestTriggerDropReasonDebugLog_TranslateWithDebug asserts that when
+// GLEIPNIR_LOG_LEVEL=debug is set before the TriggerService is constructed,
+// dropped events (translate → emit=false) produce a LOG_LEVEL_DEBUG host Log
+// RPC with attrs["reason"] == the expected drop reason.
+//
+// Timing: the fakeSocketModeRunner plays events synchronously before blocking on
+// ctx.Done(). We use a second normal event as a synchronization barrier — by the
+// time EmitEvent fires for the normal event we know the prior dropped event was
+// processed. Then we cancel and wait for the stream to finish before reading logs.
+func TestTriggerDropReasonDebugLog_TranslateWithDebug(t *testing.T) {
+	// Set BEFORE buildTriggerTestHarness so logLevelIsDebug() sees it in the constructor.
+	t.Setenv("GLEIPNIR_LOG_LEVEL", "debug")
+
+	subtypeEvent := socketmode.Event{
+		Type: socketmode.EventTypeEventsAPI,
+		Data: slackevents.EventsAPIEvent{
+			InnerEvent: slackevents.EventsAPIInnerEvent{
+				Type: "message",
+				Data: &slackevents.MessageEvent{
+					Channel:        "C01ABC",
+					ChannelType:    "channel",
+					User:           "U01USER",
+					Text:           "bot says hi",
+					TimeStamp:      "1700006000.000001",
+					EventTimeStamp: "1700006000.000001",
+					SubType:        "bot_message",
+				},
+			},
+		},
+		Request: &socketmode.Request{EnvelopeID: "env-debug-subtype"},
+	}
+	// Normal event after the dropped one; receiving it confirms the dropped event
+	// was processed first (fakeSocketModeRunner is sequential).
+	barrierEvent := eventsAPISocketEvent("C01ABC", "channel", "U01USER", "hello", "1700006002.000001", "T01TEAM")
+
+	fake := &fakeSocketModeRunner{
+		events: []socketmode.Event{subtypeEvent, barrierEvent},
+	}
+
+	triggerClient, host, emitCh, cleanup := buildTriggerTestHarness(t, fake)
+	defer cleanup()
+
+	svcs := &services{trigger: triggerClient}
+	cancel, done := startTriggerInBackground(t, svcs, `{}`)
+
+	// Wait for the barrier event to confirm the dropped event was processed.
+	select {
+	case <-emitCh:
+	case <-time.After(3 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("timed out waiting for barrier EmitEvent")
+	}
+	cancel()
+	<-done
+
+	// Assert a DEBUG log line with reason=subtype was recorded.
+	var found bool
+	for _, line := range host.Logs() {
+		if line.Level == slog.LevelDebug && line.Attrs["reason"] == string(dropSubType) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected DEBUG log with reason=%q; got logs: %v", dropSubType, host.Logs())
+	}
+}
+
+// TestTriggerDropReasonDebugLog_ShortcutWithDebug asserts that a dropped shortcut
+// event (block_actions → translateShortcut emit=false) produces a debug log line
+// when GLEIPNIR_LOG_LEVEL=debug.
+func TestTriggerDropReasonDebugLog_ShortcutWithDebug(t *testing.T) {
+	t.Setenv("GLEIPNIR_LOG_LEVEL", "debug")
+
+	// block_actions is dropped; the barrier event confirms processing order.
+	fake := &fakeSocketModeRunner{
+		events: []socketmode.Event{
+			blockActionsSocketEvent(),
+			eventsAPISocketEvent("C01ABC", "channel", "U01USER", "hello", "1700007000.000001", "T01TEAM"),
+		},
+	}
+
+	triggerClient, host, emitCh, cleanup := buildTriggerTestHarness(t, fake)
+	defer cleanup()
+
+	svcs := &services{trigger: triggerClient}
+	cancel, done := startTriggerInBackground(t, svcs, `{}`)
+
+	select {
+	case <-emitCh:
+	case <-time.After(3 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("timed out waiting for barrier EmitEvent")
+	}
+	cancel()
+	<-done
+
+	var found bool
+	for _, line := range host.Logs() {
+		if line.Level == slog.LevelDebug && line.Attrs["reason"] == string(dropUnsupportedInteraction) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected DEBUG log with reason=%q; got logs: %v", dropUnsupportedInteraction, host.Logs())
+	}
+}
+
+// TestTriggerDropReasonDebugLog_Suppressed asserts that when GLEIPNIR_LOG_LEVEL
+// is NOT set (default info level), dropped events produce zero host Log calls.
+func TestTriggerDropReasonDebugLog_Suppressed(t *testing.T) {
+	// Do NOT set GLEIPNIR_LOG_LEVEL → debugEnabled=false → no Log RPCs.
+	fake := &fakeSocketModeRunner{
+		events: []socketmode.Event{
+			// Dropped event.
+			{
+				Type: socketmode.EventTypeEventsAPI,
+				Data: slackevents.EventsAPIEvent{
+					InnerEvent: slackevents.EventsAPIInnerEvent{
+						Type: "message",
+						Data: &slackevents.MessageEvent{
+							Channel:        "C01ABC",
+							ChannelType:    "channel",
+							User:           "U01USER",
+							Text:           "bot says hi",
+							TimeStamp:      "1700008000.000001",
+							EventTimeStamp: "1700008000.000001",
+							SubType:        "bot_message",
+						},
+					},
+				},
+				Request: &socketmode.Request{EnvelopeID: "env-suppress-subtype"},
+			},
+			// Barrier event.
+			eventsAPISocketEvent("C01ABC", "channel", "U01USER", "hello", "1700008001.000001", "T01TEAM"),
+		},
+	}
+
+	triggerClient, host, emitCh, cleanup := buildTriggerTestHarness(t, fake)
+	defer cleanup()
+
+	svcs := &services{trigger: triggerClient}
+	cancel, done := startTriggerInBackground(t, svcs, `{}`)
+
+	select {
+	case <-emitCh:
+	case <-time.After(3 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("timed out waiting for barrier EmitEvent")
+	}
+	cancel()
+	<-done
+
+	// Assert zero Log calls when debug is suppressed.
+	if logs := host.Logs(); len(logs) != 0 {
+		t.Errorf("expected no Log calls when debug disabled; got %d: %v", len(logs), logs)
 	}
 }

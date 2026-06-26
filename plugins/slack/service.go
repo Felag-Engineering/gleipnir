@@ -372,11 +372,12 @@ func defaultSocketModeFactory(xappToken string) (socketModeRunner, error) {
 // subscription scope, and emits matching events to the host via EmitEvent.
 type TriggerService struct {
 	triggerv1.UnimplementedTriggerServiceServer
-	host        hostv1.HostServiceClient
-	hubRegistry *hubRegistry
-	httpClient  *http.Client           // outbound Slack auth.test client
-	apiURL      string                 // empty = Slack production default; tests pass httptest.Server URL + "/"
-	botUserID   atomic.Pointer[string] // cached bot user ID; nil until first auth.test
+	host         hostv1.HostServiceClient
+	hubRegistry  *hubRegistry
+	httpClient   *http.Client           // outbound Slack auth.test client
+	apiURL       string                 // empty = Slack production default; tests pass httptest.Server URL + "/"
+	botUserID    atomic.Pointer[string] // cached bot user ID; nil until first auth.test
+	debugEnabled bool                   // true when GLEIPNIR_LOG_LEVEL=debug at construction time
 }
 
 // NewTriggerService creates a TriggerService that uses hostClient for host RPCs
@@ -388,10 +389,11 @@ func NewTriggerService(hostClient hostv1.HostServiceClient, registry *hubRegistr
 		httpClient = http.DefaultClient
 	}
 	return &TriggerService{
-		host:        hostClient,
-		hubRegistry: registry,
-		httpClient:  httpClient,
-		apiURL:      apiURL,
+		host:         hostClient,
+		hubRegistry:  registry,
+		httpClient:   httpClient,
+		apiURL:       apiURL,
+		debugEnabled: logLevelIsDebug(),
 	}
 }
 
@@ -402,10 +404,11 @@ func newTriggerServiceWithRegistry(hostClient hostv1.HostServiceClient, registry
 		httpClient = http.DefaultClient
 	}
 	return &TriggerService{
-		host:        hostClient,
-		hubRegistry: registry,
-		httpClient:  httpClient,
-		apiURL:      apiURL,
+		host:         hostClient,
+		hubRegistry:  registry,
+		httpClient:   httpClient,
+		apiURL:       apiURL,
+		debugEnabled: logLevelIsDebug(),
 	}
 }
 
@@ -413,6 +416,21 @@ func newTriggerServiceWithRegistry(hostClient hostv1.HostServiceClient, registry
 // a registry on the fly. Tests that only care about TriggerService use this.
 func newTriggerServiceWithFactory(hostClient hostv1.HostServiceClient, factory socketModeFactory, httpClient *http.Client, apiURL string) *TriggerService {
 	return newTriggerServiceWithRegistry(hostClient, newHubRegistry(factory), httpClient, apiURL)
+}
+
+// debugLog emits a single LOG_LEVEL_DEBUG host Log RPC. It is a no-op when
+// debugEnabled is false (GLEIPNIR_LOG_LEVEL != "debug"), so no RPCs are issued
+// at the default info level. Errors from the Log RPC are intentionally ignored
+// (mirrors the EmitMetric best-effort pattern).
+func (s *TriggerService) debugLog(ctx context.Context, msg string, attrs map[string]string) {
+	if !s.debugEnabled {
+		return
+	}
+	_, _ = s.host.Log(ctx, &hostv1.LogRequest{
+		Level: hostv1.LogLevel_LOG_LEVEL_DEBUG,
+		Msg:   msg,
+		Attrs: attrs,
+	})
 }
 
 // Start is a server-streaming RPC that opens a Slack Socket Mode connection and
@@ -490,12 +508,15 @@ func (s *TriggerService) Start(req *triggerv1.StartRequest, stream grpc.ServerSt
 			botID = *p
 		}
 
-		kind, eventID, payload, emit, err := translate(eventsAPIEvent.InnerEvent, eventsAPIEvent.TeamID, botID)
+		kind, eventID, payload, emit, reason, err := translate(eventsAPIEvent.InnerEvent, eventsAPIEvent.TeamID, botID)
 		if err != nil {
 			log.Printf("slack: translate error: %v", err)
 			return
 		}
 		if !emit {
+			s.debugLog(hostCtx, "slack: dropping event (translate)", map[string]string{
+				"reason": string(reason),
+			})
 			return
 		}
 
@@ -515,6 +536,11 @@ func (s *TriggerService) Start(req *triggerv1.StartRequest, stream grpc.ServerSt
 		// D… for DMs). The subscription_schema rejects non-ID values at save time
 		// (SlackChannelID in manifest.go), so the channel scope check is ID-only.
 		if !scope.matches(p.ChannelID, p.Mentioned, isDM) {
+			s.debugLog(hostCtx, "slack: dropping event (out of scope)", map[string]string{
+				"reason":     "out_of_scope",
+				"event_id":   eventID,
+				"channel_id": p.ChannelID,
+			})
 			return
 		}
 
@@ -621,12 +647,15 @@ func (s *TriggerService) onSlashCommand(ctx context.Context) func(slack.SlashCom
 // ChannelService approval/feedback path is unaffected.
 func (s *TriggerService) onShortcut(ctx context.Context) func(slack.InteractionCallback) {
 	return func(cb slack.InteractionCallback) {
-		kind, eventID, payload, emit, err := translateShortcut(cb)
+		kind, eventID, payload, emit, reason, err := translateShortcut(cb)
 		if err != nil {
 			log.Printf("slack: translateShortcut error: %v", err)
 			return
 		}
 		if !emit {
+			s.debugLog(ctx, "slack: dropping event (translate)", map[string]string{
+				"reason": string(reason),
+			})
 			return
 		}
 		if _, err := s.host.EmitEvent(ctx, &hostv1.EmitEventRequest{

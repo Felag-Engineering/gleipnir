@@ -17,13 +17,14 @@ func TestTranslate(t *testing.T) {
 	const botID = "U07BOT"
 
 	cases := []struct {
-		name     string
-		inner    slackevents.EventsAPIInnerEvent
-		teamID   string
-		botID    string // empty string tests the degraded path
-		wantEmit bool
-		wantKind string
-		wantErr  bool
+		name       string
+		inner      slackevents.EventsAPIInnerEvent
+		teamID     string
+		botID      string // empty string tests the degraded path
+		wantEmit   bool
+		wantKind   string
+		wantErr    bool
+		wantReason dropReason // expected drop reason when wantEmit=false
 		// checkPayload is called when wantEmit=true to assert specific payload fields.
 		checkPayload func(t *testing.T, payload []byte)
 	}{
@@ -200,9 +201,10 @@ func TestTranslate(t *testing.T) {
 					EventTimeStamp: "1700003000.000001",
 				},
 			},
-			teamID:   "T01TEAM",
-			botID:    botID,
-			wantEmit: false,
+			teamID:     "T01TEAM",
+			botID:      botID,
+			wantEmit:   false,
+			wantReason: dropSelfTrigger,
 		},
 		{
 			// Self-trigger guard for AppMentionEvent.
@@ -217,9 +219,10 @@ func TestTranslate(t *testing.T) {
 					EventTimeStamp: "1700003001.000001",
 				},
 			},
-			teamID:   "T01TEAM",
-			botID:    botID,
-			wantEmit: false,
+			teamID:     "T01TEAM",
+			botID:      botID,
+			wantEmit:   false,
+			wantReason: dropSelfTrigger,
 		},
 		{
 			// Degraded path: when botID is "", Mentioned must be false and the
@@ -268,9 +271,28 @@ func TestTranslate(t *testing.T) {
 					EventTimeStamp:  "1700005000.000300",
 				},
 			},
-			teamID:   "T01TEAM",
-			botID:    botID,
-			wantEmit: false,
+			teamID:     "T01TEAM",
+			botID:      botID,
+			wantEmit:   false,
+			wantReason: dropThreadReply,
+		},
+		{
+			name: "AppMentionEvent threaded reply is dropped",
+			inner: slackevents.EventsAPIInnerEvent{
+				Type: "app_mention",
+				Data: &slackevents.AppMentionEvent{
+					Channel:         "C09OPS",
+					User:            "U01USER",
+					Text:            "<@" + botID + "> rolling back now",
+					TimeStamp:       "1700005001.000300",
+					ThreadTimeStamp: "1700005001.000100",
+					EventTimeStamp:  "1700005001.000300",
+				},
+			},
+			teamID:     "T01TEAM",
+			botID:      botID,
+			wantEmit:   false,
+			wantReason: dropThreadReply,
 		},
 		{
 			name: "SubType bot_message is dropped",
@@ -285,9 +307,10 @@ func TestTranslate(t *testing.T) {
 					SubType:        "bot_message",
 				},
 			},
-			teamID:   "T01TEAM",
-			botID:    botID,
-			wantEmit: false,
+			teamID:     "T01TEAM",
+			botID:      botID,
+			wantEmit:   false,
+			wantReason: dropSubType,
 		},
 		{
 			name: "SubType message_changed is dropped",
@@ -302,9 +325,10 @@ func TestTranslate(t *testing.T) {
 					SubType:        "message_changed",
 				},
 			},
-			teamID:   "T01TEAM",
-			botID:    botID,
-			wantEmit: false,
+			teamID:     "T01TEAM",
+			botID:      botID,
+			wantEmit:   false,
+			wantReason: dropSubType,
 		},
 		{
 			name: "nil inner Data is dropped",
@@ -312,9 +336,10 @@ func TestTranslate(t *testing.T) {
 				Type: "message",
 				Data: nil,
 			},
-			teamID:   "T01TEAM",
-			botID:    botID,
-			wantEmit: false,
+			teamID:     "T01TEAM",
+			botID:      botID,
+			wantEmit:   false,
+			wantReason: dropUnsupported,
 		},
 		{
 			name: "malformed ts falls back gracefully (no error)",
@@ -343,15 +368,16 @@ func TestTranslate(t *testing.T) {
 				// using a string pointer here ensures the default case matches.
 				Data: new(string),
 			},
-			teamID:   "T01TEAM",
-			botID:    botID,
-			wantEmit: false,
+			teamID:     "T01TEAM",
+			botID:      botID,
+			wantEmit:   false,
+			wantReason: dropUnsupported,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			kind, eventID, payload, emit, err := translate(tc.inner, tc.teamID, tc.botID)
+			kind, eventID, payload, emit, reason, err := translate(tc.inner, tc.teamID, tc.botID)
 
 			if tc.wantErr && err == nil {
 				t.Fatal("expected error, got nil")
@@ -364,6 +390,9 @@ func TestTranslate(t *testing.T) {
 				t.Errorf("emit: want %v, got %v", tc.wantEmit, emit)
 			}
 			if !emit {
+				if reason != tc.wantReason {
+					t.Errorf("reason: want %q, got %q", tc.wantReason, reason)
+				}
 				return
 			}
 
@@ -465,7 +494,7 @@ func TestTranslateEventIDMatchesDeriveEventID(t *testing.T) {
 		},
 	}
 
-	_, eventID, _, emit, err := translate(inner, "T01TEAM", "U07BOT")
+	_, eventID, _, emit, _, err := translate(inner, "T01TEAM", "U07BOT")
 	if err != nil || !emit {
 		t.Fatalf("translate: emit=%v err=%v", emit, err)
 	}
@@ -491,7 +520,7 @@ func TestTranslate_SkipsThreadedReplies(t *testing.T) {
 			EventTimeStamp:  "1700010000.000200",
 		},
 	}
-	_, _, _, emit, err := translate(inner, "T01TEAM", "U07BOT")
+	_, _, _, emit, _, err := translate(inner, "T01TEAM", "U07BOT")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -514,7 +543,7 @@ func TestTranslate_SkipsThreadedMentions(t *testing.T) {
 			EventTimeStamp:  "1700011000.000200",
 		},
 	}
-	_, _, _, emit, err := translate(inner, "T01TEAM", "U07BOT")
+	_, _, _, emit, _, err := translate(inner, "T01TEAM", "U07BOT")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -537,7 +566,7 @@ func TestTranslatePayloadChannelForMessage(t *testing.T) {
 			EventTimeStamp: "1700000000.000001",
 		},
 	}
-	_, _, payload, emit, err := translate(inner, "", "")
+	_, _, payload, emit, _, err := translate(inner, "", "")
 	if err != nil || !emit {
 		t.Fatalf("translate: emit=%v err=%v", emit, err)
 	}
@@ -642,7 +671,7 @@ func TestTranslateShortcut_MessageAction(t *testing.T) {
 		},
 	}
 
-	kind, eventID, payload, emit, err := translateShortcut(cb)
+	kind, eventID, payload, emit, _, err := translateShortcut(cb)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -700,7 +729,7 @@ func TestTranslateShortcut_Global(t *testing.T) {
 		// Channel intentionally zero-valued — global shortcuts have no channel context.
 	}
 
-	kind, eventID, payload, emit, err := translateShortcut(cb)
+	kind, eventID, payload, emit, _, err := translateShortcut(cb)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -727,7 +756,8 @@ func TestTranslateShortcut_Global(t *testing.T) {
 }
 
 // TestTranslateShortcut_BlockActionsNotEmitted verifies that block_actions
-// callbacks return emit=false, preserving the ChannelService approval/feedback path.
+// callbacks return emit=false with reason=dropUnsupportedInteraction, preserving
+// the ChannelService approval/feedback path.
 func TestTranslateShortcut_BlockActionsNotEmitted(t *testing.T) {
 	cb := slack.InteractionCallback{
 		Type: slack.InteractionTypeBlockActions,
@@ -738,11 +768,14 @@ func TestTranslateShortcut_BlockActionsNotEmitted(t *testing.T) {
 		},
 	}
 
-	_, _, _, emit, err := translateShortcut(cb)
+	_, _, _, emit, reason, err := translateShortcut(cb)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if emit {
 		t.Error("emit: want false for block_actions (ChannelService path must not be hijacked)")
+	}
+	if reason != dropUnsupportedInteraction {
+		t.Errorf("reason: want %q, got %q", dropUnsupportedInteraction, reason)
 	}
 }

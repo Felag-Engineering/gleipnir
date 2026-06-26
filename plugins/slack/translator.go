@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,25 @@ import (
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 )
+
+// dropReason identifies why a translate call returned emit=false. The reason
+// is structured so callers can log it without string formatting.
+type dropReason string
+
+const (
+	dropSubType                dropReason = "subtype"
+	dropThreadReply            dropReason = "threaded_reply"
+	dropSelfTrigger            dropReason = "self_trigger"
+	dropUnsupported            dropReason = "unsupported_event"
+	dropUnsupportedInteraction dropReason = "unsupported_interaction"
+)
+
+// logLevelIsDebug returns true when GLEIPNIR_LOG_LEVEL is "debug" (case-insensitive).
+// Used to gate per-event host Log RPCs so no extra RPCs are issued at the
+// default info level.
+func logLevelIsDebug() bool {
+	return strings.EqualFold(os.Getenv("GLEIPNIR_LOG_LEVEL"), "debug")
+}
 
 // parseSlackTS parses a Slack message timestamp of the form "1700000000.123456"
 // into a time.Time. Falls back to time.Now() on parse error so callers always
@@ -67,13 +87,13 @@ func deriveEventID(channelID, ts string) string {
 // IMPORTANT: slackevents.ParseEvent populates InnerEvent.Data via reflect.New,
 // which returns a pointer. The type switch MUST use pointer cases (*MessageEvent,
 // *AppMentionEvent) or the default case will always match.
-func translate(inner slackevents.EventsAPIInnerEvent, teamID, botUserID string) (kind, eventID string, payload []byte, emit bool, err error) {
+func translate(inner slackevents.EventsAPIInnerEvent, teamID, botUserID string) (kind, eventID string, payload []byte, emit bool, reason dropReason, err error) {
 	switch ev := inner.Data.(type) {
 	case *slackevents.MessageEvent:
 		// Drop subtypes: bot_message, message_changed, message_deleted, etc.
 		// Only plain human-authored new messages (SubType == "") are emitted.
 		if ev.SubType != "" {
-			return "", "", nil, false, nil
+			return "", "", nil, false, dropSubType, nil
 		}
 		// Skip threaded replies — they must not fire trigger events.
 		// Feedback thread replies are handled by ChannelService's handleThreadReply,
@@ -82,13 +102,13 @@ func translate(inner slackevents.EventsAPIInnerEvent, teamID, botUserID string) 
 		// trigger events are needed in the future, a separate event kind (e.g.
 		// "thread_reply") should be added rather than removing this filter.
 		if ev.ThreadTimeStamp != "" {
-			return "", "", nil, false, nil
+			return "", "", nil, false, dropThreadReply, nil
 		}
 		// Self-trigger guard: drop events posted by the bot itself. The bot_message
 		// subtype filter above catches most cases, but a bot can also post with its
 		// human-like user ID (e.g. in DMs), so we check user == botUserID explicitly.
 		if botUserID != "" && ev.User == botUserID {
-			return "", "", nil, false, nil
+			return "", "", nil, false, dropSelfTrigger, nil
 		}
 		// Compute Mentioned via text-scan rather than hardcoding false. This makes
 		// the MessageEvent and AppMentionEvent twins for the same Slack mention carry
@@ -115,19 +135,19 @@ func translate(inner slackevents.EventsAPIInnerEvent, teamID, botUserID string) 
 		}
 		b, err := json.Marshal(p)
 		if err != nil {
-			return "", "", nil, false, fmt.Errorf("translate: marshal message payload: %w", err)
+			return "", "", nil, false, "", fmt.Errorf("translate: marshal message payload: %w", err)
 		}
-		return eventKind, deriveEventID(ev.Channel, ev.TimeStamp), b, true, nil
+		return eventKind, deriveEventID(ev.Channel, ev.TimeStamp), b, true, "", nil
 
 	case *slackevents.AppMentionEvent:
 		// Skip threaded mentions for the same reason as MessageEvent above.
 		// If thread-scoped mention triggers are needed later, add a separate event kind.
 		if ev.ThreadTimeStamp != "" {
-			return "", "", nil, false, nil
+			return "", "", nil, false, dropThreadReply, nil
 		}
 		// Self-trigger guard: symmetry with MessageEvent — drop if bot mentions itself.
 		if botUserID != "" && ev.User == botUserID {
-			return "", "", nil, false, nil
+			return "", "", nil, false, dropSelfTrigger, nil
 		}
 		// Compute Mentioned via text-scan (same logic as MessageEvent) so both twins
 		// carry the same value. A real app_mention will contain the tag, so in
@@ -148,14 +168,14 @@ func translate(inner slackevents.EventsAPIInnerEvent, teamID, botUserID string) 
 		}
 		b, err := json.Marshal(p)
 		if err != nil {
-			return "", "", nil, false, fmt.Errorf("translate: marshal mention payload: %w", err)
+			return "", "", nil, false, "", fmt.Errorf("translate: marshal mention payload: %w", err)
 		}
-		return "channel_message", deriveEventID(ev.Channel, ev.TimeStamp), b, true, nil
+		return "channel_message", deriveEventID(ev.Channel, ev.TimeStamp), b, true, "", nil
 
 	default:
 		// All other inner event types (reactions, channel events, etc.) are
 		// not subscribed to by this plugin version. Drop silently.
-		return "", "", nil, false, nil
+		return "", "", nil, false, dropUnsupported, nil
 	}
 }
 
@@ -197,7 +217,7 @@ func translateSlashCommand(cmd slack.SlashCommand) (eventID string, payload []by
 //   - cb.Team.ID: cb.Team is slack.Team; use .ID, not cb.TeamID (no such field).
 //   - For global shortcuts cb.Channel is zero-valued (no message context), so
 //     deriveEventID is called with an empty channelID.
-func translateShortcut(cb slack.InteractionCallback) (kind, eventID string, payload []byte, emit bool, err error) {
+func translateShortcut(cb slack.InteractionCallback) (kind, eventID string, payload []byte, emit bool, reason dropReason, err error) {
 	switch cb.Type {
 	case slack.InteractionTypeMessageAction:
 		p := SlackMessageShortcutPayload{
@@ -211,9 +231,9 @@ func translateShortcut(cb slack.InteractionCallback) (kind, eventID string, payl
 		}
 		b, err := json.Marshal(p)
 		if err != nil {
-			return "", "", nil, false, fmt.Errorf("translateShortcut message_action: marshal payload: %w", err)
+			return "", "", nil, false, "", fmt.Errorf("translateShortcut message_action: marshal payload: %w", err)
 		}
-		return "message_shortcut", deriveEventID(cb.Channel.ID, cb.TriggerID), b, true, nil
+		return "message_shortcut", deriveEventID(cb.Channel.ID, cb.TriggerID), b, true, "", nil
 
 	case slack.InteractionTypeShortcut:
 		p := SlackGlobalShortcutPayload{
@@ -224,14 +244,14 @@ func translateShortcut(cb slack.InteractionCallback) (kind, eventID string, payl
 		}
 		b, err := json.Marshal(p)
 		if err != nil {
-			return "", "", nil, false, fmt.Errorf("translateShortcut global: marshal payload: %w", err)
+			return "", "", nil, false, "", fmt.Errorf("translateShortcut global: marshal payload: %w", err)
 		}
 		// Global shortcuts have no channel context — use empty channelID.
-		return "global_shortcut", deriveEventID("", cb.TriggerID), b, true, nil
+		return "global_shortcut", deriveEventID("", cb.TriggerID), b, true, "", nil
 
 	default:
 		// block_actions and any other type: emit=false so the ChannelService
 		// approval/feedback path falls through untouched.
-		return "", "", nil, false, nil
+		return "", "", nil, false, dropUnsupportedInteraction, nil
 	}
 }

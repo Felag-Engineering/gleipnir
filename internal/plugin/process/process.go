@@ -214,11 +214,16 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 		// identity and can authenticate Host RPCs. GLEIPNIR_INSTANCE_ID and
 		// GLEIPNIR_PLUGIN_ID were introduced by #291; GLEIPNIR_INSTANCE_TOKEN is
 		// the per-generation credential the plugin attaches to every Host RPC via
-		// serve.TokenInterceptorFromEnv() (spec §8.4, #292).
+		// serve.TokenInterceptorFromEnv() (spec §8.4, #292). GLEIPNIR_LOG_LEVEL is
+		// forwarded from the host so plugins can match host log verbosity (#652);
+		// it is injected here via opts.Env rather than the hostwire allowlist
+		// because every GLEIPNIR_ var must travel through opts.Env, never the
+		// system-env allowlist (enforced by hostwire's TestSafeEnvKeys_AllowlistIsComplete).
 		Env: []string{
 			"GLEIPNIR_INSTANCE_ID=" + cfg.InstanceID,
 			"GLEIPNIR_PLUGIN_ID=" + cfg.PluginID,
 			serve.InstanceTokenEnvVar + "=" + token,
+			"GLEIPNIR_LOG_LEVEL=" + os.Getenv("GLEIPNIR_LOG_LEVEL"),
 		},
 		ServerInterceptors: cfg.ServerInterceptors,
 	})

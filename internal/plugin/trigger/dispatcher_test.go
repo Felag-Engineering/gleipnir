@@ -1,10 +1,13 @@
 package trigger_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -232,10 +235,28 @@ func newDispatcher(q plugintrigger.Querier, d dedup.Store, launcher plugintrigge
 	})
 }
 
+// newDispatcherWithLogger wires a Dispatcher with a caller-supplied logger.
+// Used by tests that need to capture debug-level log output.
+func newDispatcherWithLogger(q plugintrigger.Querier, d dedup.Store, launcher plugintrigger.RunLauncher, pub event.Publisher, logger *slog.Logger) *plugintrigger.Dispatcher {
+	return plugintrigger.NewDispatcher(plugintrigger.DispatcherConfig{
+		Launcher:  launcher,
+		Querier:   q,
+		Dedup:     d,
+		Publisher: pub,
+		Logger:    logger,
+	})
+}
+
+// debugLogger returns an slog.Logger that writes JSON to buf at LevelDebug and
+// above. Tests use this to assert specific debug log lines.
+func debugLogger(buf *bytes.Buffer) *slog.Logger {
+	return slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 // TestDispatcher_DedupHit verifies that a dedup hit short-circuits dispatch
-// before any policy scan or Launch call.
+// before any policy scan or Launch call, and logs a debug line with reason=duplicate.
 func TestDispatcher_DedupHit(t *testing.T) {
 	t.Parallel()
 
@@ -248,7 +269,9 @@ func TestDispatcher_DedupHit(t *testing.T) {
 	}
 	launcher := &fakeLauncher{}
 	pub := &fakePublisher{}
-	d := newDispatcher(q, dedupStore, launcher, pub)
+
+	var buf bytes.Buffer
+	d := newDispatcherWithLogger(q, dedupStore, launcher, pub, debugLogger(&buf))
 
 	evt := plugintrigger.Event{
 		InstanceID:  "inst-1",
@@ -262,6 +285,15 @@ func TestDispatcher_DedupHit(t *testing.T) {
 	}
 	if launcher.callCount() != 0 {
 		t.Errorf("expected 0 launches on dedup hit, got %d", launcher.callCount())
+	}
+
+	// Debug log must record the duplicate drop with reason=duplicate.
+	output := buf.String()
+	if !strings.Contains(output, "dropping duplicate event") {
+		t.Errorf("expected 'dropping duplicate event' in debug log; got: %s", output)
+	}
+	if !strings.Contains(output, `"duplicate"`) {
+		t.Errorf("expected reason=duplicate in debug log; got: %s", output)
 	}
 }
 
@@ -304,7 +336,8 @@ func TestDispatcher_DedupMiss_MatchingPolicyLaunches(t *testing.T) {
 }
 
 // TestDispatcher_BindingNoMatch verifies that a non-matching binding does not
-// result in a Launch call.
+// result in a Launch call, and logs the per-policy no-match line plus the
+// aggregate "event evaluated against policies matched=0" debug line.
 func TestDispatcher_BindingNoMatch(t *testing.T) {
 	t.Parallel()
 
@@ -326,7 +359,9 @@ func TestDispatcher_BindingNoMatch(t *testing.T) {
 	}
 	launcher := &fakeLauncher{}
 	pub := &fakePublisher{}
-	d := newDispatcher(q, dedup.Noop{}, launcher, pub)
+
+	var buf bytes.Buffer
+	d := newDispatcherWithLogger(q, dedup.Noop{}, launcher, pub, debugLogger(&buf))
 
 	// Payload has channel=#general, not #incidents → no match.
 	evt := plugintrigger.Event{
@@ -346,6 +381,25 @@ func TestDispatcher_BindingNoMatch(t *testing.T) {
 	published := pub.published()
 	if !contains(published, "plugin.event_no_match") {
 		t.Errorf("expected plugin.event_no_match in %v", published)
+	}
+
+	// Per-policy no-match debug line.
+	output := buf.String()
+	if !strings.Contains(output, "binding did not match policy") {
+		t.Errorf("expected 'binding did not match policy' in debug log; got: %s", output)
+	}
+	if !strings.Contains(output, "binding_no_match") {
+		t.Errorf("expected reason=binding_no_match in debug log; got: %s", output)
+	}
+
+	// Aggregate line: evaluated=1, matched=0.
+	if !strings.Contains(output, "event evaluated against policies") {
+		t.Errorf("expected 'event evaluated against policies' in debug log; got: %s", output)
+	}
+	// The JSON handler encodes integers as numbers. matched=0 may appear as
+	// `"matched":0`. A simple Contains check is sufficient.
+	if !strings.Contains(output, `"matched":0`) {
+		t.Errorf("expected matched=0 in aggregate debug log; got: %s", output)
 	}
 }
 
