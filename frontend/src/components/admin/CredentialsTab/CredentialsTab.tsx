@@ -436,20 +436,22 @@ function OAuthClientForm({
         Paste the Client ID and Client Secret from the provider (e.g. Slack app
         Basic Information). Both values are required before you can authorize.
       </p>
-      <label className={styles.field}>
+      <label className={styles.fieldRow}>
         <span className={styles.fieldLabel}>Client ID</span>
         <input
           type="text"
+          className={styles.input}
           value={clientId}
           onChange={(e) => setClientId(e.target.value)}
           disabled={!canManage}
           autoComplete="off"
         />
       </label>
-      <label className={styles.field}>
+      <label className={styles.fieldRow}>
         <span className={styles.fieldLabel}>Client Secret</span>
         <input
           type="password"
+          className={styles.input}
           value={clientSecret}
           onChange={(e) => setClientSecret(e.target.value)}
           disabled={!canManage}
