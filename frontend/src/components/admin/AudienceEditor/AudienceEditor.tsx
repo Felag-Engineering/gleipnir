@@ -159,12 +159,20 @@ export function AudienceEditor({
   )
 
   function buildPayload(): AudienceCreateRequest | AudienceUpdateRequest {
-    const entryInputs = entries.map((e) => ({
-      plugin_instance_id: e.plugin_instance_id,
-      notify: e.notify,
-      request: e.request,
-      config: e.config,
-    }))
+    const entryInputs = entries.map((e) => {
+      // Custom response_buttons are no longer editable in the UI — strip the key
+      // from every save so persisted ones are cleaned up and Requests fall back
+      // to the default Approve/Reject pair (an arbitrary option_id cannot resolve
+      // an approval gate). See EntryRow.tsx for the rationale.
+      const config = { ...(e.config ?? {}) } as Record<string, unknown>
+      delete config['response_buttons']
+      return {
+        plugin_instance_id: e.plugin_instance_id,
+        notify: e.notify,
+        request: e.request,
+        config,
+      }
+    })
 
     if (initial) {
       return {

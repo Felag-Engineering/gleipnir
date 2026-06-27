@@ -477,8 +477,10 @@ tools:
       additionalProperties: false
       properties:
         blocks:
-          description: JSON array of Slack Block Kit block objects, e.g. [{\"type\":\"section\"
+          items:
+            type: object
           title: Blocks
+          type: array
         channel:
           description: Channel ID (C…) or name (#general)
           title: Channel
@@ -612,8 +614,10 @@ tools:
       additionalProperties: false
       properties:
         blocks:
-          description: JSON array of Slack Block Kit block objects, e.g. [{\"type\":\"section\"
+          items:
+            type: object
           title: Blocks
+          type: array
         channel:
           description: Channel ID containing the message to update
           title: Channel
@@ -660,4 +664,4 @@ tools:
         - user
       type: object
     name: lookup_user
-version: 0.1.1
+version: 0.1.2

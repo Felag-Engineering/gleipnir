@@ -13,7 +13,7 @@ import (
 var pluginManifest = manifest.Manifest{
 	SchemaVersion: "v1",
 	Name:          "slack",
-	Version:       "0.1.1",
+	Version:       "0.1.2",
 	Description:   "Slack integration: tools (send/list channels), triggers (channel messages), and channels (notify/request via Slack DMs and posts).",
 	Services: manifest.Services{
 		Tool:    "v1",

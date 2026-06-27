@@ -197,6 +197,11 @@ export interface ApproveRunResponse {
   decision: string
 }
 
+// Matches execution/run/runs_handler.go → Cancel response map[string]string
+export interface CancelRunResponse {
+  run_id: string
+}
+
 // --- Feedback ---
 
 // Matches trigger/runs_handler.go → FeedbackDecisionRequest (POST /api/v1/runs/:id/feedback)

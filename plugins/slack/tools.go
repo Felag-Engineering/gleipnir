@@ -20,11 +20,49 @@ import (
 // ListTools (wire surface, JSON string) and manifest.go (YAML node).
 // additionalProperties: false is the library's default for struct reflections.
 
+// blockKitBlocks is a JSON array of Slack Block Kit block objects. It behaves
+// exactly like json.RawMessage at runtime (raw passthrough — the agent sends a
+// JSON array which we hand straight to slack.Blocks.UnmarshalJSON) but it
+// advertises an explicit array-of-objects JSON Schema via JSONSchema().
+//
+// Why a dedicated type: a plain json.RawMessage reflects to a *typeless* schema
+// (no "type" keyword). Provider schema translators that require a concrete
+// "type" on every property — notably Gemini, see internal/llm/google/schema.go
+// — reject that with `property "blocks": schema missing required "type" field`,
+// failing the run before the first LLM call. The items object is intentionally
+// unconstrained ({type:object}) because Block Kit shapes vary widely; the host
+// translator accepts an object with no properties.
+type blockKitBlocks json.RawMessage
+
+func (b blockKitBlocks) MarshalJSON() ([]byte, error) {
+	if len(b) == 0 {
+		return []byte("null"), nil
+	}
+	return b, nil
+}
+
+func (b *blockKitBlocks) UnmarshalJSON(data []byte) error {
+	if b == nil {
+		return errors.New("blockKitBlocks: UnmarshalJSON on nil pointer")
+	}
+	*b = append((*b)[0:0], data...)
+	return nil
+}
+
+func (blockKitBlocks) JSONSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{
+		Type:        "array",
+		Items:       &jsonschema.Schema{Type: "object"},
+		Title:       "Blocks",
+		Description: `JSON array of Slack Block Kit block objects, e.g. [{"type":"section","text":{...}}]. Must be a JSON array, not an object. When set, takes precedence over plain text for rendering; text is used as the notification fallback.`,
+	}
+}
+
 type PostMessageParams struct {
-	Channel  string          `json:"channel"            jsonschema:"required,title=Channel,description=Channel ID (C…) or name (#general)"`
-	Text     string          `json:"text,omitempty"     jsonschema:"title=Text,description=Message text. Used as the notification / fallback text when blocks are present\\, or as the message body when blocks are absent."`
-	Blocks   json.RawMessage `json:"blocks,omitempty"   jsonschema:"title=Blocks,description=JSON array of Slack Block Kit block objects\\, e.g. [{\\\"type\\\":\\\"section\\\",\\\"text\\\":{...}}]. Must be a JSON array\\, not an object. When set\\, takes precedence over plain text for rendering; text is used as the notification fallback."`
-	ThreadTS string          `json:"thread_ts,omitempty" jsonschema:"title=Thread TS,description=Optional parent thread timestamp to reply in-thread"`
+	Channel  string         `json:"channel"            jsonschema:"required,title=Channel,description=Channel ID (C…) or name (#general)"`
+	Text     string         `json:"text,omitempty"     jsonschema:"title=Text,description=Message text. Used as the notification / fallback text when blocks are present\\, or as the message body when blocks are absent."`
+	Blocks   blockKitBlocks `json:"blocks,omitempty"`
+	ThreadTS string         `json:"thread_ts,omitempty" jsonschema:"title=Thread TS,description=Optional parent thread timestamp to reply in-thread"`
 }
 
 type ReadThreadParams struct {
@@ -42,10 +80,10 @@ type ReadHistoryParams struct {
 }
 
 type UpdateMessageParams struct {
-	Channel string          `json:"channel"          jsonschema:"required,title=Channel,description=Channel ID containing the message to update"`
-	Ts      string          `json:"ts"               jsonschema:"required,title=Message TS,description=Timestamp of the message to update"`
-	Text    string          `json:"text,omitempty"   jsonschema:"title=Text,description=Message text. Used as the notification / fallback text when blocks are present\\, or as the message body when blocks are absent."`
-	Blocks  json.RawMessage `json:"blocks,omitempty" jsonschema:"title=Blocks,description=JSON array of Slack Block Kit block objects\\, e.g. [{\\\"type\\\":\\\"section\\\",\\\"text\\\":{...}}]. Must be a JSON array\\, not an object. When set\\, takes precedence over plain text for rendering; text is used as the notification fallback."`
+	Channel string         `json:"channel"          jsonschema:"required,title=Channel,description=Channel ID containing the message to update"`
+	Ts      string         `json:"ts"               jsonschema:"required,title=Message TS,description=Timestamp of the message to update"`
+	Text    string         `json:"text,omitempty"   jsonschema:"title=Text,description=Message text. Used as the notification / fallback text when blocks are present\\, or as the message body when blocks are absent."`
+	Blocks  blockKitBlocks `json:"blocks,omitempty"`
 }
 
 type DeleteMessageParams struct {
@@ -347,7 +385,7 @@ func handlePostMessage(ctx context.Context, sc *slack.Client, inputJSON string) 
 		return nil, slack.SlackErrorResponse{Err: "invalid_arguments"}
 	}
 
-	opts, err := msgOptionsFromTextAndBlocks(p.Text, p.Blocks)
+	opts, err := msgOptionsFromTextAndBlocks(p.Text, json.RawMessage(p.Blocks))
 	if err != nil {
 		return nil, err
 	}
@@ -572,7 +610,7 @@ func handleUpdateMessage(ctx context.Context, sc *slack.Client, inputJSON string
 		return nil, slack.SlackErrorResponse{Err: "invalid_arguments"}
 	}
 
-	opts, err := msgOptionsFromTextAndBlocks(p.Text, p.Blocks)
+	opts, err := msgOptionsFromTextAndBlocks(p.Text, json.RawMessage(p.Blocks))
 	if err != nil {
 		return nil, err
 	}

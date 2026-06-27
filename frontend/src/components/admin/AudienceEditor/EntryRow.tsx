@@ -3,8 +3,6 @@ import { PluginHealthChip } from '@/components/admin/PluginHealthChip/PluginHeal
 import { SchemaForm } from '@/components/form/SchemaForm'
 import type { SchemaShape } from '@/components/form/SchemaForm'
 import { useOptionsContext } from '@/hooks/useOptionsContext'
-import { ResponseButtonsEditor } from './ResponseButtonsEditor'
-import type { ResponseButton } from './ResponseButtonsEditor'
 import type { ApiAudienceEntry, ApiPluginInstanceForAudience } from '@/api/types'
 import styles from './EntryRow.module.css'
 
@@ -24,17 +22,6 @@ interface Props {
   isDragging: boolean
   isDragOver: boolean
   disabled: boolean
-}
-
-// Returns true when the schema property declares an array-of-objects field,
-// which is the gate for rendering the ResponseButtonsEditor escape hatch (S4).
-function isArrayOfObjects(prop: unknown): boolean {
-  if (typeof prop !== 'object' || prop === null) return false
-  const p = prop as Record<string, unknown>
-  if (p['type'] !== 'array') return false
-  const items = p['items']
-  if (typeof items !== 'object' || items === null) return false
-  return (items as Record<string, unknown>)['type'] === 'object'
 }
 
 function EntryConfig({
@@ -65,38 +52,22 @@ function EntryConfig({
 
   const schema = rawSchema!
 
-  // Detect the response_buttons property in the schema (S4 strict check).
-  const rbProp = schema.properties?.['response_buttons']
-  const hasResponseButtons = isArrayOfObjects(rbProp)
-
-  // Build a schema for SchemaForm that omits response_buttons — it is handled
-  // by ResponseButtonsEditor. We preserve all other properties.
+  // Custom response buttons (response_buttons) are intentionally NOT editable in
+  // the UI for now — approval/feedback Requests fall back to the default
+  // Approve/Reject buttons. A custom button whose option_id is not exactly
+  // "approve"/"reject" cannot resolve an approval gate (the host maps any other
+  // option_id to "answered"), which silently wedges approval-gated runs. We
+  // strip the property from the form schema so SchemaForm never renders it, and
+  // drop any persisted value on the next save.
   const formProperties = { ...(schema.properties ?? {}) }
-  if (hasResponseButtons) {
-    delete formProperties['response_buttons']
-  }
+  delete formProperties['response_buttons']
   const formSchema: SchemaShape = { ...schema, properties: formProperties }
 
-  // Split entry.config: SchemaForm value excludes response_buttons; the
-  // escape-hatch editor owns that key separately.
-  const rb = entry.config?.['response_buttons'] as ResponseButton[] | undefined
   const schemaFormValue: Record<string, unknown> = { ...(entry.config ?? {}) }
   delete schemaFormValue['response_buttons']
 
   function handleSchemaFormChange(next: Record<string, unknown>) {
-    const merged: Record<string, unknown> = { ...next }
-    if (rb !== undefined) {
-      merged['response_buttons'] = rb
-    }
-    onChange({ ...entry, config: merged })
-  }
-
-  function handleResponseButtonsChange(nextRb: ResponseButton[] | undefined) {
-    const merged: Record<string, unknown> = { ...schemaFormValue }
-    if (nextRb !== undefined) {
-      merged['response_buttons'] = nextRb
-    }
-    onChange({ ...entry, config: merged })
+    onChange({ ...entry, config: next })
   }
 
   return (
@@ -109,16 +80,6 @@ function EntryConfig({
         idPrefix={`entry-${index}-cfg`}
         optionsContext={optionsCtx}
       />
-      {hasResponseButtons && (
-        <div className={styles.responseButtonsSection}>
-          <ResponseButtonsEditor
-            value={rb}
-            onChange={handleResponseButtonsChange}
-            disabled={isDisabled}
-            idPrefix={`entry-${index}-rb`}
-          />
-        </div>
-      )}
     </div>
   )
 }

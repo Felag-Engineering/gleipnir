@@ -496,8 +496,19 @@ describe('AudienceEditor — channel AsyncCombobox via optionsContext (B3)', () 
   })
 })
 
-describe('AudienceEditor — response_buttons escape hatch', () => {
-  it('preserves response_buttons in the save payload when set', async () => {
+describe('AudienceEditor — response_buttons removed from the UI', () => {
+  it('does not render a response-buttons editor for a Slack entry', () => {
+    renderEditor({
+      initial: AUDIENCE_WITH_SLACK,
+      pluginInstances: [PLUGIN_SLACK_WITH_SCHEMA],
+      references: REFS_EMPTY,
+    })
+    // The custom-button escape hatch was removed; Requests use Approve/Reject.
+    expect(screen.queryByRole('button', { name: /\+ add button/i })).not.toBeInTheDocument()
+    expect(screen.queryByText(/response button/i)).not.toBeInTheDocument()
+  })
+
+  it('strips response_buttons from the save payload even when the entry had them', async () => {
     const onSave = vi.fn().mockResolvedValue(AUDIENCE_WITH_RESPONSE_BUTTONS)
     renderEditor({
       initial: AUDIENCE_WITH_RESPONSE_BUTTONS,
@@ -511,9 +522,9 @@ describe('AudienceEditor — response_buttons escape hatch', () => {
     await waitFor(() => expect(onSave).toHaveBeenCalledOnce())
     const req = onSave.mock.calls[0][0]
     const configSaved = req.entries[0].config
-    expect(configSaved).toHaveProperty('response_buttons')
-    expect(configSaved.response_buttons).toHaveLength(2)
-    expect(configSaved.response_buttons[0]).toMatchObject({ option_id: 'yes', style: 'primary' })
+    expect(configSaved).not.toHaveProperty('response_buttons')
+    // Other config fields are preserved.
+    expect(configSaved).toMatchObject({ channel: '#ops' })
   })
 
   it('omits response_buttons from payload when not set (backend default Approve/Reject)', async () => {
@@ -524,30 +535,6 @@ describe('AudienceEditor — response_buttons escape hatch', () => {
       references: REFS_EMPTY,
       onSave,
     })
-
-    await userEvent.click(screen.getByRole('button', { name: /^save$/i }))
-
-    await waitFor(() => expect(onSave).toHaveBeenCalledOnce())
-    const req = onSave.mock.calls[0][0]
-    const configSaved = req.entries[0].config
-    expect(configSaved).not.toHaveProperty('response_buttons')
-  })
-
-  it('omits response_buttons after adding then removing all buttons', async () => {
-    const onSave = vi.fn().mockResolvedValue(AUDIENCE_WITH_SLACK)
-    renderEditor({
-      initial: AUDIENCE_WITH_SLACK,
-      pluginInstances: [PLUGIN_SLACK_WITH_SCHEMA],
-      references: REFS_EMPTY,
-      onSave,
-    })
-
-    // Add a button.
-    await userEvent.click(screen.getByRole('button', { name: /\+ add button/i }))
-
-    // Remove it — the only row removal should call onChange(undefined).
-    const removeBtn = await screen.findByRole('button', { name: /remove button 1/i })
-    await userEvent.click(removeBtn)
 
     await userEvent.click(screen.getByRole('button', { name: /^save$/i }))
 
