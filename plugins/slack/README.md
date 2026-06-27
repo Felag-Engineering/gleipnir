@@ -846,6 +846,27 @@ shipped — existing installs do **not** need to re-authorize to use the new too
 The only planned scope addition (`files:write` for `upload_file`) is deferred to
 a separate PR to keep re-auth impact isolated.
 
+### Optional scope — `groups:read` (private channels in the searchable picker)
+
+The searchable channel picker (audience entries, trigger bindings, and config
+fields backed by the `channels` option provider) calls `conversations.list`
+requesting **both public and private channels**. Listing private channels
+requires the `groups:read` scope, which is intentionally **not** in
+`oauth_defaults` to avoid forcing existing installs to re-authorize.
+
+| Scope         | Used by |
+|---------------|---------|
+| `groups:read` | `channels` option provider — listing private channels in the searchable picker |
+
+Without `groups:read`, Slack rejects the **entire** `conversations.list` call
+with `missing_scope` (not just the private results), so the picker shows no
+options and the field degrades to free-text "enter an ID directly". To enable
+it: add `groups:read` to the Slack app's bot scopes under **OAuth &
+Permissions**, add it to `oauth_defaults.scopes` in `manifest.go` (so the
+authorize URL requests it), reinstall the rebuilt bundle, and **re-authorize**
+the instance. If you only use public channels, no change is needed — public
+channels are already covered by `channels:read`.
+
 ## Token refresh
 
 Slack v2 bot tokens (`xoxb-` prefix) do not expire under normal circumstances
