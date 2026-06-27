@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useRun } from '@/hooks/queries/runs'
 import { useRunSteps } from '@/hooks/queries/runs'
+import { useCancelRun } from '@/hooks/mutations/runs'
 import { useRunTimeline } from '@/hooks/useRunTimeline'
 import { useScrollSentinel } from '@/hooks/useScrollSentinel'
 import { useLiveDuration } from '@/hooks/useLiveDuration'
@@ -20,6 +21,7 @@ import { CopyBlock } from '@/components/CopyBlock'
 import type { FilterKey } from '@/components/RunDetail'
 import type { CapabilitySnapshotV2, GrantedToolEntry } from '@/components/RunDetail/types'
 import { isFeedbackEntry } from '@/components/RunDetail/types'
+import { useCurrentUser } from '@/hooks/queries/users'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import NotFoundPage from '@/pages/NotFoundPage'
 import { ApiError } from '@/api/fetch'
@@ -70,6 +72,25 @@ export default function RunDetailPage() {
   )
 
   const showRetry = run?.status === 'failed' || run?.status === 'interrupted'
+
+  const { data: currentUser } = useCurrentUser()
+  const cancelRun = useCancelRun()
+  // In-flight runs can be cancelled by operators/admins. Mirrors the backend
+  // RequireRole(Operator) gate on POST /runs/{id}/cancel and the cancellable
+  // states the RunManager accepts.
+  const inFlight =
+    run?.status === 'pending' ||
+    run?.status === 'running' ||
+    run?.status === 'waiting_for_approval' ||
+    run?.status === 'waiting_for_feedback'
+  const canCancel = currentUser?.roles.some((r) => r === 'operator' || r === 'admin') ?? false
+  const showCancel = Boolean(inFlight && canCancel)
+
+  function handleCancel() {
+    if (!id) return
+    if (!window.confirm('Cancel this run? It will be marked failed and cannot be resumed.')) return
+    cancelRun.mutate(id)
+  }
 
   const retryMessage = useMemo(() => {
     if (!run?.trigger_payload) return ''
@@ -145,6 +166,9 @@ export default function RunDetailPage() {
                 capabilitySnapshot={capabilitySnapshot}
                 showRetry={showRetry}
                 onRetry={() => setRetryModalOpen(true)}
+                showCancel={showCancel}
+                onCancel={handleCancel}
+                cancelPending={cancelRun.isPending}
               />
 
               {run.status === 'waiting_for_approval' && (

@@ -29,9 +29,12 @@ interface Props {
   } | null
   showRetry?: boolean
   onRetry?: () => void
+  showCancel?: boolean
+  onCancel?: () => void
+  cancelPending?: boolean
 }
 
-export function RunHeader({ run, toolCallCount, tokenTotal, duration, capabilitySnapshot, showRetry, onRetry }: Props) {
+export function RunHeader({ run, toolCallCount, tokenTotal, duration, capabilitySnapshot, showRetry, onRetry, showCancel, onCancel, cancelPending }: Props) {
   const navigate = useNavigate()
   const [adminOpen, setAdminOpen] = useState(false)
   const [capExpanded, setCapExpanded] = useState(false)
@@ -69,6 +72,11 @@ export function RunHeader({ run, toolCallCount, tokenTotal, duration, capability
         {showRetry && onRetry && (
           <Button variant="secondary" size="small" onClick={onRetry}>
             Retry
+          </Button>
+        )}
+        {showCancel && onCancel && (
+          <Button variant="danger" size="small" disabled={cancelPending} onClick={onCancel}>
+            {cancelPending ? 'Cancelling…' : 'Cancel run'}
           </Button>
         )}
       </div>
