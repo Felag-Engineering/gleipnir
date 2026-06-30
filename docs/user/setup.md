@@ -7,6 +7,11 @@ Getting from zero to a running Gleipnir instance with its first agent.
 - Docker and Docker Compose v2 (`docker compose version`)
 - `openssl` (available on macOS and most Linux distributions by default)
 
+> **Architectures.** Published images are multi-arch — both `linux/amd64`
+> (Intel/AMD) and `linux/arm64` (Raspberry Pi 4/5, Apple silicon, Ampere/AWS
+> Graviton). Docker and Podman automatically pull the variant matching your
+> host; the commands below are identical on either architecture.
+
 ## Option A: Pre-built image (no clone required)
 
 Create a working directory and add two files:
