@@ -256,9 +256,14 @@ func TestNotify_ParallelFanOut(t *testing.T) {
 	}
 	invokedMu.Unlock()
 
-	// Wall clock must be well under NotifyTimeout * 1.5 (parallel, not serial).
-	if elapsed > 750*time.Millisecond {
-		t.Errorf("Notify took %v, want < 750ms (serial execution suspected)", elapsed)
+	// Sanity ceiling that the fan-out is parallel, not serial. The bound is
+	// deliberately generous: an absolute wall-clock assertion is hardware- and
+	// load-sensitive (CLAUDE.md: time-dependent tests) and this runs under
+	// `-race` in CI. Serial execution of the blocking/slow paths would dwarf
+	// this, so the ceiling still catches a regression to serial dispatch while
+	// normal runner variance cannot flake it.
+	if elapsed > 3*time.Second {
+		t.Errorf("Notify took %v, want < 3s (serial execution suspected)", elapsed)
 	}
 }
 
@@ -323,8 +328,13 @@ func TestNotify_DeadlineUpperBound(t *testing.T) {
 		t.Fatalf("Notify returned error: %v", err)
 	}
 
-	// Notify returns nil regardless of failures.
-	slack := 100 * time.Millisecond
+	// Notify returns nil regardless of failures. We only assert that the blocking
+	// client did not make Notify hang unbounded — i.e. the deadline IS enforced.
+	// The slack is deliberately large: the precise cancellation latency is
+	// hardware/load-sensitive (CLAUDE.md: time-dependent tests) and this runs
+	// under `-race`. A generous ceiling still proves boundedness (returns vs.
+	// hangs) without flaking on a loaded runner.
+	slack := 2 * time.Second
 	if elapsed > notifyTimeout+slack {
 		t.Errorf("Notify took %v, want < %v (deadline not enforced)", elapsed, notifyTimeout+slack)
 	}

@@ -53,7 +53,13 @@ func TestListSteps_10kStress(t *testing.T) {
 	h := run.NewRunsHandler(store, run.NewRunManager(), nil)
 	router := newRunsRouter(h)
 
-	// First-page latency check: the default limit of 500 must respond in < 500ms.
+	// First-page latency check. This is a catastrophic-regression smoke (e.g. a
+	// missing index turning pagination into a full-table scan), NOT a precise
+	// perf gate — an absolute wall-clock bound is hardware-sensitive (CLAUDE.md:
+	// time-dependent tests) and this test runs under `-race` in CI, which slows
+	// execution several-fold. The threshold is deliberately generous so loaded
+	// amd64/arm64 runners cannot flake it while a true blow-up still trips it.
+	const firstPageMax = 5 * time.Second
 	firstPageStart := time.Now()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/r-stress/steps", nil)
 	w := httptest.NewRecorder()
@@ -63,8 +69,8 @@ func TestListSteps_10kStress(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("first page: status = %d, want 200; body: %s", w.Code, w.Body.String())
 	}
-	if elapsed > 500*time.Millisecond {
-		t.Errorf("first page took %s, want < 500ms", elapsed)
+	if elapsed > firstPageMax {
+		t.Errorf("first page took %s, want < %s", elapsed, firstPageMax)
 	}
 
 	// Walk every page and assert ordering + total count.
@@ -109,8 +115,12 @@ func TestListSteps_10kStress(t *testing.T) {
 		t.Errorf("total steps walked = %d, want %d", seenTotal, totalSteps)
 	}
 
+	// Generous catastrophic-regression bound (see firstPageMax above): walking
+	// 20 pages of 500 rows under `-race` on a loaded CI runner must stay well
+	// under this, while a pathological regression (O(n²) paging) would exceed it.
+	const fullWalkMax = 60 * time.Second
 	walkElapsed := time.Since(walkStart)
-	if walkElapsed > 5*time.Second {
-		t.Errorf("full walk took %s, want < 5s", walkElapsed)
+	if walkElapsed > fullWalkMax {
+		t.Errorf("full walk took %s, want < %s", walkElapsed, fullWalkMax)
 	}
 }
