@@ -1,6 +1,9 @@
 services:
   api:
-    image: felagengineering/gleipnir:latest
+    # Fully-qualified registry path (docker.io/…) so Podman resolves it without
+    # a short-name prompt — Podman's default registries.conf does not assume
+    # docker.io the way Docker does. Docker accepts the qualified form too.
+    image: docker.io/felagengineering/gleipnir:latest
     ports:
       - "${GLEIPNIR_PORT:-3000}:8080"
     environment:

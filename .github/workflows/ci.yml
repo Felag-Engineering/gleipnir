@@ -303,6 +303,46 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  # Builds and boots the image under Podman (rootless, preinstalled on the
+  # ubuntu runner) so we gate Podman compatibility per-PR and don't silently
+  # regress it. Build + run rather than `podman compose` to avoid depending on
+  # a compose provider being installed on the runner; the compose files
+  # themselves are exercised by Docker jobs and identical in shape.
+  podman-smoke:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Podman version
+        run: podman version
+
+      - name: Build image with Podman
+        run: podman build -t localhost/gleipnir:podman-ci .
+
+      - name: Run and health-check
+        run: |
+          set -euo pipefail
+          podman run -d --name gleipnir \
+            -e GLEIPNIR_ENCRYPTION_KEY="$(openssl rand -hex 32)" \
+            -p 3000:8080 \
+            localhost/gleipnir:podman-ci
+          # Poll the public health endpoint until it responds (or time out).
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:3000/api/v1/health; then
+              echo "healthy after ${i} attempt(s)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::gleipnir did not become healthy under Podman"
+          podman logs gleipnir
+          exit 1
+
+      - name: Tear down
+        if: always()
+        run: podman rm -f gleipnir || true
+
   # Publishes :dev on every merge to main. Bleeding-edge tag — do not pull
   # this in production. :latest is reserved for the release job below.
   docker-push-dev:

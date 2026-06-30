@@ -8,7 +8,8 @@
 
 services:
   api:
-    image: felagengineering/gleipnir:dev
+    # Fully-qualified for Podman short-name resolution (see docker-compose.yml).
+    image: docker.io/felagengineering/gleipnir:dev
 
   mcp-test-server:
     build:
