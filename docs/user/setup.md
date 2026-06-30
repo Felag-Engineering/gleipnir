@@ -4,8 +4,13 @@ Getting from zero to a running Gleipnir instance with its first agent.
 
 ## Prerequisites
 
-- Docker and Docker Compose v2 (`docker compose version`)
+- Docker and Docker Compose v2 (`docker compose version`) — or Podman 4.7+
+  (see [Running under Podman](podman.md))
 - `openssl` (available on macOS and most Linux distributions by default)
+
+> **Podman users:** the stack runs under Podman too. Follow this page but read
+> [podman.md](podman.md) first for the handful of differences (compose command,
+> fully-qualified image names, SELinux bind-mount labels).
 
 ## Option A: Pre-built image (no clone required)
 
@@ -133,4 +138,5 @@ If the run completes, the stack is working end to end.
 - [Policies](policies.md) — trigger types, capability grants, run states
 - [Roles](roles.md) — add more users with appropriate permissions
 - [Operations](operations.md) — database backups, key management, upgrading
+- [Running under Podman](podman.md) — Podman-specific notes (rootless, SELinux)
 - [Playbooks](../playbooks/) — worked examples for common use cases

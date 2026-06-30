@@ -15,8 +15,13 @@ services:
       context: .
       dockerfile: Dockerfile
     image: gleipnir:local
-    # host.docker.internal lets the container reach services on the host
-    # (e.g. an LMStudio server bound to 127.0.0.1:1234). Required on Linux
-    # where the alias is not added automatically; harmless on Docker Desktop.
+    # Reach services on the host (e.g. an LMStudio server bound to
+    # 127.0.0.1:1234). `host.docker.internal` is the Docker alias (required on
+    # Linux where it is not added automatically; harmless on Docker Desktop).
+    # `host.containers.internal` is the Podman-native equivalent — Podman
+    # provides it automatically, but declaring it keeps the two stacks symmetric
+    # and lets the same config reach the host under either runtime. The
+    # `host-gateway` magic string is honored by Docker and by Podman 4.7+.
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      - "host.containers.internal:host-gateway"
