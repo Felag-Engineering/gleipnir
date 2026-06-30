@@ -97,6 +97,15 @@ func newGenState() *genState {
 type Controller struct {
 	mu         sync.Mutex
 	byInstance map[string]*genState
+
+	// afterPauseHook, if non-nil, is invoked by BeginDrain the moment an instance
+	// is committed to the paused state. It is a test-only synchronisation seam,
+	// always nil in production, and set exactly once before any BeginDrain via
+	// SetAfterPauseHookForTest (export_test.go) — so the go-statement that launches
+	// the drain establishes happens-before and no lock is needed. It exists because
+	// BeginDrain does not return until *after* it un-pauses, leaving a test no
+	// public signal for the mid-drain paused window (issue #678).
+	afterPauseHook func(instanceID string)
 }
 
 // New returns a Controller with no registered instances.
@@ -327,6 +336,14 @@ func (c *Controller) BeginDrain(ctx context.Context, instanceID string, grace ti
 		waitCh = ch
 	}
 	s.mu.Unlock()
+
+	// Test-only synchronisation seam (nil in production): paused is now committed,
+	// so a test can deterministically know the blocked-Acquire window is open
+	// before it issues the racing Acquire. Fired outside s.mu so the hook cannot
+	// re-enter the lock. See Controller.afterPauseHook / issue #678.
+	if c.afterPauseHook != nil {
+		c.afterPauseHook(instanceID)
+	}
 
 	// --- Step 2: wait up to grace for in-flight calls to drain ---
 	drainedNaturally := false

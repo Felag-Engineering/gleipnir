@@ -74,44 +74,51 @@ func TestAcquire_IncrementsRefcountAndReleaseDecrements(t *testing.T) {
 // arriving during a drain pause waits until BeginDrain completes and then
 // succeeds under the new generation.
 //
-// Synchronisation: we hold a refcount slot throughout, which guarantees
-// BeginDrain cannot return until we release it. Therefore any goroutine started
-// after BeginDrain is launched and while the refcount is held will find the
-// instance paused and block in Acquire — no sleep needed.
+// Synchronisation: BeginDrain commits paused=true internally and then blocks
+// until the drain completes, so there is no public signal for the mid-drain
+// paused window. We use the afterPauseHook test seam (issue #678) to block until
+// paused is committed before issuing the racing Acquire. That makes the
+// blocked-Acquire path deterministic — the second Acquire can never observe the
+// old generation (the earlier version closed a channel BEFORE calling BeginDrain
+// and so depended on goroutine start order, which occasionally returned gen 1).
 func TestAcquire_BlocksWhilePaused_WakesOnNewGeneration(t *testing.T) {
 	c := generation.New()
 	c.RegisterInstance("inst-d")
 
 	ctx := context.Background()
 
-	// Acquire a slot that will hold BeginDrain open.
+	// Acquire a slot that holds BeginDrain open: a non-zero refcount forces
+	// BeginDrain to park in its drain wait until we release this slot.
 	_, held, _, err := c.Acquire(ctx, "inst-d")
 	if err != nil {
 		t.Fatalf("Acquire (held): %v", err)
 	}
 
-	drainStarted := make(chan struct{})
+	// paused closes the instant BeginDrain commits paused=true for inst-d. The
+	// hook is per-controller, so it is set before the drain goroutine launches
+	// (establishing happens-before) and needs no restore.
+	paused := make(chan struct{})
+	c.SetAfterPauseHookForTest(func(instanceID string) {
+		if instanceID == "inst-d" {
+			close(paused)
+		}
+	})
+
 	drainDone := make(chan struct{})
 	go func() {
 		defer close(drainDone)
-		// Signal just before blocking on the drain channel so the test knows
-		// BeginDrain has set paused=true and is waiting for the refcount to drop.
-		close(drainStarted)
 		_, _, _ = c.BeginDrain(ctx, "inst-d", time.Second)
 	}()
 
-	// Wait until BeginDrain has started (and thus set paused=true). Because we
-	// still hold the refcount, BeginDrain cannot return — the instance is
-	// guaranteed to be in the paused state when the next Acquire goroutine runs.
+	// Block until paused is committed. After this point any Acquire is guaranteed
+	// to find the instance paused (and the generation cannot rotate to 2 without
+	// first clearing paused), so the racing Acquire below can never see gen 1.
 	select {
-	case <-drainStarted:
+	case <-paused:
 	case <-time.After(5 * time.Second):
-		t.Fatal("BeginDrain goroutine did not start")
+		t.Fatal("BeginDrain did not reach the paused state")
 	}
 
-	// A new Acquire must block while paused. The drain goroutine above holds the
-	// lock only briefly (to set paused=true) and then releases it before waiting
-	// on the drain channel, so this Acquire call will enter the select and block.
 	acquireResult := make(chan uint64, 1)
 	go func() {
 		_, rel, gen, err := c.Acquire(ctx, "inst-d")
@@ -123,8 +130,8 @@ func TestAcquire_BlocksWhilePaused_WakesOnNewGeneration(t *testing.T) {
 		acquireResult <- gen
 	}()
 
-	// Release the held slot so BeginDrain can complete and unblock the waiting
-	// Acquire goroutine.
+	// Release the held slot so BeginDrain can complete and rotate the generation,
+	// waking the blocked Acquire.
 	held()
 
 	select {

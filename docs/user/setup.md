@@ -8,6 +8,11 @@ Getting from zero to a running Gleipnir instance with its first agent.
   (see [Running under Podman](podman.md))
 - `openssl` (available on macOS and most Linux distributions by default)
 
+> **Architectures.** Published images are multi-arch — both `linux/amd64`
+> (Intel/AMD) and `linux/arm64` (Raspberry Pi 4/5, Apple silicon, Ampere/AWS
+> Graviton). Docker and Podman automatically pull the variant matching your
+> host; the commands below are identical on either architecture.
+
 > **Podman users:** the stack runs under Podman too. Follow this page but read
 > [podman.md](podman.md) first for the handful of differences (compose command,
 > fully-qualified image names, SELinux bind-mount labels).

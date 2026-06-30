@@ -19,6 +19,28 @@ docker compose up        # run full stack (Go binary with embedded frontend)
 
 The `Makefile` wraps the common targets: `make build` (`go build ./...`), `make test` (`go test -race ./...`), `make lint` (gofmt check + plugin import boundary + staticcheck), and `make proto` (regenerate gRPC stubs). `make help` lists them all.
 
+### Cross-compiling for arm64
+
+The backend is CGO-free (`CGO_ENABLED=0`) and uses pure-Go SQLite
+(`modernc.org/sqlite`), so there is no C cross-toolchain to set up — building
+for another architecture is just a matter of setting `GOARCH`:
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o gleipnir-arm64 .
+```
+
+The multi-arch container image is produced the same way: the `Dockerfile`'s
+builder stages are pinned to `--platform=$BUILDPLATFORM` and cross-compile to
+`$TARGETARCH`, so `docker buildx build --platform linux/amd64,linux/arm64`
+builds both variants without emulating the Go toolchain. CI publishes both
+(`docker-push-dev` / `docker-push-release` in `.github/workflows/ci.yml`), and
+the `backend-tests-arm64` job runs the suite natively on an arm64 runner.
+
+**Plugins** are separate compiled Go binaries the host spawns as subprocesses,
+so a plugin's `GOARCH` must match the **host** it will run on. The Slack plugin
+Makefile takes the same `GOARCH` override: `make build GOARCH=arm64` (or the
+`build-arm64` convenience target).
+
 ## Frontend
 
 Run from `frontend/`:
