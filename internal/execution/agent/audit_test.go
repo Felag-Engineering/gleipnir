@@ -424,8 +424,16 @@ func BenchmarkAuditWriter_SequentialEnqueue(b *testing.B) {
 }
 
 func TestAuditWriter_PerformanceBaseline(t *testing.T) {
-	// Asserts that 1000 sequential enqueues complete within 10s.
-	// Threshold is generous to avoid flaking on slow CI runners.
+	// Catastrophic-regression smoke: 1000 sequential enqueues must not take
+	// pathologically long (e.g. a per-write fsync or accidental O(n²) would push
+	// this into minutes). It is NOT a precise perf gate — an absolute wall-clock
+	// bound is inherently hardware-sensitive (CLAUDE.md: time-dependent tests),
+	// so the threshold is deliberately generous. GitHub's free ubuntu-24.04-arm
+	// runner has slow/contended disk I/O and legitimately lands around ~14s with
+	// no regression; the bound sits well above that so normal variance across
+	// amd64/arm64 runners cannot flake it while a true blow-up still trips it.
+	// See issue #680.
+	const maxElapsed = 60 * time.Second
 	s := testutil.NewTestStore(t)
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
@@ -447,7 +455,7 @@ func TestAuditWriter_PerformanceBaseline(t *testing.T) {
 	}
 	elapsed := time.Since(start)
 
-	if elapsed > 10*time.Second {
-		t.Errorf("1000 sequential enqueues took %v, want < 10s", elapsed)
+	if elapsed > maxElapsed {
+		t.Errorf("1000 sequential enqueues took %v, want < %v", elapsed, maxElapsed)
 	}
 }
