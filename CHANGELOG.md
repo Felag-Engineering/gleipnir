@@ -14,7 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Security
 
-## [1.1.0] - 2026-06-24
+## [1.1.0] - 2026-07-01
 
 The plugin system. Gleipnir can now be extended with signed, out-of-process plugins that add tools, channels, and event triggers alongside MCP. This release also hardens the LLM provider layer, the shutdown path, and the authentication surface.
 
@@ -34,12 +34,19 @@ The plugin system. Gleipnir can now be extended with signed, out-of-process plug
 - **OpenAI-compatible reasoning.** `reasoning_content` from OpenAI-compatible backends is now surfaced as `thinking` steps in the reasoning trace, with hardened streaming retry and gpt-5 support.
 - **`gleipnirctl create-user`.** New admin CLI subcommand to provision users directly against the database.
 - **Operator plugin runbook.** Operator-facing plugin documentation, environment-variable reference, and a README plugins section.
+- **Multi-arch (arm64) container images.** `felagengineering/gleipnir` is published as a `linux/amd64` + `linux/arm64` manifest list, so the same tag runs on x86 servers and arm64 hosts (Raspberry Pi, Graviton/Ampere). The Go build cross-compiles (CGO-free, pure-Go SQLite) so arm64 needs no emulation; ARM build + test run in CI (#674).
+- **Podman deployment support.** The image and compose stack run under Podman (including rootless): fully-qualified image references, `host.containers.internal` alongside `host.docker.internal`, and a `podman-smoke` CI job that builds and health-checks the container on every PR (#675).
+- **Slack reference plugin maturation.** Approver authorization binding Slack users to Gleipnir roles so an in-Slack Approve/Deny is authorized against the operator's role (#624); close-the-loop Request updates (`chat.update` + Block Kit) when a request is resolved or times out (#625); thread/history read tools plus rich, editable messages (#626); distinct trigger states for channel-message vs. mention vs. direct-message, plus slash commands and message shortcuts (#621, #629); `channel_type` and regex text binding matchers (#617, #603); per-tool `missing_scope` errors that name the required scope without marking the whole instance unhealthy (#653, #647).
+- **Plugin configuration UX.** Dynamic option providers backing searchable dropdowns for config/scope/binding fields (#644); the audience editor renders config through the design-system SchemaForm (#627); an instance-onboarding steps-to-healthy checklist with health scent badges and humanized health detail (#658); per-event-kind "how it fires" help in the subscribed-trigger picker (#655); grant plugin ToolService tools directly from the agent editor Capabilities section (#608).
+- **Configurable per-instance EmitEvent rate limit** via host-owned columns, for tuning a plugin's event throughput independently of its config schema (#637).
 
 ### Changed
 
 - **`GLEIPNIR_PLUGINS_ENABLED` has been removed.** The plugin system is now an unconditional part of the host. The flag existed only as a temporary rollout mechanism and never appeared in a tagged release; operators tracking `main` who set it should drop it — it is now ignored (spec §15.2).
 - **Provider layer refactor (ADR-026).** Each LLM provider now sits behind a shared `ProviderWire`/`ProviderAdapter` seam that owns the common request/metrics choreography, with a cross-wire contract test suite. The OpenAI-compatible loader drops the brittle model-name reasoning heuristic in favor of an explicit flag.
 - **Opus 4.8** added to the model catalog.
+- **Unified "Feedback request" vocabulary.** The agent-initiated feedback flow and the audience-side Request routing are now labelled consistently as "Feedback request" across the UI (#670).
+- **Safer credential edits.** The admin UI confirms before clearing a plugin instance's stored credentials (#659).
 
 ### Fixed
 
@@ -47,6 +54,10 @@ The plugin system. Gleipnir can now be extended with signed, out-of-process plug
 - **Run-state, trigger, and provider correctness.** A batch of fixes to run-state transitions, trigger dispatch, and provider handling; poll policies now always show their next fire time while active.
 - **Plugin lifecycle hardening.** Generation-drain context cancellation, feedback-response rollback on CAS conflict, cached channel-dispatch connection cleanup on shutdown, OAuth scanner shutdown join, plugin migration baseline execution, and the `plugin_pending_requests` reclaim scanner startup.
 - **ntfy reference plugin** credential setup (corrected auth-strategy literal) and README CLI examples.
+- **Plugin tool calls survive deactivate/reactivate.** Deactivating and reactivating a plugin instance left the tool-dispatch pool holding the killed subprocess's closed connection, so every subsequent tool call failed with `plugin "<name>" is unavailable` until the host was restarted (and, for approval-gated tools, spammed the operator with repeated approval prompts). The stale connection is now evicted on deactivate/activate so the next call re-dials the fresh subprocess (#683).
+- **Gemini + approval UI fixes.** Gemini blocks-schema handling, an approval-button interaction trap, and a Cancel-run button (#673).
+- **Trigger label & count consistency.** The Agents list and run view show a friendly trigger label instead of the raw internal `subscribed` (#609); the audience routing preview shows the instance name rather than a raw ULID (#610); the run-view tool count excludes the feedback channel to match the Agents card (#611); the instance-level `config_schema` renders in the Config tab (#602); audience drag-to-reorder no longer leaves a stuck highlight (#671).
+- **Plugin health & robustness.** The administrative `inactive` state is excluded from the worst-health aggregate (#589); manifest schema parse errors fail closed on the config-migration gate (#632); plugin tool-namespace reservations are released on instance deletion (#574); `feedback_response_late` is recorded as a `plugin_audit_events` row (#579); OAuth `begin` error paths no longer leak the raw provider error body (#631).
 
 ### Security
 
