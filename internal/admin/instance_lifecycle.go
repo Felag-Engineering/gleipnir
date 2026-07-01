@@ -142,6 +142,7 @@ type InstanceLifecycleDeps struct {
 	ProcMgr    PluginProcessManager
 	Trigger    TriggerRestarter
 	Inflight   InflightCounter
+	Evictor    ToolConnEvictor
 	Unreg      ToolUnregistrar
 	PluginsDir string
 }
@@ -161,6 +162,7 @@ type InstanceLifecycle struct {
 	procMgr    PluginProcessManager
 	trigger    TriggerRestarter
 	inflight   InflightCounter
+	evictor    ToolConnEvictor
 	unreg      ToolUnregistrar
 	pluginsDir string
 }
@@ -180,6 +182,7 @@ func NewInstanceLifecycle(deps InstanceLifecycleDeps) *InstanceLifecycle {
 		procMgr:    deps.ProcMgr,
 		trigger:    deps.Trigger,
 		inflight:   deps.Inflight,
+		evictor:    deps.Evictor,
 		unreg:      deps.Unreg,
 		pluginsDir: deps.PluginsDir,
 	}
@@ -277,6 +280,15 @@ func (m *InstanceLifecycle) Deactivate(ctx context.Context, pluginID, instanceID
 		m.trigger.Stop(instanceID)
 	}
 
+	// Evict the cached tool-dispatch connection. procMgr.Stop closed the
+	// subprocess UDS above, so the Pool's cached *grpc.ClientConn is now dead;
+	// leaving it cached would make every tool call after reactivation fail with
+	// "grpc: the client connection is closing" (the conn is re-dialed only on a
+	// cache miss). The Pool keys by instance NAME. Best-effort, nil-safe.
+	if m.evictor != nil {
+		m.evictor.EvictInstance(inst.InstanceName)
+	}
+
 	nowStr := m.clock().UTC().Format(time.RFC3339Nano)
 	m.writeAuditEvent(ctx, auditInstanceDeactivated, "info", nowStr, map[string]any{
 		"plugin_id":     pluginID,
@@ -337,6 +349,14 @@ func (m *InstanceLifecycle) Activate(ctx context.Context, pluginID, instanceID s
 	// Best-effort trigger stream start.
 	if m.trigger != nil {
 		m.trigger.Start(ctx, instanceID)
+	}
+
+	// Defensive backstop: evict any lingering cached tool-dispatch connection so
+	// the first Call after reactivation re-dials the freshly-spawned subprocess.
+	// Deactivate already evicts, but this guards any path that respawns an
+	// instance without a preceding Deactivate. Best-effort, nil-safe.
+	if m.evictor != nil {
+		m.evictor.EvictInstance(inst.InstanceName)
 	}
 
 	nowStr := m.clock().UTC().Format(time.RFC3339Nano)

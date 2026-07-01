@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -43,6 +44,23 @@ func withPluginsDir(dir string) func(*InstanceLifecycleDeps) {
 
 func withUnreg(u ToolUnregistrar) func(*InstanceLifecycleDeps) {
 	return func(d *InstanceLifecycleDeps) { d.Unreg = u }
+}
+
+func withEvictor(e ToolConnEvictor) func(*InstanceLifecycleDeps) {
+	return func(d *InstanceLifecycleDeps) { d.Evictor = e }
+}
+
+// fakeEvictor records the instance names passed to EvictInstance so tests can
+// assert the deactivate/activate lifecycle drops the stale tool-dispatch conn.
+type fakeEvictor struct {
+	mu      sync.Mutex
+	evicted []string
+}
+
+func (f *fakeEvictor) EvictInstance(instanceName string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.evicted = append(f.evicted, instanceName)
 }
 
 // ─── Deactivate ──────────────────────────────────────────────────────────────
@@ -142,10 +160,12 @@ func TestInstanceLifecycle_Deactivate(t *testing.T) {
 
 		pm := &fakeProcessManager{}
 		restarter := &fakeTriggerRestarter{}
+		ev := &fakeEvictor{}
 		m := newTestLifecycle(q, nil,
 			withProcMgr(pm),
 			withTrigger(restarter),
 			withInflight(&fakeInflightCounter{counts: map[string]int{"prod": 0}}),
+			withEvictor(ev),
 		)
 
 		inst, err := m.Deactivate(ctx, "plugin-1", "inst-1")
@@ -161,6 +181,14 @@ func TestInstanceLifecycle_Deactivate(t *testing.T) {
 		pm.mu.Unlock()
 		if len(stopped) != 1 || stopped[0] != "inst-1" {
 			t.Errorf("Stop called with %v, want [inst-1]", stopped)
+		}
+		// The stale tool-dispatch connection must be evicted by instance NAME so a
+		// later reactivation re-dials the fresh subprocess (deactivate→activate bug).
+		ev.mu.Lock()
+		evicted := ev.evicted
+		ev.mu.Unlock()
+		if len(evicted) != 1 || evicted[0] != "prod" {
+			t.Errorf("EvictInstance called with %v, want [prod]", evicted)
 		}
 	})
 

@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -152,6 +153,60 @@ func TestPool_HappyPath(t *testing.T) {
 	if output != `{"echoed":"hello"}` {
 		t.Errorf("output = %q; want %q", output, `{"echoed":"hello"}`)
 	}
+}
+
+// TestPool_EvictInstance_ForcesRedial verifies that EvictInstance drops the
+// cached connection so the next Call re-dials via ConnFactory. This is the fix
+// for the deactivate→activate bug: a stopped-then-respawned subprocess must not
+// keep serving calls over the dead connection cached from its prior generation.
+func TestPool_EvictInstance_ForcesRedial(t *testing.T) {
+	srv := &fakeToolServer{
+		callHook: func(_ context.Context, _ *toolv1.CallRequest) (*toolv1.CallResponse, error) {
+			return &toolv1.CallResponse{OutputJson: `"ok"`}, nil
+		},
+	}
+	// Wrap the bufconn factory with a dial counter.
+	inner, srvCleanup := bufconnDialer(t, srv)
+	var dials atomic.Int64
+	counting := func(name string) (*grpc.ClientConn, error) {
+		dials.Add(1)
+		return inner(name)
+	}
+	pool := dispatch.New(dispatch.Config{
+		CallTimeout:          500 * time.Millisecond,
+		CancelTimeout:        150 * time.Millisecond,
+		DefaultMaxConcurrent: 10,
+		DefaultMaxQueueDepth: 10,
+		Connect:              counting,
+	})
+	defer func() {
+		pool.Close() //nolint:errcheck
+		srvCleanup()
+	}()
+
+	// First call dials once and caches the connection.
+	if _, _, err := pool.Call(context.Background(), "run-1", "pol-1", "inst", "echo", `{}`); err != nil {
+		t.Fatalf("first Call: %v", err)
+	}
+	// Second call to the same instance reuses the cached connection (no re-dial).
+	if _, _, err := pool.Call(context.Background(), "run-2", "pol-1", "inst", "echo", `{}`); err != nil {
+		t.Fatalf("second Call: %v", err)
+	}
+	if got := dials.Load(); got != 1 {
+		t.Fatalf("dials after two cached calls = %d; want 1", got)
+	}
+
+	// Evict, then the next call must re-dial.
+	pool.EvictInstance("inst")
+	if _, _, err := pool.Call(context.Background(), "run-3", "pol-1", "inst", "echo", `{}`); err != nil {
+		t.Fatalf("Call after evict: %v", err)
+	}
+	if got := dials.Load(); got != 2 {
+		t.Errorf("dials after evict+call = %d; want 2 (re-dial)", got)
+	}
+
+	// Evicting an unknown instance is a safe no-op.
+	pool.EvictInstance("does-not-exist")
 }
 
 // TestPool_ErrorEnvelope verifies that a plugin-side ErrorEnvelope is returned
