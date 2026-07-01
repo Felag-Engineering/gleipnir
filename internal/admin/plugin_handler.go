@@ -166,6 +166,16 @@ type InflightCounter interface {
 	InflightCountByInstance(instanceName string) int
 }
 
+// ToolConnEvictor closes and removes the cached tool-dispatch connection for a
+// named plugin instance. Implemented by *dispatch.Pool; kept as a narrow
+// interface here so the admin package does not import internal/plugin/dispatch
+// (mirrors InflightCounter). Called by Deactivate/Activate so a
+// stopped-then-respawned subprocess does not keep serving tool calls over the
+// dead connection cached from its prior generation. A nil evictor is a safe no-op.
+type ToolConnEvictor interface {
+	EvictInstance(instanceName string)
+}
+
 // RSSSample holds one RSS reading for a single plugin instance. Defined with
 // primitive types only so the admin package does not import
 // internal/plugin/process — the adapter in main.go converts between the two.

@@ -351,6 +351,7 @@ func run(cfg config.Config) error {
 		pluginProcMgr    admin.PluginProcessManager
 		pluginTrigger    admin.TriggerRestarter
 		pluginInflight   admin.InflightCounter
+		pluginEvictor    admin.ToolConnEvictor
 		pluginPluginsDir string
 		pluginInstaller  admin.PluginInstaller
 		pluginRSSAgg     admin.RSSAggregator
@@ -364,6 +365,7 @@ func run(cfg config.Config) error {
 			pluginProcMgr = mgr
 			pluginPluginsDir = cfg.PluginsDir
 			pluginInflight = rt.Pool
+			pluginEvictor = rt.Pool
 		}
 	}
 	if mgr := rt.Manager(); mgr != nil {
@@ -379,6 +381,7 @@ func run(cfg config.Config) error {
 		ProcMgr:    pluginProcMgr,
 		Trigger:    pluginTrigger,
 		Inflight:   pluginInflight,
+		Evictor:    pluginEvictor,
 		PluginsDir: pluginPluginsDir,
 		Unreg:      rt.ToolRegistrar,
 	})

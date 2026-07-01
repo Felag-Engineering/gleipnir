@@ -479,6 +479,34 @@ func (p *Pool) CancelRun(runID string) {
 	}
 }
 
+// EvictInstance closes and removes the cached connection for the named instance,
+// if one exists. The next Call to that instance re-dials via ConnFactory.
+//
+// Called by the admin deactivate/activate lifecycle. Stopping a subprocess closes
+// its UDS, but the Pool caches a *grpc.ClientConn per instance and only re-dials
+// on a cache miss — so a stopped-then-respawned instance would keep serving tool
+// calls over the dead connection, failing every call with
+// "grpc: the client connection is closing". Evicting on deactivate forces a fresh
+// dial when the instance is reactivated under a new subprocess/socket.
+//
+// A no-op when nothing is cached. closeOnce guards against a concurrent CancelRun
+// goroutine that may already be force-closing the same connection.
+func (p *Pool) EvictInstance(instanceName string) {
+	p.instancesMu.Lock()
+	defer p.instancesMu.Unlock()
+	st, ok := p.instances[instanceName]
+	if !ok {
+		return
+	}
+	st.closeOnce.Do(func() {
+		if err := st.conn.Close(); err != nil {
+			slog.Warn("plugin conn.Close during evict",
+				"instance", instanceName, "err", err)
+		}
+	})
+	delete(p.instances, instanceName)
+}
+
 // Close cancels all in-flight runs (best-effort) and closes all connections.
 // Used during host shutdown.
 func (p *Pool) Close() error {
