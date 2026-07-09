@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -452,4 +454,79 @@ func TestModelsHandler_FilterSemantics(t *testing.T) {
 			t.Errorf("expected 2 models on filter error, got %d", len(envelope.Data[0].Models))
 		}
 	})
+}
+
+// decodeProviderOrder decodes the response envelope and returns the
+// providers in the order they appear in the JSON array.
+func decodeProviderOrder(t *testing.T, body io.Reader) []string {
+	t.Helper()
+	var envelope struct {
+		Data []struct {
+			Provider string `json:"provider"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(body).Decode(&envelope); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	providers := make([]string, len(envelope.Data))
+	for i, p := range envelope.Data {
+		providers[i] = p.Provider
+	}
+	return providers
+}
+
+// TestModelsHandler_DeterministicProviderOrder guards against #612: the
+// handler builds its response by ranging over a map keyed by provider, whose
+// iteration order Go randomizes per call. Repeated calls must return
+// providers in the same, alphabetically-sorted order every time.
+func TestModelsHandler_DeterministicProviderOrder(t *testing.T) {
+	lister := &stubModelLister{
+		models: map[string][]llm.ModelInfo{
+			"openai":    {{Name: "gpt-5", DisplayName: "GPT-5"}},
+			"anthropic": {{Name: "claude-sonnet-4-6", DisplayName: "claude-sonnet-4-6"}},
+			"google":    {{Name: "gemini-2.5-flash", DisplayName: "Gemini 2.5 Flash"}},
+		},
+	}
+	wantOrder := []string{"anthropic", "google", "openai"}
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "List", method: http.MethodGet, path: "/models"},
+		{name: "Refresh", method: http.MethodPost, path: "/models/refresh"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(newModelsRouter(lister))
+			t.Cleanup(srv.Close)
+
+			// Call repeatedly: a map-iteration bug would eventually surface a
+			// different order across calls even though it might pass once.
+			for i := 0; i < 10; i++ {
+				req, err := http.NewRequest(tc.method, srv.URL+tc.path, nil)
+				if err != nil {
+					t.Fatalf("build request: %v", err)
+				}
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatalf("%s %s: %v", tc.method, tc.path, err)
+				}
+
+				if resp.StatusCode != http.StatusOK {
+					resp.Body.Close()
+					t.Fatalf("status = %d, want 200", resp.StatusCode)
+				}
+
+				gotOrder := decodeProviderOrder(t, resp.Body)
+				resp.Body.Close()
+
+				if !reflect.DeepEqual(gotOrder, wantOrder) {
+					t.Fatalf("call %d: provider order = %v, want %v", i, gotOrder, wantOrder)
+				}
+			}
+		})
+	}
 }

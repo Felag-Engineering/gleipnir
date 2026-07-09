@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"sort"
 
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
 	"github.com/felag-engineering/gleipnir/internal/llm"
@@ -78,6 +79,7 @@ func (h *ModelsHandler) List(w http.ResponseWriter, r *http.Request) {
 			Models:   filterModels(toModelResponses(models), prov, enabled),
 		})
 	}
+	sortByProvider(result)
 	httputil.WriteJSON(w, http.StatusOK, result)
 }
 
@@ -118,7 +120,16 @@ func (h *ModelsHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 			Models:   toModelResponses(models),
 		})
 	}
+	sortByProvider(result)
 	httputil.WriteJSON(w, http.StatusOK, result)
+}
+
+// sortByProvider sorts result in place, alphabetically by Provider, so
+// /api/v1/models returns a deterministic order every call. Go's map
+// iteration order is randomized, and both List and Refresh build result
+// from a map keyed by provider.
+func sortByProvider(result []modelsListResponse) {
+	sort.Slice(result, func(i, j int) bool { return result[i].Provider < result[j].Provider })
 }
 
 func toModelResponses(models []llm.ModelInfo) []modelResponse {
