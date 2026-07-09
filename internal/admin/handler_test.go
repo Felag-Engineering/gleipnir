@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1063,5 +1065,72 @@ func TestFormatUptime(t *testing.T) {
 				t.Errorf("formatUptime(%dm) = %q, want %q", tt.minutes, got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestFormatDBSize(t *testing.T) {
+	tests := []struct {
+		name      string
+		mainBytes int // -1 means don't create the main .db file
+		walBytes  int // -1 means don't create the -wal file
+		shmBytes  int // -1 means don't create the -shm file
+		expected  string
+	}{
+		{
+			name:      "main plus wal plus shm summed",
+			mainBytes: 1024,
+			walBytes:  1024 * 1023, // total 1024*1024 = 1 MB
+			shmBytes:  0,
+			expected:  "1.0 MB",
+		},
+		{
+			name:      "only main file present",
+			mainBytes: 512,
+			walBytes:  -1,
+			shmBytes:  -1,
+			expected:  "512 B",
+		},
+		{
+			name:      "missing sidecars treated as zero",
+			mainBytes: 2048,
+			walBytes:  -1,
+			shmBytes:  -1,
+			expected:  "2.0 KB",
+		},
+		{
+			name:      "main file missing reports unknown",
+			mainBytes: -1,
+			walBytes:  1024,
+			shmBytes:  -1,
+			expected:  "unknown",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "gleipnir.db")
+
+			if tt.mainBytes >= 0 {
+				writeSizedFile(t, path, tt.mainBytes)
+			}
+			if tt.walBytes >= 0 {
+				writeSizedFile(t, path+"-wal", tt.walBytes)
+			}
+			if tt.shmBytes >= 0 {
+				writeSizedFile(t, path+"-shm", tt.shmBytes)
+			}
+
+			got := formatDBSize(path)
+			if got != tt.expected {
+				t.Errorf("formatDBSize() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func writeSizedFile(t *testing.T, path string, size int) {
+	t.Helper()
+	if err := os.WriteFile(path, make([]byte, size), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
 	}
 }

@@ -659,15 +659,26 @@ func formatUptime(d time.Duration) string {
 	return fmt.Sprintf("%dm", minutes)
 }
 
+// statSize returns the size in bytes of the file at path, or 0 if it does
+// not exist or cannot be stat'd.
+func statSize(path string) int64 {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return fi.Size()
+}
+
 func formatDBSize(path string) string {
 	if path == "" {
 		return "unknown"
 	}
-	fi, err := os.Stat(path)
-	if err != nil {
+	if _, err := os.Stat(path); err != nil {
 		return "unknown"
 	}
-	size := fi.Size()
+	// SQLite runs in WAL mode (ADR-003): committed data can live in the
+	// -wal sidecar until checkpoint, so the main file alone under-reports.
+	size := statSize(path) + statSize(path+"-wal") + statSize(path+"-shm")
 	switch {
 	case size >= 1<<30:
 		return fmt.Sprintf("%.1f GB", float64(size)/float64(1<<30))
