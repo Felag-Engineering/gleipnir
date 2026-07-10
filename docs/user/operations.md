@@ -127,7 +127,7 @@ All variables are read at startup. Changing a value requires restarting the stac
 | `GLEIPNIR_PLUGIN_REQUEST_SCAN_INTERVAL` | `30s` | How often to scan for plugin channel requests that have timed out. |
 | `GLEIPNIR_PLUGIN_DEDUP_SWEEP_INTERVAL` | `10m` | How often the dedup sweeper evicts entries older than the 1-hour dedup window. |
 
-`GLEIPNIR_PORT` is a Docker Compose variable (not read by the Go server directly). It controls which host port the container exposes and defaults to `3000`.
+`GLEIPNIR_PORT` is a Docker Compose variable (not read by the Go server directly). It controls which host port the container exposes and defaults to `8080` (matching the container's internal port).
 
 Installing and managing plugins — see [Plugins](plugins.md).
 
