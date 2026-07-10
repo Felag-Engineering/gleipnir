@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -461,19 +462,42 @@ func run(cfg config.Config) error {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
-	// httpWG tracks the ListenAndServe goroutine so main can confirm it has
-	// exited after Shutdown returns. Without this, a late panic from the listener
-	// could race the process exit.
+	// Bind the listener explicitly before serving so the "ready" banner is only
+	// shown once the socket is actually accepting connections. A failed bind
+	// (e.g. the port is already in use) must fail loudly rather than advertise a
+	// URL that doesn't work.
+	ln, err := net.Listen("tcp", cfg.ListenAddr)
+	if err != nil {
+		slog.Error("failed to bind listen address", "addr", cfg.ListenAddr, "err", err)
+		os.Exit(1)
+	}
+
+	// public_url (ADR-035), when set, is the canonical URL to advertise; on any
+	// read error we simply fall back to the localhost form in the banner.
+	publicURL, err := systemSettings.GetPublicURL(ctx)
+	if err != nil {
+		slog.Warn("could not read public_url for startup banner", "err", err)
+		publicURL = ""
+	}
+
+	// httpWG tracks the Serve goroutine so main can confirm it has exited after
+	// Shutdown returns. Without this, a late panic from the listener could race
+	// the process exit.
 	var httpWG sync.WaitGroup
 	httpWG.Add(1)
 	go func() {
 		defer httpWG.Done()
-		slog.Info("server listening", "addr", cfg.ListenAddr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("server error", "err", err)
 			quit <- syscall.SIGTERM
 		}
 	}()
+
+	slog.Info("server listening", "addr", cfg.ListenAddr)
+	// Human-facing affordance: a plain "ready → open this URL" notice so an
+	// operator staring at `compose up` output knows it booted and where to go
+	// (structured logs are easy to miss / some compose providers swallow them).
+	printReadyBanner(os.Stdout, version.Version, cfg.ListenAddr, publicURL)
 
 	<-quit
 	slog.Info("shutting down")

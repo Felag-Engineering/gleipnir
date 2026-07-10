@@ -25,7 +25,11 @@ Create a working directory and add two files:
 ```yaml
 services:
   api:
-    image: felagengineering/gleipnir:latest
+    # Fully-qualified (docker.io/…) so Podman resolves it without a short-name
+    # prompt; Docker accepts the qualified form too. Multi-arch: the right
+    # amd64/arm64 variant is pulled automatically for your host.
+    image: docker.io/felagengineering/gleipnir:latest
+    # Host port 3000 -> container port 8080. Open http://localhost:3000.
     ports:
       - "${GLEIPNIR_PORT:-3000}:8080"
     environment:
@@ -33,10 +37,12 @@ services:
       - GLEIPNIR_ENCRYPTION_KEY=${GLEIPNIR_ENCRYPTION_KEY:?Set GLEIPNIR_ENCRYPTION_KEY in .env}
     volumes:
       - gleipnir_data:/data
+      - gleipnir_plugins:/plugins
     restart: unless-stopped
 
 volumes:
   gleipnir_data:
+  gleipnir_plugins:
 ```
 
 **`.env`**
@@ -85,11 +91,37 @@ GLEIPNIR_ENCRYPTION_KEY=<paste-64-hex-chars-here>
 docker compose up -d
 ```
 
-The container will be healthy once the `/api/v1/health` endpoint responds. You can check:
+`-d` starts it in the background. Within a few seconds the container logs print a
+ready banner telling you where to go:
+
+```
+──────────────────────────────────────────────────────────
+  Gleipnir 1.1.0 is ready.
+
+  → Open the web UI:  http://localhost:8080
+
+  Running under Docker/Podman Compose? The port above is the
+  container's internal port — open the host port you mapped
+  instead (default: http://localhost:3000).
+──────────────────────────────────────────────────────────
+```
+
+Confirm it's up:
 
 ```bash
-docker compose ps
+docker compose ps                           # STATUS shows "healthy"
+curl http://localhost:3000/api/v1/health    # -> {"data":{"status":"ok"}}
 ```
+
+Then open **http://localhost:3000** in your browser.
+
+> **"It looks like it hung."** If you run `docker compose up` *without* `-d`, the
+> command stays attached and the server runs in the foreground — that is normal,
+> not a hang. The app is also quiet after startup, so a still terminal doesn't
+> mean it's stuck; confirm with the health check above or `docker compose logs`.
+> Under Podman, `podman compose` sometimes doesn't stream container logs to the
+> attach view at all — use `podman compose logs` (or `podman logs <container>`)
+> to see the ready banner.
 
 ## Complete the setup wizard
 

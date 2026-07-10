@@ -33,6 +33,16 @@ podman compose up -d
 podman compose ps
 ```
 
+On startup the container logs a ready banner with the URL to open. Note that
+`podman compose` (unlike `docker compose`) sometimes does **not** stream
+container stdout to the attach view — a quiet terminal after `Attaching to …`
+does not mean it hung. Confirm it's up with either of:
+
+```bash
+podman compose logs                          # shows the "Gleipnir … is ready" banner
+curl http://localhost:3000/api/v1/health     # -> {"data":{"status":"ok"}}
+```
+
 Then open `http://localhost:3000` and complete the setup wizard exactly as in
 [setup.md](setup.md#complete-the-setup-wizard).
 
