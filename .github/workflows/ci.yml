@@ -303,6 +303,59 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  # Boots the cross-compiled arm64 image under QEMU emulation and health-checks
+  # it. docker-build above proves arm64 *compiles*; this proves the arm64 binary
+  # actually *boots and serves* — the one gap that let a runtime-only arm64
+  # regression reach users. Emulated and therefore slow, but this is a single
+  # container liveness probe, not a performance test, so the wall-clock cost is
+  # a boot plus a health poll. The arm64 layers are already warm in the gha
+  # cache from docker-build, so the build step here is a near-instant cache hit.
+  arm64-boot:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # setup-qemu-action registers the binfmt handlers that let an amd64 runner
+      # exec the arm64 binary; buildx --load needs a single-platform build.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build arm64 image (load into local docker)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          load: true
+          tags: gleipnir:arm64-ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Boot arm64 image and health-check
+        run: |
+          set -euo pipefail
+          docker run -d --name gleipnir-arm64 \
+            --platform linux/arm64 \
+            -e GLEIPNIR_ENCRYPTION_KEY="$(openssl rand -hex 32)" \
+            -p 3000:8080 \
+            gleipnir:arm64-ci
+          # Emulated arm64 boots slower than native — allow a generous window
+          # (45 * 2s = 90s) so QEMU startup jitter can't flake the gate.
+          for i in $(seq 1 45); do
+            if curl -fsS http://localhost:3000/api/v1/health; then
+              echo "arm64 image healthy after ${i} attempt(s)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::gleipnir arm64 image did not boot/serve under QEMU"
+          docker logs gleipnir-arm64
+          exit 1
+
+      - name: Tear down
+        if: always()
+        run: docker rm -f gleipnir-arm64 || true
+
   # Builds and boots the image under Podman (rootless, preinstalled on the
   # ubuntu runner) so we gate Podman compatibility per-PR and don't silently
   # regress it. Build + run rather than `podman compose` to avoid depending on
