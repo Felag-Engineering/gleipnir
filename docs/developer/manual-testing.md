@@ -35,7 +35,7 @@ Bring up the dev stack (base + the in-repo MCP test server):
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 ```
 
-This starts `api` (on `${GLEIPNIR_PORT:-3000}` → `8080`) and `mcp-test-server` (on `8090`). Then start your own Todoist and Mealie MCP servers separately and attach them to the same Docker network (or expose them on the host).
+This starts `api` (on `${GLEIPNIR_PORT:-8080}` → `8080`) and `mcp-test-server` (on `8090`). Then start your own Todoist and Mealie MCP servers separately and attach them to the same Docker network (or expose them on the host).
 
 Verify services are running:
 
@@ -52,7 +52,7 @@ Common failure modes:
 
 ### Registering MCP servers in Gleipnir
 
-1. Open [http://localhost:3000](http://localhost:3000) (or `http://localhost:${GLEIPNIR_PORT}`)
+1. Open [http://localhost:8080](http://localhost:8080) (or `http://localhost:${GLEIPNIR_PORT}`)
 2. Go to **Settings → MCP Servers → Add Server**
 3. Register the MCP test server: name `test`, URL `http://mcp-test-server:8090/mcp`
 4. Register your Todoist MCP server: name `todoist`, URL pointing at wherever you host it

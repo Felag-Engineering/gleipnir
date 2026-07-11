@@ -47,7 +47,7 @@ Create a `docker-compose.yml` and a `.env` file as shown in [Setup](docs/user/se
    docker compose up -d
    ```
 
-4. Open `http://localhost:3000` in your browser.
+4. Open `http://localhost:8080` in your browser.
 
 5. Complete the first-run setup: create the admin user, then add your LLM provider API key at **Admin → Models**.
 

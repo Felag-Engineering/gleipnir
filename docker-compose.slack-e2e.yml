@@ -1,6 +1,6 @@
 # Slack kitchen-sink E2E stack override.
 # Builds Gleipnir from the local source and exposes the OAuth callback at
-# http://localhost:3000.
+# http://localhost:8080.
 #
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.slack-e2e.yml up --build

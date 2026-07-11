@@ -33,7 +33,17 @@ podman compose up -d
 podman compose ps
 ```
 
-Then open `http://localhost:3000` and complete the setup wizard exactly as in
+On startup the container logs a ready banner with the URL to open. Note that
+`podman compose` (unlike `docker compose`) sometimes does **not** stream
+container stdout to the attach view — a quiet terminal after `Attaching to …`
+does not mean it hung. Confirm it's up with either of:
+
+```bash
+podman compose logs                          # shows the "Gleipnir … is ready" banner
+curl http://localhost:8080/api/v1/health     # -> {"data":{"status":"ok"}}
+```
+
+Then open `http://localhost:8080` and complete the setup wizard exactly as in
 [setup.md](setup.md#complete-the-setup-wizard).
 
 ## Quickstart (no compose)
@@ -46,14 +56,14 @@ podman volume create gleipnir_data
 podman volume create gleipnir_plugins
 
 podman run -d --name gleipnir \
-  -p 3000:8080 \
+  -p 8080:8080 \
   -e GLEIPNIR_ENCRYPTION_KEY="$(openssl rand -hex 32)" \
   -v gleipnir_data:/data \
   -v gleipnir_plugins:/plugins \
   docker.io/felagengineering/gleipnir:latest
 
 # wait for healthy, then:
-curl -fsS http://localhost:3000/api/v1/health
+curl -fsS http://localhost:8080/api/v1/health
 ```
 
 > Save the encryption key you generate above — losing it makes every stored
@@ -91,7 +101,7 @@ services:
 ### Rootless port mapping
 
 Rootless Podman can only bind host ports **≥ 1024**. The default
-`GLEIPNIR_PORT=3000` is fine. If you set a privileged port (< 1024) you'll need
+`GLEIPNIR_PORT=8080` is fine. If you set a privileged port (< 1024) you'll need
 `sudo`, rootful Podman, or a `net.ipv4.ip_unprivileged_port_start` sysctl change.
 
 ### Reaching host services

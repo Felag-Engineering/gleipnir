@@ -25,24 +25,31 @@ Create a working directory and add two files:
 ```yaml
 services:
   api:
-    image: felagengineering/gleipnir:latest
+    # Fully-qualified (docker.io/…) so Podman resolves it without a short-name
+    # prompt; Docker accepts the qualified form too. Multi-arch: the right
+    # amd64/arm64 variant is pulled automatically for your host.
+    image: docker.io/felagengineering/gleipnir:latest
+    # Host port defaults to 8080, matching the container port — open
+    # http://localhost:8080. Override GLEIPNIR_PORT to publish elsewhere.
     ports:
-      - "${GLEIPNIR_PORT:-3000}:8080"
+      - "${GLEIPNIR_PORT:-8080}:8080"
     environment:
       - GLEIPNIR_DB_PATH=${GLEIPNIR_DB_PATH:-/data/gleipnir.db}
       - GLEIPNIR_ENCRYPTION_KEY=${GLEIPNIR_ENCRYPTION_KEY:?Set GLEIPNIR_ENCRYPTION_KEY in .env}
     volumes:
       - gleipnir_data:/data
+      - gleipnir_plugins:/plugins
     restart: unless-stopped
 
 volumes:
   gleipnir_data:
+  gleipnir_plugins:
 ```
 
 **`.env`**
 ```
 GLEIPNIR_ENCRYPTION_KEY=<paste-64-hex-chars-here>
-GLEIPNIR_PORT=3000
+GLEIPNIR_PORT=8080
 ```
 
 Generate the key and paste it into `.env` before starting:
@@ -85,15 +92,37 @@ GLEIPNIR_ENCRYPTION_KEY=<paste-64-hex-chars-here>
 docker compose up -d
 ```
 
-The container will be healthy once the `/api/v1/health` endpoint responds. You can check:
+`-d` starts it in the background. Within a few seconds the container logs print a
+ready banner telling you where to go:
+
+```
+──────────────────────────────────────────────────────────
+  Gleipnir 1.1.0 is ready.
+
+  → Open the web UI:  http://localhost:8080
+──────────────────────────────────────────────────────────
+```
+
+Confirm it's up:
 
 ```bash
-docker compose ps
+docker compose ps                           # STATUS shows "healthy"
+curl http://localhost:8080/api/v1/health    # -> {"data":{"status":"ok"}}
 ```
+
+Then open **http://localhost:8080** in your browser.
+
+> **"It looks like it hung."** If you run `docker compose up` *without* `-d`, the
+> command stays attached and the server runs in the foreground — that is normal,
+> not a hang. The app is also quiet after startup, so a still terminal doesn't
+> mean it's stuck; confirm with the health check above or `docker compose logs`.
+> Under Podman, `podman compose` sometimes doesn't stream container logs to the
+> attach view at all — use `podman compose logs` (or `podman logs <container>`)
+> to see the ready banner.
 
 ## Complete the setup wizard
 
-Open `http://localhost:3000` in your browser. On first run, Gleipnir redirects to the setup wizard. If it doesn't, navigate directly to `http://localhost:3000/setup`. The setup page is only reachable until the first admin account is created — after that it redirects to the login page.
+Open `http://localhost:8080` in your browser. On first run, Gleipnir redirects to the setup wizard. If it doesn't, navigate directly to `http://localhost:8080/setup`. The setup page is only reachable until the first admin account is created — after that it redirects to the login page.
 
 1. **Create the admin account.** Choose a username and a strong password. This is the only account until you add more users.
 2. Log in with the credentials you just created.

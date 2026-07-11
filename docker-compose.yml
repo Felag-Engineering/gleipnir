@@ -4,8 +4,11 @@ services:
     # a short-name prompt — Podman's default registries.conf does not assume
     # docker.io the way Docker does. Docker accepts the qualified form too.
     image: docker.io/felagengineering/gleipnir:latest
+    # Host port defaults to 8080 to match the container's internal port, so the
+    # URL is the same everywhere (the startup banner, the browser, and inside
+    # the container). Override GLEIPNIR_PORT to publish on a different host port.
     ports:
-      - "${GLEIPNIR_PORT:-3000}:8080"
+      - "${GLEIPNIR_PORT:-8080}:8080"
     environment:
       - GLEIPNIR_DB_PATH=${GLEIPNIR_DB_PATH:-/data/gleipnir.db}
       # REQUIRED. Encrypts provider API keys and webhook secrets at rest.
