@@ -148,15 +148,3 @@
   color: var(--text-faint);
   font-style: italic;
 }
-
-.loading {
-  margin: 0;
-  font-size: var(--text-sm);
-  color: var(--text-muted);
-}
-
-.errorMsg {
-  margin: 0;
-  font-size: var(--text-sm);
-  color: var(--color-red);
-}

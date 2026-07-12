@@ -127,6 +127,7 @@ function mockInstancesLoaded(instances: ApiPluginInstanceForAudience[]) {
   vi.mocked(usePluginInstancesForAudience).mockReturnValue({
     data: instances,
     status: 'success',
+    refetch: vi.fn(),
   } as unknown as ReturnType<typeof usePluginInstancesForAudience>)
 }
 
@@ -134,6 +135,15 @@ function mockInstancesPending() {
   vi.mocked(usePluginInstancesForAudience).mockReturnValue({
     data: undefined,
     status: 'pending',
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof usePluginInstancesForAudience>)
+}
+
+function mockInstancesError() {
+  vi.mocked(usePluginInstancesForAudience).mockReturnValue({
+    data: undefined,
+    status: 'error',
+    refetch: vi.fn(),
   } as unknown as ReturnType<typeof usePluginInstancesForAudience>)
 }
 
@@ -171,6 +181,15 @@ function mockInstanceDetailPending() {
   vi.mocked(usePluginInstanceDetail).mockReturnValue({
     data: undefined,
     status: 'pending',
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof usePluginInstanceDetail>)
+}
+
+function mockInstanceDetailError() {
+  vi.mocked(usePluginInstanceDetail).mockReturnValue({
+    data: undefined,
+    status: 'error',
+    refetch: vi.fn(),
   } as unknown as ReturnType<typeof usePluginInstanceDetail>)
 }
 
@@ -229,9 +248,56 @@ describe('AdminPluginInstancePage — loading state', () => {
     mockMutationNoop()
   })
 
-  it('shows loading message while data is pending', () => {
+  it('shows a skeleton while the instance list is pending', () => {
+    const { container } = renderPage()
+    // The shared SkeletonList renders aria-hidden skeleton blocks.
+    expect(container.querySelectorAll('[aria-hidden="true"]').length).toBeGreaterThan(0)
+    // No raw "Loading…" text remains.
+    expect(screen.queryByText('Loading…')).not.toBeInTheDocument()
+  })
+})
+
+describe('AdminPluginInstancePage — error state', () => {
+  beforeEach(() => {
+    mockCurrentUser(['admin'])
+    mockInstanceDetailPending()
+    mockMutationNoop()
+  })
+
+  it('shows a recoverable error with retry when the instance list fails to load', () => {
+    mockInstancesError()
     renderPage()
-    expect(screen.getByText(/loading/i)).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+    expect(screen.getByText(/instance could not be loaded/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument()
+  })
+
+  it('retry button calls refetch on the instance list', () => {
+    const refetch = vi.fn()
+    vi.mocked(usePluginInstancesForAudience).mockReturnValue({
+      data: undefined,
+      status: 'error',
+      refetch,
+    } as unknown as ReturnType<typeof usePluginInstancesForAudience>)
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }))
+    expect(refetch).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('AdminPluginInstancePage — Config tab error state', () => {
+  beforeEach(() => {
+    mockCurrentUser(['admin'])
+    mockInstancesLoaded([INSTANCE_NO_SCHEMA])
+    mockMutationNoop()
+  })
+
+  it('shows a recoverable error with retry when the config detail fails to load', () => {
+    mockInstanceDetailError()
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Config' }))
+    expect(screen.getByText(/could not load instance config/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument()
   })
 })
 

@@ -4,6 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { Button } from '@/components/Button'
+import { QueryBoundary, SkeletonList } from '@/components/QueryBoundary'
 import { SchemaForm, REDACTION_SENTINEL } from '@/components/form/SchemaForm'
 import type { SchemaShape, SchemaProperty } from '@/components/form/SchemaForm'
 import { useOptionsContext } from '@/hooks/useOptionsContext'
@@ -149,7 +150,7 @@ function ConfigTab({ pluginId, instanceId }: ConfigTabProps) {
   // carries the CHANNEL config schema — wrong for instance-level fields like
   // Slack's app_level_token. The detail endpoint now returns the correct
   // instance-level schema verbatim (ADR-049; schema is metadata, not a secret).
-  const { data: detail, status: detailStatus } = usePluginInstanceDetail(pluginId, instanceId)
+  const { data: detail, status: detailStatus, refetch: refetchDetail } = usePluginInstanceDetail(pluginId, instanceId)
 
   // Derive the instance-level schema from the detail response rather than from
   // the listing's channel schema (which the audience editor depends on — leave
@@ -264,18 +265,17 @@ function ConfigTab({ pluginId, instanceId }: ConfigTabProps) {
     setCasConflict(false)
   }
 
-  if (detailStatus === 'pending') {
+  if (detailStatus !== 'success') {
     return (
       <div className={styles.tabContent}>
-        <p className={styles.loading}>Loading…</p>
-      </div>
-    )
-  }
-
-  if (detailStatus === 'error') {
-    return (
-      <div className={styles.tabContent}>
-        <p className={styles.errorMsg}>Could not load instance config.</p>
+        <QueryBoundary
+          status={detailStatus}
+          errorMessage="Could not load instance config."
+          onRetry={() => { void refetchDetail() }}
+          skeleton={<SkeletonList count={3} height={48} gap={12} borderRadius={8} />}
+        >
+          {null}
+        </QueryBoundary>
       </div>
     )
   }
@@ -343,7 +343,7 @@ export default function AdminPluginInstancePage() {
   const [activeTab, setActiveTab] = useState<Tab>('subscriptions')
   const queryClient = useQueryClient()
 
-  const { data: allInstances, status } = usePluginInstancesForAudience()
+  const { data: allInstances, status, refetch: refetchInstances } = usePluginInstancesForAudience()
   const { data: currentUser } = useCurrentUser()
 
   // The backend gates all credentials endpoints with RequireRole(admin).
@@ -526,11 +526,26 @@ export default function AdminPluginInstancePage() {
   }, [])
 
   function renderTabContent() {
-    if (status === 'pending') {
-      return <p className={styles.loading}>Loading…</p>
+    if (status !== 'success') {
+      return (
+        <QueryBoundary
+          status={status}
+          errorMessage="Instance could not be loaded."
+          onRetry={() => { void refetchInstances() }}
+          skeleton={<SkeletonList count={3} height={48} gap={12} borderRadius={8} />}
+        >
+          {null}
+        </QueryBoundary>
+      )
     }
-    if (status === 'error' || !instance) {
-      return <p className={styles.errorMsg}>Instance not found or could not be loaded.</p>
+    if (!instance) {
+      // Loaded successfully but this instance id is not in the list — a genuine
+      // not-found, not a fetch failure, so no retry affordance is offered.
+      return (
+        <QueryBoundary status="error" errorMessage="Instance not found or could not be loaded.">
+          {null}
+        </QueryBoundary>
+      )
     }
 
     if (activeTab === 'subscriptions' && hasSubscriptionSchema) {
