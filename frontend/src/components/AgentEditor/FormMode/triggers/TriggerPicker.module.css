@@ -83,6 +83,16 @@
   outline: none;
 }
 
+/*
+ * This full-bleed popover search has only a bottom border, so the removed
+ * outline needs a keyboard-visible substitute (#703): thicken the bottom edge
+ * to the accent colour on keyboard focus. :focus-visible keeps it off mouse clicks.
+ */
+.search:focus-visible {
+  border-bottom-color: var(--color-blue);
+  box-shadow: inset 0 -1px 0 var(--color-blue);
+}
+
 .search::placeholder {
   color: var(--text-muted);
 }

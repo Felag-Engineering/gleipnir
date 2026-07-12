@@ -100,25 +100,9 @@
 }
 
 .input {
+  composes: input from '@/styles/forms.module.css';
+  /* Tighter padding than the default field — this is a dense inline row editor. */
   padding: var(--space-1) var(--space-2);
-  font-size: var(--text-sm);
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-mid);
-  border-radius: var(--radius-md);
-  color: var(--text-primary);
-  font-family: var(--font-body);
-  width: 100%;
-  box-sizing: border-box;
-}
-
-.input:focus {
-  outline: 2px solid var(--color-blue);
-  outline-offset: 1px;
-}
-
-.input:disabled {
-  opacity: 0.6;
-  cursor: default;
 }
 
 .select {

@@ -425,6 +425,8 @@ export function AgentEditorPage() {
         isEditMode={Boolean(id)}
         pausedAt={policy?.paused_at}
         isPauseResumeLoading={pausePolicy.isPending || resumePolicy.isPending}
+        isSaving={savePolicy.isPending}
+        isDeleting={deletePolicy.isPending}
         onSave={handleSave}
         onDeleteClick={() => setDeleteModalOpen(true)}
         onRunNowClick={id ? () => setTriggerModalOpen(true) : undefined}

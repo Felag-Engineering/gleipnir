@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
 import { KeyRound, Bot, Layers } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
+import { Button } from '@/components/Button'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import { useProviders, useAllAdminModels, useAdminSettings } from '@/hooks/queries/admin'
 import { useModels } from '@/hooks/queries/users'
@@ -73,12 +74,13 @@ function ProviderKeyRow({ provider }: { provider: ApiProviderStatus }) {
         <div className={styles.providerActions}>
           {provider.has_key && <span className={styles.activeBadge}>Active</span>}
           {!editing && (
-            <button
-              className={provider.has_key ? styles.btnSecondary : styles.btnPrimary}
+            <Button
+              variant={provider.has_key ? 'secondary' : 'primary'}
+              size="small"
               onClick={() => setEditing(true)}
             >
               {provider.has_key ? 'Update' : 'Set Key'}
-            </button>
+            </Button>
           )}
         </div>
       </div>
@@ -92,16 +94,18 @@ function ProviderKeyRow({ provider }: { provider: ApiProviderStatus }) {
             autoFocus
           />
           <div className={styles.keyInputActions}>
-            <button
-              className={styles.btnPrimary}
+            <Button
+              variant="primary"
+              size="small"
               onClick={handleSave}
-              disabled={!keyValue.trim() || setKey.isPending}
+              disabled={!keyValue.trim()}
+              loading={setKey.isPending}
             >
               Save
-            </button>
-            <button className={styles.btnSecondary} onClick={handleCancel}>
+            </Button>
+            <Button variant="secondary" size="small" onClick={handleCancel}>
               Cancel
-            </button>
+            </Button>
           </div>
         </div>
       )}
