@@ -89,6 +89,12 @@ export const Loading: Story = {
   args: { data: undefined, isLoading: true },
 }
 
+// Error exercises the failed-fetch branch: a distinct error affordance with a
+// Retry action, NOT the healthy-but-empty copy.
+export const Error: Story = {
+  args: { data: undefined, isLoading: false, isError: true, onRetry: () => {} },
+}
+
 // SubPennyCosts exercises the sub-penny formatting path (toFixed(4) for
 // costs < $0.01). Uses cheap models with small token counts to produce
 // values like $0.0001 that would previously round to $0.00.

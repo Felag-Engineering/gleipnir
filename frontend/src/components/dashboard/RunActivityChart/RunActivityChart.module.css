@@ -43,6 +43,22 @@
   font-family: var(--font-body);
 }
 
+.errorState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  height: 100%;
+  text-align: center;
+}
+
+.errorMessage {
+  color: var(--color-red);
+  font-size: var(--text-sm);
+  font-family: var(--font-body);
+}
+
 .skeleton {
   width: 100%;
   height: 100%;

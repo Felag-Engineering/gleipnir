@@ -8,11 +8,16 @@ import {
   CartesianGrid,
 } from 'recharts'
 import type { ApiTimeSeriesResponse } from '@/api/types'
+import { Button } from '@/components/Button'
 import styles from './RunActivityChart.module.css'
 
 interface RunActivityChartProps {
   data: ApiTimeSeriesResponse | undefined
   isLoading: boolean
+  // isError is true when the underlying stats fetch failed. It is rendered as a
+  // distinct error affordance so a failed call is not mistaken for an empty account.
+  isError?: boolean
+  onRetry?: () => void
 }
 
 interface ChartRow {
@@ -100,7 +105,7 @@ function ChartLegend({ rows }: { rows: ChartRow[] }) {
   )
 }
 
-export function RunActivityChart({ data, isLoading }: RunActivityChartProps) {
+export function RunActivityChart({ data, isLoading, isError, onRetry }: RunActivityChartProps) {
   const rows = buildChartData(data)
   const empty = isAllZero(rows)
 
@@ -114,6 +119,15 @@ export function RunActivityChart({ data, isLoading }: RunActivityChartProps) {
       <div className={styles.chartArea}>
         {isLoading ? (
           <div className={styles.skeleton} />
+        ) : isError ? (
+          <div className={styles.errorState} role="alert">
+            <span className={styles.errorMessage}>Couldn&apos;t load run activity</span>
+            {onRetry && (
+              <Button variant="ghost" size="small" onClick={onRetry}>
+                Retry
+              </Button>
+            )}
+          </div>
         ) : empty ? (
           <div className={styles.emptyState}>No runs in the last 24h</div>
         ) : (
@@ -202,7 +216,7 @@ export function RunActivityChart({ data, isLoading }: RunActivityChartProps) {
         )}
       </div>
 
-      <ChartLegend rows={rows} />
+      {!isError && <ChartLegend rows={rows} />}
     </div>
   )
 }
