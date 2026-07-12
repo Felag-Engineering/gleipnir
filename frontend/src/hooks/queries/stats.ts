@@ -43,5 +43,6 @@ export function useTimeSeriesStats(window = '24h') {
     data: query.data,
     isLoading: query.isLoading,
     isError: query.isError,
+    refetch: query.refetch,
   }
 }

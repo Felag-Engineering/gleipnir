@@ -75,3 +75,9 @@ export const Empty: Story = {
 export const Loading: Story = {
   args: { data: undefined, isLoading: true },
 }
+
+// Error exercises the failed-fetch branch: a distinct error affordance with a
+// Retry action, NOT the healthy-but-empty copy.
+export const Error: Story = {
+  args: { data: undefined, isLoading: false, isError: true, onRetry: () => {} },
+}

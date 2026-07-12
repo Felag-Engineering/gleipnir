@@ -9,11 +9,16 @@ import {
 } from 'recharts'
 import type { ApiTimeSeriesResponse } from '@/api/types'
 import { estimateCost } from '@/constants/pricing'
+import { Button } from '@/components/Button'
 import styles from './CostByModelChart.module.css'
 
 interface CostByModelChartProps {
   data: ApiTimeSeriesResponse | undefined
   isLoading: boolean
+  // isError is true when the underlying stats fetch failed. It is rendered as a
+  // distinct error affordance so a failed call is not mistaken for an empty account.
+  isError?: boolean
+  onRetry?: () => void
 }
 
 // Color palette for model lines, assigned by insertion order.
@@ -122,7 +127,7 @@ function CostLegend({ rows, models }: { rows: ChartRow[]; models: string[] }) {
   )
 }
 
-export function CostByModelChart({ data, isLoading }: CostByModelChartProps) {
+export function CostByModelChart({ data, isLoading, isError, onRetry }: CostByModelChartProps) {
   const { rows, models } = buildChartData(data)
   const empty = models.length === 0
 
@@ -136,6 +141,15 @@ export function CostByModelChart({ data, isLoading }: CostByModelChartProps) {
       <div className={styles.chartArea}>
         {isLoading ? (
           <div className={styles.skeleton} />
+        ) : isError ? (
+          <div className={styles.errorState} role="alert">
+            <span className={styles.errorMessage}>Couldn&apos;t load cost data</span>
+            {onRetry && (
+              <Button variant="ghost" size="small" onClick={onRetry}>
+                Retry
+              </Button>
+            )}
+          </div>
         ) : empty ? (
           <div className={styles.emptyState}>No runs yet</div>
         ) : (
@@ -208,7 +222,7 @@ export function CostByModelChart({ data, isLoading }: CostByModelChartProps) {
         )}
       </div>
 
-      {!empty && <CostLegend rows={rows} models={models} />}
+      {!empty && !isError && <CostLegend rows={rows} models={models} />}
     </div>
   )
 }

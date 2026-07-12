@@ -32,8 +32,18 @@ export default function DashboardPage() {
         isLoading={readiness.isLoading || recentRuns.isLoading}
       />
       <div className={styles.chartGrid}>
-        <RunActivityChart data={timeSeries.data} isLoading={timeSeries.isLoading} />
-        <CostByModelChart data={timeSeries.data} isLoading={timeSeries.isLoading} />
+        <RunActivityChart
+          data={timeSeries.data}
+          isLoading={timeSeries.isLoading}
+          isError={timeSeries.isError}
+          onRetry={() => timeSeries.refetch()}
+        />
+        <CostByModelChart
+          data={timeSeries.data}
+          isLoading={timeSeries.isLoading}
+          isError={timeSeries.isError}
+          onRetry={() => timeSeries.refetch()}
+        />
       </div>
       {attention.count > 0 && (
         <AttentionQueue
