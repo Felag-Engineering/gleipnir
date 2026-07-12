@@ -74,14 +74,14 @@
 .driftBadge {
   composes: badgePill from '../../../styles/badges.module.css';
   composes: colorOrange from '../../../styles/badges.module.css';
-  font-size: 10px;
+  font-size: var(--text-2xs);
   font-weight: var(--weight-medium);
 }
 
 .unreachableBadge {
   composes: badgePill from '../../../styles/badges.module.css';
   composes: colorRed from '../../../styles/badges.module.css';
-  font-size: 10px;
+  font-size: var(--text-2xs);
   font-weight: var(--weight-medium);
 }
 
@@ -130,7 +130,7 @@
   gap: var(--space-1);
   padding: var(--space-1) var(--space-3);
   border: 1px solid var(--border-mid);
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
   background: transparent;
   cursor: pointer;
   font-size: var(--text-xs);
@@ -164,7 +164,7 @@
 .deleteBtn {
   padding: var(--space-1) var(--space-3);
   border: 1px solid color-mix(in srgb, var(--color-red) 30%, transparent);
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
   background: transparent;
   cursor: pointer;
   font-size: var(--text-xs);
@@ -227,7 +227,7 @@
 .authHeadersBtn {
   padding: var(--space-1) var(--space-3);
   border: 1px solid var(--border-mid);
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
   background: transparent;
   cursor: pointer;
   font-size: var(--text-xs);
@@ -275,7 +275,7 @@
   padding: var(--space-1) var(--space-2);
   background: var(--bg-canvas);
   border: 1px solid var(--border-mid);
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   color: var(--text-primary);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
@@ -292,7 +292,7 @@
   padding: var(--space-1) var(--space-2);
   background: var(--bg-canvas);
   border: 1px solid var(--border-mid);
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   color: var(--text-primary);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
@@ -313,7 +313,7 @@
   font-size: var(--text-sm);
   cursor: pointer;
   line-height: 1;
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   transition: color var(--duration-fast) var(--ease-out);
 }
 
@@ -324,7 +324,7 @@
 .addHeaderBtn {
   background: transparent;
   border: 1px dashed var(--border-mid);
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   color: var(--text-muted);
   font-size: var(--text-xs);
   padding: var(--space-1) var(--space-2);
@@ -354,7 +354,7 @@
 .cancelBtn {
   padding: var(--space-1) var(--space-3);
   border: 1px solid var(--border-mid);
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
   background: transparent;
   cursor: pointer;
   font-size: var(--text-xs);
@@ -370,7 +370,7 @@
 .saveBtn {
   padding: var(--space-1) var(--space-3);
   border: 1px solid var(--border-mid);
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
   background: var(--bg-elevated);
   cursor: pointer;
   font-size: var(--text-xs);

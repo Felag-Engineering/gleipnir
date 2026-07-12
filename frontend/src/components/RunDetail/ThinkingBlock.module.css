@@ -1,6 +1,6 @@
 .block {
   position: relative;
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
   background: var(--bg-surface);
   /* border shorthand first so border-left can override the left side */
   border: 1px solid var(--border-subtle);

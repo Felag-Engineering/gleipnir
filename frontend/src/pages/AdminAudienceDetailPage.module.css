@@ -96,7 +96,7 @@
   padding: var(--space-3) var(--space-4);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
 }
 
 .entryCardAuto {
@@ -121,7 +121,7 @@
   color: var(--text-muted);
   background: var(--bg-canvas);
   border: 1px solid var(--border-subtle);
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   font-variant-numeric: tabular-nums;
 }
 
@@ -141,7 +141,7 @@
 
 .flag {
   composes: badgeRect from '../styles/badges.module.css';
-  font-size: 10px;
+  font-size: var(--text-2xs);
 }
 
 .flagNotify {
@@ -247,7 +247,7 @@
   padding: var(--space-3);
   background: color-mix(in srgb, var(--text-muted) 10%, transparent);
   border-left: 3px solid var(--text-muted);
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   font-size: var(--text-sm);
   color: var(--text-second);
 }

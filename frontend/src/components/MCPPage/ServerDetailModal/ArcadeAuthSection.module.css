@@ -56,7 +56,7 @@
   flex-shrink: 0;
   padding: var(--space-1) var(--space-3);
   border: 1px solid var(--border-mid);
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
   background: transparent;
   cursor: pointer;
   font-size: var(--text-xs);

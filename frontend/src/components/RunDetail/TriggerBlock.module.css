@@ -1,6 +1,6 @@
 .block {
   position: relative;
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
   background: var(--bg-surface);
   border: 1px solid color-mix(in srgb, var(--color-teal) 25%, var(--border-subtle));
 }

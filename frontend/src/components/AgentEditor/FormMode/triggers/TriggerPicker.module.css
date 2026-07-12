@@ -17,7 +17,7 @@
   padding: var(--space-2) var(--space-3);
   background: var(--bg-elevated);
   border: 1px solid var(--border-mid);
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
   color: var(--text-primary);
   font-family: var(--font-body);
   font-size: var(--text-sm);
@@ -62,7 +62,7 @@
   z-index: 100;
   background: var(--bg-elevated);
   border: 1px solid var(--border-mid);
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
   overflow: hidden;
 }
@@ -160,7 +160,7 @@
 
 .skeletonRow {
   height: 16px;
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--text-muted) 20%, transparent);
   animation: shimmer 1.2s ease-in-out infinite;
 }
