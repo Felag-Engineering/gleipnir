@@ -32,26 +32,10 @@
 }
 
 .input {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-mid);
-  border-radius: var(--radius-lg);
-  padding: var(--space-2) var(--space-3);
-  font-size: var(--text-sm);
-  color: var(--text-primary);
-  width: 100%;
-  transition: border-color var(--duration-fast) var(--ease-out);
-  box-sizing: border-box;
+  composes: input from '@/styles/forms.module.css';
 }
 
-.input:focus {
-  outline: none;
-  border-color: var(--color-blue);
-}
-
-.input::placeholder {
-  color: var(--text-muted);
-}
-
+/* Applied alongside .input (see CronConfig/PollConfig/PolicyIdentitySection). */
 .inputMono {
   font-family: var(--font-mono);
 }
