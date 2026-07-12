@@ -261,8 +261,8 @@ export function AgentEditorPage() {
   async function handlePause() {
     if (!id) return
     try {
+      // No success toast — the status badge flips to Paused, which is the confirmation.
       await pausePolicy.mutateAsync(id)
-      toast.success('Agent paused')
     } catch {
       toast.error("Couldn't pause agent")
     }
@@ -271,8 +271,8 @@ export function AgentEditorPage() {
   async function handleResume() {
     if (!id) return
     try {
+      // No success toast — the status badge flips back to Active, which is the confirmation.
       await resumePolicy.mutateAsync(id)
-      toast.success('Agent resumed')
     } catch {
       toast.error("Couldn't resume agent")
     }

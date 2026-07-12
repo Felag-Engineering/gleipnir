@@ -74,9 +74,8 @@ export default function UsersPage() {
     updateMutation.mutate(
       { id: user.id, deactivated: nextDeactivated },
       {
-        onSuccess: () => {
-          toast.success(nextDeactivated ? 'User deactivated' : 'User reactivated')
-        },
+        // No success toast — the row's status badge updates in place, which is the
+        // confirmation. Only the silent failure needs surfacing.
         onError: () => {
           toast.error("Couldn't update user")
         },

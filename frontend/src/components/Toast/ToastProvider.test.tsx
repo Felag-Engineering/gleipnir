@@ -11,6 +11,7 @@ function Harness() {
       <button onClick={() => toast.error('Failed')}>fire-error</button>
       <button onClick={() => toast.info('Heads up')}>fire-info</button>
       <button onClick={() => toast.success('Sticky', { duration: 0 })}>fire-sticky</button>
+      <button onClick={() => toast.error('Dup')}>fire-dup</button>
     </div>
   )
 }
@@ -93,6 +94,28 @@ describe('ToastProvider / ToastRegion', () => {
     fireEvent.click(screen.getByText('fire-info'))
 
     expect(screen.getAllByLabelText('Dismiss')).toHaveLength(3)
+  })
+
+  it('caps the visible stack at 3, evicting the oldest toast', () => {
+    renderHarness()
+    // Fire four distinct toasts; the first ('Saved') should be evicted.
+    fireEvent.click(screen.getByText('fire-success'))
+    fireEvent.click(screen.getByText('fire-error'))
+    fireEvent.click(screen.getByText('fire-info'))
+    fireEvent.click(screen.getByText('fire-sticky'))
+
+    expect(screen.getAllByLabelText('Dismiss')).toHaveLength(3)
+    expect(screen.queryByText('Saved')).not.toBeInTheDocument()
+    expect(screen.getByText('Sticky')).toBeInTheDocument()
+  })
+
+  it('dedups an identical toast instead of stacking a duplicate', () => {
+    renderHarness()
+    fireEvent.click(screen.getByText('fire-dup'))
+    fireEvent.click(screen.getByText('fire-dup'))
+
+    expect(screen.getAllByText('Dup')).toHaveLength(1)
+    expect(screen.getAllByLabelText('Dismiss')).toHaveLength(1)
   })
 
   it('never auto-dismisses a toast fired with duration: 0 (sticky)', () => {

@@ -392,7 +392,8 @@ export function ServerDetailModal({
                       setToolEnabledMutation.mutate(
                         { serverId: server.id, toolId: tool.id, enabled },
                         {
-                          onSuccess: () => toast.success(enabled ? 'Tool enabled' : 'Tool disabled'),
+                          // No success toast — the tool's toggle reflects the new state.
+                          // Toggling several tools in a row shouldn't stack confirmations.
                           onError: () => toast.error("Couldn't update tool"),
                         },
                       )

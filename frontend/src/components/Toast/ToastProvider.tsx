@@ -26,6 +26,10 @@ const DEFAULT_DURATIONS: Record<ToastVariant, number> = {
   error: 6000,
 }
 
+// Cap the visible stack so rapid-fire actions can't bury the screen in toasts.
+// The oldest toast is evicted once the cap is exceeded.
+const MAX_TOASTS = 3
+
 function noop() {}
 
 const noopApi: ToastApi = { success: noop, error: noop, info: noop, dismiss: noop }
@@ -57,25 +61,47 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const nextId = useRef(0)
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>())
 
-  const dismiss = useCallback((id: string) => {
+  // clearTimerFor cancels and forgets any pending auto-dismiss timer for an id.
+  const clearTimerFor = useCallback((id: string) => {
     const timer = timers.current.get(id)
     if (timer) {
       clearTimeout(timer)
       timers.current.delete(id)
     }
-    setToasts(prev => prev.filter(t => t.id !== id))
   }, [])
+
+  const dismiss = useCallback((id: string) => {
+    clearTimerFor(id)
+    setToasts(prev => prev.filter(t => t.id !== id))
+  }, [clearTimerFor])
 
   const addToast = useCallback((variant: ToastVariant, message: string, opts?: ToastOptions) => {
     const id = String(nextId.current++)
-    setToasts(prev => [...prev, { id, variant, message }])
-
     const duration = opts?.duration ?? DEFAULT_DURATIONS[variant]
+
+    setToasts(prev => {
+      // Dedup: if an identical toast (same variant + message) is already showing,
+      // drop the old instance so this one refreshes its position and timer instead
+      // of stacking a visual duplicate (e.g. toggling the same control repeatedly).
+      const duplicate = prev.find(t => t.variant === variant && t.message === message)
+      let next = duplicate ? prev.filter(t => t.id !== duplicate.id) : prev
+      if (duplicate) clearTimerFor(duplicate.id)
+
+      next = [...next, { id, variant, message }]
+
+      // Enforce the stack cap by evicting oldest-first.
+      while (next.length > MAX_TOASTS) {
+        clearTimerFor(next[0].id)
+        next = next.slice(1)
+      }
+      return next
+    })
+
     if (duration > 0) {
       const timer = setTimeout(() => dismiss(id), duration)
       timers.current.set(id, timer)
     }
-  }, [dismiss])
+  }, [dismiss, clearTimerFor])
 
   // Clear any pending auto-dismiss timers on unmount so they never fire
   // against an unmounted component.
