@@ -46,7 +46,7 @@
 .input {
   background: var(--bg-canvas);
   border: 1px solid var(--border-subtle);
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
   padding: var(--space-3) var(--space-3);
   font-size: var(--text-base);
   font-family: var(--font-body);
@@ -73,7 +73,7 @@
   color: var(--color-red);
   background: color-mix(in srgb, var(--color-red) 8%, transparent);
   border-left: 3px solid var(--color-red);
-  border-radius: 0 4px 4px 0;
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
   padding: var(--space-2) var(--space-3);
 }
 
@@ -88,6 +88,6 @@
   color: var(--color-amber);
   background: color-mix(in srgb, var(--color-amber) 8%, transparent);
   border-left: 3px solid var(--color-amber);
-  border-radius: 0 4px 4px 0;
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
   padding: var(--space-2) var(--space-3);
 }

@@ -8,7 +8,7 @@
   padding: var(--space-4);
   background: color-mix(in srgb, var(--color-blue) 6%, transparent);
   border: 1px solid color-mix(in srgb, var(--color-blue) 22%, transparent);
-  border-radius: 4px;
+  border-radius: var(--radius-md);
 }
 
 .header {
@@ -106,7 +106,7 @@
   color: var(--color-blue);
   background: color-mix(in srgb, var(--color-blue) 14%, transparent);
   padding: 0 var(--space-2);
-  border-radius: 4px;
+  border-radius: var(--radius-md);
 }
 
 .cta {

@@ -1,6 +1,6 @@
 .block {
   position: relative;
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
 }
@@ -137,7 +137,7 @@
   grid-template-columns: 1fr 1fr;
   min-height: 0;
   overflow: hidden;
-  border-radius: 0 0 6px 6px;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
 }
 
 .panesSingle {

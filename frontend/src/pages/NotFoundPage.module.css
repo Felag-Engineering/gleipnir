@@ -47,7 +47,7 @@
   padding: var(--space-2) var(--space-4);
   background: var(--bg-elevated);
   border: 1px solid var(--border-mid);
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   color: var(--text-primary);
   font-size: var(--text-sm);
   font-family: var(--font-body);
@@ -70,7 +70,7 @@
   padding: var(--space-2) var(--space-4);
   background: transparent;
   border: 1px solid var(--border-subtle);
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   color: var(--text-second);
   font-size: var(--text-sm);
   font-family: var(--font-body);

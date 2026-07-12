@@ -2,7 +2,7 @@
   --skeleton-shimmer-duration: 1.5s;
   width: var(--skeleton-w, 100%);
   height: var(--skeleton-h, 16px);
-  border-radius: var(--skeleton-r, 4px);
+  border-radius: var(--skeleton-r, var(--radius-md));
   background: var(--bg-elevated);
   position: relative;
   overflow: hidden;

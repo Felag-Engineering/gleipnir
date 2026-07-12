@@ -72,11 +72,26 @@ Capability aliases: `--color-tool: var(--color-blue)`, `--color-feedback: var(--
 - Body: `IBM Plex Sans, system-ui, sans-serif` (`--font-body`)
 - Mono: `IBM Plex Mono, monospace` (`--font-mono`)
 - Scale: 11 / 13 / 15 / 18 / 24 / 32 px (`--text-xs` through `--text-2xl`)
+- `--text-2xs: 10px` — micro type for badges/chips that sit below the `--text-xs` (11px) floor. Use only for dense metadata labels; prefer `--text-xs` for normal small text. Never hardcode `font-size: 10px`.
 - Weights: 300 (light), 400 (normal), 500 (medium), 600 (semibold), 700 (bold, wordmark only)
 
 ### Spacing
 
-4px base grid via CSS custom properties (`--space-1` through `--space-16`, plus `--space-20` and `--space-32` for larger fixed sizes). All margins, padding, and gaps snap to multiples of 4px. Section radii use `--radius-section`.
+4px base grid via CSS custom properties (`--space-1` through `--space-16`, plus `--space-20` and `--space-32` for larger fixed sizes). All margins, padding, and gaps snap to multiples of 4px.
+
+### Radii
+
+Small-element `border-radius` values come from the radius scale — never hardcode `2/3/4/6px`:
+
+```
+--radius-xs:       2px   (thin bars, tiny chips)
+--radius-sm:       3px   (small tags/chips)
+--radius-md:       4px   (default — inputs, buttons, cards)
+--radius-lg:       6px   (panels, larger cards)
+--radius-section:  8px   (page sections)
+```
+
+Larger structural radii (modals/pills at 10/12/14/16/999px) are intentionally left as raw values for now — they are distinct one-offs, not part of the small-element drift the scale addresses; a future pass may fold them in.
 
 ### Motion
 

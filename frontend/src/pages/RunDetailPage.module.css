@@ -20,7 +20,7 @@
   gap: var(--space-2);
   margin: var(--space-4) var(--space-6);
   padding: var(--space-3) var(--space-4);
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
   border: 1px solid color-mix(in srgb, var(--color-amber) 30%, transparent);
   background: color-mix(in srgb, var(--color-amber) 6%, transparent);
 }
@@ -44,7 +44,7 @@
   gap: var(--space-2);
   margin: var(--space-4) var(--space-6);
   padding: var(--space-3) var(--space-4);
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
   border: 1px solid color-mix(in srgb, var(--color-red) 30%, transparent);
   background: color-mix(in srgb, var(--color-red) 6%, transparent);
 }
@@ -83,7 +83,7 @@
   color: var(--text-second);
   background: var(--bg-elevated);
   border: 1px solid var(--border-mid);
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   cursor: pointer;
   transition: color var(--duration-fast) var(--ease-out);
 }
@@ -100,7 +100,7 @@
   color: var(--text-second);
   background: var(--bg-elevated);
   border: 1px solid var(--border-mid);
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   cursor: pointer;
   transition: color var(--duration-fast) var(--ease-out);
 }

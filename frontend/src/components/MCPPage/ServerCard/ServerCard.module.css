@@ -47,21 +47,21 @@
 .driftBadge {
   composes: badgePill from '../../../styles/badges.module.css';
   composes: colorOrange from '../../../styles/badges.module.css';
-  font-size: 10px;
+  font-size: var(--text-2xs);
   font-weight: var(--weight-medium);
 }
 
 .unreachableBadge {
   composes: badgePill from '../../../styles/badges.module.css';
   composes: colorRed from '../../../styles/badges.module.css';
-  font-size: 10px;
+  font-size: var(--text-2xs);
   font-weight: var(--weight-medium);
 }
 
 .discoveringBadge {
   composes: badgePill from '../../../styles/badges.module.css';
   composes: colorAmber from '../../../styles/badges.module.css';
-  font-size: 10px;
+  font-size: var(--text-2xs);
   font-weight: var(--weight-medium);
 }
 
@@ -86,7 +86,7 @@
   background: color-mix(in srgb, var(--color-blue) 10%, transparent);
   color: var(--color-blue);
   padding: 2px var(--space-2);
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   font-size: var(--text-xs);
   font-family: var(--font-mono);
 }
@@ -95,6 +95,6 @@
   background: var(--bg-elevated);
   color: var(--text-second);
   padding: 2px var(--space-2);
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   font-size: var(--text-xs);
 }
