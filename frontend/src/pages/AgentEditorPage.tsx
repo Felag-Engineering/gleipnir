@@ -14,6 +14,7 @@ import { ConcurrencySection } from '@/components/AgentEditor/FormMode/Concurrenc
 import { ModelSection } from '@/components/AgentEditor/FormMode/ModelSection'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ErrorBanner } from '@/components/form/ErrorBanner'
+import { useToast } from '@/components/Toast'
 import { usePolicy, usePolicies } from '@/hooks/queries/policies'
 import { useSavePolicy, useDeletePolicy, usePausePolicy, useResumePolicy } from '@/hooks/mutations/policies'
 import { ApiError } from '@/api/fetch'
@@ -124,6 +125,7 @@ export function AgentEditorPage() {
   const { id } = useParams<{ id?: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const toast = useToast()
 
   const { data: policy, status: policyStatus, error: policyErrorObj } = usePolicy(id)
   const { data: allPolicies } = usePolicies()
@@ -220,6 +222,7 @@ export function AgentEditorPage() {
       setSavedDisabledTools(findDisabledGrantNames(formState, queryClient))
       // Clear the draft on successful save — no longer needed.
       localStorage.removeItem(DRAFT_KEY_NEW)
+      toast.success('Agent saved')
       if (!id) {
         navigate(`/agents/${result.id}`, { replace: true })
       }
@@ -248,6 +251,7 @@ export function AgentEditorPage() {
     try {
       await deletePolicy.mutateAsync(id)
       setDeleteModalOpen(false)
+      toast.success('Agent deleted')
       navigate('/agents')
     } catch (e) {
       setDeleteError(e as ApiError)
@@ -256,12 +260,22 @@ export function AgentEditorPage() {
 
   async function handlePause() {
     if (!id) return
-    try { await pausePolicy.mutateAsync(id) } catch { /* error surface handled by TanStack Query */ }
+    try {
+      // No success toast — the status badge flips to Paused, which is the confirmation.
+      await pausePolicy.mutateAsync(id)
+    } catch {
+      toast.error("Couldn't pause agent")
+    }
   }
 
   async function handleResume() {
     if (!id) return
-    try { await resumePolicy.mutateAsync(id) } catch { /* error surface handled by TanStack Query */ }
+    try {
+      // No success toast — the status badge flips back to Active, which is the confirmation.
+      await resumePolicy.mutateAsync(id)
+    } catch {
+      toast.error("Couldn't resume agent")
+    }
   }
 
   // Stable ref so the keydown listener always calls the current handleSave
