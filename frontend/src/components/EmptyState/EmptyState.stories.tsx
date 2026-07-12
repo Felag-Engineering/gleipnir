@@ -29,3 +29,21 @@ export const CustomMessage: Story = {
     ctaTo: '/dashboard',
   },
 }
+
+// Button CTA — used by pages that open a modal instead of navigating.
+export const ButtonCta: Story = {
+  args: {
+    headline: 'No users',
+    subtext: 'Create a user to get started.',
+    ctaLabel: 'Create user',
+    onCtaClick: () => {},
+  },
+}
+
+// No CTA — e.g. a read-only viewer with nothing to add.
+export const NoCta: Story = {
+  args: {
+    headline: 'No audiences',
+    subtext: 'No audiences have been created yet.',
+  },
+}

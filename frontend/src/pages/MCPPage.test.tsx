@@ -121,6 +121,16 @@ function mockServersPending() {
   vi.mocked(useQueries).mockReturnValue([] as ReturnType<typeof useQueries>)
 }
 
+function mockServersError(refetch: () => void = vi.fn()) {
+  vi.mocked(useMcpServers).mockReturnValue({
+    data: undefined,
+    status: 'error',
+    refetch,
+  } as unknown as ReturnType<typeof useMcpServers>)
+
+  vi.mocked(useQueries).mockReturnValue([] as ReturnType<typeof useQueries>)
+}
+
 // --- Tests ---
 
 describe('ToolsPage — skeleton on load', () => {
@@ -296,5 +306,25 @@ describe('ToolsPage — empty state', () => {
     expect(screen.getByText('Add an MCP server to start discovering tools.')).toBeInTheDocument()
     const addButtons = screen.getAllByRole('button', { name: /add mcp server/i })
     expect(addButtons.length).toBe(2) // header + empty state
+  })
+})
+
+describe('ToolsPage — error state', () => {
+  beforeEach(() => {
+    mockNoopMutations()
+  })
+
+  it('shows the error message on failure', () => {
+    mockServersError()
+    renderPage()
+    expect(screen.getByText(/failed to load mcp servers/i)).toBeInTheDocument()
+  })
+
+  it('offers a Retry that refetches on click', () => {
+    const refetch = vi.fn()
+    mockServersError(refetch)
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }))
+    expect(refetch).toHaveBeenCalledTimes(1)
   })
 })

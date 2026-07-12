@@ -80,21 +80,24 @@ function mockUsersLoaded(users: ApiUser[]) {
   vi.mocked(useUsers).mockReturnValue({
     data: users,
     status: 'success',
-  } as ReturnType<typeof useUsers>)
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useUsers>)
 }
 
 function mockUsersPending() {
   vi.mocked(useUsers).mockReturnValue({
     data: undefined,
     status: 'pending',
-  } as ReturnType<typeof useUsers>)
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useUsers>)
 }
 
-function mockUsersError() {
+function mockUsersError(refetch: () => void = vi.fn()) {
   vi.mocked(useUsers).mockReturnValue({
     data: undefined,
     status: 'error',
-  } as ReturnType<typeof useUsers>)
+    refetch,
+  } as unknown as ReturnType<typeof useUsers>)
 }
 
 // --- Tests ---
@@ -126,6 +129,15 @@ describe('UsersPage — error state', () => {
   it('shows error message on failure', () => {
     renderPage()
     expect(screen.getByText(/failed to load users/i)).toBeInTheDocument()
+  })
+
+  it('offers a Retry that refetches on click', () => {
+    const refetch = vi.fn()
+    mockUsersError(refetch)
+    mockNoopMutations()
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }))
+    expect(refetch).toHaveBeenCalledTimes(1)
   })
 })
 

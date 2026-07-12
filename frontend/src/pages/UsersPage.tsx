@@ -5,6 +5,7 @@ import { useUpdateUser } from '@/hooks/mutations/users'
 import type { ApiUser } from '@/api/types'
 import type { ApiError } from '@/api/fetch'
 import { QueryBoundary, SkeletonList } from '@/components/QueryBoundary'
+import { EmptyState } from '@/components/EmptyState'
 import { PageHeader } from '@/components/PageHeader'
 import { Button } from '@/components/Button'
 import { CreateUserModal } from '@/components/UsersPage/CreateUserModal'
@@ -26,7 +27,7 @@ export default function UsersPage() {
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [editingUser, setEditingUser] = useState<ApiUser | null>(null)
 
-  const { data: users, status } = useUsers()
+  const { data: users, status, refetch } = useUsers()
   const createMutation = useCreateUser()
   const updateMutation = useUpdateUser()
   const toast = useToast()
@@ -101,12 +102,18 @@ export default function UsersPage() {
         status={status}
         isEmpty={(users ?? []).length === 0}
         errorMessage="Failed to load users."
+        onRetry={() => { void refetch() }}
         skeleton={<SkeletonList count={3} height={48} gap={12} borderRadius={8} />}
         emptyState={
-          <div className={styles.emptyState}>
-            <p className={styles.emptyHeadline}>No users</p>
-            <p className={styles.emptySubtext}>Create a user to get started.</p>
-          </div>
+          <EmptyState
+            headline="No users"
+            subtext="Create a user to get started."
+            ctaLabel="Create your first user"
+            onCtaClick={() => {
+              createMutation.reset()
+              setShowCreateModal(true)
+            }}
+          />
         }
       >
         <div className={styles.tableWrapper}>
