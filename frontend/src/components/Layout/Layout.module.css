@@ -327,6 +327,46 @@
   animation: none;
 }
 
+/* ---- Mobile top bar (drawer toggle) ---- */
+
+/* Hidden on desktop; the sidebar is always in-flow there. */
+.mobileBar {
+  display: none;
+}
+
+.menuToggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-second);
+  cursor: pointer;
+  transition:
+    color var(--duration-fast) var(--ease-out),
+    background var(--duration-fast) var(--ease-out);
+}
+
+.menuToggle:hover {
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+}
+
+.mobileBrand {
+  display: flex;
+  align-items: center;
+}
+
+/* ---- Drawer backdrop (mobile only) ---- */
+
+.backdrop {
+  display: none;
+}
+
 /* ---- Main content area ---- */
 
 .mainWrapper {
@@ -350,4 +390,55 @@
 @keyframes fadeIn {
   from { opacity: 0; }
   to { opacity: 1; }
+}
+
+/* ---- Mobile / narrow-viewport breakpoint ---- */
+/* Below 768px the sidebar collapses to an off-canvas drawer toggled from the
+   mobile top bar. Content becomes full width because the sidebar leaves the
+   flow (position: fixed). The slide uses --duration-normal, which tokens.css
+   zeroes under prefers-reduced-motion, so reduced-motion is honored. */
+@media (max-width: 768px) {
+  .layout {
+    /* Off-canvas drawer sits at translateX(-100%); guard against any shell
+       horizontal scroll at narrow widths (375px). */
+    overflow-x: hidden;
+  }
+
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    max-width: 85vw;
+    transform: translateX(-100%);
+    transition: transform var(--duration-normal) var(--ease-out);
+    box-shadow: none;
+    z-index: 160;
+  }
+
+  .sidebarOpen {
+    transform: translateX(0);
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.35);
+  }
+
+  .backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 150;
+    animation: fadeIn var(--duration-normal) var(--ease-out);
+  }
+
+  .mobileBar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    background: var(--bg-sidebar);
+    border-bottom: 1px solid var(--border-subtle);
+    position: sticky;
+    top: 0;
+    z-index: 90;
+  }
 }
