@@ -60,4 +60,31 @@ describe('Button', () => {
     const btn = screen.getByTestId('btn')
     expect(btn).toHaveAttribute('aria-label', 'custom label')
   })
+
+  it('is disabled and sets aria-busy while loading', () => {
+    render(<Button loading>Saving</Button>)
+    const btn = screen.getByRole('button')
+    expect(btn).toBeDisabled()
+    expect(btn).toHaveAttribute('aria-busy', 'true')
+  })
+
+  it('does not call onClick while loading', () => {
+    const onClick = vi.fn()
+    render(<Button loading onClick={onClick}>Saving</Button>)
+    fireEvent.click(screen.getByRole('button'))
+    expect(onClick).not.toHaveBeenCalled()
+  })
+
+  it('renders a spinner while loading and keeps the label', () => {
+    render(<Button loading>Saving</Button>)
+    const btn = screen.getByRole('button')
+    expect(btn).toHaveTextContent('Saving')
+    // The spinner is the aria-hidden child span rendered before the label.
+    expect(btn.querySelector('span[aria-hidden="true"]')).not.toBeNull()
+  })
+
+  it('does not set aria-busy when not loading', () => {
+    render(<Button>Idle</Button>)
+    expect(screen.getByRole('button')).not.toHaveAttribute('aria-busy')
+  })
 })

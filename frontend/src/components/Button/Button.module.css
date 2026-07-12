@@ -23,7 +23,7 @@
 }
 
 .primary {
-  background: linear-gradient(135deg, var(--color-blue), #c07a48);
+  background: linear-gradient(135deg, var(--color-blue), var(--accent-gradient-end));
   box-shadow: 0 2px 8px color-mix(in srgb, var(--color-blue) 20%, transparent);
   color: var(--bg-canvas);
   border-color: transparent;
