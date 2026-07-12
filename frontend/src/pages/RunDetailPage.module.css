@@ -63,6 +63,10 @@
   font-size: var(--text-sm);
   color: var(--color-red);
   white-space: pre-wrap;
+  /* Wrap long unbroken tokens (stack traces, URLs, JSON blobs) so a run error
+     can't force horizontal page overflow on narrow viewports (#709). */
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .timeline {
