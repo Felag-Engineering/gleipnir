@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react'
-import { Wrench } from 'lucide-react'
 import { useQueries } from '@tanstack/react-query'
 import { useMcpServers } from '@/hooks/queries/servers'
 import { queryKeys } from '@/hooks/queryKeys'
@@ -10,6 +9,7 @@ import { apiFetch } from '@/api/fetch'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
 import { QueryBoundary, SkeletonList } from '@/components/QueryBoundary'
+import { EmptyState } from '@/components/EmptyState'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ServerCard } from '@/components/MCPPage/ServerCard'
 import { ServerDetailModal } from '@/components/MCPPage/ServerDetailModal'
@@ -37,7 +37,7 @@ export default function MCPPage() {
   const [discoveringServerId, setDiscoveringServerId] = useState<string | null>(null)
   const [selectedServer, setSelectedServer] = useState<ApiMcpServer | null>(null)
 
-  const { data: servers, status: serversStatus } = useMcpServers()
+  const { data: servers, status: serversStatus, refetch: refetchServers } = useMcpServers()
   const { data: policies } = usePolicies()
   const { data: currentUser } = useCurrentUser()
   // canManage gates the enable/disable toggle — derived at page level so
@@ -168,25 +168,19 @@ export default function MCPPage() {
           status={serversStatus}
           isEmpty={(servers ?? []).length === 0}
           errorMessage="Failed to load MCP servers."
+          onRetry={() => { void refetchServers() }}
           skeleton={<SkeletonList count={3} height={100} gap={12} borderRadius={8} />}
           emptyState={
-            <div className={styles.emptyState}>
-              <div className={styles.emptyIcon} aria-hidden="true">
-                <Wrench size={48} />
-              </div>
-              <p className={styles.emptyHeadline}>No MCP servers</p>
-              <p className={styles.emptySubtext}>Add an MCP server to start discovering tools.</p>
-              <Button
-                variant="primary"
-                onClick={() => {
-                  setAddDiscoveryWarning(null)
-                  addMutation.reset()
-                  setShowAddModal(true)
-                }}
-              >
-                Add MCP server
-              </Button>
-            </div>
+            <EmptyState
+              headline="No MCP servers"
+              subtext="Add an MCP server to start discovering tools."
+              ctaLabel="Add MCP server"
+              onCtaClick={() => {
+                setAddDiscoveryWarning(null)
+                addMutation.reset()
+                setShowAddModal(true)
+              }}
+            />
           }
         >
           <div className={styles.serverList}>

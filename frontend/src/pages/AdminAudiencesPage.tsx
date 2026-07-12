@@ -1,6 +1,7 @@
 import { Link, useNavigate } from 'react-router-dom'
 import { PageHeader } from '@/components/PageHeader'
 import { QueryBoundary, SkeletonList } from '@/components/QueryBoundary'
+import { EmptyState } from '@/components/EmptyState'
 import { Button } from '@/components/Button'
 import { useAudiences } from '@/hooks/queries/admin'
 import { useCurrentUser } from '@/hooks/queries/users'
@@ -43,20 +44,18 @@ export default function AdminAudiencesPage() {
         onRetry={() => { void refetch() }}
         skeleton={<SkeletonList count={3} height={48} gap={12} borderRadius={8} />}
         emptyState={
-          <div className={styles.emptyState}>
-            <p className={styles.emptyHeadline}>No audiences</p>
-            {canManage ? (
-              <Button
-                variant="primary"
-                type="button"
-                onClick={() => navigate('/admin/audiences/new')}
-              >
-                Create your first audience
-              </Button>
-            ) : (
-              <p className={styles.emptySubtext}>No audiences have been created yet.</p>
-            )}
-          </div>
+          canManage ? (
+            <EmptyState
+              headline="No audiences"
+              ctaLabel="Create your first audience"
+              onCtaClick={() => navigate('/admin/audiences/new')}
+            />
+          ) : (
+            <EmptyState
+              headline="No audiences"
+              subtext="No audiences have been created yet."
+            />
+          )
         }
       >
         <div className={styles.tableWrapper}>
