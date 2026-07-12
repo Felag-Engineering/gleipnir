@@ -11,8 +11,24 @@ import { OpenAICompatProvidersSection } from '@/components/admin/OpenAICompatPro
 import { EncryptionKeyNotice } from '@/components/admin/EncryptionKeyNotice'
 import { useOpenAICompatProviders } from '@/hooks/queries/openaiCompatProviders'
 import { formatProviderName } from '@/utils/format'
+import { QueryBoundary, SkeletonList } from '@/components/QueryBoundary'
 import cardStyles from '@/components/Settings/Settings.module.css'
 import styles from './AdminModelsPage.module.css'
+
+/* ------------------------------------------------------------------ */
+/*  Status helpers                                                     */
+/* ------------------------------------------------------------------ */
+
+type QueryStatus = 'pending' | 'error' | 'success'
+
+// combineStatus folds several TanStack Query statuses into one for a section
+// that depends on multiple queries: any error wins, then any pending, else
+// success. Lets a QueryBoundary gate a region backed by more than one hook.
+function combineStatus(...statuses: QueryStatus[]): QueryStatus {
+  if (statuses.includes('error')) return 'error'
+  if (statuses.includes('pending')) return 'pending'
+  return 'success'
+}
 
 /* ------------------------------------------------------------------ */
 /*  ApiKeysSection                                                     */
@@ -94,7 +110,7 @@ function ProviderKeyRow({ provider }: { provider: ApiProviderStatus }) {
 }
 
 function ApiKeysSection() {
-  const { data: providers } = useProviders()
+  const { data: providers, status, refetch } = useProviders()
 
   return (
     <section className={cardStyles.card}>
@@ -108,7 +124,14 @@ function ApiKeysSection() {
         </p>
       </div>
       <div className={cardStyles.cardBody}>
-        {providers?.map((p) => <ProviderKeyRow key={p.name} provider={p} />)}
+        <QueryBoundary
+          status={status}
+          errorMessage="Failed to load providers."
+          onRetry={() => { void refetch() }}
+          skeleton={<SkeletonList count={2} height={44} gap={12} borderRadius={8} />}
+        >
+          {providers?.map((p) => <ProviderKeyRow key={p.name} provider={p} />)}
+        </QueryBoundary>
       </div>
     </section>
   )
@@ -119,10 +142,13 @@ function ApiKeysSection() {
 /* ------------------------------------------------------------------ */
 
 function SystemDefaultSection() {
-  const { data: providerModels } = useModels()
-  const { data: settings } = useAdminSettings()
+  const modelsQuery = useModels()
+  const settingsQuery = useAdminSettings()
+  const { data: providerModels } = modelsQuery
+  const { data: settings } = settingsQuery
   const updateSettings = useUpdateAdminSettings()
 
+  const status = combineStatus(modelsQuery.status, settingsQuery.status)
   const currentDefault = settings?.default_model ?? ''
 
   const handleChange = useCallback(
@@ -147,29 +173,39 @@ function SystemDefaultSection() {
         </p>
       </div>
       <div className={cardStyles.cardBody}>
-        <div className={cardStyles.fieldGroup}>
-          <label className={cardStyles.label} htmlFor="default-model">
-            Default model
-          </label>
-          <select
-            id="default-model"
-            className={cardStyles.select}
-            value={currentDefault}
-            onChange={handleChange}
-          >
-            <option value="">Select a model</option>
-            {providerModels?.map((pg) =>
-              pg.models.map((m) => (
-                <option key={`${pg.provider}:${m.name}`} value={`${pg.provider}:${m.name}`}>
-                  {m.display_name}
-                </option>
-              )),
-            )}
-          </select>
-          <span className={cardStyles.fieldHint}>
-            Only enabled models appear in this list.
-          </span>
-        </div>
+        <QueryBoundary
+          status={status}
+          errorMessage="Failed to load models."
+          onRetry={() => {
+            void modelsQuery.refetch()
+            void settingsQuery.refetch()
+          }}
+          skeleton={<SkeletonList count={1} height={64} gap={12} borderRadius={8} />}
+        >
+          <div className={cardStyles.fieldGroup}>
+            <label className={cardStyles.label} htmlFor="default-model">
+              Default model
+            </label>
+            <select
+              id="default-model"
+              className={cardStyles.select}
+              value={currentDefault}
+              onChange={handleChange}
+            >
+              <option value="">Select a model</option>
+              {providerModels?.map((pg) =>
+                pg.models.map((m) => (
+                  <option key={`${pg.provider}:${m.name}`} value={`${pg.provider}:${m.name}`}>
+                    {m.display_name}
+                  </option>
+                )),
+              )}
+            </select>
+            <span className={cardStyles.fieldHint}>
+              Only enabled models appear in this list.
+            </span>
+          </div>
+        </QueryBoundary>
       </div>
     </section>
   )
@@ -227,12 +263,22 @@ function ToggleSwitch({
 }
 
 function AvailableModelsSection() {
-  const { data: allModels } = useAllAdminModels()
-  const { data: providers } = useProviders()
-  const { data: compatProviders } = useOpenAICompatProviders()
-  const { data: settings } = useAdminSettings()
+  const allModelsQuery = useAllAdminModels()
+  const providersQuery = useProviders()
+  const compatQuery = useOpenAICompatProviders()
+  const settingsQuery = useAdminSettings()
+  const { data: allModels } = allModelsQuery
+  const { data: providers } = providersQuery
+  const { data: compatProviders } = compatQuery
+  const { data: settings } = settingsQuery
   const toggleModel = useSetModelEnabled()
 
+  const status = combineStatus(
+    allModelsQuery.status,
+    providersQuery.status,
+    compatQuery.status,
+    settingsQuery.status,
+  )
   const currentDefault = settings?.default_model ?? ''
 
   // Hardcoded providers (Anthropic, Google) carry a has_key flag from
@@ -272,8 +318,19 @@ function AvailableModelsSection() {
         </p>
       </div>
       <div className={cardStyles.cardBody}>
-        <div className={styles.providerGroups}>
-          {allProviders.map((providerName) => {
+        <QueryBoundary
+          status={status}
+          errorMessage="Failed to load models."
+          onRetry={() => {
+            void allModelsQuery.refetch()
+            void providersQuery.refetch()
+            void compatQuery.refetch()
+            void settingsQuery.refetch()
+          }}
+          skeleton={<SkeletonList count={4} height={48} gap={12} borderRadius={8} />}
+        >
+          <div className={styles.providerGroups}>
+            {allProviders.map((providerName) => {
             const hasKey = providerKeyMap.get(providerName) ?? false
             const models = grouped.get(providerName) ?? []
             const capitalizedName = formatProviderName(providerName)
@@ -329,7 +386,8 @@ function AvailableModelsSection() {
               </div>
             )
           })}
-        </div>
+          </div>
+        </QueryBoundary>
       </div>
     </section>
   )
