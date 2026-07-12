@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import { Button } from '@/components/Button';
 import styles from './EditorTopBar.module.css';
 
 export interface EditorTopBarProps {
@@ -7,6 +8,8 @@ export interface EditorTopBarProps {
   isEditMode: boolean;
   pausedAt?: string | null;
   isPauseResumeLoading?: boolean;
+  isSaving?: boolean;
+  isDeleting?: boolean;
   onSave: () => void;
   onDeleteClick: () => void;
   onRunNowClick?: () => void;
@@ -20,6 +23,8 @@ export function EditorTopBar({
   isEditMode,
   pausedAt,
   isPauseResumeLoading,
+  isSaving,
+  isDeleting,
   onSave,
   onDeleteClick,
   onRunNowClick,
@@ -67,21 +72,25 @@ export function EditorTopBar({
           )
         )}
 
-        <button
-          className={styles.saveButton}
+        <Button
+          variant="primary"
+          size="small"
           onClick={onSave}
           disabled={!canSave}
+          loading={isSaving}
         >
-          Save
-        </button>
+          {isSaving ? 'Saving…' : 'Save'}
+        </Button>
 
         {isEditMode && (
-          <button
-            className={styles.deleteButton}
+          <Button
+            variant="danger"
+            size="small"
             onClick={onDeleteClick}
+            loading={isDeleting}
           >
             Delete
-          </button>
+          </Button>
         )}
       </div>
     </div>

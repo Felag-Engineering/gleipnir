@@ -29,6 +29,10 @@
   /* Accent aliases for hover and muted states */
   --accent-hover: #e0a26e;
   --accent-muted: rgba(212, 145, 90, 0.14);
+  /* Second stop of the primary-button gradient (Button.module.css). Kept
+     theme-independent — identical across dark/light, matching the prior
+     hardcoded value. */
+  --accent-gradient-end: #c07a48;
 
   /* Background tier between elevated and mid — used for neutral trace dots, subtle fills */
   --bg-subtle: #2c3832;

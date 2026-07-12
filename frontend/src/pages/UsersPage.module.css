@@ -99,28 +99,5 @@
   gap: var(--space-2);
 }
 
-.actionBtn {
-  display: inline-flex;
-  align-items: center;
-  padding: var(--space-1) var(--space-2);
-  background: transparent;
-  color: var(--text-second);
-  font-size: var(--text-xs);
-  font-weight: var(--weight-medium);
-  font-family: var(--font-body);
-  border: 1px solid var(--border-mid);
-  border-radius: 4px;
-  cursor: pointer;
-  transition: color var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out);
-}
-
-.actionBtn:hover {
-  color: var(--text-primary);
-  border-color: var(--text-muted);
-}
-
-.actionBtnDestructive:hover {
-  color: var(--color-red);
-  border-color: var(--color-red);
-}
+/* Row actions (Edit / Deactivate) use the shared <Button> component. */
 

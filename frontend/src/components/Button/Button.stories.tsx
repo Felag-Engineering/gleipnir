@@ -9,6 +9,7 @@ const meta: Meta<typeof Button> = {
     variant: { control: 'select', options: ['primary', 'secondary', 'ghost', 'danger'] },
     size: { control: 'select', options: ['default', 'small'] },
     disabled: { control: 'boolean' },
+    loading: { control: 'boolean' },
   },
 }
 
@@ -33,6 +34,22 @@ export const Danger: Story = {
 
 export const Disabled: Story = {
   args: { variant: 'primary', children: 'Disabled', disabled: true },
+}
+
+export const Loading: Story = {
+  args: { variant: 'primary', children: 'Saving…', loading: true },
+}
+
+export const LoadingVariants: Story = {
+  render: () => (
+    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+      <Button variant="primary" loading>Saving…</Button>
+      <Button variant="secondary" loading>Saving…</Button>
+      <Button variant="ghost" loading>Saving…</Button>
+      <Button variant="danger" loading>Deleting…</Button>
+      <Button variant="primary" size="small" loading>Saving…</Button>
+    </div>
+  ),
 }
 
 export const Small: Story = {

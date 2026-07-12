@@ -152,9 +152,9 @@ export default function UsersPage() {
                     <td>{formatDate(user.created_at)}</td>
                     <td>
                       <div className={styles.actionsCell}>
-                        <button
-                          type="button"
-                          className={styles.actionBtn}
+                        <Button
+                          variant="secondary"
+                          size="small"
                           onClick={() => {
                             updateMutation.reset()
                             setEditingUser(user)
@@ -162,15 +162,15 @@ export default function UsersPage() {
                           disabled={updateMutation.isPending}
                         >
                           Edit
-                        </button>
-                        <button
-                          type="button"
-                          className={`${styles.actionBtn} ${user.deactivated_at ? '' : styles.actionBtnDestructive}`}
+                        </Button>
+                        <Button
+                          variant={user.deactivated_at ? 'secondary' : 'danger'}
+                          size="small"
                           onClick={() => handleStatusToggle(user)}
-                          disabled={updateMutation.isPending}
+                          loading={updateMutation.isPending}
                         >
                           {user.deactivated_at ? 'Reactivate' : 'Deactivate'}
-                        </button>
+                        </Button>
                       </div>
                     </td>
                   </tr>
