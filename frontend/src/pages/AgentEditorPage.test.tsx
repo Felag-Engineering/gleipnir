@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -1033,5 +1033,140 @@ describe('AgentEditorPage — audience draft preservation', () => {
     await waitFor(() => {
       expect(localStorage.getItem('policyDraft:new')).toBeNull()
     })
+  })
+})
+
+// NO_MODEL_YAML is valid except for the missing model block, so validateFormState
+// reports model.provider / model.name errors — which live on the "Model & Limits"
+// tab, NOT the default-active "Basics" tab. Used to prove whole-form (not
+// active-tab-only) validation and cross-tab deep-linking.
+const NO_MODEL_YAML = `name: my-agent
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: filesystem.read_file
+agent:
+  task: Do the thing.
+  limits:
+    max_tokens_per_run: 10000
+    max_tool_calls_per_run: 50
+  concurrency: skip
+`
+
+describe('AgentEditorPage — tabbed layout', () => {
+  function loadPolicy(yaml: string) {
+    vi.mocked(usePolicy).mockReturnValue({
+      data: {
+        id: 'valid-id',
+        name: 'my-agent',
+        trigger_type: 'webhook',
+        folder: '',
+        yaml,
+        created_at: '',
+        updated_at: '',
+      },
+      status: 'success',
+    } as ReturnType<typeof usePolicy>)
+  }
+
+  it('renders all four tabs and reaches every section without losing data across a switch', async () => {
+    mockHooksDefault()
+    loadPolicy(VALID_YAML)
+    renderEditor('/agents/valid-id')
+
+    // All four tabs are present in the tablist.
+    expect(screen.getByRole('tab', { name: /Basics/ })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /Trigger/ })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /Capabilities/ })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /Model & Limits/ })).toBeInTheDocument()
+
+    // Basics is active by default; edit the name so we can prove it survives.
+    const nameInput = screen.getAllByRole('textbox')[0] as HTMLInputElement
+    await userEvent.type(nameInput, '-edited')
+    expect(nameInput.value).toBe('my-agent-edited')
+
+    // Switch to Model & Limits, then back to Basics.
+    fireEvent.click(screen.getByRole('tab', { name: /Model & Limits/ }))
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: /Model & Limits/ })).toHaveAttribute('aria-selected', 'true')
+    })
+    fireEvent.click(screen.getByRole('tab', { name: /Basics/ }))
+
+    // The name field still carries the edit — no data lost switching tabs.
+    await waitFor(() => {
+      const backToName = screen.getAllByRole('textbox')[0] as HTMLInputElement
+      expect(backToName.value).toBe('my-agent-edited')
+    })
+  })
+
+  it('ArrowRight moves selection through the tablist (keyboard-accessible)', async () => {
+    mockHooksDefault()
+    loadPolicy(VALID_YAML)
+    renderEditor('/agents/valid-id')
+
+    const basics = screen.getByRole('tab', { name: /Basics/ })
+    basics.focus()
+    fireEvent.keyDown(basics, { key: 'ArrowRight' })
+
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: /Trigger/ })).toHaveAttribute('aria-selected', 'true')
+    })
+    expect(basics).toHaveAttribute('aria-selected', 'false')
+  })
+
+  it('indicates a validation error on a non-active tab via a badge', async () => {
+    mockHooksDefault()
+    loadPolicy(VALID_YAML)
+    // Two server issues in two different tabs. The first (name → Basics) becomes
+    // the active tab; the second (model.provider → Model & Limits) must surface
+    // as a badge on that non-active tab.
+    const serverIssues = [
+      { field: 'name', message: 'name is required' },
+      { field: 'model.provider', message: 'model.provider is required' },
+    ]
+    vi.mocked(useSavePolicy).mockReturnValue({
+      mutateAsync: vi.fn().mockRejectedValue(
+        new ApiError(400, 'policy validation failed', 'name is required', serverIssues),
+      ),
+      isPending: false,
+    } as unknown as ReturnType<typeof useSavePolicy>)
+
+    renderEditor('/agents/valid-id')
+
+    fireEvent.keyDown(window, { key: 's', ctrlKey: true })
+
+    const modelTab = await screen.findByRole('tab', { name: /Model & Limits/ })
+    // The Model & Limits tab is NOT the focused/active tab, yet it shows an
+    // error badge so the operator knows it blocks Save.
+    await waitFor(() => {
+      expect(modelTab).toHaveAttribute('aria-selected', 'false')
+      expect(within(modelTab).getByLabelText(/error/i)).toBeInTheDocument()
+    })
+    // Basics (the first issue's tab) is the active tab.
+    expect(screen.getByRole('tab', { name: /Basics/ })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('save validates the whole form and navigates to a non-active tab that holds the error', async () => {
+    const { mutateAsync } = mockHooksDefault()
+    // Missing model — the only error lives on the Model & Limits tab, while the
+    // active tab starts on Basics.
+    loadPolicy(NO_MODEL_YAML)
+    renderEditor('/agents/valid-id')
+
+    // Precondition: Basics is active, Model & Limits is not.
+    expect(screen.getByRole('tab', { name: /Basics/ })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: /Model & Limits/ })).toHaveAttribute('aria-selected', 'false')
+
+    fireEvent.keyDown(window, { key: 's', ctrlKey: true })
+
+    // Whole-form validation caught the model error even though it lives on an
+    // inactive tab, so the API was never called and the editor deep-links to it.
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: /Model & Limits/ })).toHaveAttribute('aria-selected', 'true')
+    })
+    expect(mutateAsync).not.toHaveBeenCalled()
+    // The error is visible after navigating (banner + inline both surface it).
+    expect(screen.getAllByText(/model\.provider is required/).length).toBeGreaterThan(0)
   })
 })

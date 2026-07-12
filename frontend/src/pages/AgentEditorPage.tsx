@@ -14,6 +14,7 @@ import { ConcurrencySection } from '@/components/AgentEditor/FormMode/Concurrenc
 import { ModelSection } from '@/components/AgentEditor/FormMode/ModelSection'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ErrorBanner } from '@/components/form/ErrorBanner'
+import { Tabs, tabId, panelId, type TabDescriptor } from '@/components/Tabs'
 import { useToast } from '@/components/Toast'
 import { usePolicy, usePolicies } from '@/hooks/queries/policies'
 import { useSavePolicy, useDeletePolicy, usePausePolicy, useResumePolicy } from '@/hooks/mutations/policies'
@@ -110,6 +111,43 @@ function splitIssuesBySection(issues: FormIssue[]) {
   }
 }
 
+// The four authoring tabs, in display order. Each groups one or more of the
+// eight form sections so operators focus on one concern at a time (#711):
+//   basics       — PolicyIdentity + TaskInstructions
+//   trigger      — Trigger
+//   capabilities — Capabilities + Audience
+//   modelLimits  — Model + RunLimits + Concurrency
+type TabKey = 'basics' | 'trigger' | 'capabilities' | 'modelLimits'
+
+const TAB_PREFIX = 'agent-editor'
+
+const TAB_ORDER: TabKey[] = ['basics', 'trigger', 'capabilities', 'modelLimits']
+
+const TAB_LABELS: Record<TabKey, string> = {
+  basics: 'Basics',
+  trigger: 'Trigger',
+  capabilities: 'Capabilities',
+  modelLimits: 'Model & Limits',
+}
+
+// tabForField maps a validation issue's field path to the tab that owns the
+// section rendering it. Mirrors splitIssuesBySection's bucket logic so a
+// deep-linked error opens the right tab.
+function tabForField(field: string): TabKey {
+  if (field.startsWith('trigger.')) return 'trigger'
+  if (field.startsWith('capabilities') || field === 'audience') return 'capabilities'
+  if (
+    field.startsWith('model.') ||
+    field.startsWith('agent.limits.') ||
+    field === 'agent.concurrency' ||
+    field === 'agent.queue_depth'
+  ) {
+    return 'modelLimits'
+  }
+  // name, agent.task, and anything unrecognized land on Basics.
+  return 'basics'
+}
+
 // scrollToField scrolls the first element with data-field="<field>" into view
 // and focuses the first focusable child inside it.
 function scrollToField(field: string) {
@@ -161,6 +199,27 @@ export function AgentEditorPage() {
   // savedDisabledTools holds display names of tools that were still disabled
   // after a successful save. Shown as a dismissible warning banner.
   const [savedDisabledTools, setSavedDisabledTools] = useState<string[]>([])
+  // activeTab is remembered across re-renders (component state) but not across
+  // reloads — a fresh mount always starts on Basics.
+  const [activeTab, setActiveTab] = useState<TabKey>('basics')
+  // pendingFocusField defers a scroll/focus until after a tab switch renders —
+  // a hidden panel can't receive focus, so we switch the tab first (see the
+  // effect below) and focus once the owning panel is visible.
+  const [pendingFocusField, setPendingFocusField] = useState<string | null>(null)
+
+  // focusField opens the tab owning `field`, then focuses it after the panel
+  // becomes visible. Used by both the ErrorBanner deep-link and post-save
+  // scroll-to-first-error.
+  function focusField(field: string) {
+    setActiveTab(tabForField(field))
+    setPendingFocusField(field)
+  }
+
+  useEffect(() => {
+    if (!pendingFocusField) return
+    scrollToField(pendingFocusField)
+    setPendingFocusField(null)
+  }, [pendingFocusField])
 
   // Initialize from fetched policy data. The firstMount ref prevents this
   // effect from clobbering a restored draft on the /agents/new route.
@@ -207,7 +266,7 @@ export function AgentEditorPage() {
     if (clientIssues.length > 0) {
       setIssues(clientIssues)
       setDetailMsg(null)
-      scrollToField(clientIssues[0].field)
+      focusField(clientIssues[0].field)
       return
     }
 
@@ -236,7 +295,7 @@ export function AgentEditorPage() {
         }))
         setIssues(serverIssues)
         setDetailMsg(null)
-        scrollToField(serverIssues[0].field)
+        focusField(serverIssues[0].field)
       } else {
         // Legacy or non-validation error — fall back to the single-bullet banner.
         setDetailMsg(err?.detail ?? err?.message ?? 'Save failed. Please try again.')
@@ -335,6 +394,21 @@ export function AgentEditorPage() {
 
   const sectionIssues = splitIssuesBySection(issues)
 
+  // Per-tab error counts drive the badge on each tab. Sums each tab's owned
+  // section buckets so a non-active tab surfaces which sections block Save.
+  const tabErrorCounts: Record<TabKey, number> = {
+    basics: sectionIssues.identity.length + sectionIssues.task.length,
+    trigger: sectionIssues.trigger.length,
+    capabilities: sectionIssues.capabilities.length + sectionIssues.audience.length,
+    modelLimits: sectionIssues.model.length + sectionIssues.limits.length + sectionIssues.concurrency.length,
+  }
+
+  const tabDescriptors: TabDescriptor[] = TAB_ORDER.map(key => ({
+    id: key,
+    label: TAB_LABELS[key],
+    errorCount: tabErrorCounts[key],
+  }))
+
   // Build the banner issue list: if we have structured issues use them;
   // otherwise fall back to the single detail message.
   const bannerIssues = issues.length > 0
@@ -395,52 +469,95 @@ export function AgentEditorPage() {
           <ErrorBanner
             issues={bannerIssues}
             onDismiss={() => { setIssues([]); setDetailMsg(null) }}
-            onIssueClick={scrollToField}
+            onIssueClick={focusField}
           />
           <div className={styles.formPane}>
-            <PolicyIdentitySection
-              value={formState.identity}
-              onChange={v => handleFormChange({ identity: v })}
-              existingFolders={existingFolders}
-              errors={sectionIssues.identity}
+            <Tabs
+              tabs={tabDescriptors}
+              activeId={activeTab}
+              onChange={id => setActiveTab(id as TabKey)}
+              ariaLabel="Agent configuration"
+              idPrefix={TAB_PREFIX}
             />
-            <TriggerSection
-              value={formState.trigger}
-              onChange={v => handleFormChange({ trigger: v })}
-              policyId={savedPolicyId}
-              errors={sectionIssues.trigger}
-            />
-            <CapabilitiesSection
-              value={formState.capabilities}
-              onChange={v => handleFormChange({ capabilities: v })}
-              errors={sectionIssues.capabilities}
-            />
-            <AudienceSection
-              value={formState.audience}
-              onChange={v => handleFormChange({ audience: v })}
-              onNewAudienceClick={() => navigate('/admin/audiences/new')}
-              errors={sectionIssues.audience}
-            />
-            <TaskInstructionsSection
-              value={formState.task}
-              onChange={v => handleFormChange({ task: v })}
-              errors={sectionIssues.task}
-            />
-            <ModelSection
-              value={formState.model}
-              onChange={v => handleFormChange({ model: v })}
-              errors={sectionIssues.model}
-            />
-            <RunLimitsSection
-              value={formState.limits}
-              onChange={v => handleFormChange({ limits: v })}
-              errors={sectionIssues.limits}
-            />
-            <ConcurrencySection
-              value={formState.concurrency}
-              onChange={v => handleFormChange({ concurrency: v })}
-              errors={sectionIssues.concurrency}
-            />
+
+            <div
+              role="tabpanel"
+              id={panelId(TAB_PREFIX, 'basics')}
+              aria-labelledby={tabId(TAB_PREFIX, 'basics')}
+              hidden={activeTab !== 'basics'}
+              className={styles.panel}
+            >
+              <PolicyIdentitySection
+                value={formState.identity}
+                onChange={v => handleFormChange({ identity: v })}
+                existingFolders={existingFolders}
+                errors={sectionIssues.identity}
+              />
+              <TaskInstructionsSection
+                value={formState.task}
+                onChange={v => handleFormChange({ task: v })}
+                errors={sectionIssues.task}
+              />
+            </div>
+
+            <div
+              role="tabpanel"
+              id={panelId(TAB_PREFIX, 'trigger')}
+              aria-labelledby={tabId(TAB_PREFIX, 'trigger')}
+              hidden={activeTab !== 'trigger'}
+              className={styles.panel}
+            >
+              <TriggerSection
+                value={formState.trigger}
+                onChange={v => handleFormChange({ trigger: v })}
+                policyId={savedPolicyId}
+                errors={sectionIssues.trigger}
+              />
+            </div>
+
+            <div
+              role="tabpanel"
+              id={panelId(TAB_PREFIX, 'capabilities')}
+              aria-labelledby={tabId(TAB_PREFIX, 'capabilities')}
+              hidden={activeTab !== 'capabilities'}
+              className={styles.panel}
+            >
+              <CapabilitiesSection
+                value={formState.capabilities}
+                onChange={v => handleFormChange({ capabilities: v })}
+                errors={sectionIssues.capabilities}
+              />
+              <AudienceSection
+                value={formState.audience}
+                onChange={v => handleFormChange({ audience: v })}
+                onNewAudienceClick={() => navigate('/admin/audiences/new')}
+                errors={sectionIssues.audience}
+              />
+            </div>
+
+            <div
+              role="tabpanel"
+              id={panelId(TAB_PREFIX, 'modelLimits')}
+              aria-labelledby={tabId(TAB_PREFIX, 'modelLimits')}
+              hidden={activeTab !== 'modelLimits'}
+              className={styles.panel}
+            >
+              <ModelSection
+                value={formState.model}
+                onChange={v => handleFormChange({ model: v })}
+                errors={sectionIssues.model}
+              />
+              <RunLimitsSection
+                value={formState.limits}
+                onChange={v => handleFormChange({ limits: v })}
+                errors={sectionIssues.limits}
+              />
+              <ConcurrencySection
+                value={formState.concurrency}
+                onChange={v => handleFormChange({ concurrency: v })}
+                errors={sectionIssues.concurrency}
+              />
+            </div>
           </div>
         </div>
       </ErrorBoundary>

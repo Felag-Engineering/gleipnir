@@ -30,6 +30,15 @@
   width: 100%;
 }
 
+/* One authoring tab's panel. Sections inside stack with the same rhythm the
+   old single-column form used. Inactive panels carry the `hidden` attribute
+   (display:none) so their state stays mounted — switching tabs loses no data. */
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
 .loadingState,
 .errorState {
   flex: 1;
