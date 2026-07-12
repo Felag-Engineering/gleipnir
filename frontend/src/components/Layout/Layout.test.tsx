@@ -136,4 +136,52 @@ describe('Layout', () => {
     const banner = screen.getByRole('status')
     expect(banner.className).toContain('disconnectBannerCritical')
   })
+
+  // ---- Mobile drawer toggle (#704) ----
+
+  it('renders a keyboard-accessible menu toggle collapsed by default', () => {
+    renderLayout()
+    const toggle = screen.getByRole('button', { name: /open navigation menu/i })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(toggle).toHaveAttribute('aria-controls', 'app-sidebar')
+    // Sidebar renders but is not in the open state until toggled.
+    const sidebar = document.getElementById('app-sidebar')
+    expect(sidebar?.className).not.toContain('sidebarOpen')
+  })
+
+  it('toggle opens the drawer, exposing the backdrop and open state', () => {
+    renderLayout()
+    const toggle = screen.getByRole('button', { name: /open navigation menu/i })
+    fireEvent.click(toggle)
+    const openToggle = screen.getByRole('button', { name: /close navigation menu/i })
+    expect(openToggle).toHaveAttribute('aria-expanded', 'true')
+    const sidebar = document.getElementById('app-sidebar')
+    expect(sidebar?.className).toContain('sidebarOpen')
+  })
+
+  it('Escape closes the open drawer', () => {
+    renderLayout()
+    fireEvent.click(screen.getByRole('button', { name: /open navigation menu/i }))
+    expect(document.getElementById('app-sidebar')?.className).toContain('sidebarOpen')
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(document.getElementById('app-sidebar')?.className).not.toContain('sidebarOpen')
+    expect(screen.getByRole('button', { name: /open navigation menu/i })).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('outside-click on the backdrop closes the drawer', () => {
+    const { container } = renderLayout()
+    fireEvent.click(screen.getByRole('button', { name: /open navigation menu/i }))
+    const backdrop = container.querySelector('[class*="backdrop"]') as HTMLElement
+    expect(backdrop).not.toBeNull()
+    fireEvent.click(backdrop)
+    expect(document.getElementById('app-sidebar')?.className).not.toContain('sidebarOpen')
+  })
+
+  it('navigation closes the drawer', () => {
+    renderLayout()
+    fireEvent.click(screen.getByRole('button', { name: /open navigation menu/i }))
+    expect(document.getElementById('app-sidebar')?.className).toContain('sidebarOpen')
+    fireEvent.click(screen.getByRole('link', { name: /run history/i }))
+    expect(document.getElementById('app-sidebar')?.className).not.toContain('sidebarOpen')
+  })
 })

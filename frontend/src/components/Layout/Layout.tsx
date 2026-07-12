@@ -1,5 +1,6 @@
-import { useCallback, useState } from 'react'
-import { Activity, Bot, ChevronUp, Cpu, History, Mail, Megaphone, Puzzle, Settings2, Users, Wrench } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
+import FocusTrap from 'focus-trap-react'
+import { Activity, Bot, ChevronUp, Cpu, History, Mail, Megaphone, Menu, Puzzle, Settings2, Users, Wrench } from 'lucide-react'
 import { Logo } from '@/components/Logo/Logo'
 import { ContactTray } from '@/components/ContactTray'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
@@ -34,8 +35,38 @@ export default function Layout() {
   const handleMenuClose = useCallback(() => setMenuOpen(false), [])
   const [contactOpen, setContactOpen] = useState(false)
   const handleContactClose = useCallback(() => setContactOpen(false), [])
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const closeDrawer = useCallback(() => setDrawerOpen(false), [])
   const { items: attentionItems } = useAttentionItems()
   const { data: mcpServers } = useMcpServers()
+
+  // Close the mobile drawer whenever navigation occurs so tapping a nav link
+  // dismisses it. Keyed on pathname only — the drawer is a shell concern.
+  useEffect(() => {
+    setDrawerOpen(false)
+  }, [location.pathname])
+
+  // Esc closes the drawer (focus-trap escapeDeactivates is disabled so the
+  // React state stays the source of truth, mirroring the Modal pattern).
+  useEffect(() => {
+    if (!drawerOpen) return
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setDrawerOpen(false)
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [drawerOpen])
+
+  // Once the viewport grows past the mobile breakpoint the sidebar is always
+  // visible, so drop any lingering drawer state (and its focus trap).
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 769px)')
+    function onChange() {
+      if (mq.matches) setDrawerOpen(false)
+    }
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
 
   const hasPendingApprovals = (attentionItems?.length ?? 0) > 0
   const hasUnhealthyServers = mcpServers?.some(s => s.last_discovered_at === null) ?? false
@@ -55,7 +86,27 @@ export default function Layout() {
 
   return (
     <div className={styles.layout}>
-      <aside className={styles.sidebar}>
+      {drawerOpen && (
+        <div
+          className={styles.backdrop}
+          onClick={closeDrawer}
+          aria-hidden="true"
+        />
+      )}
+      <FocusTrap
+        active={drawerOpen}
+        focusTrapOptions={{
+          allowOutsideClick: true,
+          returnFocusOnDeactivate: true,
+          escapeDeactivates: false,
+          fallbackFocus: '#app-sidebar',
+        }}
+      >
+      <aside
+        id="app-sidebar"
+        className={drawerOpen ? `${styles.sidebar} ${styles.sidebarOpen}` : styles.sidebar}
+        tabIndex={-1}
+      >
         <div className={styles.sidebarBrand}>
           <Logo variant="sidebar" />
         </div>
@@ -147,8 +198,24 @@ export default function Layout() {
           </div>
         </div>
       </aside>
+      </FocusTrap>
 
       <div className={styles.mainWrapper}>
+        <div className={styles.mobileBar}>
+          <button
+            type="button"
+            className={styles.menuToggle}
+            aria-label={drawerOpen ? 'Close navigation menu' : 'Open navigation menu'}
+            aria-controls="app-sidebar"
+            aria-expanded={drawerOpen}
+            onClick={() => setDrawerOpen(prev => !prev)}
+          >
+            <Menu size={22} aria-hidden strokeWidth={1.5} />
+          </button>
+          <div className={styles.mobileBrand}>
+            <Logo variant="sidebar" />
+          </div>
+        </div>
         {connectionState !== 'connected' && (
           <div
             className={connectionState === 'disconnected'
