@@ -11,6 +11,7 @@ import {
   useDeleteMcpServerHeader,
   useSetMcpToolEnabled,
 } from '@/hooks/mutations/servers'
+import { useToast } from '@/components/Toast'
 import { ArcadeAuthSection } from './ArcadeAuthSection'
 import styles from './ServerDetailModal.module.css'
 
@@ -70,6 +71,7 @@ export function ServerDetailModal({
   onDelete,
 }: Props) {
   const setToolEnabledMutation = useSetMcpToolEnabled()
+  const toast = useToast()
   const [expandedToolId, setExpandedToolId] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
   const [showHeaderEditor, setShowHeaderEditor] = useState(false)
@@ -387,7 +389,13 @@ export function ServerDetailModal({
                     usedBy={usedBy}
                     canManage={canManage}
                     onSetEnabled={(enabled) =>
-                      setToolEnabledMutation.mutate({ serverId: server.id, toolId: tool.id, enabled })
+                      setToolEnabledMutation.mutate(
+                        { serverId: server.id, toolId: tool.id, enabled },
+                        {
+                          onSuccess: () => toast.success(enabled ? 'Tool enabled' : 'Tool disabled'),
+                          onError: () => toast.error("Couldn't update tool"),
+                        },
+                      )
                     }
                     isUpdatingEnabled={
                       setToolEnabledMutation.isPending &&

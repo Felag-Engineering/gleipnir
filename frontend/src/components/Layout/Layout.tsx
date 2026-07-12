@@ -7,6 +7,7 @@ import { useSSE } from '@/hooks/useSSE'
 import { useCurrentUser } from '@/hooks/queries/users'
 import { useAttentionItems } from '@/hooks/useAttentionItems'
 import { useMcpServers } from '@/hooks/queries/servers'
+import { ToastRegion } from '@/components/Toast'
 import { UserMenu } from './UserMenu'
 import styles from './Layout.module.css'
 
@@ -172,6 +173,7 @@ export default function Layout() {
           </div>
         </main>
       </div>
+      <ToastRegion />
     </div>
   )
 }

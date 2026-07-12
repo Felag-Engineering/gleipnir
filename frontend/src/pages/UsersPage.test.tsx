@@ -216,6 +216,7 @@ describe('UsersPage — deactivate action', () => {
 
     expect(mutateMock).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'u1', deactivated: true }),
+      expect.any(Object),
     )
   })
 
@@ -240,6 +241,7 @@ describe('UsersPage — deactivate action', () => {
 
     expect(mutateMock).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'u3', deactivated: false }),
+      expect.any(Object),
     )
   })
 })

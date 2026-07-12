@@ -11,6 +11,7 @@ import { CreateUserModal } from '@/components/UsersPage/CreateUserModal'
 import { highestRoleFromArray } from '@/components/UsersPage/roles'
 import { formatDate } from '@/utils/format'
 import { usePageTitle } from '@/hooks/usePageTitle'
+import { useToast } from '@/components/Toast'
 import styles from './UsersPage.module.css'
 
 const ROLE_BADGE_CLASS: Record<string, string> = {
@@ -28,6 +29,7 @@ export default function UsersPage() {
   const { data: users, status } = useUsers()
   const createMutation = useCreateUser()
   const updateMutation = useUpdateUser()
+  const toast = useToast()
 
   function handleCreateSubmit(username: string, password: string, roles: string[]) {
     createMutation.mutate(
@@ -36,6 +38,7 @@ export default function UsersPage() {
         onSuccess: () => {
           setShowCreateModal(false)
           createMutation.reset()
+          toast.success('User created')
         },
       },
     )
@@ -67,7 +70,18 @@ export default function UsersPage() {
   }
 
   function handleStatusToggle(user: ApiUser) {
-    updateMutation.mutate({ id: user.id, deactivated: !user.deactivated_at })
+    const nextDeactivated = !user.deactivated_at
+    updateMutation.mutate(
+      { id: user.id, deactivated: nextDeactivated },
+      {
+        onSuccess: () => {
+          toast.success(nextDeactivated ? 'User deactivated' : 'User reactivated')
+        },
+        onError: () => {
+          toast.error("Couldn't update user")
+        },
+      },
+    )
   }
 
   return (
