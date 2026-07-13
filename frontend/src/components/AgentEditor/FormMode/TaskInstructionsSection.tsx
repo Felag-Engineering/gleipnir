@@ -17,11 +17,13 @@ export function TaskInstructionsSection({ value, onChange, errors = [] }: TaskIn
       <div className={shared.heading}>Task Instructions</div>
 
       <div className={shared.field} data-field="agent.task">
-        <label className={shared.label}>Task</label>
+        <label className={shared.labelRequired} htmlFor="agent-task">Task</label>
         <textarea
+          id="agent-task"
           className={styles.textarea}
           value={value.task}
           placeholder="Describe what the agent should do…"
+          aria-required="true"
           aria-invalid={taskErrors.length > 0 || undefined}
           onChange={(e) => onChange({ ...value, task: e.target.value })}
         />

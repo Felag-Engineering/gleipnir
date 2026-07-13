@@ -19,11 +19,13 @@ export function PolicyIdentitySection({ value, onChange, existingFolders = [], e
       <div className={shared.heading}>Identity</div>
 
       <div className={shared.field} data-field="name">
-        <label className={shared.label}>Name</label>
+        <label className={shared.labelRequired} htmlFor="policy-name">Name</label>
         <input
+          id="policy-name"
           className={`${shared.input} ${shared.inputMono}`}
           type="text"
           value={value.name}
+          aria-required="true"
           aria-invalid={nameInvalid || undefined}
           aria-describedby={nameInvalid ? 'field-name-error' : undefined}
           onChange={(e) => onChange({ ...value, name: e.target.value })}

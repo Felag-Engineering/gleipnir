@@ -15,6 +15,7 @@ import { ModelSection } from '@/components/AgentEditor/FormMode/ModelSection'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ErrorBanner } from '@/components/form/ErrorBanner'
 import { Tabs, tabId, panelId, type TabDescriptor } from '@/components/Tabs'
+import { Button } from '@/components/Button'
 import { useToast } from '@/components/Toast'
 import { usePolicy, usePolicies } from '@/hooks/queries/policies'
 import { useSavePolicy, useDeletePolicy, usePausePolicy, useResumePolicy } from '@/hooks/mutations/policies'
@@ -467,6 +468,13 @@ export function AgentEditorPage() {
     complete: tabComplete[key],
   }))
 
+  // Prev/next drive the guided Back/Next footer. On the last tab the Next slot
+  // becomes the primary Save so the create flow has a clear finish; the top-bar
+  // Save stays available throughout for editing.
+  const activeIndex = TAB_ORDER.indexOf(activeTab)
+  const prevTab = activeIndex > 0 ? TAB_ORDER[activeIndex - 1] : null
+  const nextTab = activeIndex < TAB_ORDER.length - 1 ? TAB_ORDER[activeIndex + 1] : null
+
   // Build the banner issue list: if we have structured issues use them;
   // otherwise fall back to the single detail message.
   const bannerIssues = issues.length > 0
@@ -621,6 +629,33 @@ export function AgentEditorPage() {
                 onChange={v => handleFormChange({ concurrency: v })}
                 errors={sectionIssues.concurrency}
               />
+            </div>
+
+            {/* One footer, driven by the active tab: guided Back/Next through the
+                sequence, ending in a primary Save on the last tab. */}
+            <div className={styles.panelFooter}>
+              {prevTab ? (
+                <Button type="button" variant="secondary" onClick={() => setActiveTab(prevTab)}>
+                  ← {TAB_LABELS[prevTab]}
+                </Button>
+              ) : (
+                <span />
+              )}
+              {nextTab ? (
+                <Button type="button" variant="secondary" onClick={() => setActiveTab(nextTab)}>
+                  {TAB_LABELS[nextTab]} →
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  variant="primary"
+                  onClick={handleSave}
+                  disabled={!canSave}
+                  loading={savePolicy.isPending}
+                >
+                  Save agent
+                </Button>
+              )}
             </div>
           </div>
         </div>

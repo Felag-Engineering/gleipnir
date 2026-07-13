@@ -1,14 +1,14 @@
 /* Shared base styles for agent editor form sections.
    Section-specific overrides live in each *Section.module.css. */
 
+/* Sections are flat groups, not cards: once each tab carries a title and each
+   section a legible eyebrow, an extra bordered box per section (and cards
+   nested inside it, e.g. the concurrency options) reads as heavy chrome. The
+   eyebrow + panel gap carry the grouping instead. */
 .section {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
-  background: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-section);
-  padding: var(--space-5);
 }
 
 .heading {
@@ -31,6 +31,27 @@
 .label {
   font-size: var(--text-xs);
   color: var(--text-second);
+}
+
+/* Required-field markers via ::after so the DOM label text stays clean and
+   getByLabelText("Name") still matches. Mirrors SchemaForm's convention. The
+   aria-required attribute on the control carries the semantics for AT. */
+.labelRequired {
+  composes: label;
+}
+
+.labelRequired::after {
+  content: ' *';
+  color: var(--color-red);
+}
+
+.headingRequired {
+  composes: heading;
+}
+
+.headingRequired::after {
+  content: ' *';
+  color: var(--color-red);
 }
 
 .input {

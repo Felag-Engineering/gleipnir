@@ -69,6 +69,19 @@
   color: var(--text-second);
 }
 
+/* Guided Back/Next (or finish-Save) footer. Sits below the active panel and is
+   separated by a rule so it reads as the step's forward affordance. space-between
+   keeps Back left and Next/Save right; the empty <span> holds the right slot on
+   the first tab. */
+.panelFooter {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border-subtle);
+}
+
 .loadingState,
 .errorState {
   flex: 1;

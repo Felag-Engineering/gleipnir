@@ -25,3 +25,22 @@
   font-size: var(--text-xs);
   color: var(--text-muted);
 }
+
+/* Actionable first-run callout when no models are enabled — turns the dead
+   dropdown text into a path to Admin → Models. */
+.emptyHint {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-sm);
+  color: var(--text-second);
+  line-height: 1.5;
+}
+
+.emptyHintLink {
+  color: var(--color-blue);
+  font-weight: var(--weight-medium);
+  text-decoration: none;
+}
+
+.emptyHintLink:hover {
+  text-decoration: underline;
+}
