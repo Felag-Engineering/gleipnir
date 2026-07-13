@@ -130,6 +130,26 @@ const TAB_LABELS: Record<TabKey, string> = {
   modelLimits: 'Model & Limits',
 }
 
+// One-line orientation for each tab, shown under the panel title. Written from
+// the operator's side of the screen — what they set here, in plain terms.
+const TAB_LEAD: Record<TabKey, string> = {
+  basics: 'Name your agent and describe the job it does.',
+  trigger: 'Choose what starts a run, and how often.',
+  capabilities: 'Grant the tools and channels this agent may use.',
+  modelLimits: 'Pick the model and set guardrails for each run.',
+}
+
+// PanelHeader gives every tab a readable title + lead-in, establishing the
+// top-level hierarchy the faint section eyebrows alone couldn't carry.
+function PanelHeader({ tab }: { tab: TabKey }) {
+  return (
+    <header className={styles.panelHeader}>
+      <h2 className={styles.panelTitle}>{TAB_LABELS[tab]}</h2>
+      <p className={styles.panelLead}>{TAB_LEAD[tab]}</p>
+    </header>
+  )
+}
+
 // tabForField maps a validation issue's field path to the tab that owns the
 // section rendering it. Mirrors splitIssuesBySection's bucket logic so a
 // deep-linked error opens the right tab.
@@ -202,6 +222,14 @@ export function AgentEditorPage() {
   // activeTab is remembered across re-renders (component state) but not across
   // reloads — a fresh mount always starts on Basics.
   const [activeTab, setActiveTab] = useState<TabKey>('basics')
+  // visitedTabs gates the per-tab completion check: a tab shows ✓ only once the
+  // operator has actually moved through it (and it satisfies its required
+  // fields). A fresh create form therefore starts fully unchecked and fills in
+  // as they progress; an existing agent (edit mode) is treated as already
+  // visited so its complete sections read as done on load.
+  const [visitedTabs, setVisitedTabs] = useState<Set<TabKey>>(
+    () => new Set<TabKey>(id ? TAB_ORDER : ['basics']),
+  )
   // pendingFocusField defers a scroll/focus until after a tab switch renders —
   // a hidden panel can't receive focus, so we switch the tab first (see the
   // effect below) and focus once the owning panel is visible.
@@ -220,6 +248,13 @@ export function AgentEditorPage() {
     scrollToField(pendingFocusField)
     setPendingFocusField(null)
   }, [pendingFocusField])
+
+  // Mark the active tab visited. Runs for every path that changes activeTab —
+  // tab clicks, keyboard roving, and the error deep-link — so "visited" tracks
+  // wherever the operator has actually landed.
+  useEffect(() => {
+    setVisitedTabs(prev => (prev.has(activeTab) ? prev : new Set(prev).add(activeTab)))
+  }, [activeTab])
 
   // Initialize from fetched policy data. The firstMount ref prevents this
   // effect from clobbering a restored draft on the /agents/new route.
@@ -403,10 +438,33 @@ export function AgentEditorPage() {
     modelLimits: sectionIssues.model.length + sectionIssues.limits.length + sectionIssues.concurrency.length,
   }
 
+  // Completion is computed LIVE (not from the post-Save `issues` state) so the
+  // check appears the moment a visited tab's required fields are satisfied — a
+  // positive signal that encourages, unlike the red badges which stay gated to
+  // a Save attempt so we never scold before the operator has tried. A tab is
+  // "complete" only when it has been VISITED and contributes no validation
+  // issue (i.e. is not blocking Save); the visited gate keeps a fresh form
+  // fully unchecked and lets the checks fill in as the operator moves through.
+  const liveSection = splitIssuesBySection(validateFormState(formState))
+  const tabComplete: Record<TabKey, boolean> = {
+    basics: visitedTabs.has('basics') && liveSection.identity.length === 0 && liveSection.task.length === 0,
+    trigger: visitedTabs.has('trigger') && liveSection.trigger.length === 0,
+    capabilities:
+      visitedTabs.has('capabilities') &&
+      liveSection.capabilities.length === 0 &&
+      liveSection.audience.length === 0,
+    modelLimits:
+      visitedTabs.has('modelLimits') &&
+      liveSection.model.length === 0 &&
+      liveSection.limits.length === 0 &&
+      liveSection.concurrency.length === 0,
+  }
+
   const tabDescriptors: TabDescriptor[] = TAB_ORDER.map(key => ({
     id: key,
     label: TAB_LABELS[key],
     errorCount: tabErrorCounts[key],
+    complete: tabComplete[key],
   }))
 
   // Build the banner issue list: if we have structured issues use them;
@@ -489,6 +547,7 @@ export function AgentEditorPage() {
               hidden={activeTab !== 'basics'}
               className={styles.panel}
             >
+              <PanelHeader tab="basics" />
               <PolicyIdentitySection
                 value={formState.identity}
                 onChange={v => handleFormChange({ identity: v })}
@@ -509,6 +568,7 @@ export function AgentEditorPage() {
               hidden={activeTab !== 'trigger'}
               className={styles.panel}
             >
+              <PanelHeader tab="trigger" />
               <TriggerSection
                 value={formState.trigger}
                 onChange={v => handleFormChange({ trigger: v })}
@@ -524,6 +584,7 @@ export function AgentEditorPage() {
               hidden={activeTab !== 'capabilities'}
               className={styles.panel}
             >
+              <PanelHeader tab="capabilities" />
               <CapabilitiesSection
                 value={formState.capabilities}
                 onChange={v => handleFormChange({ capabilities: v })}
@@ -544,6 +605,7 @@ export function AgentEditorPage() {
               hidden={activeTab !== 'modelLimits'}
               className={styles.panel}
             >
+              <PanelHeader tab="modelLimits" />
               <ModelSection
                 value={formState.model}
                 onChange={v => handleFormChange({ model: v })}

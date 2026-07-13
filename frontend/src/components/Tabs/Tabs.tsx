@@ -12,6 +12,13 @@ export interface TabDescriptor {
    * opening it.
    */
   errorCount?: number
+  /**
+   * True when this tab's required fields are satisfied (it is not blocking
+   * Save). Renders a completion check in the tab's status marker — a positive
+   * signal that turns the strip into a live map of what's left. Errors take
+   * precedence, so a tab with errorCount > 0 never shows as complete.
+   */
+  complete?: boolean
 }
 
 export interface TabsProps {
@@ -80,6 +87,12 @@ export function Tabs({ tabs, activeId, onChange, ariaLabel, idPrefix = 'tabs' }:
         const selected = tab.id === activeId
         const errorCount = tab.errorCount ?? 0
         const hasError = errorCount > 0
+        // Errors outrank completion: a tab that blocks Save is never "done".
+        const complete = Boolean(tab.complete) && !hasError
+        const markerClass = [
+          styles.tabMarker,
+          hasError ? styles.tabMarkerError : complete ? styles.tabMarkerComplete : '',
+        ].join(' ')
         return (
           <button
             key={tab.id}
@@ -94,15 +107,17 @@ export function Tabs({ tabs, activeId, onChange, ariaLabel, idPrefix = 'tabs' }:
             onClick={() => onChange(tab.id)}
             onKeyDown={(e) => handleKeyDown(e, index)}
           >
+            <span
+              className={markerClass}
+              // Only the error state joins the accessible name (as it shipped in
+              // #711); the numeric/complete markers are decorative so a tab's
+              // name stays exactly its label for assistive tech and tests.
+              aria-label={hasError ? `${errorCount} ${errorCount === 1 ? 'error' : 'errors'}` : undefined}
+              aria-hidden={hasError ? undefined : true}
+            >
+              {hasError ? errorCount : complete ? '✓' : index + 1}
+            </span>
             <span className={styles.tabLabel}>{tab.label}</span>
-            {hasError && (
-              <span
-                className={styles.tabBadge}
-                aria-label={`${errorCount} ${errorCount === 1 ? 'error' : 'errors'}`}
-              >
-                {errorCount}
-              </span>
-            )}
           </button>
         )
       })}

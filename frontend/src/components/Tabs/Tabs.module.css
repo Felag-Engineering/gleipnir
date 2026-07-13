@@ -36,23 +36,38 @@
   border-bottom-color: var(--color-blue);
 }
 
-/* Error badge: a small pill carrying the error count for the tab. Uses the
-   error color so operators can spot which tabs block Save without opening
-   them. */
-.tabBadge {
+/* Leading status marker: one slot, three states, so the strip reads as a live
+   map of what's left. Default shows the tab's step number; it upgrades to a
+   check when the tab's required fields are satisfied, or the error count when
+   the tab blocks Save. */
+.tabMarker {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 16px;
-  height: 16px;
+  min-width: 18px;
+  height: 18px;
   padding: 0 var(--space-1);
   border-radius: 999px;
-  background: var(--color-red);
-  color: var(--bg-canvas);
+  background: var(--bg-subtle);
+  color: var(--text-muted);
   font-size: var(--text-2xs);
   font-weight: var(--weight-semibold);
   line-height: 1;
   flex-shrink: 0;
+  transition: background var(--duration-fast) var(--ease-out),
+              color var(--duration-fast) var(--ease-out);
+}
+
+/* Required fields satisfied — a quiet positive signal, not a loud one. */
+.tabMarkerComplete {
+  background: color-mix(in srgb, var(--color-green) 18%, transparent);
+  color: var(--color-green);
+}
+
+/* Blocks Save — reuses the error color so it reads at a glance. */
+.tabMarkerError {
+  background: var(--color-red);
+  color: var(--bg-canvas);
 }
 
 .tabHasError {

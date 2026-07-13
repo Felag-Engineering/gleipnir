@@ -16,7 +16,9 @@
   font-size: var(--text-xs);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--text-faint);
+  /* An eyebrow, not a whisper: --text-faint was near-invisible (border-level),
+     leaving the field labels louder than the section titles above them. */
+  color: var(--text-muted);
   margin-bottom: var(--space-2);
 }
 

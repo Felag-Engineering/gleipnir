@@ -47,6 +47,28 @@
   display: none;
 }
 
+/* Tab-level heading + lead-in. This is the panel's focal point and the top of
+   the hierarchy: panel title (primary) > section eyebrow (muted) > field label. */
+.panelHeader {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.panelTitle {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.panelLead {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  color: var(--text-second);
+}
+
 .loadingState,
 .errorState {
   flex: 1;
