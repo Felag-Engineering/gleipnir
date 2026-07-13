@@ -39,6 +39,14 @@
   gap: var(--space-6);
 }
 
+/* The `hidden` attribute alone can't hide the panel: it works via the UA rule
+   `[hidden] { display: none }`, which any author `display` (the flex above)
+   overrides. Re-assert display:none with class+attribute specificity so the
+   active tab is the only visible panel. State stays mounted — no data loss. */
+.panel[hidden] {
+  display: none;
+}
+
 .loadingState,
 .errorState {
   flex: 1;
