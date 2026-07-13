@@ -30,6 +30,58 @@
   width: 100%;
 }
 
+/* One authoring tab's panel. Sections inside stack with the same rhythm the
+   old single-column form used. Inactive panels carry the `hidden` attribute
+   (display:none) so their state stays mounted — switching tabs loses no data. */
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+/* The `hidden` attribute alone can't hide the panel: it works via the UA rule
+   `[hidden] { display: none }`, which any author `display` (the flex above)
+   overrides. Re-assert display:none with class+attribute specificity so the
+   active tab is the only visible panel. State stays mounted — no data loss. */
+.panel[hidden] {
+  display: none;
+}
+
+/* Tab-level heading + lead-in. This is the panel's focal point and the top of
+   the hierarchy: panel title (primary) > section eyebrow (muted) > field label. */
+.panelHeader {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.panelTitle {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.panelLead {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  color: var(--text-second);
+}
+
+/* Guided Back/Next (or finish-Save) footer. Sits below the active panel and is
+   separated by a rule so it reads as the step's forward affordance. space-between
+   keeps Back left and Next/Save right; the empty <span> holds the right slot on
+   the first tab. */
+.panelFooter {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border-subtle);
+}
+
 .loadingState,
 .errorState {
   flex: 1;

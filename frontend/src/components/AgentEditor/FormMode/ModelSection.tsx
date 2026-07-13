@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import shared from './FormSections.module.css';
 import styles from './ModelSection.module.css';
 import type { ModelFormState, SectionIssues } from './types';
@@ -68,13 +69,14 @@ export function ModelSection({ value, onChange, errors = [] }: ModelSectionProps
 
   return (
     <div className={shared.section}>
-      <div className={shared.heading}>Model</div>
+      <div className={shared.headingRequired}>Model</div>
       <div data-field="model.provider">
         <select
           className={styles.select}
           value={selected}
           onChange={handleChange}
           disabled={isLoading || isError || providers?.length === 0}
+          aria-required="true"
           aria-invalid={modelErrors.length > 0 || undefined}
         >
           {isLoading && <option value={selected}>Loading models…</option>}
@@ -95,6 +97,14 @@ export function ModelSection({ value, onChange, errors = [] }: ModelSectionProps
           ))}
         </select>
         <FieldError messages={modelErrors} />
+        {!isLoading && !isError && providers?.length === 0 && (
+          <p className={styles.emptyHint}>
+            No models are enabled yet — an agent can&rsquo;t run without one.{' '}
+            <Link to="/admin/models" className={styles.emptyHintLink}>
+              Add a provider in Admin → Models
+            </Link>
+          </p>
+        )}
       </div>
     </div>
   );

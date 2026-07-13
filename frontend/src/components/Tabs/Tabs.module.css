@@ -1,0 +1,79 @@
+.tablist {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--border-mid);
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-second);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  margin-bottom: -1px;
+  transition: color var(--duration-fast) var(--ease-out),
+              border-color var(--duration-fast) var(--ease-out);
+}
+
+.tab:hover {
+  color: var(--text-primary);
+}
+
+.tab:focus-visible {
+  outline: 2px solid var(--color-blue);
+  outline-offset: -2px;
+  border-radius: var(--radius-sm);
+}
+
+.tabActive {
+  color: var(--text-primary);
+  border-bottom-color: var(--color-blue);
+}
+
+/* Leading status marker: one slot, three states, so the strip reads as a live
+   map of what's left. Default shows the tab's step number; it upgrades to a
+   check when the tab's required fields are satisfied, or the error count when
+   the tab blocks Save. */
+.tabMarker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 var(--space-1);
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  line-height: 1;
+  flex-shrink: 0;
+  transition: background var(--duration-fast) var(--ease-out),
+              color var(--duration-fast) var(--ease-out);
+}
+
+/* Required fields satisfied — a quiet positive signal, not a loud one. */
+.tabMarkerComplete {
+  background: color-mix(in srgb, var(--color-green) 18%, transparent);
+  color: var(--color-green);
+}
+
+/* Blocks Save — reuses the error color so it reads at a glance. */
+.tabMarkerError {
+  background: var(--color-red);
+  color: var(--bg-canvas);
+}
+
+.tabHasError {
+  color: var(--color-red);
+}
+
+.tabHasError.tabActive {
+  border-bottom-color: var(--color-red);
+}
