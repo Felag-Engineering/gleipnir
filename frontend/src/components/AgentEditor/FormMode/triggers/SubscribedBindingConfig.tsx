@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import styles from './SubscribedBindingConfig.module.css';
 import type { ApiPluginInstanceForAudience } from '@/api/types';
 import { AsyncCombobox } from '@/components/form/AsyncCombobox';

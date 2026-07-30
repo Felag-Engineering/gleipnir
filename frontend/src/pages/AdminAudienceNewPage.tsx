@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router'
 import { ArrowLeft } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { QueryBoundary, SkeletonList } from '@/components/QueryBoundary'

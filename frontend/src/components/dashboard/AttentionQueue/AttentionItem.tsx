@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router'
 import { useApproveRun } from '@/hooks/mutations/runs'
 import { useCountdown } from '@/hooks/useCountdown'
 import type { AttentionItem as AttentionItemType } from '@/hooks/useAttentionItems'

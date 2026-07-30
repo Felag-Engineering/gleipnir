@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { useAudiences, useAudience, usePluginInstancesForAudience } from '@/hooks/queries/admin'
 import { RoutingPreview } from '@/components/admin/AudienceEditor/RoutingPreview'
 import { FieldError } from '@/components/form/FieldError'

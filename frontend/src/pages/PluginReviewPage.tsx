@@ -1,5 +1,5 @@
-import { useNavigate, useParams } from 'react-router-dom'
-import { Link } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router'
+import { Link } from 'react-router'
 import { ArrowLeft } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { QueryBoundary } from '@/components/QueryBoundary'

@@ -1,4 +1,4 @@
-import { useNavigate, useRouteError } from 'react-router-dom'
+import { useNavigate, useRouteError } from 'react-router'
 import ErrorFallback from './ErrorFallback'
 
 export default function RouteErrorFallback() {

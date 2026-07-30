@@ -1,5 +1,5 @@
 import { ChevronDown, CircleCheckBig, Circle } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
 import styles from './SetupChecklist.module.css'
 

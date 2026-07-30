@@ -44,7 +44,7 @@ jobs:
       - uses: actions/setup-node@v4
         if: steps.secrets-check.outputs.skip != 'true'
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Build Gleipnir image
         if: steps.secrets-check.outputs.skip != 'true'

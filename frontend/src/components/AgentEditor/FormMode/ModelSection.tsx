@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import shared from './FormSections.module.css';
 import styles from './ModelSection.module.css';
 import type { ModelFormState, SectionIssues } from './types';

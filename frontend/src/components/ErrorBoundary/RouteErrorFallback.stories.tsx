@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { createMemoryRouter, RouterProvider } from 'react-router-dom'
+import { createMemoryRouter } from 'react-router'
+import { RouterProvider } from 'react-router/dom'
 import '@/tokens.css'
 import RouteErrorFallback from './RouteErrorFallback'
 

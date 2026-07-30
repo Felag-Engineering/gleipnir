@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router'
 import { Button } from '@/components/Button/Button'
 import { Logo } from '@/components/Logo/Logo'
 import { login, getAuthStatus } from '@/api/auth'

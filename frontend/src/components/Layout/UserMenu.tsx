@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { Settings, LogOut } from 'lucide-react'
 import { logout } from '@/api/auth'
 import styles from './UserMenu.module.css'

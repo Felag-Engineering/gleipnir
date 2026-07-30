@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { PageHeader } from '@/components/PageHeader'
 import { QueryBoundary, SkeletonList } from '@/components/QueryBoundary'
 import { PluginHealthChip } from '@/components/admin/PluginHealthChip/PluginHealthChip'

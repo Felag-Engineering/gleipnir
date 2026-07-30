@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import type { ApiPolicyListItem } from '@/api/types'
 import { usePolicy } from '@/hooks/queries/policies'
 import { useRuns } from '@/hooks/queries/runs'

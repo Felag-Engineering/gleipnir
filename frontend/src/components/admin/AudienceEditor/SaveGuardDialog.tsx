@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { Modal } from '@/components/Modal/Modal'
 import { ModalFooter } from '@/components/ModalFooter/ModalFooter'
 import type { ApiAudienceReferences } from '@/api/types'
