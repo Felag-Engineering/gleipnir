@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { Button } from '@/components/Button'
 import { AddInstanceModal } from '@/components/admin/AddInstanceModal'
 import { ApiError } from '@/api/fetch'

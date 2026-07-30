@@ -1,4 +1,4 @@
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router'
 import { ArrowRight } from 'lucide-react'
 import { useRuns } from '@/hooks/queries/runs'
 import { useSetupReadiness } from '@/hooks/useSetupReadiness'

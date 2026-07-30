@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { Play, Pencil } from 'lucide-react'
 import type { ApiPolicyListItem } from '@/api/types'
 import { StatusBadge } from '@/components/dashboard/StatusBadge'

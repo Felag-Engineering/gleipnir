@@ -3,7 +3,7 @@
 # (an amd64 CI runner) rather than under QEMU — its output (frontend/dist) is
 # static JS/CSS and architecture-neutral, so there is nothing to gain from
 # running it on the target arch.
-FROM --platform=$BUILDPLATFORM node:20-alpine AS frontend-builder
+FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend-builder
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci

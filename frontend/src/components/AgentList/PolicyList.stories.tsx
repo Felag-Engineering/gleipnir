@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { fn } from 'storybook/test'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import '@/tokens.css'
 import type { ApiPolicyListItem } from '@/api/types'
 import { PolicyList } from './PolicyList'

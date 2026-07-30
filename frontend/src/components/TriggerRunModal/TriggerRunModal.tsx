@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { Modal } from '@/components/Modal/Modal'
 import { ModalFooter } from '@/components/ModalFooter'
 import { ApiError } from '@/api/fetch'

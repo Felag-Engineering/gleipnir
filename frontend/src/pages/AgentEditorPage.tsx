@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { EditorTopBar } from '@/components/AgentEditor/EditorTopBar/EditorTopBar'
 import { DeleteAgentModal } from '@/components/AgentEditor/DeleteAgentModal'
