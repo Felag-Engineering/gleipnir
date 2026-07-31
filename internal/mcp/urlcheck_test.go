@@ -2,11 +2,31 @@ package mcp
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"net/url"
 	"testing"
 )
 
 func TestValidateServerURL(t *testing.T) {
+	// Stub DNS so hostname cases are fast, deterministic, and can exercise
+	// the resolves-only-to-link-local branch, which real DNS can't produce
+	// on demand. Package-level var swap — this test must not use t.Parallel().
+	prevLookup := lookupHost
+	lookupHost = func(_ context.Context, host string) ([]string, error) {
+		switch host {
+		case "mcp.example.com":
+			return []string{"203.0.113.10"}, nil
+		case "linklocal.example.com":
+			return []string{"169.254.169.254"}, nil
+		case "nxdomain.example.com":
+			return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+		default:
+			return nil, fmt.Errorf("unexpected lookup for %q in test stub", host)
+		}
+	}
+	t.Cleanup(func() { lookupHost = prevLookup })
+
 	tests := []struct {
 		name    string
 		rawURL  string
@@ -53,8 +73,20 @@ func TestValidateServerURL(t *testing.T) {
 			rawURL:  "http://192.168.50.10:8080/mcp",
 			wantErr: false,
 		},
+		{
+			// Resolution failure is not a security failure: allow the URL and
+			// let the actual connection attempt surface the error.
+			name:    "hostname that fails to resolve",
+			rawURL:  "http://nxdomain.example.com:9000",
+			wantErr: false,
+		},
 
 		// Blocked — link-local addresses.
+		{
+			name:    "hostname resolving only to link-local",
+			rawURL:  "http://linklocal.example.com/latest/meta-data",
+			wantErr: true,
+		},
 		{
 			name:    "link-local cloud metadata IP",
 			rawURL:  "http://169.254.169.254/latest/meta-data",

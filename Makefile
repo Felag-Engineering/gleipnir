@@ -1,9 +1,11 @@
-.PHONY: help build test security security-go security-frontend proto lint-plugins lint-plugins-self-test lint lint-go-fmt lint-staticcheck
+.PHONY: help build test security security-go security-frontend proto lint-plugins lint-plugins-self-test lint lint-go-fmt lint-staticcheck ci-local ci-local-lint ci-local-drift ci-local-backend ci-local-sdk ci-local-frontend
 
 help:
 	@echo "Targets:"
 	@echo "  build                      go build ./..."
 	@echo "  test                       go test -race ./..."
+	@echo "  ci-local                   run the full PR CI gate locally (see lanes below);"
+	@echo "                             fastest as: make -j4 -O ci-local"
 	@echo "  security                   run all security scans (govulncheck + npm audit)"
 	@echo "  security-go                govulncheck ./..."
 	@echo "  security-frontend          npm audit --omit=dev (in frontend/)"
@@ -63,5 +65,82 @@ lint-go-fmt:
 
 # GOWORK=off scopes staticcheck to the root module only (excludes plugin-sdk and
 # other workspace members). Invoked via go run so no installed binary is required.
+# Pinned (not @latest): this also runs as a CI gate, and an unpinned staticcheck
+# release would redden every open PR at once. Bump deliberately.
 lint-staticcheck:
-	GOWORK=off go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+	GOWORK=off go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
+
+# ---------------------------------------------------------------------------
+# ci-local — the full PR gate, runnable on a dirty tree.
+#
+# Mirrors every per-PR CI job that a laptop can run: backend build + race
+# tests, gofmt, plugin import boundary (+ self-test), sqlc drift, proto lint +
+# gen drift, plugin-sdk build/tests + examples + first-party plugin modules,
+# frontend typecheck + unit tests. This is the dev-loop's Stage 5.5 merge
+# gate — when CI is unavailable, a green ci-local is the signal a human
+# merges on, so it must not silently skip lanes: a missing tool is a hard
+# failure, never a skip.
+#
+# NOT covered locally (CI-only): docker multi-arch build, arm64 QEMU boot,
+# podman smoke, and the vuln scans (`make security` — network-dependent).
+#
+# The drift lanes intentionally do NOT use CI's `git diff --exit-code`: on a
+# dirty tree (the dev-loop runs this gate before committing) that would flag
+# the developer's own uncommitted changes. Instead they hash the worktree
+# state of the generated dirs before and after regeneration — drift means
+# "regeneration changed something", regardless of what was already dirty. On
+# failure the regenerated files are left in place: the fix is to stage them.
+#
+# Lanes are independent phony targets so `make -j4 -O ci-local` runs them in
+# parallel (-O keeps output per-target). Build/test lanes order after the
+# drift lanes: the drift lanes rewrite generated sources, and a concurrent
+# compile reading a half-written file would fail spuriously.
+# ---------------------------------------------------------------------------
+
+ci-local: ci-local-lint ci-local-drift ci-local-backend ci-local-sdk ci-local-frontend
+	@echo ""
+	@echo "ci-local ✅  lanes: backend build+race tests · gofmt · staticcheck · plugin import boundary · sqlc drift · proto lint+gen drift · plugin-sdk+examples+plugins tests · frontend typecheck+unit"
+	@echo "not covered locally (CI-only): docker/arm64/podman image jobs, vuln scans (make security)"
+
+ci-local-lint: lint-go-fmt lint-plugins lint-plugins-self-test lint-staticcheck
+
+ci-local-drift:
+	@command -v sqlc >/dev/null || { echo "ci-local: sqlc is required for the sqlc-drift lane (CI pins 1.30.0) — https://docs.sqlc.dev/en/latest/overview/install.html"; exit 1; }
+	@command -v buf  >/dev/null || { echo "ci-local: buf is required for the proto lanes — https://buf.build/docs/installation"; exit 1; }
+	@before=$$( (git status --porcelain -- internal/db/; git diff -- internal/db/) | sha256sum); \
+	sqlc generate; \
+	after=$$( (git status --porcelain -- internal/db/; git diff -- internal/db/) | sha256sum); \
+	if [ "$$before" != "$$after" ]; then \
+		echo "ci-local: sqlc drift — 'sqlc generate' changed internal/db/; stage the regenerated files"; \
+		exit 1; \
+	fi
+	@if find . -type f -name '*.proto' -not -path './.git/*' | grep -q .; then \
+		buf lint || exit 1; \
+	else \
+		echo "ci-local: no .proto files; skipping buf lint (mirrors CI)"; \
+	fi
+	@before=$$( (git status --porcelain -- plugin-sdk/gen/; git diff -- plugin-sdk/gen/) | sha256sum); \
+	buf generate; \
+	after=$$( (git status --porcelain -- plugin-sdk/gen/; git diff -- plugin-sdk/gen/) | sha256sum); \
+	if [ "$$before" != "$$after" ]; then \
+		echo "ci-local: proto gen drift — 'buf generate' changed plugin-sdk/gen/; stage the regenerated files"; \
+		exit 1; \
+	fi
+
+ci-local-backend: ci-local-drift
+	GOWORK=off go build ./...
+	GOWORK=off go test -race ./...
+
+ci-local-sdk: ci-local-drift
+	cd plugin-sdk && GOWORK=off go build ./... && GOWORK=off go test ./...
+	go test ./plugin-sdk/examples/minimal-tool/...
+	@for dir in plugins/*/; do \
+		echo "go test $$dir..."; \
+		(cd "$$dir" && go test ./...) || exit 1; \
+	done
+
+ci-local-frontend:
+	@command -v npm >/dev/null || { echo "ci-local: npm is required for the frontend lane (CI uses Node 22)"; exit 1; }
+	@if [ ! -d frontend/node_modules ]; then echo "ci-local: frontend/node_modules missing — running npm ci"; cd frontend && npm ci; fi
+	cd frontend && npx tsc --noEmit
+	cd frontend && npm run test:unit

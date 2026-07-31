@@ -275,6 +275,7 @@ func TestPoller_CheckNoMatchNoRun(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
@@ -303,7 +304,6 @@ func TestPoller_CheckNoMatchNoRun(t *testing.T) {
 	if len(runs) != 0 {
 		t.Errorf("expected no runs when check does not match, got %d", len(runs))
 	}
-	_ = manager
 }
 
 // TestPoller_MatchAny_OnePassFires verifies that match=any fires when at least
@@ -379,6 +379,7 @@ agent:
 	defer cancel()
 
 	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
@@ -406,7 +407,6 @@ agent:
 	if len(runs) != 0 {
 		t.Errorf("expected no runs when match=all and one check fails, got %d", len(runs))
 	}
-	_ = manager
 }
 
 // TestPoller_ToolErrorTreatedAsNotPassed verifies that when the poll tool
@@ -423,6 +423,7 @@ func TestPoller_ToolErrorTreatedAsNotPassed(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
@@ -450,7 +451,6 @@ func TestPoller_ToolErrorTreatedAsNotPassed(t *testing.T) {
 	if len(runs) != 0 {
 		t.Errorf("expected no runs when tool errors with match=all, got %d", len(runs))
 	}
-	_ = manager
 }
 
 // TestPoller_ConcurrencySkip verifies that when an active run already exists,
@@ -469,6 +469,7 @@ func TestPoller_ConcurrencySkip(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
@@ -512,6 +513,7 @@ func TestPoller_GracefulShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
@@ -560,11 +562,13 @@ func TestPoller_Stop_DoesNotDeadlock(t *testing.T) {
 	yamlStr := pollPolicyYAML("poll-stop", "100ms")
 	insertTestPollPolicy(t, store, "pol-poll-stop", "poll-stop", yamlStr)
 
+	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
-		Manager:                run.NewRunManager(),
+		Manager:                manager,
 		AgentFactory:           pollerFactory(),
 		Publisher:              nil,
 		DefaultFeedbackTimeout: 0,
@@ -676,6 +680,7 @@ func TestPoller_CheckTimeout_CancelsCallTool(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
@@ -739,6 +744,7 @@ func TestPoller_SkipsLoop_WhenNoSystemDefaultAndNoModelInYAML(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
 	// Resolver with no default configured — simulates unconfigured system default.
 	noDefault := newTestSettings("", "")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{

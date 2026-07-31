@@ -189,12 +189,14 @@ func badSignatureTarball(t *testing.T, name, version string) string {
 	return tarPath
 }
 
-// oversizedTarball builds a tarball whose uncompressed total exceeds maxTarballBytes.
+// oversizedTarball builds a tarball whose uncompressed total exceeds the
+// current maxTarballBytes (which TestInstall_TarballTooLarge lowers first —
+// the limit logic is threshold-independent).
 func oversizedTarball(t *testing.T, name string) string {
 	t.Helper()
 
-	// 101 MiB is intentional: it sits just over the 100 MiB cumulative cap to exercise that limit.
-	huge := bytes.Repeat([]byte("X"), 101<<20)
+	// One MiB over the cap: just past the cumulative limit to exercise it.
+	huge := bytes.Repeat([]byte("X"), int(maxTarballBytes)+(1<<20))
 
 	tarPath := filepath.Join(t.TempDir(), name+"-huge.tar.gz")
 	writeTarball(t, tarPath, []tarEntry{
@@ -558,6 +560,13 @@ func TestInstall_SameVersion_NoOp(t *testing.T) {
 }
 
 func TestInstall_TarballTooLarge(t *testing.T) {
+	// Lower the cap rather than materializing a real >100 MiB payload; the
+	// size-limit logic is identical at any threshold. Package-level var swap —
+	// do not add t.Parallel() here.
+	prevCap := maxTarballBytes
+	maxTarballBytes = 1 << 20 // 1 MiB
+	t.Cleanup(func() { maxTarballBytes = prevCap })
+
 	q := openTestDB(t)
 	inst := newTestInstaller(t, q, false)
 

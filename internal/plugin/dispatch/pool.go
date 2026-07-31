@@ -24,6 +24,13 @@ import (
 // pluginruntime.go (managerConnFactory.Connect); tests supply a stub.
 type ConnFactory func(instanceName string) (*grpc.ClientConn, error)
 
+// testHookQueueSlotClaimed, when non-nil, fires immediately after a caller
+// claims a queue slot. Queue occupancy is otherwise unobservable from outside
+// the pool, so tests need this signal to synchronize on "a caller is parked in
+// the queue" without wall-clock sleeps (signal-don't-poll). Set only via
+// SetQueueSlotClaimedHookForTest (export_test.go); always nil in production.
+var testHookQueueSlotClaimed func()
+
 // Config holds all tunable parameters for a Pool.
 type Config struct {
 	// CallTimeout is the per-call deadline. Defaults to 30s if zero, matching
@@ -290,7 +297,9 @@ func (p *Pool) Call(ctx context.Context, runID, policyID, instanceName, toolName
 	// and can reason about the backpressure rather than the run stalling.
 	select {
 	case st.queueGate <- struct{}{}:
-		// queue slot claimed
+		if testHookQueueSlotClaimed != nil {
+			testHookQueueSlotClaimed()
+		}
 	default:
 		return "", false, ErrQueueFull
 	}

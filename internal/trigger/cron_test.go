@@ -37,6 +37,9 @@ func setupCronFixture(t *testing.T) (*db.Store, *CronRunner) {
 	store := testutil.NewTestStore(t)
 	registry := mcp.NewRegistry(store.Queries())
 	manager := run.NewRunManager()
+	// Registered after NewTestStore so cleanup runs LIFO: drain any run
+	// launched by fire() before the store closes underneath it.
+	t.Cleanup(manager.Wait)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
@@ -218,6 +221,7 @@ func TestCronRunner_Start_LoadsActivePolicies(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	registry := mcp.NewRegistry(store.Queries())
 	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
@@ -469,6 +473,7 @@ func TestCronRunner_Stop_DoesNotDeadlock(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	registry := mcp.NewRegistry(store.Queries())
 	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,

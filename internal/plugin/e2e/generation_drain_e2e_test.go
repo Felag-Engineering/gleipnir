@@ -56,7 +56,11 @@ import (
 // be returned until the refcount reaches zero, so if the test observes drained=true
 // AFTER close(releaseHandler), the ordering is proven without reading refs directly.
 func TestHostRPC_GenerationDrain_WaitsForInflight(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel(): this test installs a per-controller afterPauseHook
+	// (generation.Controller.SetAfterPauseHookForTest) below, and the repo
+	// convention is that a hook-bearing test does not run in parallel with
+	// others (see the hook's doc comment in
+	// internal/plugin/generation/testhooks.go).
 
 	const instanceID = "e2e-drain-natural-inst"
 
@@ -119,35 +123,36 @@ func TestHostRPC_GenerationDrain_WaitsForInflight(t *testing.T) {
 		drained bool
 		err     error
 	}
-	// drainStarted signals that the BeginDrain goroutine has entered the call
-	// and is now in the pause state. We need this to guarantee the goroutine's
-	// drain is in progress before we fire the concurrent second drain.
-	drainStarted := make(chan struct{})
+
+	// drainPaused closes the instant the goroutine's BeginDrain commits the
+	// paused state for instanceID (generation.Controller.afterPauseHook,
+	// issue #678). controller.go's BeginDrain sets s.draining = true under the
+	// instance lock in the same step that commits paused, strictly before the
+	// hook fires — so any BeginDrain call that runs after this signal is
+	// guaranteed to observe draining==true and become the "second" (rejected)
+	// drain. This replaces a prior sleep-and-hope wait that could flake if the
+	// inline call below won the race and became the first drain instead.
+	drainPaused := make(chan struct{})
+	ctrl.SetAfterPauseHookForTest(func(id string) {
+		if id == instanceID {
+			close(drainPaused)
+		}
+	})
+
 	drainDone := make(chan drainResult, 1)
 	go func() {
-		// Signal just before we call BeginDrain so the test knows we are committed.
-		// There's a tiny window before BeginDrain acquires the lock, but it is
-		// harmless: the inline concurrent call below either sees s.draining==false
-		// (wins the race, becomes first drain) or ==true (second drain, gets error).
-		// Either ordering produces a valid "drain already in progress" result for
-		// whichever call is second. The check below accounts for this.
-		close(drainStarted)
 		newGen, drained, err := ctrl.BeginDrain(context.Background(), instanceID, 10*time.Second)
 		drainDone <- drainResult{newGen: newGen, drained: drained, err: err}
 	}()
 
-	// Wait for the goroutine to be in-flight before firing the second drain.
+	// Wait for the goroutine's drain to commit the paused state before firing
+	// the concurrent second drain below. 5s is a CI-tolerance deadline, not a
+	// real timing assertion — BeginDrain should signal within microseconds.
 	select {
-	case <-drainStarted:
+	case <-drainPaused:
 	case <-time.After(5 * time.Second):
-		t.Fatal("drain goroutine did not start within 5s")
+		t.Fatal("BeginDrain goroutine did not reach the paused state within 5s")
 	}
-
-	// Give the goroutine a moment to actually call BeginDrain and enter the pause
-	// state before we fire the concurrent second drain. A tiny sleep here is
-	// acceptable because this is not a timing assertion: it only determines which
-	// call wins the s.draining lock, not when the drain completes.
-	time.Sleep(10 * time.Millisecond)
 
 	// --- Step 4: Prove BeginDrain is still waiting ---
 	// The drain cannot return until refs reach zero. The RPC is still holding a
@@ -162,8 +167,9 @@ func TestHostRPC_GenerationDrain_WaitsForInflight(t *testing.T) {
 	// Also check the concurrent-drain serialisation guarantee: a second BeginDrain
 	// while one is already in progress must return "drain already in progress".
 	// This is checked inline (before release) to avoid complicating the wire test
-	// with extra goroutines. By now the goroutine's drain is in-progress
-	// (10ms sleep above), so this call reliably sees s.draining==true.
+	// with extra goroutines. The drainPaused signal above proves the goroutine's
+	// drain has already committed s.draining = true, so this call deterministically
+	// observes it and becomes the "second" drain.
 	_, _, concurrentDrainErr := ctrl.BeginDrain(context.Background(), instanceID, time.Second)
 	if concurrentDrainErr == nil {
 		t.Error("second concurrent BeginDrain should have returned an error")

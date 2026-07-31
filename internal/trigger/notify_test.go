@@ -36,6 +36,9 @@ func setupNotifyPollerFixture(t *testing.T) (*db.Store, *Poller) {
 	store := testutil.NewTestStore(t)
 	registry := mcp.NewRegistry(store.Queries())
 	manager := run.NewRunManager()
+	// Registered after NewTestStore so cleanup runs LIFO: drain any launched
+	// run goroutine before the store closes underneath it.
+	t.Cleanup(manager.Wait)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
@@ -182,6 +185,9 @@ func setupNotifySchedulerFixture(t *testing.T) (*db.Store, *Scheduler) {
 	store := testutil.NewTestStore(t)
 	registry := mcp.NewRegistry(store.Queries())
 	manager := run.NewRunManager()
+	// Registered after NewTestStore so cleanup runs LIFO: drain any launched
+	// run goroutine before the store closes underneath it.
+	t.Cleanup(manager.Wait)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,

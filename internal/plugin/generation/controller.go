@@ -101,7 +101,7 @@ type Controller struct {
 	// afterPauseHook, if non-nil, is invoked by BeginDrain the moment an instance
 	// is committed to the paused state. It is a test-only synchronisation seam,
 	// always nil in production, and set exactly once before any BeginDrain via
-	// SetAfterPauseHookForTest (export_test.go) — so the go-statement that launches
+	// SetAfterPauseHookForTest (testhooks.go) — so the go-statement that launches
 	// the drain establishes happens-before and no lock is needed. It exists because
 	// BeginDrain does not return until *after* it un-pauses, leaving a test no
 	// public signal for the mid-drain paused window (issue #678).

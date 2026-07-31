@@ -6,15 +6,17 @@ on:
   workflow_dispatch:
 
 jobs:
-  slack-e2e:
+  # Job-level `if` cannot read the secrets context, so a preflight job turns
+  # secret presence into an output the e2e job can gate on. When secrets are
+  # missing the e2e job shows as SKIPPED (gray) — previously the single job
+  # "succeeded" in ~10s having run nothing, a silent green that hid the fact
+  # the E2E had never actually executed.
+  preflight:
     runs-on: ubuntu-latest
-    # Only run on the upstream repo. The string comparison is case-sensitive;
-    # canonical owner casing is Felag-Engineering (verified via git remote).
     if: github.repository == 'Felag-Engineering/gleipnir' && github.event_name != 'pull_request'
-
+    outputs:
+      has-secrets: ${{ steps.secrets-check.outputs.has-secrets }}
     steps:
-      - uses: actions/checkout@v4
-
       - name: Check required secrets
         id: secrets-check
         run: |
@@ -23,8 +25,12 @@ jobs:
             if [ -z "${!v}" ]; then missing="$missing $v"; fi
           done
           if [ -n "$missing" ]; then
-            echo "::warning::Skipping nightly slack-e2e: missing secrets:$missing"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Nightly slack-e2e did NOT run — missing repo secrets:$missing"
+            echo "## ⚠️ Slack E2E skipped — no secrets configured" >> "$GITHUB_STEP_SUMMARY"
+            echo "Missing:\`$missing\`. Configure them in repo Settings → Secrets to enable the nightly." >> "$GITHUB_STEP_SUMMARY"
+            echo "has-secrets=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has-secrets=true" >> "$GITHUB_OUTPUT"
           fi
         env:
           SLACK_TEST_CLIENT_ID: ${{ secrets.SLACK_TEST_CLIENT_ID }}
@@ -35,23 +41,27 @@ jobs:
           SLACK_TEST_ADMIN_PASSWORD: ${{ secrets.SLACK_TEST_ADMIN_PASSWORD }}
           SLACK_TEST_ANTHROPIC_API_KEY: ${{ secrets.SLACK_TEST_ANTHROPIC_API_KEY }}
 
+  slack-e2e:
+    runs-on: ubuntu-latest
+    needs: preflight
+    if: needs.preflight.outputs.has-secrets == 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/setup-go@v5
-        if: steps.secrets-check.outputs.skip != 'true'
         with:
           go-version-file: 'go.mod'
           cache: true
 
       - uses: actions/setup-node@v4
-        if: steps.secrets-check.outputs.skip != 'true'
         with:
           node-version: '22'
 
       - name: Build Gleipnir image
-        if: steps.secrets-check.outputs.skip != 'true'
         run: docker build -t gleipnir:e2e .
 
       - name: Build Slack plugin bundle
-        if: steps.secrets-check.outputs.skip != 'true'
         working-directory: plugins/slack
         run: |
           go build -o slack-plugin .
@@ -62,7 +72,6 @@ jobs:
 
       - name: Boot Gleipnir
         id: boot
-        if: steps.secrets-check.outputs.skip != 'true'
         run: |
           export GLEIPNIR_ENCRYPTION_KEY=$(openssl rand -hex 32)
           export GLEIPNIR_PLUGINS_ENABLED=true
@@ -77,7 +86,6 @@ jobs:
           for i in $(seq 60); do curl -sf http://localhost:8080/api/v1/health && break; sleep 1; done
 
       - name: Seed admin user, models, and plugin instance
-        if: steps.secrets-check.outputs.skip != 'true'
         run: |
           set -euo pipefail
           COOKIE_JAR=/tmp/e2e-cookies.txt
@@ -118,7 +126,6 @@ jobs:
           SLACK_TEST_ANTHROPIC_API_KEY: ${{ secrets.SLACK_TEST_ANTHROPIC_API_KEY }}
 
       - name: Run Playwright spec
-        if: steps.secrets-check.outputs.skip != 'true'
         working-directory: tests/playwright
         run: |
           npm install
@@ -144,11 +151,11 @@ jobs:
           retention-days: 14
 
       - name: Capture container logs on failure
-        if: failure() && steps.secrets-check.outputs.skip != 'true' && steps.boot.outcome != 'skipped'
+        if: failure() && steps.boot.outcome != 'skipped'
         run: docker logs gleipnir > gleipnir.log 2>&1
 
       - name: Upload container logs
-        if: failure() && steps.secrets-check.outputs.skip != 'true' && steps.boot.outcome != 'skipped'
+        if: failure() && steps.boot.outcome != 'skipped'
         uses: actions/upload-artifact@v4
         with:
           name: gleipnir-logs

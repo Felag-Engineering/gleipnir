@@ -84,6 +84,15 @@ func TestHashPasswordSaltUniqueness(t *testing.T) {
 }
 
 func TestHashPasswordCost(t *testing.T) {
+	// TestMain lowers the live cost for suite speed; this test pins the
+	// production security posture, so restore the production cost for the
+	// one deliberate slow hash below.
+	restore := SetBcryptCostForTest(productionBcryptCost)
+	t.Cleanup(restore)
+
+	if productionBcryptCost != 12 {
+		t.Errorf("productionBcryptCost = %d, want 12 — lowering it weakens stored-password brute-force resistance", productionBcryptCost)
+	}
 	hash, err := HashPassword("any-password")
 	if err != nil {
 		t.Fatalf("HashPassword: %v", err)
@@ -92,8 +101,8 @@ func TestHashPasswordCost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bcrypt.Cost: %v", err)
 	}
-	if cost != bcryptCost {
-		t.Errorf("bcrypt cost = %d, want %d", cost, bcryptCost)
+	if cost != productionBcryptCost {
+		t.Errorf("bcrypt cost = %d, want %d", cost, productionBcryptCost)
 	}
 }
 

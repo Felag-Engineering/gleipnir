@@ -154,18 +154,24 @@ func computeTestSignature(secret, body string) string {
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
 }
 
-// newHandler builds a WebhookHandler with the given secret loader.
+// newHandler builds a WebhookHandler with the given secret loader. Several
+// callers exercise 202 paths that launch a run goroutine, so this uses
+// MockLLMClient (fails fast, doesn't panic) rather than NewNoopLLMClient.
 func newHandler(t *testing.T, store *db.Store, loader trigger.SecretLoaderInterface) *trigger.WebhookHandler {
 	t.Helper()
 	registry := mcp.NewRegistry(store.Queries())
-	noopClient := testutil.NewNoopLLMClient()
+	mockClient := testutil.NewMockLLMClient()
 	providerReg := llm.NewProviderRegistry()
-	providerReg.Register("anthropic", noopClient)
+	providerReg.Register("anthropic", mockClient)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
+	mgr := run.NewRunManager()
+	// Registered after the caller's NewTestStore call so cleanup runs LIFO:
+	// drain any launched run goroutine before the store closes underneath it.
+	t.Cleanup(mgr.Wait)
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
-		Manager:                run.NewRunManager(),
+		Manager:                mgr,
 		AgentFactory:           run.NewAgentFactory(providerReg),
 		Publisher:              nil,
 		DefaultFeedbackTimeout: 0,
@@ -530,14 +536,17 @@ func TestWebhookHandler_RunCreatedInDB(t *testing.T) {
 	insertTestPolicy(t, store, "p-run-created", minimalWebhookPolicy)
 
 	registry := mcp.NewRegistry(store.Queries())
-	noopClient := testutil.NewNoopLLMClient()
+	// Launches a run goroutine on 202; MockLLMClient fails fast without panicking.
+	mockClient := testutil.NewMockLLMClient()
 	providerReg := llm.NewProviderRegistry()
-	providerReg.Register("anthropic", noopClient)
+	providerReg.Register("anthropic", mockClient)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
+	mgr := run.NewRunManager()
+	t.Cleanup(mgr.Wait)
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
-		Manager:                run.NewRunManager(),
+		Manager:                mgr,
 		AgentFactory:           run.NewAgentFactory(providerReg),
 		Publisher:              nil,
 		DefaultFeedbackTimeout: 0,
@@ -605,6 +614,9 @@ func TestWebhookHandler_Returns500_WhenNoDefaultModelAndPolicyOmitsModel(t *test
 	store := testutil.NewTestStore(t)
 	insertTestPolicy(t, store, "p-no-model-500", webhookPolicyNoModel)
 
+	// The missing-default-model check happens in fetchAndParsePolicy, before
+	// Launch is ever reached, so no run goroutine is launched here — keep
+	// NewNoopLLMClient's panic-on-call as coverage against a regression.
 	registry := mcp.NewRegistry(store.Queries())
 	noopClient := testutil.NewNoopLLMClient()
 	providerReg := llm.NewProviderRegistry()
@@ -612,10 +624,12 @@ func TestWebhookHandler_Returns500_WhenNoDefaultModelAndPolicyOmitsModel(t *test
 
 	// Resolver with no default configured.
 	noDefault := newTestSettings("", "")
+	mgr := run.NewRunManager()
+	t.Cleanup(mgr.Wait)
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
-		Manager:                run.NewRunManager(),
+		Manager:                mgr,
 		AgentFactory:           run.NewAgentFactory(providerReg),
 		Publisher:              nil,
 		DefaultFeedbackTimeout: 0,

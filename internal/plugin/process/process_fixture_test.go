@@ -55,13 +55,22 @@ func runFixtureServePlugin() {
 	}
 }
 
-// runFixtureServeThenCrash starts the go-plugin server in a goroutine, waits
-// for the handshake to complete (by sleeping briefly), then exits the process.
-// This simulates a crash: the subprocess exits unexpectedly while the host
-// still holds a live connection.
+// runFixtureServeThenCrash starts the go-plugin server in a goroutine, then
+// waits for a host-driven crash signal before exiting the process. This
+// simulates a crash: the subprocess exits unexpectedly while the host still
+// holds a live connection.
+//
+// The signal is a file path delivered via GLEIPNIR_TEST_CRASH_TRIGGER: the
+// fixture polls for that file's existence (cheap subprocess-internal poll,
+// 10ms interval) and exits as soon as it appears. Tests only create the file
+// after process.Start has returned successfully, so the crash can never race
+// the go-plugin handshake — unlike a fixed sleep, which could be too short
+// for Bootstrap.Bind to complete under -race on a loaded CI runner. A
+// generous overall guard bounds how long an orphaned fixture can linger if
+// the trigger var is unset or never touched.
 func runFixtureServeThenCrash() {
 	impl := &fixtureImpl{}
-	// Serve in the background so we can exit after a short delay regardless
+	// Serve in the background so we can exit on the crash signal regardless
 	// of whether the parent has called Kill.
 	go goplugin.Serve(&goplugin.ServeConfig{
 		HandshakeConfig: hostwire.HandshakeConfig,
@@ -70,9 +79,17 @@ func runFixtureServeThenCrash() {
 		},
 		GRPCServer: goplugin.DefaultGRPCServer,
 	})
-	// Give the host time to complete the Bootstrap.Bind handshake before we
-	// exit so Start() can succeed and return an *Instance before the crash.
-	time.Sleep(500 * time.Millisecond)
+
+	triggerPath := os.Getenv("GLEIPNIR_TEST_CRASH_TRIGGER")
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if triggerPath != "" {
+			if _, err := os.Stat(triggerPath); err == nil {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	os.Exit(17)
 }
 

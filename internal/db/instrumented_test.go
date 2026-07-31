@@ -9,7 +9,6 @@ package db
 
 import (
 	"context"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -20,20 +19,12 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/infra/metrics"
 )
 
-// openTestStore opens a fresh temp-file SQLite store and applies migrations.
-// Using a temp file (not :memory:) ensures WAL and foreign-key constraints
-// behave identically to production.
+// openTestStore opens a fresh temp-file SQLite store with the schema applied.
+// Delegates to newTestStore (store_test.go), which copies a once-migrated
+// template instead of re-running the migration chain per test.
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("db.Open: %v", err)
-	}
-	t.Cleanup(func() { s.Close() })
-	if err := s.Migrate(context.Background()); err != nil {
-		t.Fatalf("s.Migrate: %v", err)
-	}
-	return s
+	return newTestStore(t)
 }
 
 // TestInstrumentedQueries_DelegatesAndRecords verifies that each of the six
