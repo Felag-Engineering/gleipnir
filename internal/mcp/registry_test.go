@@ -1,19 +1,57 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
 	"github.com/felag-engineering/gleipnir/internal/toolregistry"
 )
+
+// captureLogger replaces slog.Default() with a handler that writes JSON to
+// buf for the duration of the test and restores the original default on
+// cleanup. Mirrors internal/http/api/logging_test.go's helper of the same
+// name; package mcp's tests never use t.Parallel() (see CLAUDE.md's
+// package-level-clock convention, which applies equally to a mutated
+// package-level slog default), so this is safe.
+func captureLogger(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	h := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+	orig := slog.Default()
+	slog.SetDefault(slog.New(h))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+	return &buf
+}
+
+// decodeLogLines parses newline-delimited JSON from buf into a slice of
+// maps, one per log line, so tests can index fields by name.
+func decodeLogLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+	var lines []map[string]any
+	dec := json.NewDecoder(strings.NewReader(buf.String()))
+	for dec.More() {
+		var m map[string]any
+		if err := dec.Decode(&m); err != nil {
+			t.Fatalf("decode log line: %v", err)
+		}
+		lines = append(lines, m)
+	}
+	return lines
+}
 
 // newTestRegistry opens a fresh in-memory-backed SQLite store, applies the
 // schema, and returns a Registry backed by it along with the store for raw
@@ -34,6 +72,10 @@ func newTestRegistry(t *testing.T) (*Registry, *db.Store) {
 // makeMCPServer starts an httptest.Server that returns a tools/list JSON-RPC
 // response containing the provided tools. Each tool map must have at minimum
 // "name", "description", and "inputSchema" keys.
+//
+// New protocol-era tests use NewFakeMCPServer (fakeserver.go) instead — this
+// helper answers every method with a tools/list result and has no
+// server/discover surface at all.
 func makeMCPServer(t *testing.T, tools []map[string]any) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -950,5 +992,528 @@ func TestProbeTools_NoDBWrites(t *testing.T) {
 	}
 	if toolCount != 0 {
 		t.Errorf("mcp_tools count = %d after ProbeTools, want 0", toolCount)
+	}
+}
+
+// strPtr is a small helper for building *string test fixtures.
+func strPtr(s string) *string { return &s }
+
+// TestNewClientForServer_ThreadsProtocolVersion verifies that
+// newClientForServer pins the client's protocolVersion from the DB row's
+// protocol_version column, and that NULL or empty leaves the client
+// unpinned (legacy behavior).
+func TestNewClientForServer_ThreadsProtocolVersion(t *testing.T) {
+	tests := []struct {
+		name string
+		set  *string // nil = leave the column NULL
+		want string
+	}{
+		{name: "pinned version threads through", set: strPtr("2026-07-28"), want: "2026-07-28"},
+		{name: "NULL protocol_version is unpinned", set: nil, want: ""},
+		{name: "empty string protocol_version is unpinned", set: strPtr(""), want: ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reg, store := newTestRegistry(t)
+			ctx := context.Background()
+
+			if _, err := store.CreateMCPServer(ctx, db.CreateMCPServerParams{
+				ID:        "srv-pv",
+				Name:      "pv-server",
+				Url:       "http://127.0.0.1:1",
+				CreatedAt: "2024-01-01T00:00:00Z",
+			}); err != nil {
+				t.Fatalf("CreateMCPServer: %v", err)
+			}
+			if tc.set != nil {
+				if err := store.UpdateMCPServerProtocolVersion(ctx, db.UpdateMCPServerProtocolVersionParams{
+					ProtocolVersion: tc.set,
+					ID:              "srv-pv",
+				}); err != nil {
+					t.Fatalf("UpdateMCPServerProtocolVersion: %v", err)
+				}
+			}
+
+			srv, err := store.GetMCPServer(ctx, "srv-pv")
+			if err != nil {
+				t.Fatalf("GetMCPServer: %v", err)
+			}
+
+			cl := reg.newClientForServer(srv)
+			if cl.protocolVersion != tc.want {
+				t.Errorf("cl.protocolVersion = %q, want %q", cl.protocolVersion, tc.want)
+			}
+		})
+	}
+}
+
+// TestRefreshTools_PinsProtocolVersion verifies the DoD's two headline
+// scenarios: a modern fake pins 2026-07-28, and a legacy fake pins the
+// legacy version (the server's negotiated version, or the constant when the
+// server didn't echo one).
+func TestRefreshTools_PinsProtocolVersion(t *testing.T) {
+	tests := []struct {
+		name string
+		opts []FakeServerOption
+		want string
+	}{
+		{
+			name: "FakeModern pins 2026-07-28",
+			opts: []FakeServerOption{WithFakeMode(FakeModern)},
+			want: "2026-07-28",
+		},
+		{
+			name: "FakeLegacy pins the legacy constant",
+			opts: []FakeServerOption{WithFakeMode(FakeLegacy)},
+			want: "2024-11-05",
+		},
+		{
+			name: "FakeLegacy pins the server's negotiated version",
+			opts: []FakeServerOption{WithFakeMode(FakeLegacy), WithFakeLegacyNegotiatedVersion("2025-03-26")},
+			want: "2025-03-26",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reg, store := newTestRegistry(t)
+			ctx := context.Background()
+			rawDB := store.DB()
+
+			fake := NewFakeMCPServer(tc.opts...)
+			srv := httptest.NewServer(fake)
+			t.Cleanup(srv.Close)
+
+			// Insert the server row directly, mirroring the existing
+			// auth-header test above, so the create path isn't involved.
+			var serverID string
+			if err := rawDB.QueryRow(
+				`INSERT INTO mcp_servers (id, name, url, created_at) VALUES ('srv-refresh-pin', 'pin-server', ?, ?) RETURNING id`,
+				srv.URL, "2024-01-01T00:00:00Z",
+			).Scan(&serverID); err != nil {
+				t.Fatalf("insert server: %v", err)
+			}
+
+			if _, err := reg.RefreshTools(ctx, serverID); err != nil {
+				t.Fatalf("RefreshTools: %v", err)
+			}
+
+			got, err := store.GetMCPServer(ctx, serverID)
+			if err != nil {
+				t.Fatalf("GetMCPServer: %v", err)
+			}
+			if got.ProtocolVersion == nil || *got.ProtocolVersion != tc.want {
+				t.Errorf("protocol_version = %v, want %q", got.ProtocolVersion, tc.want)
+			}
+		})
+	}
+}
+
+// TestRefreshTools_ReprobesAndUpdatesPin verifies the DoD's third scenario:
+// refresh re-probes and updates a stale pin, and the returned ToolDiff is
+// still correct alongside the updated pin.
+func TestRefreshTools_ReprobesAndUpdatesPin(t *testing.T) {
+	reg, store := newTestRegistry(t)
+	ctx := context.Background()
+	rawDB := store.DB()
+
+	fake := NewFakeMCPServer(WithFakeMode(FakeModern), WithFakeTools(
+		Tool{Name: "tool-a", Description: "d", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	))
+	srv := httptest.NewServer(fake)
+	t.Cleanup(srv.Close)
+
+	var serverID string
+	if err := rawDB.QueryRow(
+		`INSERT INTO mcp_servers (id, name, url, created_at, protocol_version) VALUES ('srv-reprobe', 'reprobe-server', ?, ?, '2024-11-05') RETURNING id`,
+		srv.URL, "2024-01-01T00:00:00Z",
+	).Scan(&serverID); err != nil {
+		t.Fatalf("insert server: %v", err)
+	}
+
+	diff, err := reg.RefreshTools(ctx, serverID)
+	if err != nil {
+		t.Fatalf("RefreshTools: %v", err)
+	}
+	if len(diff.Added) != 1 || diff.Added[0] != "tool-a" {
+		t.Errorf("diff.Added = %v, want [tool-a]", diff.Added)
+	}
+
+	got, err := store.GetMCPServer(ctx, serverID)
+	if err != nil {
+		t.Fatalf("GetMCPServer: %v", err)
+	}
+	if got.ProtocolVersion == nil || *got.ProtocolVersion != "2026-07-28" {
+		t.Errorf("protocol_version = %v, want %q (re-probed and updated)", got.ProtocolVersion, "2026-07-28")
+	}
+}
+
+// TestRefreshTools_ProbeFailureIsFailOpen verifies that a protocol probe
+// that cannot pin a version — an inconclusive discover status, or a
+// confirmed-modern server sharing no version with us — never fails
+// RefreshTools and leaves protocol_version untouched (NULL).
+func TestRefreshTools_ProbeFailureIsFailOpen(t *testing.T) {
+	tests := []struct {
+		name string
+		opts []FakeServerOption
+	}{
+		{
+			name: "inconclusive discover status",
+			opts: []FakeServerOption{WithFakeMode(FakeLegacy), WithFakeDiscoverStatus(http.StatusInternalServerError)},
+		},
+		{
+			name: "confirmed-modern server with no mutually supported version",
+			opts: []FakeServerOption{WithFakeMode(FakeVersionMismatch), WithFakeSupportedVersions("2025-11-25")},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reg, store := newTestRegistry(t)
+			ctx := context.Background()
+			rawDB := store.DB()
+
+			fake := NewFakeMCPServer(tc.opts...)
+			srv := httptest.NewServer(fake)
+			t.Cleanup(srv.Close)
+
+			var serverID string
+			if err := rawDB.QueryRow(
+				`INSERT INTO mcp_servers (id, name, url, created_at) VALUES ('srv-failopen', 'failopen-server', ?, ?) RETURNING id`,
+				srv.URL, "2024-01-01T00:00:00Z",
+			).Scan(&serverID); err != nil {
+				t.Fatalf("insert server: %v", err)
+			}
+
+			diff, err := reg.RefreshTools(ctx, serverID)
+			if err != nil {
+				t.Fatalf("RefreshTools: expected nil error (fail-open), got %v", err)
+			}
+			if len(diff.Added) != 1 || diff.Added[0] != "tool-a" {
+				t.Errorf("diff.Added = %v, want [tool-a] (the fake's default tool)", diff.Added)
+			}
+
+			got, err := store.GetMCPServer(ctx, serverID)
+			if err != nil {
+				t.Fatalf("GetMCPServer: %v", err)
+			}
+			if got.ProtocolVersion != nil {
+				t.Errorf("protocol_version = %v, want nil (probe failure leaves the pin untouched)", *got.ProtocolVersion)
+			}
+		})
+	}
+}
+
+// TestRefreshTools_NeverDowngradesModernPin is the Finding 2 reproducer
+// (security review, #737 cycle 2): a row already pinned to a modern version,
+// re-probed against a server whose server/discover POST now returns an
+// ambiguous 4xx (a WAF, a hostile proxy, a flaky deploy) while the legacy
+// initialize handshake still succeeds, must NOT be silently rewritten to the
+// legacy version — before the fix this was a single-request, invisible,
+// permanent demotion.
+func TestRefreshTools_NeverDowngradesModernPin(t *testing.T) {
+	reg, store := newTestRegistry(t)
+	ctx := context.Background()
+	rawDB := store.DB()
+
+	// WithFakeDiscoverStatus forces an empty-bodied 400 regardless of mode —
+	// exactly the "4xx with no recognized modern JSON-RPC error" shape that
+	// classifies discoverLegacy — while every other mode-driven behavior
+	// (including the legacy initialize handshake) is untouched.
+	fake := NewFakeMCPServer(WithFakeMode(FakeModern), WithFakeDiscoverStatus(http.StatusBadRequest))
+	srv := httptest.NewServer(fake)
+	t.Cleanup(srv.Close)
+
+	var serverID string
+	if err := rawDB.QueryRow(
+		`INSERT INTO mcp_servers (id, name, url, created_at, protocol_version) VALUES ('srv-nodowngrade', 'nodowngrade-server', ?, ?, '2026-07-28') RETURNING id`,
+		srv.URL, "2024-01-01T00:00:00Z",
+	).Scan(&serverID); err != nil {
+		t.Fatalf("insert server: %v", err)
+	}
+
+	diff, err := reg.RefreshTools(ctx, serverID)
+	if err != nil {
+		t.Fatalf("RefreshTools: expected nil error (fail-open), got %v", err)
+	}
+	if len(diff.Added) != 1 || diff.Added[0] != "tool-a" {
+		t.Errorf("diff.Added = %v, want [tool-a] (tool discovery over the untouched legacy handshake is unaffected)", diff.Added)
+	}
+
+	got, err := store.GetMCPServer(ctx, serverID)
+	if err != nil {
+		t.Fatalf("GetMCPServer: %v", err)
+	}
+	if got.ProtocolVersion == nil || *got.ProtocolVersion != "2026-07-28" {
+		t.Errorf("protocol_version = %v, want unchanged %q — a single ambiguous 4xx must not downgrade an established modern pin",
+			got.ProtocolVersion, "2026-07-28")
+	}
+}
+
+// TestRefreshTools_ConcurrentRefreshesCannotRaceThePin is the regression test
+// for Finding 1 (security review, #737 cycle 3): the no-downgrade guard used
+// to be a non-atomic read-then-write — refreshProtocolVersion read `previous`
+// from srv's in-memory snapshot and then wrote unconditionally. Two
+// concurrent refreshes (e.g. an operator double-clicking Discover on a
+// freshly-registered modern server) could both snapshot the same stale NULL
+// `previous`, race past the in-memory guard, and whichever write landed last
+// would win — even a legacy write demoting a server the OTHER goroutine had
+// just proven modern. Reproduced 5/5 before the fix.
+//
+// The fake server answers server/discover modern on the FIRST request it
+// receives and legacy (an empty 400 — a shape classifyDiscoverResponse
+// resolves to discoverLegacy) on every request after that, modeling the
+// finding's "the peer answers modern once and 400 once" scenario
+// deterministically: exactly one of the two concurrent probes is classified
+// modern and the other legacy, regardless of which goroutine's HTTP request
+// actually wins the race to the server.
+//
+// UpdateMCPServerProtocolVersionIfNotModern moves the guard from an
+// in-memory check into the UPDATE's SQL WHERE clause, evaluated against the
+// row's LIVE state, so the modern pin must survive regardless of which
+// goroutine's write reaches the database first.
+func TestRefreshTools_ConcurrentRefreshesCannotRaceThePin(t *testing.T) {
+	reg, store := newTestRegistry(t)
+	ctx := context.Background()
+	rawDB := store.DB()
+
+	var discoverCalls atomic.Int64
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		var decoded struct {
+			Method string `json:"method"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &decoded) //nolint:errcheck
+
+		switch decoded.Method {
+		case "server/discover":
+			if discoverCalls.Add(1) == 1 {
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+					"jsonrpc": "2.0", "id": 1,
+					"result": map[string]any{
+						"resultType":        "complete",
+						"supportedVersions": []string{"2026-07-28"},
+					},
+				})
+				return
+			}
+			// Every subsequent probe: an unrecognized-shaped 400 with no
+			// JSON-RPC envelope, which classifies discoverLegacy.
+			w.WriteHeader(http.StatusBadRequest)
+		case "initialize":
+			w.Header().Set("Mcp-Session-Id", "race-session")
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+				"jsonrpc": "2.0", "id": 1, "result": map[string]any{},
+			})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}
+	srv := httptest.NewServer(http.HandlerFunc(handler))
+	t.Cleanup(srv.Close)
+
+	var serverID string
+	if err := rawDB.QueryRow(
+		`INSERT INTO mcp_servers (id, name, url, created_at) VALUES ('srv-race', 'race-server', ?, ?) RETURNING id`,
+		srv.URL, "2024-01-01T00:00:00Z",
+	).Scan(&serverID); err != nil {
+		t.Fatalf("insert server: %v", err)
+	}
+
+	// Both goroutines snapshot the same NULL protocol_version, exactly as two
+	// concurrent RefreshTools calls would via their own independent
+	// GetMCPServer read.
+	srv1, err := store.GetMCPServer(ctx, serverID)
+	if err != nil {
+		t.Fatalf("GetMCPServer: %v", err)
+	}
+	srv2 := srv1
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); reg.refreshProtocolVersion(ctx, &srv1) }()
+	go func() { defer wg.Done(); reg.refreshProtocolVersion(ctx, &srv2) }()
+	wg.Wait()
+
+	got, err := store.GetMCPServer(ctx, serverID)
+	if err != nil {
+		t.Fatalf("GetMCPServer: %v", err)
+	}
+	if got.ProtocolVersion == nil || *got.ProtocolVersion != "2026-07-28" {
+		t.Errorf("protocol_version = %v, want %q — a concurrent legacy probe must never win a race against a modern one",
+			got.ProtocolVersion, "2026-07-28")
+	}
+}
+
+// TestRefreshTools_LogsEveryPinChangeAtWarn verifies the second half of the
+// Finding 2 fix: because mcp_servers config changes have no dedicated audit
+// event in this repo (see refreshProtocolVersion's doc comment), every pin
+// write — and every blocked downgrade attempt — must be visible in the logs
+// at WARN, not just on probe error.
+func TestRefreshTools_LogsEveryPinChangeAtWarn(t *testing.T) {
+	tests := []struct {
+		name        string
+		opts        []FakeServerOption
+		initialPin  string
+		wantMessage string
+	}{
+		{
+			name:        "a genuine pin change is logged",
+			opts:        []FakeServerOption{WithFakeMode(FakeModern)},
+			initialPin:  "2024-11-05",
+			wantMessage: "mcp protocol version pin changed",
+		},
+		{
+			name:        "a blocked downgrade attempt is logged",
+			opts:        []FakeServerOption{WithFakeMode(FakeModern), WithFakeDiscoverStatus(http.StatusBadRequest)},
+			initialPin:  "2026-07-28",
+			wantMessage: "mcp protocol probe would downgrade an established modern pin; keeping existing pin, explicit operator action required",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reg, store := newTestRegistry(t)
+			ctx := context.Background()
+			rawDB := store.DB()
+
+			fake := NewFakeMCPServer(tc.opts...)
+			srv := httptest.NewServer(fake)
+			t.Cleanup(srv.Close)
+
+			var serverID string
+			if err := rawDB.QueryRow(
+				`INSERT INTO mcp_servers (id, name, url, created_at, protocol_version) VALUES ('srv-warnlog', 'warnlog-server', ?, ?, ?) RETURNING id`,
+				srv.URL, "2024-01-01T00:00:00Z", tc.initialPin,
+			).Scan(&serverID); err != nil {
+				t.Fatalf("insert server: %v", err)
+			}
+
+			buf := captureLogger(t)
+			if _, err := reg.RefreshTools(ctx, serverID); err != nil {
+				t.Fatalf("RefreshTools: %v", err)
+			}
+
+			var found bool
+			for _, l := range decodeLogLines(t, buf) {
+				if l["level"] == "WARN" && l["msg"] == tc.wantMessage {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("expected a WARN log with msg %q, got lines: %v", tc.wantMessage, decodeLogLines(t, buf))
+			}
+		})
+	}
+}
+
+// TestRefreshTools_ProbeSequenceBoundedBySingleTimeout verifies Finding 5
+// (security review, #737 cycle 2): the protocol probe and tool discovery
+// share ONE context.WithTimeout budget rather than each of the (up to six)
+// MCP round trips getting its own full GLEIPNIR_MCP_TIMEOUT allowance. A
+// server that responds slowly but successfully to every individual request
+// must still cause the whole RefreshTools call to fail once the shared
+// budget is exhausted, rather than succeeding after the sum of per-request
+// waits.
+func TestRefreshTools_ProbeSequenceBoundedBySingleTimeout(t *testing.T) {
+	const (
+		budget = 200 * time.Millisecond // WithMCPTimeout — the PER-REQUEST allowance
+		delay  = 1 * time.Second        // per slow round trip; 5 slow round trips sum to 5s if unbounded
+	)
+	// ProbeTimeout() applies probeTimeoutMultiplier (Finding 5, security
+	// review, #737 cycle 3) so this is the actual whole-sequence budget
+	// RefreshTools' context.WithTimeout is built from, not budget itself.
+	sharedTimeout := probeTimeoutMultiplier * budget
+
+	slowHandler := func(w http.ResponseWriter, r *http.Request) {
+		var decoded struct {
+			Method string `json:"method"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &decoded) //nolint:errcheck
+
+		switch decoded.Method {
+		case "server/discover":
+			// Fast, unambiguous legacy signal — no need to be slow here; the
+			// slow round trips are the legacy handshake and tool discovery.
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte("404 page not found")) //nolint:errcheck
+		case "initialize":
+			time.Sleep(delay)
+			w.Header().Set("Mcp-Session-Id", "slow-session")
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+				"jsonrpc": "2.0", "id": 1, "result": map[string]any{},
+			})
+		case "notifications/initialized":
+			time.Sleep(delay)
+			w.WriteHeader(http.StatusOK)
+		case "tools/list":
+			time.Sleep(delay)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+				"jsonrpc": "2.0", "id": 1,
+				"result": map[string]any{"tools": []map[string]any{
+					{"name": "tool-a", "description": "d", "inputSchema": map[string]any{"type": "object"}},
+				}},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(slowHandler))
+	t.Cleanup(srv.Close)
+
+	store, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("store.Migrate: %v", err)
+	}
+	reg := NewRegistry(store.Queries(), WithMCPTimeout(budget))
+
+	var serverID string
+	if err := store.DB().QueryRow(
+		`INSERT INTO mcp_servers (id, name, url, created_at) VALUES ('srv-slowbudget', 'slowbudget-server', ?, ?) RETURNING id`,
+		srv.URL, "2024-01-01T00:00:00Z",
+	).Scan(&serverID); err != nil {
+		t.Fatalf("insert server: %v", err)
+	}
+
+	start := time.Now()
+	_, err = reg.RefreshTools(context.Background(), serverID)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("RefreshTools: expected an error once the shared budget is exhausted, got nil")
+	}
+	// Pre-fix, each of the 5 slow round trips gets its own ~budget-sized
+	// per-request client.Timeout, all comfortably above delay, so the whole
+	// sequence succeeds after roughly 5*delay (5s). Post-fix, one shared
+	// context.WithTimeout(ctx, sharedTimeout) governs the entire sequence, so
+	// it must fail near sharedTimeout, not near 5*delay.
+	//
+	// Code review, #737 cycle 2/3: CLAUDE.md requires a wall-clock assertion
+	// that cannot be turned into a signal to use a deadline at least 5x the
+	// expected duration so CI scheduling jitter cannot flake it. The prior
+	// version of this test used a 1.5x ceiling (only ~150ms of slack over a
+	// 300ms budget), which passed locally but is exactly the shape of flake
+	// this repo has been bitten by before. 5x sharedTimeout is generous
+	// enough to absorb CI scheduling jitter around context cancellation while
+	// staying well under the 5*delay (5s) a regression to per-round-trip
+	// timeouts would produce — the two are more than 2x apart, so the
+	// assertion still genuinely proves the sequence is bounded rather than
+	// just being loose enough to always pass.
+	if ceiling := 5 * sharedTimeout; elapsed > ceiling {
+		t.Errorf("RefreshTools took %s, want under %s (single shared timeout, not per-round-trip)", elapsed, ceiling)
 	}
 }

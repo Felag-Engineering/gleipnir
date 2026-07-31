@@ -218,6 +218,14 @@ describe('strategy: header_set', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(/reserved header name/i)
   })
 
+  it('rejects Mcp-Protocol-Version as a reserved header', async () => {
+    renderTab({ creds: { strategy: 'header_set', header_names: [] }, strategy: 'header_set' })
+    await userEvent.type(screen.getByLabelText(/new header name/i), 'Mcp-Protocol-Version')
+    await userEvent.type(screen.getByLabelText(/new header value/i), 'anything')
+    await userEvent.click(screen.getByRole('button', { name: /add/i }))
+    expect(screen.getByRole('alert')).toHaveTextContent(/reserved header name/i)
+  })
+
   it('auditor: add row is hidden', () => {
     renderTab({ creds, strategy: 'header_set', canManage: false })
     expect(screen.queryByLabelText(/new header name/i)).not.toBeInTheDocument()

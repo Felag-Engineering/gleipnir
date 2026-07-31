@@ -251,6 +251,10 @@ func (h *MCPHandler) List(w http.ResponseWriter, r *http.Request) {
 // Flow (atomicity guarantee per #194):
 //  1. Validate name and URL.
 //  2. Validate and encrypt auth headers.
+//     3a. Pre-flight protocol-era probe (ProbeProtocol): probes server/discover
+//     to determine the protocol_version to pin. Fail-open, same posture as
+//     step 3 — a probe failure never blocks registration, and is NOT
+//     reflected in discovery_error (that field is tools-only).
 //  3. Pre-flight probe (ProbeTools): discover tools without writing any DB rows.
 //     A probe failure is non-fatal — the server is still created so the operator
 //     can fix the URL later; discovery_error is populated in the 201 response.
@@ -303,6 +307,30 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 		ciphertext = ct
 	}
 
+	// Steps 3a and 3 share one bounded context rather than each getting its
+	// own full-length allowance. GLEIPNIR_MCP_TIMEOUT bounds a single HTTP
+	// round trip (see Registry.ProbeTimeout); against a legacy-classified
+	// server the two probes together cost up to 6 round trips, so without a
+	// shared budget the worst-case handler hold could reach
+	// (round trips × GLEIPNIR_MCP_TIMEOUT) — many times GLEIPNIR_HTTP_WRITE_
+	// TIMEOUT (Finding 5, security review, #737 cycle 2).
+	probeCtx, cancel := context.WithTimeout(r.Context(), h.registry.ProbeTimeout())
+	defer cancel()
+
+	// Step 3a: probe the server's protocol era. Fail-open, exactly like the
+	// tool probe below — a probe failure must never block registration.
+	// Ordered before tool discovery so that when request shaping branches on
+	// the pin, discovery already runs under the negotiated version. A
+	// protocol-probe failure must NOT populate discoveryError — that field
+	// is about tools and is surfaced in the 201 body.
+	var pinnedVersion *string
+	if res, err := h.registry.ProbeProtocol(probeCtx, body.Name, body.URL, ciphertext); err != nil {
+		slog.Warn("MCP protocol probe failed on server create", "server_name", body.Name, "err", err)
+	} else {
+		v := res.Version
+		pinnedVersion = &v
+	}
+
 	// Step 3: pre-flight probe — discover tools without writing any DB rows.
 	// A network failure here is non-fatal; we still create the server so the
 	// operator can correct the URL later.
@@ -310,7 +338,7 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 		probedTools    []mcp.Tool
 		discoveryError *string
 	)
-	probed, probeErr := h.registry.ProbeTools(r.Context(), body.Name, body.URL, ciphertext)
+	probed, probeErr := h.registry.ProbeTools(probeCtx, body.Name, body.URL, ciphertext)
 	if probeErr != nil {
 		slog.Warn("MCP pre-flight probe failed on server create", "server_name", body.Name, "err", probeErr)
 		errStr := probeErr.Error()
@@ -363,6 +391,14 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to create MCP server", err.Error())
 		return
+	}
+
+	if pinnedVersion != nil {
+		if err := h.store.UpdateMCPServerProtocolVersion(r.Context(),
+			db.UpdateMCPServerProtocolVersionParams{ProtocolVersion: pinnedVersion, ID: server.ID}); err != nil {
+			slog.Warn("failed to persist MCP protocol version after create",
+				"server_id", server.ID, "err", err)
+		}
 	}
 
 	resp := mcpServerCreateResponse{

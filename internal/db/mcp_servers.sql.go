@@ -7,6 +7,7 @@ package db
 
 import (
 	"context"
+	"strings"
 )
 
 const countMCPServers = `-- name: CountMCPServers :one
@@ -244,4 +245,55 @@ type UpdateMCPServerProtocolVersionParams struct {
 func (q *Queries) UpdateMCPServerProtocolVersion(ctx context.Context, arg UpdateMCPServerProtocolVersionParams) error {
 	_, err := q.db.ExecContext(ctx, updateMCPServerProtocolVersion, arg.ProtocolVersion, arg.ID)
 	return err
+}
+
+const updateMCPServerProtocolVersionIfNotModern = `-- name: UpdateMCPServerProtocolVersionIfNotModern :execrows
+UPDATE mcp_servers
+SET protocol_version = ?1
+WHERE id = ?2
+  AND (protocol_version IN (/*SLICE:modern_versions*/?)) IS NOT TRUE
+`
+
+type UpdateMCPServerProtocolVersionIfNotModernParams struct {
+	ProtocolVersion *string   `json:"protocol_version"`
+	ID              string    `json:"id"`
+	ModernVersions  []*string `json:"modern_versions"`
+}
+
+// UpdateMCPServerProtocolVersionIfNotModern conditionally pins the negotiated
+// protocol version, refusing the write when the row's current protocol_version
+// is already one of modern_versions. The guard is evaluated by SQLite against
+// the live row inside this single UPDATE, not by the caller reading the row
+// first and deciding whether to write. That read-then-write shape let two
+// concurrent refreshes both observe a stale (e.g. NULL) protocol_version and
+// race past an in-memory guard, so whichever write landed last won even if it
+// demoted a server the other goroutine had just proven modern. :execrows lets
+// the caller distinguish "the pin changed" (1 row) from "an established
+// modern pin blocked the write" (0 rows).
+//
+// The condition is written as "(x IN (...)) IS NOT TRUE" rather than
+// "x NOT IN (...)" for two reasons: SQLite's three-valued logic makes IS NOT
+// TRUE correctly permit the write when protocol_version IS NULL (NULL IN (..)
+// is NULL, and NULL IS NOT TRUE is true) without a separate "OR ... IS NULL"
+// clause; and sqlc's slice-parameter rewriter (sqlc.slice) does not recognize
+// a NOT-wrapped IN clause, silently leaving the literal "sqlc.slice(...)"
+// text unexpanded in the generated query.
+func (q *Queries) UpdateMCPServerProtocolVersionIfNotModern(ctx context.Context, arg UpdateMCPServerProtocolVersionIfNotModernParams) (int64, error) {
+	query := updateMCPServerProtocolVersionIfNotModern
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.ProtocolVersion)
+	queryParams = append(queryParams, arg.ID)
+	if len(arg.ModernVersions) > 0 {
+		for _, v := range arg.ModernVersions {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:modern_versions*/?", strings.Repeat(",?", len(arg.ModernVersions))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:modern_versions*/?", "NULL", 1)
+	}
+	result, err := q.db.ExecContext(ctx, query, queryParams...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

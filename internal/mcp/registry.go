@@ -13,6 +13,7 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
+	"github.com/felag-engineering/gleipnir/internal/infra/headervalidate"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/toolregistry"
 )
@@ -61,6 +62,53 @@ func WithMCPTimeout(d time.Duration) RegistryOption {
 	}
 }
 
+// defaultProbeTimeout matches the zero-value Client's default HTTP timeout
+// (see NewClient) and is used by ProbeTimeout when WithMCPTimeout was not
+// configured.
+const defaultProbeTimeout = 30 * time.Second
+
+// probeTimeoutMultiplier scales the per-request GLEIPNIR_MCP_TIMEOUT up into
+// a whole-sequence budget. See ProbeTimeout's doc comment (Finding 5,
+// security review, #737 cycle 3) for why a bare 1x multiplier regresses a
+// slow-but-reachable legacy server that previously got a full
+// GLEIPNIR_MCP_TIMEOUT allowance on each of 3 round trips.
+const probeTimeoutMultiplier = 2
+
+// ProbeTimeout returns the wall-clock budget for a full multi-round-trip
+// protocol+tool probe sequence (e.g. MCPHandler.Create's protocol probe
+// followed by its tool probe, or RefreshTools's protocol re-probe followed
+// by tool discovery). It is probeTimeoutMultiplier times the per-client
+// mcpTimeout configured via WithMCPTimeout, or times the Client default when
+// unset.
+//
+// Finding 5 (security review, #737 cycle 2): GLEIPNIR_MCP_TIMEOUT bounds a
+// single HTTP round trip (it becomes http.Client.Timeout on each Client),
+// not a whole probe sequence. A legacy-classified server costs up to 6
+// round trips per create/refresh; without a shared budget the worst-case
+// handler hold is (round trips × GLEIPNIR_MCP_TIMEOUT), which can exceed
+// GLEIPNIR_HTTP_WRITE_TIMEOUT many times over. Callers wrap the whole
+// sequence in one context.WithTimeout(ctx, r.ProbeTimeout()) so the
+// cumulative time is capped regardless of how many round trips the era
+// classification ends up needing.
+//
+// Finding 5 (security review, #737 cycle 3): a bare single-mcpTimeout budget
+// over-corrects. Before this package existed, a legacy server made 3 round
+// trips (initialize, notifications/initialized, tools/list) and each got its
+// own full GLEIPNIR_MCP_TIMEOUT allowance — so a slow-cold-start server
+// taking, say, 11s per round trip worked fine. After #737, the same server
+// still makes those 3 round trips (plus server/discover) but now shares ONE
+// budget, so a bare 1x multiplier would make that same server start failing
+// registration/refresh even though nothing about its actual responsiveness
+// changed. probeTimeoutMultiplier restores headroom for a slow-but-reachable
+// server while keeping the sequence bounded (closing Finding 5 from cycle 2)
+// rather than reverting to the unbounded per-request behavior.
+func (r *Registry) ProbeTimeout() time.Duration {
+	if r.mcpTimeout > 0 {
+		return probeTimeoutMultiplier * r.mcpTimeout
+	}
+	return probeTimeoutMultiplier * defaultProbeTimeout
+}
+
 // WithEncryptionKey sets the AES-256 key used to decrypt auth_headers_encrypted
 // when building a Client for an MCP server. When nil, auth headers stored in
 // the DB are silently dropped (with a log warning) rather than causing errors.
@@ -95,7 +143,7 @@ func NewRegistry(queries *db.Queries, opts ...RegistryOption) *Registry {
 // auth headers and a warning is logged — matching the fail-open pattern used
 // by the webhook secret loader.
 func (r *Registry) newClientForServer(srv db.McpServer) *Client {
-	opts := make([]ClientOption, 0, 2)
+	opts := make([]ClientOption, 0, 3)
 	if r.mcpTimeout > 0 {
 		opts = append(opts, WithTimeout(r.mcpTimeout))
 	}
@@ -114,16 +162,62 @@ func (r *Registry) newClientForServer(srv db.McpServer) *Client {
 				if err != nil {
 					slog.Warn("failed to unmarshal mcp server auth headers; headers will not be sent",
 						"server_id", srv.ID, "server_name", srv.Name, "err", err)
-				} else if len(headers) > 0 {
-					opts = append(opts, WithAuthHeaders(headers))
+				} else {
+					// Finding 2 (security review, #737 cycle 2/3):
+					// headervalidate.ValidateName gates new writes at
+					// POST/PUT config time, but rows persisted before a
+					// header name was reserved — or before this filter
+					// existed — are grandfathered in the DB. This is the
+					// injection-time backstop: a reserved-name header can
+					// never reach the wire regardless of when it was stored.
+					headers = dropReservedAuthHeaders(headers, srv.ID, srv.Name)
+					if len(headers) > 0 {
+						opts = append(opts, WithAuthHeaders(headers))
+					}
 				}
 			}
 		}
 	}
 
+	// NULL or empty protocol_version means unpinned, which keeps legacy
+	// request shaping (NULL ⇒ legacy behavior everywhere).
+	if srv.ProtocolVersion != nil && *srv.ProtocolVersion != "" {
+		opts = append(opts, WithProtocolVersion(*srv.ProtocolVersion))
+	}
+
 	cl := NewClient(srv.Url, opts...)
 	cl.serverName = srv.Name
 	return cl
+}
+
+// dropReservedAuthHeaders filters headers down to only those whose name is
+// not in headervalidate.ReservedHeaderNames, logging a WARN for each dropped
+// entry so the operator can see why a configured header vanished.
+//
+// headervalidate.ValidateName already rejects a reserved name at
+// POST/PUT config-write time (internal/http/api/mcp_handler.go), but that
+// gate cannot retroactively scrub rows written before a name joined the
+// reserved list — or before this filter existed. This is the injection-time
+// backstop: even a grandfathered, already-persisted reserved-name header can
+// never reach the wire (Finding 2, security review, #737 cycle 2/3).
+func dropReservedAuthHeaders(headers []AuthHeader, serverID, serverName string) []AuthHeader {
+	kept := make([]AuthHeader, 0, len(headers))
+	for _, h := range headers {
+		reserved := false
+		for _, r := range headervalidate.ReservedHeaderNames {
+			if strings.EqualFold(h.Name, r) {
+				reserved = true
+				break
+			}
+		}
+		if reserved {
+			slog.Warn("dropping stored mcp auth header: name is reserved and cannot be sent",
+				"server_id", serverID, "server_name", serverName, "header_name", h.Name)
+			continue
+		}
+		kept = append(kept, h)
+	}
+	return kept
 }
 
 // splitToolName splits a dot-notation tool name (e.g. "my-server.read_pods")
@@ -255,6 +349,90 @@ func (r *Registry) ProbeTools(ctx context.Context, name, urlStr string, encrypte
 	return tools, nil
 }
 
+// ProbeProtocol performs a one-shot protocol-era probe against the MCP
+// server at urlStr without writing any DB rows. Mirrors ProbeTools; used by
+// MCPHandler.Create before the server row exists.
+func (r *Registry) ProbeProtocol(ctx context.Context, name, urlStr string, encryptedAuthHeaders *string) (ProbeResult, error) {
+	synthetic := db.McpServer{
+		ID:                   "<probe>",
+		Name:                 name,
+		Url:                  urlStr,
+		AuthHeadersEncrypted: encryptedAuthHeaders,
+	}
+	res, err := r.newClientForServer(synthetic).ProbeProtocolVersion(ctx)
+	if err != nil {
+		return ProbeResult{}, fmt.Errorf("probe protocol for %q: %w", name, err)
+	}
+	return res, nil
+}
+
+// refreshProtocolVersion probes srv for its protocol era, persists the
+// result to mcp_servers.protocol_version, and updates srv in place so the
+// client built for this refresh already carries the fresh pin. Every
+// failure is logged and swallowed by design: the pin is an optimization and
+// must never fail tool discovery.
+//
+// Finding 2 (security review, #737 cycle 2): an established modern pin is
+// NEVER auto-downgraded to a legacy one. A single ambiguous 4xx on
+// server/discover — a WAF, a hostile forward proxy, a flaky deploy — must
+// not be able to silently and permanently demote a server that has already
+// proven itself modern; that would drop #741's header-binding protections
+// for all subsequent tool traffic with no visible trace. Demoting a modern
+// pin requires explicit operator action (re-registering the server, or a
+// future "reset pin" affordance); this probe only WARNs and leaves the
+// existing pin untouched. Every OTHER pin write (a brand new pin, a legacy
+// re-negotiation, or an upgrade to modern) is logged at WARN too, so any pin
+// change is visible in the logs even though there is no dedicated audit
+// event for it: mcp_servers config changes have no audit-event path in this
+// repo today (plugin_audit_events is plugin-scoped per ADR-046, and
+// inventing a new audit subsystem is out of scope for this issue).
+//
+// Finding 1 (security review, #737 cycle 3): the guard used to read
+// `previous` from srv's in-memory snapshot and then write unconditionally —
+// two concurrent refreshes (e.g. an operator double-clicking Discover) could
+// both observe the same stale NULL/legacy `previous`, race past the
+// in-memory check, and whichever write landed last would win even if it
+// demoted a server the other goroutine had just proven modern. The guard
+// now lives entirely in UpdateMCPServerProtocolVersionIfNotModern's SQL
+// WHERE clause, evaluated by SQLite against the row's LIVE state inside the
+// UPDATE itself, so it cannot be raced by a stale application-level read.
+func (r *Registry) refreshProtocolVersion(ctx context.Context, srv *db.McpServer) {
+	res, err := r.newClientForServer(*srv).ProbeProtocolVersion(ctx)
+	if err != nil {
+		slog.Warn("mcp protocol probe failed; keeping existing pin",
+			"server_id", srv.ID, "server_name", srv.Name, "err", err)
+		return
+	}
+
+	previous := ""
+	if srv.ProtocolVersion != nil {
+		previous = *srv.ProtocolVersion
+	}
+	if previous == res.Version {
+		return
+	}
+
+	rowsAffected, err := r.queries.UpdateMCPServerProtocolVersionIfNotModern(ctx, db.UpdateMCPServerProtocolVersionIfNotModernParams{
+		ProtocolVersion: &res.Version,
+		ID:              srv.ID,
+		ModernVersions:  modernVersionsForQuery(),
+	})
+	if err != nil {
+		slog.Warn("failed to persist mcp protocol version",
+			"server_id", srv.ID, "server_name", srv.Name, "err", err)
+		return
+	}
+	if rowsAffected == 0 {
+		slog.Warn("mcp protocol probe would downgrade an established modern pin; keeping existing pin, explicit operator action required",
+			"server_id", srv.ID, "server_name", srv.Name, "current_pin", previous, "probed_version", res.Version, "probed_era", res.Era)
+		return
+	}
+
+	slog.Warn("mcp protocol version pin changed",
+		"server_id", srv.ID, "server_name", srv.Name, "previous_pin", previous, "new_pin", res.Version, "era", res.Era)
+	srv.ProtocolVersion = &res.Version
+}
+
 // RefreshTools re-discovers tools for a registered server, computes the diff
 // against the current DB state, upserts all fresh tools, deletes tools that
 // have disappeared, and updates last_discovered_at.
@@ -276,7 +454,25 @@ func (r *Registry) RefreshTools(ctx context.Context, serverID string) (ToolDiff,
 		return ToolDiff{}, fmt.Errorf("get mcp server %q: %w", serverID, err)
 	}
 
-	freshTools, err := r.newClientForServer(srv).DiscoverTools(ctx)
+	// Re-probe the protocol era before discovery so a fresh pin is available
+	// for the discovery client below. Fail-open: the probe client is
+	// separate from the discovery client (built from the pre-probe pin, not
+	// reused), so a legacy server sees two initialize handshakes per
+	// refresh — deliberate, so request shaping can later branch on the
+	// freshly-probed pin (#741) rather than the stale one.
+	//
+	// Finding 5 (security review, #737 cycle 2): the protocol probe and tool
+	// discovery share ONE context.WithTimeout budget (r.ProbeTimeout()) so a
+	// slow-but-reachable server cannot make the handler hold the connection
+	// for (round trips × GLEIPNIR_MCP_TIMEOUT) — see ProbeTimeout's doc
+	// comment. probeCtx is scoped to this function only; the DB writes below
+	// still use the caller's ctx.
+	probeCtx, cancel := context.WithTimeout(ctx, r.ProbeTimeout())
+	defer cancel()
+
+	r.refreshProtocolVersion(probeCtx, &srv)
+
+	freshTools, err := r.newClientForServer(srv).DiscoverTools(probeCtx)
 	if err != nil {
 		return ToolDiff{}, fmt.Errorf("discover tools for server %q: %w", serverID, err)
 	}
