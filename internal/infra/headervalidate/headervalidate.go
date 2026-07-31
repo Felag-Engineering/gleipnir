@@ -23,14 +23,28 @@ import (
 //   - MCP-protocol headers, reserved for the MCP client's own use:
 //     "Mcp-Session-Id" is the client-managed session id for the current
 //     protocol and is retained through the 12-month deprecation window even
-//     after the newer protocol lands. "Mcp-Method" and "Mcp-Name" are
-//     client-owned headers on the newer protocol's POSTs, reserved ahead of
-//     the client-side work so no operator config can pre-empt them.
+//     after the newer protocol lands. "Mcp-Method", "Mcp-Name", and
+//     "Mcp-Protocol-Version" are client-owned headers on the newer
+//     protocol's POSTs. "Mcp-Method"/"Mcp-Name" were reserved ahead of the
+//     client-side work (#734); "Mcp-Protocol-Version" was reserved by that
+//     client-side work itself (#737) — it is required on every modern POST
+//     and set-last in internal/mcp.Client.post.
+//     ValidateName alone only gates new POST/PUT writes; it cannot
+//     retroactively scrub a row that was already persisted before a name
+//     joined this list (a "grandfathered" row). Closing that gap for
+//     existing rows requires a second, injection-time check at the point a
+//     Client is built from stored headers — see
+//     internal/mcp.dropReservedAuthHeaders, which drops any stored header
+//     matching this list (logging a WARN) before it ever reaches
+//     WithAuthHeaders. The two checks together, not ValidateName alone,
+//     are what keep a reserved-name header off the wire regardless of when
+//     it was configured.
 //   - Required HTTP transport headers that must remain under client control.
 var ReservedHeaderNames = []string{
 	"Mcp-Session-Id",
 	"Mcp-Method",
 	"Mcp-Name",
+	"Mcp-Protocol-Version",
 	"Content-Type",
 	"Accept",
 	"Content-Length",

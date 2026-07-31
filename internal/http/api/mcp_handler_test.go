@@ -295,6 +295,132 @@ func TestMCPServerCreateHandler(t *testing.T) {
 		}
 	})
 
+	t.Run("create pins the modern protocol version", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+
+		fakeMCP := httptest.NewServer(mcp.NewFakeMCPServer(mcp.WithFakeMode(mcp.FakeModern)))
+		t.Cleanup(fakeMCP.Close)
+
+		srv := httptest.NewServer(newMCPRouter(store, registry))
+		t.Cleanup(srv.Close)
+
+		body, _ := json.Marshal(map[string]string{"name": "modern-server", "url": fakeMCP.URL})
+		resp, err := http.Post(srv.URL+"/servers", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST /servers: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("status = %d, want 201", resp.StatusCode)
+		}
+
+		var envelope struct {
+			Data struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+
+		got, err := store.GetMCPServer(context.Background(), envelope.Data.ID)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if got.ProtocolVersion == nil || *got.ProtocolVersion != "2026-07-28" {
+			t.Errorf("ProtocolVersion = %v, want %q", got.ProtocolVersion, "2026-07-28")
+		}
+	})
+
+	t.Run("create pins the legacy protocol version", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+
+		fakeMCP := httptest.NewServer(mcp.NewFakeMCPServer(mcp.WithFakeMode(mcp.FakeLegacy)))
+		t.Cleanup(fakeMCP.Close)
+
+		srv := httptest.NewServer(newMCPRouter(store, registry))
+		t.Cleanup(srv.Close)
+
+		body, _ := json.Marshal(map[string]string{"name": "legacy-server", "url": fakeMCP.URL})
+		resp, err := http.Post(srv.URL+"/servers", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST /servers: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("status = %d, want 201", resp.StatusCode)
+		}
+
+		var envelope struct {
+			Data struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+
+		got, err := store.GetMCPServer(context.Background(), envelope.Data.ID)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if got.ProtocolVersion == nil || *got.ProtocolVersion != "2024-11-05" {
+			t.Errorf("ProtocolVersion = %v, want %q", got.ProtocolVersion, "2024-11-05")
+		}
+	})
+
+	t.Run("create with unreachable server leaves protocol_version NULL", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+
+		// Start and immediately close so URL is valid but unreachable. This is
+		// also the cross-package proof that the fake is genuinely reusable —
+		// the two subtests above drive mcp.NewFakeMCPServer entirely through
+		// its exported surface from package api_test.
+		dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		deadURL := dead.URL
+		dead.Close()
+
+		srv := httptest.NewServer(newMCPRouter(store, registry))
+		t.Cleanup(srv.Close)
+
+		body, _ := json.Marshal(map[string]string{"name": "unreachable-protocol-server", "url": deadURL})
+		resp, err := http.Post(srv.URL+"/servers", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST /servers: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("status = %d, want 201", resp.StatusCode)
+		}
+
+		var envelope struct {
+			Data struct {
+				ID             string  `json:"id"`
+				DiscoveryError *string `json:"discovery_error"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if envelope.Data.DiscoveryError == nil {
+			t.Error("expected discovery_error to be set, got nil")
+		}
+
+		got, err := store.GetMCPServer(context.Background(), envelope.Data.ID)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if got.ProtocolVersion != nil {
+			t.Errorf("ProtocolVersion = %v, want nil", *got.ProtocolVersion)
+		}
+	})
+
 	t.Run("missing name returns 400", func(t *testing.T) {
 		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.Queries())

@@ -43,3 +43,27 @@ SELECT COUNT(*) FROM mcp_servers;
 -- for a registry entry. NULL clears the pin (re-probe on next discovery).
 -- name: UpdateMCPServerProtocolVersion :exec
 UPDATE mcp_servers SET protocol_version = :protocol_version WHERE id = :id;
+
+-- UpdateMCPServerProtocolVersionIfNotModern conditionally pins the negotiated
+-- protocol version, refusing the write when the row's current protocol_version
+-- is already one of modern_versions. The guard is evaluated by SQLite against
+-- the live row inside this single UPDATE, not by the caller reading the row
+-- first and deciding whether to write. That read-then-write shape let two
+-- concurrent refreshes both observe a stale (e.g. NULL) protocol_version and
+-- race past an in-memory guard, so whichever write landed last won even if it
+-- demoted a server the other goroutine had just proven modern. :execrows lets
+-- the caller distinguish "the pin changed" (1 row) from "an established
+-- modern pin blocked the write" (0 rows).
+--
+-- The condition is written as "(x IN (...)) IS NOT TRUE" rather than
+-- "x NOT IN (...)" for two reasons: SQLite's three-valued logic makes IS NOT
+-- TRUE correctly permit the write when protocol_version IS NULL (NULL IN (..)
+-- is NULL, and NULL IS NOT TRUE is true) without a separate "OR ... IS NULL"
+-- clause; and sqlc's slice-parameter rewriter (sqlc.slice) does not recognize
+-- a NOT-wrapped IN clause, silently leaving the literal "sqlc.slice(...)"
+-- text unexpanded in the generated query.
+-- name: UpdateMCPServerProtocolVersionIfNotModern :execrows
+UPDATE mcp_servers
+SET protocol_version = :protocol_version
+WHERE id = :id
+  AND (protocol_version IN (sqlc.slice('modern_versions'))) IS NOT TRUE;

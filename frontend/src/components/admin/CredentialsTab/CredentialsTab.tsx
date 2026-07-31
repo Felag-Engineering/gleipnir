@@ -24,6 +24,7 @@ const RESERVED_HEADERS = new Set([
   'Mcp-Session-Id',
   'Mcp-Method',
   'Mcp-Name',
+  'Mcp-Protocol-Version',
   'Content-Type',
   'Accept',
   'Content-Length',

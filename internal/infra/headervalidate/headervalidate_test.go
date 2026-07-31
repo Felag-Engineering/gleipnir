@@ -46,6 +46,10 @@ func TestValidateName(t *testing.T) {
 		{name: "mcp-name lowercase", input: "mcp-name", wantErr: true},
 		{name: "MCP-NAME uppercase", input: "MCP-NAME", wantErr: true},
 		{name: "mCp-nAmE mixed case", input: "mCp-nAmE", wantErr: true},
+		{name: "Mcp-Protocol-Version exact", input: "Mcp-Protocol-Version", wantErr: true},
+		{name: "mcp-protocol-version lowercase", input: "mcp-protocol-version", wantErr: true},
+		{name: "MCP-PROTOCOL-VERSION uppercase", input: "MCP-PROTOCOL-VERSION", wantErr: true},
+		{name: "mCp-PrOtOcOl-VeRsIoN mixed case", input: "mCp-PrOtOcOl-VeRsIoN", wantErr: true},
 		{name: "Content-Type exact", input: "Content-Type", wantErr: true},
 		{name: "content-type lowercase", input: "content-type", wantErr: true},
 		{name: "Accept exact", input: "Accept", wantErr: true},
@@ -59,6 +63,7 @@ func TestValidateName(t *testing.T) {
 		{name: "X-Mcp-Method is allowed", input: "X-Mcp-Method", wantErr: false},
 		{name: "Mcp-Method-Override is allowed", input: "Mcp-Method-Override", wantErr: false},
 		{name: "Mcp-Names is allowed", input: "Mcp-Names", wantErr: false},
+		{name: "Mcp-Protocol-Versions is allowed", input: "Mcp-Protocol-Versions", wantErr: false},
 	}
 
 	for _, tt := range tests {
@@ -101,13 +106,14 @@ func TestReservedHeaderNames_AllCoveredByValidateName(t *testing.T) {
 // window closes, and a silent, undocumented addition to the list.
 func TestReservedHeaderNames_ExactSet(t *testing.T) {
 	want := map[string]struct{}{
-		"Mcp-Session-Id": {},
-		"Mcp-Method":     {},
-		"Mcp-Name":       {},
-		"Content-Type":   {},
-		"Accept":         {},
-		"Content-Length": {},
-		"Host":           {},
+		"Mcp-Session-Id":       {},
+		"Mcp-Method":           {},
+		"Mcp-Name":             {},
+		"Mcp-Protocol-Version": {},
+		"Content-Type":         {},
+		"Accept":               {},
+		"Content-Length":       {},
+		"Host":                 {},
 	}
 
 	got := make(map[string]struct{}, len(ReservedHeaderNames))

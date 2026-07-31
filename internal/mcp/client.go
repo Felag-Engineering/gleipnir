@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -22,8 +23,12 @@ const (
 	// maxRedirects is the maximum number of HTTP redirects the MCP client will follow.
 	maxRedirects = 10
 
-	// mcpProtocolVersion is the MCP protocol version sent during the initialize handshake.
-	mcpProtocolVersion = "2024-11-05"
+	// ProtocolVersionLegacy is the version Gleipnir sends in the legacy
+	// initialize handshake and the pin used for servers that do not answer
+	// server/discover.
+	ProtocolVersionLegacy = "2024-11-05"
+	// ProtocolVersion20260728 is the modern MCP revision Gleipnir speaks.
+	ProtocolVersion20260728 = "2026-07-28"
 )
 
 // Tool is a tool discovered from an MCP server.
@@ -57,17 +62,34 @@ type jsonrpcResponse struct {
 
 // JSONRPCError represents a JSON-RPC error response from an MCP server.
 type JSONRPCError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 func (e *JSONRPCError) Error() string {
 	return fmt.Sprintf("json-rpc error %d: %s", e.Code, e.Message)
 }
 
+// maxErrorBodyBytes caps how much of a non-2xx response body HTTPStatusError
+// retains. Era detection (see discover.go) needs to read 400/404 bodies to
+// distinguish a modern server's JSON-RPC error from a legacy server's opaque
+// 4xx; this bound keeps a misbehaving server from ballooning memory.
+const maxErrorBodyBytes = 64 << 10
+
 // HTTPStatusError represents a non-OK HTTP status code from an MCP server.
 type HTTPStatusError struct {
 	StatusCode int
+	// Body is up to maxErrorBodyBytes of the response body. Retained because
+	// era detection must distinguish a modern server's JSON-RPC error
+	// 400/404 from a legacy server's opaque 4xx.
+	//
+	// WARNING: Body is untrusted, attacker-controlled content from the
+	// remote server and may contain secrets or arbitrary HTML/text. Error()
+	// deliberately does not include it. Do not add a %#v verb — or any other
+	// formatting path that would print every exported field — anywhere this
+	// type is logged; Go's default %#v struct formatting would dump Body.
+	Body []byte
 }
 
 func (e *HTTPStatusError) Error() string {
@@ -102,6 +124,9 @@ type Client struct {
 	httpClient  *http.Client
 	mu          sync.Mutex
 	sessionID   string
+
+	protocolVersion   string // pinned per-server version; "" = unpinned/legacy
+	negotiatedVersion string // legacy initialize result; guarded by mu
 }
 
 // ClientOption configures a Client. Options are applied sequentially after
@@ -137,6 +162,16 @@ func WithAuthHeaders(hs []AuthHeader) ClientOption {
 	}
 }
 
+// WithProtocolVersion pins the MCP protocol version negotiated for this
+// server. "" (the default) means "not yet probed" and keeps the legacy
+// request shaping. #737 stores the pin only; request shaping branches on it
+// in a follow-up.
+func WithProtocolVersion(v string) ClientOption {
+	return func(cl *Client) {
+		cl.protocolVersion = v
+	}
+}
+
 // NewClient returns a Client targeting serverURL. Optional ClientOptions are
 // applied in order after the default Client is constructed.
 func NewClient(serverURL string, opts ...ClientOption) *Client {
@@ -161,22 +196,30 @@ func NewClient(serverURL string, opts ...ClientOption) *Client {
 	return c
 }
 
-// initialize performs the MCP handshake and returns the session ID assigned by
-// the server. Callers must include this ID as "Mcp-Session-Id" on all
-// subsequent requests to the same server.
+// initializeResult is the subset of the legacy initialize response body we
+// read. The server's negotiated protocolVersion is recorded as the legacy
+// pin (see negotiatedLegacyVersion).
+type initializeResult struct {
+	ProtocolVersion string `json:"protocolVersion"`
+}
+
+// initialize performs the MCP handshake and returns the session ID assigned
+// by the server, plus the protocolVersion the server negotiated (empty if
+// the result could not be parsed). Callers must include the session ID as
+// "Mcp-Session-Id" on all subsequent requests to the same server.
 //
 // The streamable-HTTP transport requires:
 //  1. POST initialize → server replies with Mcp-Session-Id header
 //  2. POST notifications/initialized (no response body expected)
 //
 // Only after that will the server accept method calls like tools/list.
-func (c *Client) initialize(ctx context.Context) (string, error) {
+func (c *Client) initialize(ctx context.Context) (sessionID, negotiated string, err error) {
 	initBody, err := json.Marshal(jsonrpcRequest{
 		JSONRPC: "2.0",
 		ID:      1,
 		Method:  "initialize",
 		Params: map[string]any{
-			"protocolVersion": mcpProtocolVersion,
+			"protocolVersion": ProtocolVersionLegacy,
 			"capabilities":    map[string]any{},
 			"clientInfo": map[string]any{
 				"name":    "gleipnir",
@@ -185,23 +228,35 @@ func (c *Client) initialize(ctx context.Context) (string, error) {
 		},
 	})
 	if err != nil {
-		return "", fmt.Errorf("marshal initialize: %w", err)
+		return "", "", fmt.Errorf("marshal initialize: %w", err)
 	}
 
 	resp, err := c.postRaw(ctx, initBody, "")
 	if err != nil {
-		return "", fmt.Errorf("initialize: %w", err)
+		return "", "", fmt.Errorf("initialize: %w", err)
 	}
 	defer resp.Body.Close()
 
-	sessionID := resp.Header.Get("Mcp-Session-Id")
+	sessionID = resp.Header.Get("Mcp-Session-Id")
 
 	var initEnvelope jsonrpcResponse
 	if err := decodeResponse(resp, &initEnvelope); err != nil {
-		return "", fmt.Errorf("decode initialize response: %w", err)
+		return "", "", fmt.Errorf("decode initialize response: %w", err)
 	}
 	if initEnvelope.Error != nil {
-		return "", fmt.Errorf("initialize error: %w", initEnvelope.Error)
+		return "", "", fmt.Errorf("initialize error: %w", initEnvelope.Error)
+	}
+	if len(initEnvelope.Result) > 0 {
+		var result initializeResult
+		if err := json.Unmarshal(initEnvelope.Result, &result); err != nil {
+			// A server that answers initialize with an odd result shape is
+			// still usable — the session ID is what matters for tool
+			// traffic. Log and continue with an empty negotiated version.
+			slog.Debug("failed to parse initialize result; continuing without negotiated version",
+				"server_name", c.serverName, "err", err)
+		} else {
+			negotiated = result.ProtocolVersion
+		}
 	}
 	// Notify the server that initialisation is complete (fire-and-forget; the
 	// server sends no response to notifications).
@@ -211,15 +266,15 @@ func (c *Client) initialize(ctx context.Context) (string, error) {
 		"params":  map[string]any{},
 	})
 	if err != nil {
-		return "", fmt.Errorf("marshal notifications/initialized: %w", err)
+		return "", "", fmt.Errorf("marshal notifications/initialized: %w", err)
 	}
 	nresp, err := c.postRaw(ctx, notifyBody, sessionID)
 	if err != nil {
-		return "", fmt.Errorf("notifications/initialized: %w", err)
+		return "", "", fmt.Errorf("notifications/initialized: %w", err)
 	}
 	drainResponseBody(nresp.Body)
 
-	return sessionID, nil
+	return sessionID, negotiated, nil
 }
 
 // ensureSession returns the cached session ID, initializing if necessary.
@@ -235,7 +290,7 @@ func (c *Client) ensureSession(ctx context.Context) (string, error) {
 	}
 	c.mu.Unlock()
 
-	sid, err := c.initialize(ctx)
+	sid, negotiated, err := c.initialize(ctx)
 	if err != nil {
 		return "", fmt.Errorf("ensure session: %w", err)
 	}
@@ -246,6 +301,7 @@ func (c *Client) ensureSession(ctx context.Context) (string, error) {
 		sid = c.sessionID
 	} else {
 		c.sessionID = sid
+		c.negotiatedVersion = negotiated
 	}
 	c.mu.Unlock()
 	return sid, nil
@@ -256,6 +312,14 @@ func (c *Client) resetSession() {
 	c.mu.Lock()
 	c.sessionID = ""
 	c.mu.Unlock()
+}
+
+// negotiatedLegacyVersion returns the protocolVersion the server reported in
+// the most recent legacy initialize handshake, or "".
+func (c *Client) negotiatedLegacyVersion() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.negotiatedVersion
 }
 
 // callWithSession sends body to the server, automatically handling session
@@ -397,37 +461,69 @@ func (c *Client) CallTool(ctx context.Context, name string, input map[string]any
 	return
 }
 
-// decodeResponse decodes a JSON-RPC response from resp.Body into dst.
-// The MCP streamable-HTTP transport may return either plain JSON or an SSE
-// stream (Content-Type: text/event-stream). In SSE mode each response is a
-// "data: <json>" line; we extract the first such line and decode it.
-func decodeResponse(resp *http.Response, dst any) error {
+// maxJSONRPCPayloadBytes bounds how much of a 2xx response body
+// readJSONRPCPayload will ever buffer. Legitimate tools/list and
+// server/discover responses are expected to be well under this — the plan
+// deliberately left this path uncapped for #737 because tool catalogs are
+// legitimately large, but Finding 4 (security review, #737 cycle 2)
+// confirmed an uncapped read buffered 33,554,476 bytes from a single crafted
+// 2xx response. This cap is a memory-exhaustion backstop, not a realistic
+// content-size limit — it is far larger than maxErrorBodyBytes because error
+// bodies are expected to be small diagnostic text while a tool catalog is
+// not.
+const maxJSONRPCPayloadBytes = 32 << 20 // 32 MiB
+
+// readJSONRPCPayload returns the raw JSON-RPC payload bytes from resp,
+// transparently unwrapping the first "data: " line when the server replies
+// with an SSE stream.
+func readJSONRPCPayload(resp *http.Response) ([]byte, error) {
 	ct := resp.Header.Get("Content-Type")
 	if strings.Contains(ct, "text/event-stream") {
 		scanner := bufio.NewScanner(resp.Body)
 		for scanner.Scan() {
 			line := scanner.Text()
 			if strings.HasPrefix(line, "data: ") {
-				return json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), dst)
+				return []byte(strings.TrimPrefix(line, "data: ")), nil
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			return fmt.Errorf("read SSE stream: %w", err)
+			return nil, fmt.Errorf("read SSE stream: %w", err)
 		}
-		return fmt.Errorf("no data line found in SSE response")
+		return nil, fmt.Errorf("no data line found in SSE response")
 	}
-	return json.NewDecoder(resp.Body).Decode(dst)
+	return io.ReadAll(io.LimitReader(resp.Body, maxJSONRPCPayloadBytes))
 }
 
-// postRaw sends a JSON-RPC request body to c.serverURL and returns the HTTP
-// response. sessionID is included as "Mcp-Session-Id" when non-empty.
-// It returns an error for non-2xx status codes.
+// decodeResponse decodes a JSON-RPC response from resp.Body into dst.
+// The MCP streamable-HTTP transport may return either plain JSON or an SSE
+// stream (Content-Type: text/event-stream). In SSE mode each response is a
+// "data: <json>" line; we extract the first such line and decode it.
+func decodeResponse(resp *http.Response, dst any) error {
+	payload, err := readJSONRPCPayload(resp)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(payload, dst)
+}
+
+// postOptions carries the per-request client-managed transport headers.
+// The zero value is today's legacy shaping.
+type postOptions struct {
+	sessionID       string // Mcp-Session-Id      (legacy transport)
+	protocolVersion string // MCP-Protocol-Version (2026-07-28 transport)
+	rpcMethod       string // Mcp-Method           (2026-07-28 transport)
+}
+
+// post sends a JSON-RPC request body to c.serverURL and returns the HTTP
+// response. It returns an error for non-2xx status codes.
 //
 // Header injection order:
 //  1. Content-Type and Accept (transport requirements)
 //  2. c.authHeaders (operator-configured, applied in registration order)
-//  3. Mcp-Session-Id (client-managed, always wins — set last)
-func (c *Client) postRaw(ctx context.Context, body []byte, sessionID string) (*http.Response, error) {
+//  3. all client-managed headers (session, protocol version, method), each
+//     only when non-empty — set last so they always win, even if an
+//     operator configures a colliding auth header.
+func (c *Client) post(ctx context.Context, body []byte, o postOptions) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.serverURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
@@ -436,14 +532,20 @@ func (c *Client) postRaw(ctx context.Context, body []byte, sessionID string) (*h
 	// MCP streamable-HTTP transport requires the client to accept both JSON
 	// (for single-response calls) and SSE (for streaming responses).
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	// Inject operator-configured auth headers before the session header so that
-	// Mcp-Session-Id always takes precedence if an operator mistakenly
-	// configures a header with that name.
+	// Inject operator-configured auth headers before the client-managed
+	// headers so that the client-managed values always take precedence if an
+	// operator mistakenly configures a header with a colliding name.
 	for _, h := range c.authHeaders {
 		req.Header.Set(h.Name, h.Value)
 	}
-	if sessionID != "" {
-		req.Header.Set("Mcp-Session-Id", sessionID)
+	if o.sessionID != "" {
+		req.Header.Set("Mcp-Session-Id", o.sessionID)
+	}
+	if o.protocolVersion != "" {
+		req.Header.Set("MCP-Protocol-Version", o.protocolVersion)
+	}
+	if o.rpcMethod != "" {
+		req.Header.Set("Mcp-Method", o.rpcMethod)
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -452,12 +554,22 @@ func (c *Client) postRaw(ctx context.Context, body []byte, sessionID string) (*h
 	}
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		// Drain and close the body so the connection can be reused.
+		// Capture a bounded prefix of the body before draining, so era
+		// detection (discover.go) can inspect a 400/404 body, then still
+		// drain fully so the connection can be reused.
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		drainResponseBody(resp.Body)
-		return nil, &HTTPStatusError{StatusCode: resp.StatusCode}
+		return nil, &HTTPStatusError{StatusCode: resp.StatusCode, Body: errBody}
 	}
 
 	return resp, nil
+}
+
+// postRaw is a backward-compatible wrapper over post for the legacy
+// session-based transport. sessionID is included as "Mcp-Session-Id" when
+// non-empty.
+func (c *Client) postRaw(ctx context.Context, body []byte, sessionID string) (*http.Response, error) {
+	return c.post(ctx, body, postOptions{sessionID: sessionID})
 }
 
 // drainResponseBody reads any remaining data from rc and closes it.

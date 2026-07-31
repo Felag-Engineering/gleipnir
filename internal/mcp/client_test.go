@@ -531,3 +531,67 @@ func TestPostRaw_AuthHeaderCannotOverrideSessionID(t *testing.T) {
 		t.Errorf("Mcp-Session-Id = %q, want %q (client-managed)", capturedSession, "test-session")
 	}
 }
+
+// TestPostRaw_AuthHeaderCannotOverrideProtocolVersion mirrors
+// TestPostRaw_AuthHeaderCannotOverrideSessionID for the MCP-Protocol-Version
+// header. Mcp-Protocol-Version is now reserved in
+// headervalidate.ReservedHeaderNames (#737, closing the gap left open by
+// #734's Mcp-Method/Mcp-Name reservations), so an operator can no longer
+// configure it as an auth header through the admin API at all. This test
+// exercises the set-last ordering in post as defense in depth for any caller
+// that constructs a Client directly with WithAuthHeaders, bypassing that
+// validation.
+func TestPostRaw_AuthHeaderCannotOverrideProtocolVersion(t *testing.T) {
+	var capturedProtocolVersion string
+
+	srv := makeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedProtocolVersion = r.Header.Get("MCP-Protocol-Version")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Bypass the validator by setting the header directly via the option.
+	c := NewClient(srv.URL, WithAuthHeaders([]AuthHeader{
+		{Name: "MCP-Protocol-Version", Value: "injected-version"},
+	}))
+
+	if _, err := c.post(context.Background(), []byte(`{}`), postOptions{protocolVersion: "2026-07-28"}); err != nil {
+		t.Fatalf("post: %v", err)
+	}
+
+	if capturedProtocolVersion == "injected-version" {
+		t.Errorf("MCP-Protocol-Version = %q: auth header overwrote client-managed value", capturedProtocolVersion)
+	}
+	if capturedProtocolVersion != "2026-07-28" {
+		t.Errorf("MCP-Protocol-Version = %q, want %q (client-managed)", capturedProtocolVersion, "2026-07-28")
+	}
+}
+
+// TestPostRaw_ProtocolVersionHeaderAbsentWhenNotSet closes the actual gap
+// Finding 3 (security review, #737 cycle 2) identified:
+// TestPostRaw_AuthHeaderCannotOverrideProtocolVersion only proves the
+// set-last ordering wins when postOptions.protocolVersion is non-empty (the
+// server/discover path). Every other request the client makes — initialize,
+// tools/list, tools/call — sends postOptions{} with protocolVersion == "",
+// so that ordering defense never runs for them; the only thing that closes
+// the hole for those requests is that Mcp-Protocol-Version is now reserved
+// (headervalidate.ReservedHeaderNames), so an operator can never configure
+// it as an auth header in the first place. This test pins the resulting
+// behavior: with no protocolVersion in postOptions, the header is never set
+// on the outgoing request at all.
+func TestPostRaw_ProtocolVersionHeaderAbsentWhenNotSet(t *testing.T) {
+	var sawHeader bool
+
+	srv := makeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, sawHeader = r.Header["Mcp-Protocol-Version"]
+		w.WriteHeader(http.StatusOK)
+	})
+
+	c := NewClient(srv.URL)
+	if _, err := c.post(context.Background(), []byte(`{}`), postOptions{}); err != nil {
+		t.Fatalf("post: %v", err)
+	}
+
+	if sawHeader {
+		t.Error("Mcp-Protocol-Version header present, want absent when postOptions.protocolVersion is empty")
+	}
+}
