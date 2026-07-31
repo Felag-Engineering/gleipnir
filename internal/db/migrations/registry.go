@@ -35,5 +35,6 @@ func All() []Migration {
 		&AddPluginEventDedup{},
 		&AddHostEventRateLimit{},
 		&AddUserSlackUserID{},
+		&AddMCPServerProtocolVersion{},
 	}
 }

@@ -48,6 +48,7 @@ type McpServer struct {
 	HasDrift             int64   `json:"has_drift"`
 	CreatedAt            string  `json:"created_at"`
 	AuthHeadersEncrypted *string `json:"auth_headers_encrypted"`
+	ProtocolVersion      *string `json:"protocol_version"`
 }
 
 type McpTool struct {

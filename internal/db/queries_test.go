@@ -393,6 +393,57 @@ func TestMCPServerQueries(t *testing.T) {
 		t.Errorf("LastDiscoveredAt after update: got %v, want %q", got.LastDiscoveredAt, discoveredAt)
 	}
 
+	if srv.ProtocolVersion != nil {
+		t.Errorf("CreateMCPServer: protocol_version = %v, want nil", srv.ProtocolVersion)
+	}
+
+	pv := "2026-07-28"
+	if err := s.UpdateMCPServerProtocolVersion(ctx, UpdateMCPServerProtocolVersionParams{
+		ProtocolVersion: &pv,
+		ID:              "srv1",
+	}); err != nil {
+		t.Fatalf("UpdateMCPServerProtocolVersion: %v", err)
+	}
+	got, err = s.GetMCPServer(ctx, "srv1")
+	if err != nil {
+		t.Fatalf("GetMCPServer after UpdateMCPServerProtocolVersion: %v", err)
+	}
+	if got.ProtocolVersion == nil || *got.ProtocolVersion != pv {
+		t.Errorf("ProtocolVersion after update: got %v, want %q", got.ProtocolVersion, pv)
+	}
+
+	serversWithVersion, err := s.ListMCPServers(ctx)
+	if err != nil {
+		t.Fatalf("ListMCPServers after UpdateMCPServerProtocolVersion: %v", err)
+	}
+	var foundSrv1 bool
+	for _, server := range serversWithVersion {
+		if server.ID != "srv1" {
+			continue
+		}
+		foundSrv1 = true
+		if server.ProtocolVersion == nil || *server.ProtocolVersion != pv {
+			t.Errorf("ListMCPServers: srv1 protocol_version = %v, want %q", server.ProtocolVersion, pv)
+		}
+	}
+	if !foundSrv1 {
+		t.Fatal("ListMCPServers: srv1 not found")
+	}
+
+	if err := s.UpdateMCPServerProtocolVersion(ctx, UpdateMCPServerProtocolVersionParams{
+		ProtocolVersion: nil,
+		ID:              "srv1",
+	}); err != nil {
+		t.Fatalf("UpdateMCPServerProtocolVersion (clear): %v", err)
+	}
+	got, err = s.GetMCPServer(ctx, "srv1")
+	if err != nil {
+		t.Fatalf("GetMCPServer after clearing ProtocolVersion: %v", err)
+	}
+	if got.ProtocolVersion != nil {
+		t.Errorf("ProtocolVersion after clear: got %v, want nil", got.ProtocolVersion)
+	}
+
 	if _, err := s.CreateMCPServer(ctx, CreateMCPServerParams{
 		ID:        "srv2",
 		Name:      "server-two",
