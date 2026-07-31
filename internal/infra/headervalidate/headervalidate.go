@@ -18,11 +18,19 @@ import (
 )
 
 // ReservedHeaderNames lists HTTP headers that callers must not override via
-// plugin or MCP auth header configuration. These are either managed by the
-// MCP client itself or are required HTTP transport headers that must remain
-// under client control.
+// plugin or MCP auth header configuration. Two groups:
+//
+//   - MCP-protocol headers, reserved for the MCP client's own use:
+//     "Mcp-Session-Id" is the client-managed session id for the current
+//     protocol and is retained through the 12-month deprecation window even
+//     after the newer protocol lands. "Mcp-Method" and "Mcp-Name" are
+//     client-owned headers on the newer protocol's POSTs, reserved ahead of
+//     the client-side work so no operator config can pre-empt them.
+//   - Required HTTP transport headers that must remain under client control.
 var ReservedHeaderNames = []string{
 	"Mcp-Session-Id",
+	"Mcp-Method",
+	"Mcp-Name",
 	"Content-Type",
 	"Accept",
 	"Content-Length",

@@ -308,7 +308,7 @@ Every host→plugin service RPC injects a host-generated `call_id` into gRPC met
 
 - `none` — no credentials required; `credentials_encrypted` may be absent.
 - `static_api_key` — one secret header. Storage shape: `{header_name, scheme?, api_key}` inside `credentials_encrypted`. See `internal/plugin/oauth.StaticAPIKeyCreds`.
-- `header_set` — one or more named HTTP headers (generalises ADR-039). Storage shape: `{headers: [{name, value}]}`. Reserved headers (`Mcp-Session-Id`, `Content-Type`, `Accept`, `Content-Length`, `Host`) are rejected at write time. See `internal/plugin/oauth.HeaderSetCreds`.
+- `header_set` — one or more named HTTP headers (generalises ADR-039). Storage shape: `{headers: [{name, value}]}`. Reserved headers (`Mcp-Session-Id`, `Mcp-Method`, `Mcp-Name`, `Content-Type`, `Accept`, `Content-Length`, `Host`) are rejected at write time. See `internal/plugin/oauth.HeaderSetCreds`.
 - `basic_auth` — HTTP Basic Auth. Storage shape: `{username, password}`. See `internal/plugin/oauth.BasicAuthCreds`.
 - `oauth2_authcode` — host-side authorization code flow (see §9.2).
 - `oauth2_clientcred` — host-side client credentials flow (see §9.2).
