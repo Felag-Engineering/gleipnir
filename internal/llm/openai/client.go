@@ -62,6 +62,11 @@ func NewClient(apiKey string, opts ...option.RequestOption) *Client {
 // ProviderName returns the Prometheus label for this provider.
 func (w *wire) ProviderName() string { return "openai" }
 
+// SchemaFeatures declares full JSON Schema support: FunctionToolParam.Parameters
+// is the raw decoded map forwarded verbatim (translate.go:167-178), so no
+// simplification is needed.
+func (w *wire) SchemaFeatures() llm.SchemaFeatureSet { return llm.FullSchemaSupport() }
+
 // ClassifyError maps an OpenAI SDK error to the fixed error_type enum.
 // openaisdk.Error is a pointer type, so the errors.As target is **openaisdk.Error.
 func (w *wire) ClassifyError(err error) string {

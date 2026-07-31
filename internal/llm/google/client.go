@@ -82,6 +82,14 @@ func NewClientWithGenerator(gen contentGenerator) *GeminiClient {
 // ProviderName returns the Prometheus label for this provider.
 func (w *wire) ProviderName() string { return "google" }
 
+// SchemaFeatures declares full support for now so this change is
+// behavior-neutral. Gemini's function-declaration subset is genuinely
+// narrower — see translateJSONSchemaToGenaiSchema in schema.go, which today
+// drops everything except type/description/enum/required/properties/items.
+// Narrowing this declaration and implementing the lossy flattening in the
+// shared pass is issue #739; do not change it here.
+func (w *wire) SchemaFeatures() llm.SchemaFeatureSet { return llm.FullSchemaSupport() }
+
 // ClassifyError maps a Gemini SDK error to the fixed error_type enum.
 // genai.APIError is a value type, so the errors.As target is a pointer-to-value.
 func (w *wire) ClassifyError(err error) string {

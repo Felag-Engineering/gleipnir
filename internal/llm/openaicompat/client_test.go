@@ -377,3 +377,13 @@ func containsString(s, sub string) bool {
 			return false
 		}())
 }
+
+// TestWire_SchemaFeatures_Full asserts the wire declares full JSON Schema
+// support and that the declaration is safe to call on a nil receiver, mirroring
+// ProviderName's existing nil-safety.
+func TestWire_SchemaFeatures_Full(t *testing.T) {
+	var w *compatWire
+	if !w.SchemaFeatures().IsFull() {
+		t.Error("SchemaFeatures() is not full support")
+	}
+}

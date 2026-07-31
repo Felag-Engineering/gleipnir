@@ -91,6 +91,11 @@ func (f *FakeWire) ProviderName() string {
 	return "fake"
 }
 
+// SchemaFeatures declares full JSON Schema support, keeping every
+// testutil.NewFakeClient consumer on the adapter's fast path — zero behavior
+// change across the agent/trigger test suite.
+func (f *FakeWire) SchemaFeatures() SchemaFeatureSet { return FullSchemaSupport() }
+
 // Calls returns the number of Call invocations.
 func (f *FakeWire) Calls() int {
 	f.mu.Lock()

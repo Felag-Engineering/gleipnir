@@ -1691,3 +1691,13 @@ func TestCreateMessage_ThinkingModelDefaultsToHigherMaxTokens(t *testing.T) {
 		t.Errorf("max_tokens = %d, want %d (defaultMaxTokensThinking)", maxTokens, defaultMaxTokensThinking)
 	}
 }
+
+// TestWire_SchemaFeatures_Full asserts the wire declares full JSON Schema
+// support and that the declaration is safe to call on a nil receiver, mirroring
+// ProviderName's existing nil-safety.
+func TestWire_SchemaFeatures_Full(t *testing.T) {
+	var w *wire
+	if !w.SchemaFeatures().IsFull() {
+		t.Error("SchemaFeatures() is not full support")
+	}
+}
