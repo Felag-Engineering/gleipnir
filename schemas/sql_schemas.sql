@@ -39,7 +39,10 @@ CREATE TABLE mcp_servers (
     -- Encrypted auth headers (AES-256-GCM, key from GLEIPNIR_ENCRYPTION_KEY).
     -- JSON array of {"name":"...","value":"..."} objects, serialized then encrypted.
     -- Values are write-only; only header names are returned via the API (ADR-039).
-    auth_headers_encrypted  TEXT                  -- nullable; TEXT stores base64 ciphertext
+    auth_headers_encrypted  TEXT,                 -- nullable; TEXT stores base64 ciphertext
+    -- Negotiated MCP protocol version pinned at server/discover time
+    -- (mcp-realignment-spec.md §11). NULL = not yet probed.
+    protocol_version        TEXT                  -- nullable; e.g. '2026-07-28'
 );
 
 -- ---------------------------------------------------------------------------

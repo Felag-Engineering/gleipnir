@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **`mcp_servers.protocol_version` column.** Schema groundwork for pinning the MCP protocol version negotiated per registry entry at `server/discover` time (mcp-realignment-spec.md §11); nullable, unread by any code path yet (#733).
+
 ### Changed
 
 ### Fixed

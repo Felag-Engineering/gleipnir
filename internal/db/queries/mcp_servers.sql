@@ -38,3 +38,8 @@ UPDATE mcp_servers SET auth_headers_encrypted = :auth_headers_encrypted WHERE id
 
 -- name: CountMCPServers :one
 SELECT COUNT(*) FROM mcp_servers;
+
+-- UpdateMCPServerProtocolVersion pins the negotiated MCP protocol version
+-- for a registry entry. NULL clears the pin (re-probe on next discovery).
+-- name: UpdateMCPServerProtocolVersion :exec
+UPDATE mcp_servers SET protocol_version = :protocol_version WHERE id = :id;
