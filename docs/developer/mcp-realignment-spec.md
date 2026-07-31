@@ -404,23 +404,86 @@ at dispatch time.
 
 **Lossy presentation, exact enforcement.**
 
-1. **Canonicalize at discovery:** resolve `$ref` within SEP-2106 resource bounds,
-   merge `allOf`; store the canonical schema.
+1. **Normalize at discovery: byte-level normalization only.** `internal/schemanorm`
+   (#735) decodes with `UseNumber`, enforces input/depth/node bounds, and
+   re-emits with object keys recursively sorted and HTML escaping disabled.
+   That is the entire transformation — it does **not** resolve `$ref`, does
+   **not** strip `$defs`, and does **not** flatten `allOf`. Three earlier
+   designs attempted progressively more of that (bounded `$ref` inlining +
+   `allOf` merge; then a never-merge `$ref`-substitution-or-`allOf`-wrap
+   design) and three independent security reviews each closed one widening
+   mechanism and found a new one: keyword relocation across a schema-object
+   boundary (e.g. `additionalProperties` moving relative to `properties`),
+   then `$ref` mis-resolution (`$id` changing the base URI a pointer
+   resolves against, percent-encoded pointer segments), then
+   narrowing-through-wrapping not composing under negation (`not`/`if`/
+   `oneOf`) plus `$schema` being position-dependent dialect metadata that a
+   relocation can silently change. The root cause in all three rounds was
+   the same: JSON Schema has keywords whose meaning depends on **where they
+   sit**, and any structural transformation moves something. Store the
+   normalized bytes. The safety argument for byte-normalization alone is one
+   line: JSON object members are unordered (RFC 8259), and no JSON Schema
+   keyword depends on member order, so reordering cannot change what any
+   validator accepts — `internal/schemanorm`'s package doc has the full
+   account, including the three ways a naive decode/re-emit round trip
+   *does* change meaning (duplicate keys, invalid UTF-8/lone surrogates,
+   numeric re-rendering) and why each is rejected rather than repaired.
 2. **Per-provider translation** in `internal/llm`: each wire declares supported
-   schema features. Anthropic passes nearly everything; Google's
-   function-declaration subset gets a documented lossy flattening (discriminated
-   `oneOf` → enum where possible; otherwise a permissive union with variants
-   described in prose). The UI marks affected tools "schema simplified for this
-   provider".
-3. **Enforcement is exact:** the host validates the agent's arguments against the
-   **canonical** schema before dispatch (the `santhosh-tekuri/jsonschema/v6`
-   validator already in-tree). A mismatch returns a structural error the agent can
-   correct. The LLM may see a simplified picture; enforcement never does.
+   schema features. This step now owns **both** `$ref` resolution **and**
+   `allOf` flattening (moved down from step 1) — Anthropic passes nearly
+   everything; Google's function-declaration subset (which has neither
+   `$ref` nor `allOf`) gets a documented lossy flattening, including `oneOf`
+   (discriminated `oneOf` → enum where possible; otherwise a permissive
+   union with variants described in prose; `allOf` branches merged into one
+   object). Lossiness/widening here is the declared, accepted policy,
+   because it runs entirely downstream of enforcement. The UI marks affected
+   tools "schema simplified for this provider".
+3. **Enforcement is exact against the stored schema.** The host validates the
+   agent's arguments against the schema exactly as stored — byte-normalized,
+   otherwise untransformed — before dispatch, using the
+   `santhosh-tekuri/jsonschema/v6` validator already in-tree, which resolves
+   `$ref` and evaluates `allOf` (and everything else) natively and exactly.
+   A mismatch returns a structural error the agent can correct. The LLM may
+   see a simplified picture (step 2's translation); enforcement never does.
+   Because step 1 performs no structural transformation, there is no
+   "canonical schema is stricter than the source" case to document here —
+   member reordering cannot change what the stored schema accepts.
 
 **ADR-017 v1 scoping rule:** `params` blocks apply to top-level properties of the
-canonicalized schema. A policy that scopes a property governed by unresolved
-`oneOf` branching is **rejected at policy save** with a clear error — fail closed;
-loosen later only against demonstrated demand.
+stored (byte-normalized) schema. Composing the policy narrowing into the
+stored schema as an ADDITIONAL `allOf` branch is **not** a narrowing by
+construction: when the stored schema carries `unevaluatedProperties` /
+`unevaluatedItems` at or above the scoped location, the appended branch's own
+`properties`/`items` keyword produces an ANNOTATION that satisfies that
+`unevaluated*: false` for a *different* `allOf`/`oneOf` branch — verified
+against `santhosh-tekuri/jsonschema/v6`: a `oneOf` schema with
+`unevaluatedProperties: false` rejects an instance under its stored form but
+accepts it once a same-shaped `allOf` branch supplies the missing `properties`
+annotation. Appending an `allOf` branch narrows *only* when the stored schema
+has no `unevaluatedProperties`/`unevaluatedItems` anywhere at or above the
+scoped location. Enforcement MUST therefore do one of:
+- (preferred — correct regardless of what the stored schema contains) validate
+  the stored schema and the policy narrowing as **two independent compiles**:
+  an instance must pass the stored schema's own compiled validator AND a
+  second validator compiled from just the narrowing constraint, rather than
+  composing both into one document; or
+- reject the policy at save time (fail closed) whenever the stored schema
+  carries `unevaluatedProperties`/`unevaluatedItems` at or above the scoped
+  location, and only use the single-document `allOf`-append when that is
+  provably absent.
+The POLICY-EDITOR UI half unions branch property names across `allOf`/`oneOf`
+purely for DISPLAY (so an operator can see which properties exist to scope) —
+that union is presentation only and is never what gets enforced. A policy that
+scopes a property whose governance across branches cannot be determined is
+**rejected at policy save** with a clear error — fail closed; loosen later
+only against demonstrated demand.
+
+The enforcement compiler (`jsonschema.NewCompiler()`) MUST be constructed with
+a deny-all `URLLoader` (`c.UseLoader(...)`): `jsonschema.NewCompiler()`
+defaults its loader to `FileLoader{}`, so a stored schema containing
+`"$ref": "file:///..."` would otherwise cause the enforcement compiler to read
+an arbitrary local file at compile time. A stored schema whose `$ref` escapes
+the document should also be rejected at discovery.
 
 ## 11. MCP client compliance (2026-07-28)
 
