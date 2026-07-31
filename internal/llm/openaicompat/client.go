@@ -113,6 +113,10 @@ func (w *compatWire) ProviderName() string {
 	return "openaicompat"
 }
 
+// SchemaFeatures declares full JSON Schema support: InputSchema is forwarded
+// verbatim (translate.go:50), so no simplification is needed.
+func (w *compatWire) SchemaFeatures() llm.SchemaFeatureSet { return llm.FullSchemaSupport() }
+
 // compatRetryDecision drives the retry loop for OpenAI-compatible backends,
 // which have no built-in retry. An HTTP error defers to the shared per-status
 // policy (reusing the Retry-After captured by wrapHTTPError); a bare network

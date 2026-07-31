@@ -81,6 +81,11 @@ func NewClientFromEnv(opts ...option.RequestOption) *AnthropicClient {
 // ProviderName returns the Prometheus label for this provider.
 func (w *wire) ProviderName() string { return "anthropic" }
 
+// SchemaFeatures declares full JSON Schema support: Anthropic's tool schema
+// is forwarded near-verbatim (extras survive via buildToolInputSchema's
+// ExtraFields, client.go:504-515), so no simplification is needed.
+func (w *wire) SchemaFeatures() llm.SchemaFeatureSet { return llm.FullSchemaSupport() }
+
 // ClassifyError maps an Anthropic SDK error to the fixed error_type enum.
 func (w *wire) ClassifyError(err error) string {
 	if et, ok := llm.ClassifyContextError(err); ok {

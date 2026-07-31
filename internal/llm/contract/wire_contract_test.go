@@ -237,6 +237,22 @@ func requestWithTool() llm.MessageRequest {
 	}
 }
 
+// requestWithFeatureRichTool returns a request whose tool InputSchema uses a
+// nested "oneOf", a "format" annotation, and a "$defs"/"$ref" pair — the
+// constructs a restricted SchemaFeatureSet would gate. Used by
+// TestContract_ToolSchemaPassthrough_FullSupport to prove the shared
+// TranslateForFeatures pass strips nothing when a wire declares full support.
+func requestWithFeatureRichTool() llm.MessageRequest {
+	schema := json.RawMessage(`{"type":"object","properties":{"target":{"oneOf":[` +
+		`{"type":"string","format":"date-time"},{"$ref":"#/$defs/Other"}]}},` +
+		`"$defs":{"Other":{"type":"string"}}}`)
+	return llm.MessageRequest{
+		Model:   "test-model",
+		History: minimalHistory(),
+		Tools:   []llm.ToolDefinition{{Name: "my_server.do_thing", Description: "test", InputSchema: schema}},
+	}
+}
+
 // --- Contract test: stop-reason normalization ---
 
 // TestContract_StopReasonNormalization verifies that each provider maps its
@@ -538,6 +554,70 @@ func TestContract_ToolNameRoundTrip(t *testing.T) {
 			}
 			if got := resp.ToolCalls[0].Name; got != "my_server.do_thing" {
 				t.Errorf("tool name not reverse-mapped to original: got %q, want %q", got, "my_server.do_thing")
+			}
+		})
+	}
+}
+
+// --- Contract test: tool-schema passthrough on full-support declaration ---
+
+// TestContract_ToolSchemaPassthrough_FullSupport verifies that
+// ProviderAdapter.prepareRequest's shared TranslateForFeatures pass strips
+// nothing from a tool's InputSchema when the wire declares full JSON Schema
+// support (issue #736's DoD): the outbound HTTP body must still contain the
+// nested "oneOf" and the "format" value verbatim.
+//
+// Google is deliberately EXCLUDED from this table: translateJSONSchemaToGenaiSchema
+// (google/schema.go) drops unknown keywords before the SDK call as
+// pre-existing wire behavior unrelated to the shared pass, so an outbound
+// byte-identity assertion is not meaningful there. Google's full-support
+// declaration is covered by its package-local TestWire_SchemaFeatures_Full and
+// by the TranslateForFeatures unit tests in internal/llm.
+func TestContract_ToolSchemaPassthrough_FullSupport(t *testing.T) {
+	type schemaCase struct {
+		name       string
+		respBody   string
+		makeClient func(t *testing.T, srv *httptest.Server) llm.LLMClient
+	}
+
+	cases := []schemaCase{
+		{
+			name:     "anthropic",
+			respBody: anthropicTextBody(5, 3),
+			makeClient: func(t *testing.T, srv *httptest.Server) llm.LLMClient {
+				return anthropic.NewClient("test-key", option.WithBaseURL(srv.URL), option.WithMaxRetries(0))
+			},
+		},
+		{
+			name:     "openai",
+			respBody: openaiTextBody(5, 3),
+			makeClient: func(t *testing.T, srv *httptest.Server) llm.LLMClient {
+				return openai.NewClient("test-key", openaisdk_option.WithHTTPClient(srv.Client()), openaisdk_option.WithBaseURL(srv.URL))
+			},
+		},
+		{
+			name:     "openaicompat",
+			respBody: compatTextBody(5, 3),
+			makeClient: func(t *testing.T, srv *httptest.Server) llm.LLMClient {
+				return openaicompat.NewClient(srv.URL, "test-key", openaicompat.WithHTTPClient(srv.Client()))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var lastReq string
+			srv := captureServer(t, tc.respBody, &lastReq)
+			client := tc.makeClient(t, srv)
+
+			if _, err := client.CreateMessage(context.Background(), requestWithFeatureRichTool()); err != nil {
+				t.Fatalf("CreateMessage: %v", err)
+			}
+			if !strings.Contains(lastReq, "oneOf") {
+				t.Errorf("outbound request must forward \"oneOf\" verbatim on a full-support declaration; body=%s", lastReq)
+			}
+			if !strings.Contains(lastReq, "date-time") {
+				t.Errorf("outbound request must forward the format value \"date-time\" verbatim; body=%s", lastReq)
 			}
 		})
 	}

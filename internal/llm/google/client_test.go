@@ -1491,3 +1491,15 @@ func ptr(s string) *string { return &s }
 
 // ptrInt32 returns a pointer to the given int32 value.
 func ptrInt32(n int32) *int32 { return &n }
+
+// TestWire_SchemaFeatures_Full asserts the wire declares full JSON Schema
+// support and that the declaration is safe to call on a nil receiver, mirroring
+// ProviderName's existing nil-safety. Google's declaration is behavior-neutral
+// for now — issue #739 narrows it to match translateJSONSchemaToGenaiSchema's
+// actual subset and flips this assertion.
+func TestWire_SchemaFeatures_Full(t *testing.T) {
+	var w *wire
+	if !w.SchemaFeatures().IsFull() {
+		t.Error("SchemaFeatures() is not full support")
+	}
+}

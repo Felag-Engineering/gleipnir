@@ -48,4 +48,14 @@ type ProviderWire interface {
 	// ProviderName returns the Prometheus label for this provider.
 	// openaicompat returns a caller-configured name, defaulting to "openaicompat".
 	ProviderName() string
+
+	// SchemaFeatures declares which JSON Schema constructs this wire can
+	// represent on the request wire. ProviderAdapter runs
+	// TranslateForFeatures over every tool's InputSchema using this
+	// declaration before calling Call/Stream, so schema simplification lives
+	// once in internal/llm instead of per provider.
+	//
+	// Implementations must be pure constants and must be safe on a nil
+	// receiver (see ProviderName above).
+	SchemaFeatures() SchemaFeatureSet
 }
