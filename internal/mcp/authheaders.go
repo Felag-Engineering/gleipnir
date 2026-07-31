@@ -19,7 +19,7 @@ type AuthHeader struct {
 //   - names that fail RFC 7230 token syntax (checked via httpguts, which covers
 //     CR/LF/NUL/colon/whitespace and all non-token chars)
 //   - names that collide with headers managed by the MCP client or the HTTP
-//     transport layer (Mcp-Session-Id, Content-Type, Accept, Content-Length, Host)
+//     transport layer (see headervalidate.ReservedHeaderNames)
 //
 // Delegates to headervalidate.ValidateName; kept here for backward compatibility
 // with existing call sites in internal/http/api/mcp_handler.go.

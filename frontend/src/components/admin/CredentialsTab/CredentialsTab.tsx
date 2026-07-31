@@ -22,6 +22,8 @@ import styles from './CredentialsTab.module.css'
 // Rejecting these client-side gives immediate feedback; the server also rejects them.
 const RESERVED_HEADERS = new Set([
   'Mcp-Session-Id',
+  'Mcp-Method',
+  'Mcp-Name',
   'Content-Type',
   'Accept',
   'Content-Length',

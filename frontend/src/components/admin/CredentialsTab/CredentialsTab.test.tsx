@@ -202,6 +202,22 @@ describe('strategy: header_set', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(/reserved header name/i)
   })
 
+  it('rejects Mcp-Method as a reserved header', async () => {
+    renderTab({ creds: { strategy: 'header_set', header_names: [] }, strategy: 'header_set' })
+    await userEvent.type(screen.getByLabelText(/new header name/i), 'Mcp-Method')
+    await userEvent.type(screen.getByLabelText(/new header value/i), 'anything')
+    await userEvent.click(screen.getByRole('button', { name: /add/i }))
+    expect(screen.getByRole('alert')).toHaveTextContent(/reserved header name/i)
+  })
+
+  it('rejects mcp-name (lowercase) as a reserved header', async () => {
+    renderTab({ creds: { strategy: 'header_set', header_names: [] }, strategy: 'header_set' })
+    await userEvent.type(screen.getByLabelText(/new header name/i), 'mcp-name')
+    await userEvent.type(screen.getByLabelText(/new header value/i), 'anything')
+    await userEvent.click(screen.getByRole('button', { name: /add/i }))
+    expect(screen.getByRole('alert')).toHaveTextContent(/reserved header name/i)
+  })
+
   it('auditor: add row is hidden', () => {
     renderTab({ creds, strategy: 'header_set', canManage: false })
     expect(screen.queryByLabelText(/new header name/i)).not.toBeInTheDocument()
