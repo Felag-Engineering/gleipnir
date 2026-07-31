@@ -353,7 +353,7 @@ func TestPoller_MatchAll_OneFailNoRun(t *testing.T) {
 	// Uses match=any policy shape but we swap to all manually via YAML.
 	// The two checks are: equals "degraded" and equals "critical".
 	// Server returns "degraded": first passes, second fails.
-	yamlStr := fmt.Sprintf(`
+	yamlStr := `
 name: poll-all-fail
 trigger:
   type: poll
@@ -372,7 +372,7 @@ capabilities:
 agent:
   task: "process poll result"
   concurrency: parallel
-`)
+`
 	insertTestPollPolicy(t, store, "pol-all-fail", "poll-all-fail", yamlStr)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

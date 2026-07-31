@@ -317,11 +317,7 @@ func (c *Client) DiscoverTools(ctx context.Context) ([]Tool, error) {
 
 	tools := make([]Tool, len(result.Tools))
 	for i, tw := range result.Tools {
-		tools[i] = Tool{
-			Name:        tw.Name,
-			Description: tw.Description,
-			InputSchema: tw.InputSchema,
-		}
+		tools[i] = Tool(tw)
 	}
 	return tools, nil
 }

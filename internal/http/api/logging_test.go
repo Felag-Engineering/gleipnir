@@ -57,6 +57,7 @@ func TestSlogContext_InjectsLoggerWithRequestFields(t *testing.T) {
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
+	//lint:ignore SA1019 test mirrors the production middleware stack; replacement tracked in #758
 	r.Use(middleware.RealIP)
 	r.Use(slogContext)
 	r.Get("/ping", inner)
@@ -115,6 +116,7 @@ func TestSlogAccess_EmitsStructuredAccessLog(t *testing.T) {
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
+	//lint:ignore SA1019 test mirrors the production middleware stack; replacement tracked in #758
 	r.Use(middleware.RealIP)
 	r.Use(slogContext)
 	r.Use(slogAccess)
@@ -181,6 +183,7 @@ func TestSlogAccess_CapturesStatusCode(t *testing.T) {
 			code := tc.code
 			r := chi.NewRouter()
 			r.Use(middleware.RequestID)
+			//lint:ignore SA1019 test mirrors the production middleware stack; replacement tracked in #758
 			r.Use(middleware.RealIP)
 			r.Use(slogContext)
 			r.Use(slogAccess)
@@ -223,6 +226,7 @@ func TestSlogAccess_UsesRawPathNotRoutePattern(t *testing.T) {
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
+	//lint:ignore SA1019 test mirrors the production middleware stack; replacement tracked in #758
 	r.Use(middleware.RealIP)
 	r.Use(slogContext)
 	r.Use(slogAccess)

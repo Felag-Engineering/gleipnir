@@ -921,17 +921,6 @@ func toErrorIssues(fes []configvalidate.FieldError) []httputil.ErrorIssue {
 	return out
 }
 
-// joinNames returns a comma-separated string of names extracted from a slice
-// via the provided accessor. Used by deletion guards that need to format a
-// human-readable list of blocking dependents.
-func joinNames[T any](items []T, name func(T) string) string {
-	names := make([]string, len(items))
-	for i, item := range items {
-		names[i] = name(item)
-	}
-	return strings.Join(names, ", ")
-}
-
 // mapLifecycleError maps a typed error from InstanceLifecycle to the EXACT
 // current HTTP status code and response body. Every distinct string here was
 // verified against the old inline handlers (ERROR SURFACE in plan.md).

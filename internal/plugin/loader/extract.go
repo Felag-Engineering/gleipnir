@@ -115,7 +115,7 @@ func validateTarEntry(hdr *tar.Header, destDir string) error {
 	// filepath.Clean removes ".." but we want to detect it explicitly.
 	for _, part := range strings.Split(hdr.Name, "/") {
 		if part == ".." {
-			return errors.New("path traversal via ..")
+			return errors.New("path traversal via dot-dot segment")
 		}
 	}
 

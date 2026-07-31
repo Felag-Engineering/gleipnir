@@ -80,8 +80,14 @@ func (v *SubscribedBindingValidator) Validate(ctx context.Context, t model.Trigg
 
 	// Step 5: validate the binding block against the schema (nil binding is
 	// treated as an empty map — the schema decides whether that is valid).
-	binding := any(t.Binding)
-	if binding == nil {
+	// The nil check must be on the concrete map, BEFORE boxing into any: a
+	// nil map wrapped in an interface is non-nil, so the previous
+	// `any(t.Binding) == nil` check never fired (staticcheck SA4023). The
+	// jsonschema validator happens to treat a nil map as an empty object, so
+	// behavior was unchanged — but the normalization the comment promises now
+	// actually runs rather than relying on that library quirk.
+	var binding any = t.Binding
+	if t.Binding == nil {
 		binding = map[string]any{}
 	}
 	fieldErrs, err := bv.Validate(binding)

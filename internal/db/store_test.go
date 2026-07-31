@@ -304,13 +304,6 @@ func checkPragmas(t *testing.T, s *Store) {
 	}
 }
 
-func applyTestSchema(t *testing.T, s *Store) {
-	t.Helper()
-	if err := s.Migrate(context.Background()); err != nil {
-		t.Fatalf("apply test schema: %v", err)
-	}
-}
-
 func TestMigrate(t *testing.T) {
 	newStore := func(t *testing.T) *Store {
 		t.Helper()

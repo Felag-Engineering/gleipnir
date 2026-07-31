@@ -578,7 +578,7 @@ func (h *Handler) SetDefaultModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httputil.WriteJSON(w, http.StatusOK, setDefaultModelResponse{Provider: req.Provider, Name: req.Name})
+	httputil.WriteJSON(w, http.StatusOK, setDefaultModelResponse(req))
 }
 
 // GetSystemDefault returns the provider and model name from the default_model setting.

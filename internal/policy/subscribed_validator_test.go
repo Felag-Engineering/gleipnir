@@ -203,6 +203,59 @@ func TestSubscribedValidator_ValidNoBinding(t *testing.T) {
 	}
 }
 
+// TestSubscribedValidator_NilBindingWithSchema pins the nil-binding
+// normalization: an omitted binding block must be validated as an EMPTY MAP
+// against the event kind's schema — so a schema with only optional fields
+// accepts it, and a schema with required fields reports the missing field as
+// an ordinary schema issue (not a type error about JSON null). Regression
+// test for the boxed-nil bug where `any(t.Binding) == nil` was never true and
+// a nil map reached the validator as null.
+func TestSubscribedValidator_NilBindingWithSchema(t *testing.T) {
+	t.Run("optional-only schema accepts omitted binding", func(t *testing.T) {
+		optionalSchemaYAML := `
+type: object
+properties:
+  filter:
+    type: string
+additionalProperties: false
+`
+		var node yaml.Node
+		if err := yaml.Unmarshal([]byte(optionalSchemaYAML), &node); err != nil {
+			t.Fatalf("unmarshal binding schema: %v", err)
+		}
+		schema := node.Content[0]
+		manifestYAML := buildManifestYAML(t, []sdkmanifest.EventKindDecl{
+			{Kind: "channel_message", BindingSchema: schema},
+		})
+		v, snap := newTestValidator(t, "inst", "i1", manifestYAML)
+		defer snap.ResetCache()
+
+		issues := v.Validate(context.Background(), subscribedTrigger("inst", "channel_message", nil))
+		if len(issues) != 0 {
+			t.Errorf("expected no issues for nil binding against optional-only schema, got %v", issues)
+		}
+	})
+
+	t.Run("required field reported as schema issue", func(t *testing.T) {
+		schema := buildBindingSchema(t) // requires "filter" string field
+		manifestYAML := buildManifestYAML(t, []sdkmanifest.EventKindDecl{
+			{Kind: "channel_message", BindingSchema: schema},
+		})
+		v, snap := newTestValidator(t, "inst", "i1", manifestYAML)
+		defer snap.ResetCache()
+
+		issues := v.Validate(context.Background(), subscribedTrigger("inst", "channel_message", nil))
+		if len(issues) == 0 {
+			t.Fatal("expected a missing-required-field issue for nil binding, got none")
+		}
+		for _, iss := range issues {
+			if !containsString(iss.Field, "trigger.binding") {
+				t.Errorf("field %q should start with trigger.binding", iss.Field)
+			}
+		}
+	})
+}
+
 func TestSubscribedValidator_BindingSchemaViolation(t *testing.T) {
 	schema := buildBindingSchema(t) // requires "filter" string field
 	manifestYAML := buildManifestYAML(t, []sdkmanifest.EventKindDecl{
