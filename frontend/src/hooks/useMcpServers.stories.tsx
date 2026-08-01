@@ -14,6 +14,7 @@ const FIXTURE_SERVERS: ApiMcpServer[] = [
     has_drift: false,
     created_at: '2026-03-01T00:00:00Z',
     is_arcade_gateway: false,
+    protocol_version: '2026-07-28',
   },
   {
     id: 'srv-2',
@@ -23,6 +24,7 @@ const FIXTURE_SERVERS: ApiMcpServer[] = [
     has_drift: false,
     created_at: '2026-03-05T00:00:00Z',
     is_arcade_gateway: false,
+    protocol_version: null,
   },
 ]
 

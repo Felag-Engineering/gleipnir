@@ -810,6 +810,7 @@ const FIXTURE_SERVER: ApiMcpServer = {
   has_drift: false,
   created_at: '2026-01-01T00:00:00Z',
   is_arcade_gateway: false,
+  protocol_version: '2026-07-28',
 }
 
 describe('AgentEditorPage — save-success disabled-tool banner', () => {

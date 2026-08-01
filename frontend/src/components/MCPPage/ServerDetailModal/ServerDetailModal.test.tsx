@@ -48,6 +48,7 @@ const server: ApiMcpServer = {
   has_drift: false,
   created_at: '2026-04-03T15:43:55Z',
   is_arcade_gateway: false,
+  protocol_version: '2026-07-28',
 }
 
 const tools: ApiMcpTool[] = [

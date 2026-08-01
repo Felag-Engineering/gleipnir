@@ -32,6 +32,7 @@ const server: ApiMcpServer = {
   created_at: '2026-04-01T00:00:00Z',
   is_arcade_gateway: true,
   auth_header_keys: ['Authorization', 'Arcade-User-ID'],
+  protocol_version: '2026-07-28',
 }
 
 const tools: ApiMcpTool[] = [
