@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
+	"github.com/felag-engineering/gleipnir/internal/schemanorm"
 	"github.com/felag-engineering/gleipnir/internal/toolregistry"
 )
 
@@ -86,6 +88,24 @@ func makeMCPServer(t *testing.T, tools []map[string]any) *httptest.Server {
 				"tools": tools,
 			},
 		})
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// makeRawMCPServer starts an httptest.Server that answers every request with
+// body, written verbatim. makeMCPServer marshals map[string]any, and
+// encoding/json always sorts map keys alphabetically before writing, so it
+// cannot produce a duplicate object key or a controlled, non-alphabetical
+// member order. This helper can, because it never round-trips through
+// encoding/json on the way out.
+func makeRawMCPServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Errorf("write raw mcp response: %v", err)
+		}
 	}))
 	t.Cleanup(srv.Close)
 	return srv
@@ -378,6 +398,226 @@ func TestRefreshTools_ModifiedTools(t *testing.T) {
 	}
 	if hasDrift != 1 {
 		t.Errorf("has_drift = %d, want 1 after modified-tools refresh", hasDrift)
+	}
+}
+
+// TestRefreshTools_PersistsCanonicalSchema is the DoD round-trip test:
+// discovery must persist both the raw schema, byte-identical to what the
+// server sent, and its schemanorm-normalized canonical form.
+func TestRefreshTools_PersistsCanonicalSchema(t *testing.T) {
+	reg, store := newTestRegistry(t)
+	rawDB := store.DB()
+
+	const rawSchema = `{"b":1,"a":2}`
+	srv := makeRawMCPServer(t, `{"jsonrpc":"2.0","id":1,"result":{"tools":[`+
+		`{"name":"tool-a","description":"desc","inputSchema":`+rawSchema+`}`+
+		`]}}`)
+
+	serverID, err := RegisterServerForTest(context.Background(), store.Queries(), reg, "test-server", srv.URL)
+	if err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
+	}
+
+	wantCanonical, err := schemanorm.Normalize(json.RawMessage(rawSchema))
+	if err != nil {
+		t.Fatalf("schemanorm.Normalize: %v", err)
+	}
+
+	var gotRaw string
+	var gotCanonical sql.NullString
+	if err := rawDB.QueryRow(
+		`SELECT input_schema, canonical_schema FROM mcp_tools WHERE server_id = ? AND name = 'tool-a'`, serverID,
+	).Scan(&gotRaw, &gotCanonical); err != nil {
+		t.Fatalf("query stored schema: %v", err)
+	}
+
+	if gotRaw != rawSchema {
+		t.Errorf("input_schema = %q, want byte-identical %q", gotRaw, rawSchema)
+	}
+	if !gotCanonical.Valid || gotCanonical.String != string(wantCanonical) {
+		t.Errorf("canonical_schema = %v, want %q", gotCanonical, wantCanonical)
+	}
+}
+
+// TestRefreshTools_KeyOrderOnlyChangeIsNotDrift is the DoD item: a schema
+// change that reorders object members only must not flag the tool as
+// Modified once canonical_schema is already populated.
+func TestRefreshTools_KeyOrderOnlyChangeIsNotDrift(t *testing.T) {
+	reg, store := newTestRegistry(t)
+	rawDB := store.DB()
+
+	firstSrv := makeRawMCPServer(t, `{"jsonrpc":"2.0","id":1,"result":{"tools":[`+
+		`{"name":"tool-a","description":"desc","inputSchema":{"a":1,"b":2,"c":3}}`+
+		`]}}`)
+
+	serverID, err := RegisterServerForTest(context.Background(), store.Queries(), reg, "test-server", firstSrv.URL)
+	if err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
+	}
+
+	const reorderedSchema = `{"c":3,"a":1,"b":2}`
+	secondSrv := makeRawMCPServer(t, `{"jsonrpc":"2.0","id":1,"result":{"tools":[`+
+		`{"name":"tool-a","description":"desc","inputSchema":`+reorderedSchema+`}`+
+		`]}}`)
+
+	if _, err := rawDB.Exec(`UPDATE mcp_servers SET url = ? WHERE id = ?`, secondSrv.URL, serverID); err != nil {
+		t.Fatalf("update server url: %v", err)
+	}
+
+	diff, err := reg.RefreshTools(context.Background(), serverID)
+	if err != nil {
+		t.Fatalf("RefreshTools: %v", err)
+	}
+
+	if len(diff.Modified) != 0 {
+		t.Errorf("Modified = %v, want empty for a key-order-only schema change", diff.Modified)
+	}
+
+	var hasDrift int64
+	if err := rawDB.QueryRow(`SELECT has_drift FROM mcp_servers WHERE id = ?`, serverID).Scan(&hasDrift); err != nil {
+		t.Fatalf("query has_drift: %v", err)
+	}
+	if hasDrift != 0 {
+		t.Errorf("has_drift = %d, want 0 for a key-order-only schema change", hasDrift)
+	}
+
+	wantCanonical, err := schemanorm.Normalize(json.RawMessage(reorderedSchema))
+	if err != nil {
+		t.Fatalf("schemanorm.Normalize: %v", err)
+	}
+
+	var gotRaw string
+	var gotCanonical sql.NullString
+	if err := rawDB.QueryRow(
+		`SELECT input_schema, canonical_schema FROM mcp_tools WHERE server_id = ? AND name = 'tool-a'`, serverID,
+	).Scan(&gotRaw, &gotCanonical); err != nil {
+		t.Fatalf("query stored schema: %v", err)
+	}
+	if gotRaw != reorderedSchema {
+		t.Errorf("input_schema = %q, want updated to the new raw bytes %q", gotRaw, reorderedSchema)
+	}
+	if !gotCanonical.Valid || gotCanonical.String != string(wantCanonical) {
+		t.Errorf("canonical_schema = %v, want unchanged %q", gotCanonical, wantCanonical)
+	}
+}
+
+// TestRefreshTools_CanonicalizationFailureStoresNull verifies the fail-open
+// contract: a schema that schemanorm rejects (here, a duplicate object key)
+// must not fail the refresh or drop the tool -- only canonical_schema is
+// NULL, and one WARN is logged.
+func TestRefreshTools_CanonicalizationFailureStoresNull(t *testing.T) {
+	reg, store := newTestRegistry(t)
+	rawDB := store.DB()
+
+	const dupKeySchema = `{"type":"object","type":"array"}`
+	srv := makeRawMCPServer(t, `{"jsonrpc":"2.0","id":1,"result":{"tools":[`+
+		`{"name":"bad-tool","description":"desc","inputSchema":`+dupKeySchema+`}`+
+		`]}}`)
+
+	// Capture only around the call under test: newTestRegistry's migration
+	// logging (and RefreshTools's own first-discovery protocol-pin-change
+	// WARN) are unrelated noise the "exactly 1 matching line" assertion below
+	// must not be confused by.
+	buf := captureLogger(t)
+	serverID, err := RegisterServerForTest(context.Background(), store.Queries(), reg, "test-server", srv.URL)
+	if err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
+	}
+
+	var gotRaw string
+	var gotCanonical sql.NullString
+	if err := rawDB.QueryRow(
+		`SELECT input_schema, canonical_schema FROM mcp_tools WHERE server_id = ? AND name = 'bad-tool'`, serverID,
+	).Scan(&gotRaw, &gotCanonical); err != nil {
+		t.Fatalf("query stored schema: %v", err)
+	}
+	if gotRaw != dupKeySchema {
+		t.Errorf("input_schema = %q, want the raw schema stored despite the normalization failure", gotRaw)
+	}
+	if gotCanonical.Valid {
+		t.Errorf("canonical_schema = %q, want NULL after a normalization failure", gotCanonical.String)
+	}
+
+	const wantMsg = "mcp tool schema failed normalization; storing raw schema with NULL canonical"
+	var matches []map[string]any
+	for _, l := range decodeLogLines(t, buf) {
+		if l["msg"] == wantMsg {
+			matches = append(matches, l)
+		}
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected exactly 1 log line with msg %q, got %d: %v", wantMsg, len(matches), matches)
+	}
+	if matches[0]["tool_name"] != "bad-tool" {
+		t.Errorf("log line tool_name = %v, want bad-tool", matches[0]["tool_name"])
+	}
+}
+
+// TestRefreshTools_DriftFallsBackToRawWhenStoredCanonicalNull documents the
+// first-refresh-after-upgrade behavior: a pre-upgrade row with NULL
+// canonical_schema falls back to raw comparison, so a key-order-only change
+// still flags Modified once. The refresh that flags it also backfills
+// canonical_schema, so a further key-order-only refresh is clean.
+func TestRefreshTools_DriftFallsBackToRawWhenStoredCanonicalNull(t *testing.T) {
+	reg, store := newTestRegistry(t)
+	rawDB := store.DB()
+
+	firstSrv := makeRawMCPServer(t, `{"jsonrpc":"2.0","id":1,"result":{"tools":[`+
+		`{"name":"tool-a","description":"desc","inputSchema":{"a":1,"b":2}}`+
+		`]}}`)
+
+	serverID, err := RegisterServerForTest(context.Background(), store.Queries(), reg, "test-server", firstSrv.URL)
+	if err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
+	}
+
+	// Simulate a pre-upgrade row: canonical_schema was never populated.
+	if _, err := rawDB.Exec(`UPDATE mcp_tools SET canonical_schema = NULL WHERE server_id = ?`, serverID); err != nil {
+		t.Fatalf("clear canonical_schema: %v", err)
+	}
+
+	reorderedSchema := `{"b":2,"a":1}`
+	secondSrv := makeRawMCPServer(t, `{"jsonrpc":"2.0","id":1,"result":{"tools":[`+
+		`{"name":"tool-a","description":"desc","inputSchema":`+reorderedSchema+`}`+
+		`]}}`)
+	if _, err := rawDB.Exec(`UPDATE mcp_servers SET url = ? WHERE id = ?`, secondSrv.URL, serverID); err != nil {
+		t.Fatalf("update server url: %v", err)
+	}
+
+	diff, err := reg.RefreshTools(context.Background(), serverID)
+	if err != nil {
+		t.Fatalf("RefreshTools: %v", err)
+	}
+	if len(diff.Modified) != 1 || diff.Modified[0] != "tool-a" {
+		t.Errorf("Modified = %v, want [tool-a] on the first refresh after a NULL-canonical upgrade", diff.Modified)
+	}
+
+	var gotCanonical sql.NullString
+	if err := rawDB.QueryRow(
+		`SELECT canonical_schema FROM mcp_tools WHERE server_id = ? AND name = 'tool-a'`, serverID,
+	).Scan(&gotCanonical); err != nil {
+		t.Fatalf("query canonical_schema: %v", err)
+	}
+	if !gotCanonical.Valid {
+		t.Fatal("canonical_schema still NULL after a refresh that discovered a schema successfully")
+	}
+
+	// A further key-order-only refresh must now be clean: canonical_schema is
+	// populated, so the comparison prefers it over raw bytes.
+	thirdSchema := `{"a":1,"b":2}`
+	thirdSrv := makeRawMCPServer(t, `{"jsonrpc":"2.0","id":1,"result":{"tools":[`+
+		`{"name":"tool-a","description":"desc","inputSchema":`+thirdSchema+`}`+
+		`]}}`)
+	if _, err := rawDB.Exec(`UPDATE mcp_servers SET url = ? WHERE id = ?`, thirdSrv.URL, serverID); err != nil {
+		t.Fatalf("update server url: %v", err)
+	}
+
+	diff2, err := reg.RefreshTools(context.Background(), serverID)
+	if err != nil {
+		t.Fatalf("RefreshTools (second refresh): %v", err)
+	}
+	if len(diff2.Modified) != 0 {
+		t.Errorf("Modified = %v, want empty once canonical_schema is populated", diff2.Modified)
 	}
 }
 
@@ -976,6 +1216,14 @@ func TestProbeTools_NoDBWrites(t *testing.T) {
 	}
 	if len(discovered) != 1 || discovered[0].Name != "tool-a" {
 		t.Errorf("ProbeTools = %v, want [{tool-a}]", discovered)
+	}
+
+	wantCanonical, err := schemanorm.Normalize(discovered[0].InputSchema)
+	if err != nil {
+		t.Fatalf("schemanorm.Normalize: %v", err)
+	}
+	if string(discovered[0].CanonicalSchema) != string(wantCanonical) {
+		t.Errorf("ProbeTools CanonicalSchema = %s, want %s", discovered[0].CanonicalSchema, wantCanonical)
 	}
 
 	var serverCount int

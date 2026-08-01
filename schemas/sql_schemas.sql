@@ -57,6 +57,7 @@ CREATE TABLE mcp_tools (
     input_schema    TEXT    NOT NULL,     -- JSON blob (MCP tool input schema)
     created_at      TEXT    NOT NULL,     -- ISO 8601 UTC
     enabled         INTEGER NOT NULL DEFAULT 1,  -- operator-managed; 0 = disabled, 1 = enabled
+    canonical_schema TEXT,  -- nullable; schemanorm-normalized input_schema (ADR-059); NULL = not normalized
     UNIQUE(server_id, name)
 );
 

@@ -31,6 +31,24 @@ type ResolvedTool struct {
 	Client      *Client
 	Description string          // tool description from the MCP registry
 	InputSchema json.RawMessage // raw JSON schema from the MCP tool record
+
+	// CanonicalSchema is the schemanorm-normalized form of InputSchema, or
+	// nil when no canonical form is stored (mcp_tools.canonical_schema was
+	// NULL, or the tool is plugin-sourced -- ResolvedTool literals built in
+	// execution/agent/tools.go for plugin tools never populate this field).
+	// Consumers must NOT silently fall back to InputSchema: nil means "no
+	// canonical form", and treating raw as canonical would defeat the point
+	// of storing it. Nothing consumes this field in this issue.
+	//
+	// A non-nil CanonicalSchema is NOT a safety attestation: schemanorm only
+	// performs byte-level normalization (sorted keys, canonical escapes) and
+	// does not reject or resolve anything schema-semantic, including a
+	// "$ref" pointing at "file:///etc/passwd" or another external/remote
+	// location. Rejecting such refs at discovery time is spec §10 work that
+	// is deliberately out of scope here. A future enforcement consumer of
+	// this field must still construct its JSON Schema compiler with a
+	// deny-all URLLoader, and must not read "canonical" as "vetted".
+	CanonicalSchema json.RawMessage
 }
 
 // ToolDiff describes the set of changes detected between two successive tool
@@ -278,6 +296,11 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 			clients[srv.Url] = cl
 		}
 
+		var canonical json.RawMessage
+		if tool.CanonicalSchema != nil && *tool.CanonicalSchema != "" {
+			canonical = json.RawMessage(*tool.CanonicalSchema)
+		}
+
 		result = append(result, ResolvedTool{
 			GrantedTool: model.GrantedTool{
 				ServerName: serverName,
@@ -287,9 +310,10 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 				OnTimeout:  t.OnTimeout,
 				Params:     t.Params,
 			},
-			Client:      cl,
-			Description: tool.Description,
-			InputSchema: json.RawMessage(tool.InputSchema),
+			Client:          cl,
+			Description:     tool.Description,
+			InputSchema:     json.RawMessage(tool.InputSchema),
+			CanonicalSchema: canonical,
 		})
 	}
 
@@ -335,7 +359,10 @@ func (r *Registry) ResolveToolByName(ctx context.Context, dotName string) (*Clie
 //
 // The synthetic db.McpServer passed to newClientForServer carries ID "<probe>"
 // so log output is not misleading about a real server ID.
-func (r *Registry) ProbeTools(ctx context.Context, name, urlStr string, encryptedAuthHeaders *string) ([]Tool, error) {
+//
+// The returned tools are canonicalized (see canonicalizeDiscovered) so the
+// caller can persist both the raw and canonical schema forms.
+func (r *Registry) ProbeTools(ctx context.Context, name, urlStr string, encryptedAuthHeaders *string) ([]DiscoveredTool, error) {
 	synthetic := db.McpServer{
 		ID:                   "<probe>",
 		Name:                 name,
@@ -346,7 +373,7 @@ func (r *Registry) ProbeTools(ctx context.Context, name, urlStr string, encrypte
 	if err != nil {
 		return nil, fmt.Errorf("probe tools for %q: %w", name, err)
 	}
-	return tools, nil
+	return canonicalizeDiscovered(synthetic.ID, name, tools), nil
 }
 
 // ProbeProtocol performs a one-shot protocol-era probe against the MCP
@@ -436,6 +463,13 @@ func (r *Registry) refreshProtocolVersion(ctx context.Context, srv *db.McpServer
 // RefreshTools re-discovers tools for a registered server, computes the diff
 // against the current DB state, upserts all fresh tools, deletes tools that
 // have disappeared, and updates last_discovered_at.
+//
+// Freshly-discovered schemas are canonicalized via schemanorm before the diff
+// and the upsert (see canonicalizeDiscovered), so a cosmetic key-order-only
+// schema change does not flag a tool as Modified, and every upsert backfills
+// canonical_schema for rows that predate this column. Normalization failure
+// is fail-open: the tool is still discovered and stored, just with a NULL
+// canonical_schema and a logged warning.
 func (r *Registry) RefreshTools(ctx context.Context, serverID string) (ToolDiff, error) {
 	// Fetch current tool state from DB so we can compute the diff and
 	// preserve tool IDs for existing tools.
@@ -476,9 +510,10 @@ func (r *Registry) RefreshTools(ctx context.Context, serverID string) (ToolDiff,
 	if err != nil {
 		return ToolDiff{}, fmt.Errorf("discover tools for server %q: %w", serverID, err)
 	}
+	discovered := canonicalizeDiscovered(srv.ID, srv.Name, freshTools)
 
-	freshByName := make(map[string]Tool, len(freshTools))
-	for _, t := range freshTools {
+	freshByName := make(map[string]DiscoveredTool, len(discovered))
+	for _, t := range discovered {
 		freshByName[t.Name] = t
 	}
 
@@ -495,7 +530,8 @@ func (r *Registry) RefreshTools(ctx context.Context, serverID string) (ToolDiff,
 			diff.Removed = append(diff.Removed, name)
 			continue
 		}
-		if old.Description != fresh.Description || old.InputSchema != string(fresh.InputSchema) {
+		if old.Description != fresh.Description ||
+			toolSchemaChanged(old.InputSchema, old.CanonicalSchema, fresh.InputSchema, fresh.CanonicalSchema) {
 			diff.Modified = append(diff.Modified, name)
 		}
 	}
@@ -535,19 +571,20 @@ func (r *Registry) RefreshTools(ctx context.Context, serverID string) (ToolDiff,
 	//
 	// On any DB error after a successful arbiter reservation, release all
 	// reservations for this server so the namespace is not permanently locked.
-	for _, t := range freshTools {
+	for _, t := range discovered {
 		toolID := model.NewULID()
 		if old, exists := oldByName[t.Name]; exists {
 			toolID = old.ID
 		}
 
 		if _, err := r.queries.UpsertMCPTool(ctx, db.UpsertMCPToolParams{
-			ID:          toolID,
-			ServerID:    serverID,
-			Name:        t.Name,
-			Description: t.Description,
-			InputSchema: string(t.InputSchema),
-			CreatedAt:   now,
+			ID:              toolID,
+			ServerID:        serverID,
+			Name:            t.Name,
+			Description:     t.Description,
+			InputSchema:     string(t.InputSchema),
+			CanonicalSchema: t.CanonicalSchemaPtr(),
+			CreatedAt:       now,
 		}); err != nil {
 			if r.arbiter != nil {
 				// Releases all reservations for this server, including pre-existing ones,
