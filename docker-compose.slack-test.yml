@@ -1,0 +1,12 @@
+# Ephemeral override for slack-plugin shakeout: runs the locally-built
+# gleipnir:slack-test image (built from latest main) on a clean stack.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.slack-test.yml up -d
+services:
+  api:
+    image: gleipnir:slack-test
+    environment:
+      - GLEIPNIR_DB_PATH=${GLEIPNIR_DB_PATH:-/data/gleipnir.db}
+      - GLEIPNIR_ENCRYPTION_KEY=${GLEIPNIR_ENCRYPTION_KEY:?set in .env}
+      - GLEIPNIR_PLUGINS_DIR=/plugins
+      - GLEIPNIR_LOG_LEVEL=debug
