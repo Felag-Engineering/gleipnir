@@ -1,0 +1,248 @@
+package mcp
+
+import (
+	"context"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+// TestToolTraffic_ShapingByPinnedVersion is the DoD table test: the same
+// DiscoverTools + CallTool sequence, run against a client pinned to each of
+// the three protocol states a Registry-built client can have, must produce
+// the right request shape. Only an explicit modern pin (ProtocolVersion20260728)
+// gets the 2026-07-28 stateless headers and skips the session handshake
+// entirely; "" (never probed) and a legacy pin both keep today's session
+// shaping unchanged.
+func TestToolTraffic_ShapingByPinnedVersion(t *testing.T) {
+	tests := []struct {
+		name   string
+		pin    string
+		modern bool // whether the fake should reject the legacy handshake
+	}{
+		{name: "unpinned client keeps legacy shaping", pin: ""},
+		{name: "legacy pin keeps legacy shaping", pin: ProtocolVersionLegacy},
+		{name: "modern pin gets 2026-07-28 stateless shaping", pin: ProtocolVersion20260728, modern: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := []FakeServerOption{WithFakeMode(FakeModern)}
+			if tc.modern {
+				opts = append(opts, WithFakeRejectLegacyHandshake())
+			}
+			fake := NewFakeMCPServer(opts...)
+			srv := httptest.NewServer(fake)
+			t.Cleanup(srv.Close)
+
+			c := NewClient(srv.URL, WithProtocolVersion(tc.pin))
+			if _, err := c.DiscoverTools(context.Background()); err != nil {
+				t.Fatalf("DiscoverTools: %v", err)
+			}
+			if _, err := c.CallTool(context.Background(), "tool-a", nil); err != nil {
+				t.Fatalf("CallTool: %v", err)
+			}
+
+			listReqs := fake.RequestsFor(methodToolsList)
+			if len(listReqs) != 1 {
+				t.Fatalf("len(RequestsFor(tools/list)) = %d, want 1", len(listReqs))
+			}
+			callReqs := fake.RequestsFor(methodToolsCall)
+			if len(callReqs) != 1 {
+				t.Fatalf("len(RequestsFor(tools/call)) = %d, want 1", len(callReqs))
+			}
+
+			wantProtocol, wantSession := "", "fake-session"
+			wantListMethod, wantCallMethod, wantCallName := "", "", ""
+			wantInitCount := 1
+			if tc.modern {
+				wantProtocol = ProtocolVersion20260728
+				wantSession = ""
+				wantListMethod = methodToolsList
+				wantCallMethod = methodToolsCall
+				wantCallName = "tool-a"
+				wantInitCount = 0
+			}
+
+			assertHeaders := func(t *testing.T, req FakeRequest, wantMethod, wantName string) {
+				t.Helper()
+				if req.ProtocolHeader != wantProtocol {
+					t.Errorf("ProtocolHeader = %q, want %q", req.ProtocolHeader, wantProtocol)
+				}
+				if req.MethodHeader != wantMethod {
+					t.Errorf("MethodHeader = %q, want %q", req.MethodHeader, wantMethod)
+				}
+				if req.NameHeader != wantName {
+					t.Errorf("NameHeader = %q, want %q", req.NameHeader, wantName)
+				}
+				if req.SessionHeader != wantSession {
+					t.Errorf("SessionHeader = %q, want %q", req.SessionHeader, wantSession)
+				}
+			}
+			assertHeaders(t, listReqs[0], wantListMethod, "")
+			assertHeaders(t, callReqs[0], wantCallMethod, wantCallName)
+
+			if got := len(fake.RequestsFor("initialize")); got != wantInitCount {
+				t.Errorf("len(RequestsFor(initialize)) = %d, want %d", got, wantInitCount)
+			}
+			if v := fake.Violations(); len(v) != 0 {
+				t.Errorf("Violations = %v, want none", v)
+			}
+		})
+	}
+}
+
+// TestBilingualRegistry_LegacyAndModernServersInOneInstance is the
+// milestone-DoD capstone: a legacy fake and a 2026-07-28 fake both register,
+// discover tools, and serve a tools/call through the same Registry, proving
+// the two eras coexist without one server's shaping leaking into the
+// other's requests.
+func TestBilingualRegistry_LegacyAndModernServersInOneInstance(t *testing.T) {
+	reg, store := newTestRegistry(t)
+	ctx := context.Background()
+
+	legacyFake := NewFakeMCPServer(
+		WithFakeMode(FakeLegacy),
+		WithFakeTools(Tool{Name: "legacy-tool", Description: "d", InputSchema: []byte(`{"type":"object"}`)}),
+	)
+	legacySrv := httptest.NewServer(legacyFake)
+	t.Cleanup(legacySrv.Close)
+
+	modernFake := NewFakeMCPServer(
+		WithFakeMode(FakeModern),
+		WithFakeRejectLegacyHandshake(),
+		WithFakeTools(Tool{Name: "modern-tool", Description: "d", InputSchema: []byte(`{"type":"object"}`)}),
+	)
+	modernSrv := httptest.NewServer(modernFake)
+	t.Cleanup(modernSrv.Close)
+
+	legacyServerID, err := RegisterServerForTest(ctx, store.Queries(), reg, "legacy-server", legacySrv.URL)
+	if err != nil {
+		t.Fatalf("register legacy server: %v", err)
+	}
+	modernServerID, err := RegisterServerForTest(ctx, store.Queries(), reg, "modern-server", modernSrv.URL)
+	if err != nil {
+		t.Fatalf("register modern server: %v", err)
+	}
+
+	legacyRow, err := store.Queries().GetMCPServer(ctx, legacyServerID)
+	if err != nil {
+		t.Fatalf("GetMCPServer(legacy): %v", err)
+	}
+	if legacyRow.ProtocolVersion == nil || *legacyRow.ProtocolVersion != ProtocolVersionLegacy {
+		t.Errorf("legacy protocol_version = %v, want %q", legacyRow.ProtocolVersion, ProtocolVersionLegacy)
+	}
+
+	modernRow, err := store.Queries().GetMCPServer(ctx, modernServerID)
+	if err != nil {
+		t.Fatalf("GetMCPServer(modern): %v", err)
+	}
+	if modernRow.ProtocolVersion == nil || *modernRow.ProtocolVersion != ProtocolVersion20260728 {
+		t.Errorf("modern protocol_version = %v, want %q", modernRow.ProtocolVersion, ProtocolVersion20260728)
+	}
+
+	legacyTools, err := store.Queries().ListMCPToolsByServer(ctx, legacyServerID)
+	if err != nil {
+		t.Fatalf("ListMCPToolsByServer(legacy): %v", err)
+	}
+	if len(legacyTools) != 1 || legacyTools[0].Name != "legacy-tool" {
+		t.Errorf("legacy server tools = %v, want [legacy-tool]", legacyTools)
+	}
+
+	modernTools, err := store.Queries().ListMCPToolsByServer(ctx, modernServerID)
+	if err != nil {
+		t.Fatalf("ListMCPToolsByServer(modern): %v", err)
+	}
+	if len(modernTools) != 1 || modernTools[0].Name != "modern-tool" {
+		t.Errorf("modern server tools = %v, want [modern-tool]", modernTools)
+	}
+
+	legacyClient, legacyToolName, err := reg.ResolveToolByName(ctx, "legacy-server.legacy-tool")
+	if err != nil {
+		t.Fatalf("ResolveToolByName(legacy): %v", err)
+	}
+	legacyResult, err := legacyClient.CallTool(ctx, legacyToolName, nil)
+	if err != nil {
+		t.Fatalf("CallTool(legacy): %v", err)
+	}
+	if legacyResult.IsError {
+		t.Errorf("legacy CallTool IsError = true, want false")
+	}
+	if !strings.Contains(string(legacyResult.Output), "legacy-tool") {
+		t.Errorf("legacy CallTool Output = %s, want it to contain %q", legacyResult.Output, "legacy-tool")
+	}
+
+	modernClient, modernToolName, err := reg.ResolveToolByName(ctx, "modern-server.modern-tool")
+	if err != nil {
+		t.Fatalf("ResolveToolByName(modern): %v", err)
+	}
+	modernResult, err := modernClient.CallTool(ctx, modernToolName, nil)
+	if err != nil {
+		t.Fatalf("CallTool(modern): %v", err)
+	}
+	if modernResult.IsError {
+		t.Errorf("modern CallTool IsError = true, want false")
+	}
+	if !strings.Contains(string(modernResult.Output), "modern-tool") {
+		t.Errorf("modern CallTool Output = %s, want it to contain %q", modernResult.Output, "modern-tool")
+	}
+
+	// The legacy fake's protocol probe (which falls back to the legacy
+	// initialize handshake) plus RefreshTools's own tools/list, plus the
+	// CallTool above, add up to at least one initialize; every tools/list
+	// and tools/call it received must carry the session header and none of
+	// the modern transport headers.
+	if got := len(legacyFake.RequestsFor("initialize")); got < 1 {
+		t.Errorf("legacy fake saw %d initialize requests, want >= 1", got)
+	}
+	for _, method := range []string{methodToolsList, methodToolsCall} {
+		for _, req := range legacyFake.RequestsFor(method) {
+			if req.SessionHeader != "fake-session" {
+				t.Errorf("legacy %s SessionHeader = %q, want %q", method, req.SessionHeader, "fake-session")
+			}
+			if req.ProtocolHeader != "" || req.MethodHeader != "" || req.NameHeader != "" {
+				t.Errorf("legacy %s carries modern headers: protocol=%q method=%q name=%q",
+					method, req.ProtocolHeader, req.MethodHeader, req.NameHeader)
+			}
+		}
+	}
+	if v := legacyFake.Violations(); len(v) != 0 {
+		t.Errorf("legacy fake Violations = %v, want none", v)
+	}
+
+	// The modern fake never received an initialize at all — the probe's
+	// server/discover classified it modern, and every subsequent request
+	// used the stateless transport instead of the session handshake.
+	if got := len(modernFake.RequestsFor("initialize")); got != 0 {
+		t.Errorf("modern fake saw %d initialize requests, want 0", got)
+	}
+	modernListReqs := modernFake.RequestsFor(methodToolsList)
+	if len(modernListReqs) == 0 {
+		t.Fatal("modern fake saw no tools/list requests")
+	}
+	for _, req := range modernListReqs {
+		if req.ProtocolHeader != ProtocolVersion20260728 || req.MethodHeader != methodToolsList {
+			t.Errorf("modern tools/list headers = protocol=%q method=%q, want protocol=%q method=%q",
+				req.ProtocolHeader, req.MethodHeader, ProtocolVersion20260728, methodToolsList)
+		}
+		if req.SessionHeader != "" {
+			t.Errorf("modern tools/list SessionHeader = %q, want empty", req.SessionHeader)
+		}
+	}
+	modernCallReqs := modernFake.RequestsFor(methodToolsCall)
+	if len(modernCallReqs) != 1 {
+		t.Fatalf("len(modern RequestsFor(tools/call)) = %d, want 1", len(modernCallReqs))
+	}
+	callReq := modernCallReqs[0]
+	if callReq.ProtocolHeader != ProtocolVersion20260728 || callReq.MethodHeader != methodToolsCall || callReq.NameHeader != "modern-tool" {
+		t.Errorf("modern tools/call headers = protocol=%q method=%q name=%q, want protocol=%q method=%q name=%q",
+			callReq.ProtocolHeader, callReq.MethodHeader, callReq.NameHeader,
+			ProtocolVersion20260728, methodToolsCall, "modern-tool")
+	}
+	if callReq.SessionHeader != "" {
+		t.Errorf("modern tools/call SessionHeader = %q, want empty", callReq.SessionHeader)
+	}
+	if v := modernFake.Violations(); len(v) != 0 {
+		t.Errorf("modern fake Violations = %v, want none", v)
+	}
+}

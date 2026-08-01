@@ -595,3 +595,113 @@ func TestPostRaw_ProtocolVersionHeaderAbsentWhenNotSet(t *testing.T) {
 		t.Error("Mcp-Protocol-Version header present, want absent when postOptions.protocolVersion is empty")
 	}
 }
+
+// TestLegacyPostShapeUnchanged pins the byte-for-byte legacy request shape a
+// client with no protocol-version pin sends: exactly Content-Type, Accept,
+// the configured auth header, and Mcp-Session-Id, with none of the modern
+// transport headers present. Go's http.Header is a map, so wire order is not
+// observable through net/http — "documented header order" is asserted here
+// as client-managed-wins (the earlier override tests) plus this exact header
+// set.
+func TestLegacyPostShapeUnchanged(t *testing.T) {
+	var captured http.Header
+
+	srv := makeServer(t, routingHandler(t, nil, func(w http.ResponseWriter, r *http.Request) {
+		captured = r.Header.Clone()
+		successToolCallHandler(w, r)
+	}))
+
+	c := NewClient(srv.URL, WithAuthHeaders([]AuthHeader{
+		{Name: "X-Api-Key", Value: "sk-test-123"},
+	}))
+
+	if _, err := c.CallTool(context.Background(), "tool-x", nil); err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+
+	if got := captured.Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", got, "application/json")
+	}
+	if got := captured.Get("Accept"); got != "application/json, text/event-stream" {
+		t.Errorf("Accept = %q, want %q", got, "application/json, text/event-stream")
+	}
+	if got := captured.Get("X-Api-Key"); got != "sk-test-123" {
+		t.Errorf("X-Api-Key = %q, want %q", got, "sk-test-123")
+	}
+	if got := captured.Get("Mcp-Session-Id"); got != "test-session" {
+		t.Errorf("Mcp-Session-Id = %q, want %q", got, "test-session")
+	}
+	for _, h := range []string{"Mcp-Method", "Mcp-Name", "Mcp-Protocol-Version"} {
+		if _, ok := captured[h]; ok {
+			t.Errorf("%s header present, want absent on the legacy path", h)
+		}
+	}
+}
+
+// TestPost_AuthHeaderCannotOverrideMethodOrName mirrors
+// TestPostRaw_AuthHeaderCannotOverrideSessionID and
+// TestPostRaw_AuthHeaderCannotOverrideProtocolVersion for the two headers
+// this change adds: even if an operator configures "Mcp-Method" or
+// "Mcp-Name" as an auth header (bypassing the validator), the client-managed
+// values in postOptions win because they are set after the auth-headers
+// loop in post.
+func TestPost_AuthHeaderCannotOverrideMethodOrName(t *testing.T) {
+	var capturedMethod, capturedName string
+
+	srv := makeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedMethod = r.Header.Get("Mcp-Method")
+		capturedName = r.Header.Get("Mcp-Name")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	c := NewClient(srv.URL, WithAuthHeaders([]AuthHeader{
+		{Name: "Mcp-Method", Value: "injected-method"},
+		{Name: "Mcp-Name", Value: "injected-name"},
+	}))
+
+	if _, err := c.post(context.Background(), []byte(`{}`), postOptions{
+		protocolVersion: "2026-07-28",
+		rpcMethod:       "tools/call",
+		rpcName:         "tool-a",
+	}); err != nil {
+		t.Fatalf("post: %v", err)
+	}
+
+	if capturedMethod != "tools/call" {
+		t.Errorf("Mcp-Method = %q, want %q (client-managed)", capturedMethod, "tools/call")
+	}
+	if capturedName != "tool-a" {
+		t.Errorf("Mcp-Name = %q, want %q (client-managed)", capturedName, "tool-a")
+	}
+}
+
+// TestCallTool_ModernPath_CRLFToolNameFailsClosed pins the fail-closed
+// behavior documented at the Mcp-Name Set in post: a hostile MCP server can
+// hand DiscoverTools a tool name containing a CRLF injection payload, but
+// net/http's outbound header-value validation refuses to send it as
+// Mcp-Name — the request never leaves the client, so no header is smuggled
+// onto the wire.
+func TestCallTool_ModernPath_CRLFToolNameFailsClosed(t *testing.T) {
+	var requestReceived bool
+	var capturedInjected string
+
+	srv := makeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		requestReceived = true
+		capturedInjected = r.Header.Get("X-Injected")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	c := NewClient(srv.URL, WithProtocolVersion(ProtocolVersion20260728))
+
+	_, err := c.CallTool(context.Background(), "evil\r\nX-Injected: pwned", nil)
+	if err == nil {
+		t.Fatal("expected non-nil error for a CRLF-containing tool name, got nil")
+	}
+
+	if requestReceived {
+		t.Error("server received a request, want none — the CRLF-poisoned Mcp-Name header must fail closed before the request is sent")
+	}
+	if capturedInjected != "" {
+		t.Errorf("X-Injected = %q, want empty (no header was smuggled through)", capturedInjected)
+	}
+}

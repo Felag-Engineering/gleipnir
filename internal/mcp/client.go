@@ -164,8 +164,9 @@ func WithAuthHeaders(hs []AuthHeader) ClientOption {
 
 // WithProtocolVersion pins the MCP protocol version negotiated for this
 // server. "" (the default) means "not yet probed" and keeps the legacy
-// request shaping. #737 stores the pin only; request shaping branches on it
-// in a follow-up.
+// request shaping; a pin matching a version in supportedProtocolVersions
+// switches every request through sendRPC to the stateless 2026-07-28
+// transport instead (see isModernProtocol).
 func WithProtocolVersion(v string) ClientOption {
 	return func(cl *Client) {
 		cl.protocolVersion = v
@@ -322,6 +323,30 @@ func (c *Client) negotiatedLegacyVersion() string {
 	return c.negotiatedVersion
 }
 
+// isModernProtocol reports whether this client speaks the 2026-07-28
+// stateless transport. Only an explicit pin of a version in
+// supportedProtocolVersions counts: "" (never probed) and every legacy
+// pin keep the legacy session shaping, so a server that has not been
+// probed can never be silently re-shaped.
+//
+// No lock: protocolVersion is written once by WithProtocolVersion during
+// NewClient and never mutated afterwards (unlike sessionID /
+// negotiatedVersion, which mu guards).
+//
+// A legacy server cannot reach this branch by lying about its version:
+// sanitizedLegacyVersion (discover.go) only ever emits an allowlisted
+// pre-2026 token, and knownLegacyProtocolVersions is disjoint from
+// supportedProtocolVersions by construction
+// (TestLegacyAllowlistDisjointFromModernVersions).
+func (c *Client) isModernProtocol() bool {
+	for _, v := range supportedProtocolVersions {
+		if c.protocolVersion == v {
+			return true
+		}
+	}
+	return false
+}
+
 // callWithSession sends body to the server, automatically handling session
 // initialization and a single re-init retry on HTTP 401.
 func (c *Client) callWithSession(ctx context.Context, body []byte) (*http.Response, error) {
@@ -347,20 +372,53 @@ func (c *Client) callWithSession(ctx context.Context, body []byte) (*http.Respon
 	return resp, nil
 }
 
+// sendRPC dispatches one JSON-RPC request under whichever transport the
+// pinned protocol version calls for.
+//
+// Modern (2026-07-28): stateless. MCP-Protocol-Version, Mcp-Method and (when
+// the method targets a named entity) Mcp-Name are bound to the request;
+// there is no session and therefore no 401 re-init retry — a 401 on a
+// stateless transport is an auth failure, not a stale session, and retrying
+// it would double every auth failure.
+//
+// Legacy: unchanged, byte for byte — callWithSession keeps owning the
+// handshake and the single 401 re-init retry.
+//
+// rpcName is "" for methods that address no named entity (tools/list,
+// server/discover); see the Mcp-Name decision in Key decisions.
+func (c *Client) sendRPC(ctx context.Context, body []byte, method, rpcName string) (*http.Response, error) {
+	if !c.isModernProtocol() {
+		return c.callWithSession(ctx, body)
+	}
+	return c.post(ctx, body, postOptions{
+		protocolVersion: c.protocolVersion,
+		rpcMethod:       method,
+		rpcName:         rpcName,
+	})
+}
+
+// methodToolsList / methodToolsCall are written once so the JSON-RPC body's
+// "method" and the Mcp-Method header cannot drift (same single-variable rule
+// ProbeProtocolVersion applies to requestedVersion, discover.go).
+const (
+	methodToolsList = "tools/list"
+	methodToolsCall = "tools/call"
+)
+
 // DiscoverTools calls the MCP server's tool list endpoint and returns all
 // available tools. Used during server registration to populate mcp_tools.
 func (c *Client) DiscoverTools(ctx context.Context) ([]Tool, error) {
 	body, err := json.Marshal(jsonrpcRequest{
 		JSONRPC: "2.0",
 		ID:      2,
-		Method:  "tools/list",
+		Method:  methodToolsList,
 		Params:  struct{}{},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal tools/list request: %w", err)
 	}
 
-	resp, err := c.callWithSession(ctx, body)
+	resp, err := c.sendRPC(ctx, body, methodToolsList, "")
 	if err != nil {
 		return nil, fmt.Errorf("post tools/list: %w", err)
 	}
@@ -405,7 +463,7 @@ func (c *Client) CallTool(ctx context.Context, name string, input map[string]any
 	body, err = json.Marshal(jsonrpcRequest{
 		JSONRPC: "2.0",
 		ID:      2,
-		Method:  "tools/call",
+		Method:  methodToolsCall,
 		Params: struct {
 			Name      string         `json:"name"`
 			Arguments map[string]any `json:"arguments"`
@@ -420,7 +478,7 @@ func (c *Client) CallTool(ctx context.Context, name string, input map[string]any
 	}
 
 	var resp *http.Response
-	resp, err = c.callWithSession(ctx, body)
+	resp, err = c.sendRPC(ctx, body, methodToolsCall, name)
 	if err != nil {
 		err = fmt.Errorf("post tools/call: %w", err)
 		return
@@ -508,6 +566,7 @@ type postOptions struct {
 	sessionID       string // Mcp-Session-Id      (legacy transport)
 	protocolVersion string // MCP-Protocol-Version (2026-07-28 transport)
 	rpcMethod       string // Mcp-Method           (2026-07-28 transport)
+	rpcName         string // Mcp-Name             (2026-07-28 transport; "" when the method targets no named entity)
 }
 
 // post sends a JSON-RPC request body to c.serverURL and returns the HTTP
@@ -516,8 +575,8 @@ type postOptions struct {
 // Header injection order:
 //  1. Content-Type and Accept (transport requirements)
 //  2. c.authHeaders (operator-configured, applied in registration order)
-//  3. all client-managed headers (session, protocol version, method), each
-//     only when non-empty — set last so they always win, even if an
+//  3. all client-managed headers (session, protocol version, method, name),
+//     each only when non-empty — set last so they always win, even if an
 //     operator configures a colliding auth header.
 func (c *Client) post(ctx context.Context, body []byte, o postOptions) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.serverURL, bytes.NewReader(body))
@@ -542,6 +601,16 @@ func (c *Client) post(ctx context.Context, body []byte, o postOptions) (*http.Re
 	}
 	if o.rpcMethod != "" {
 		req.Header.Set("Mcp-Method", o.rpcMethod)
+	}
+	if o.rpcName != "" {
+		// o.rpcName is a tool name that ultimately originates from the remote
+		// MCP server (DiscoverTools takes it verbatim) and is not
+		// charset-constrained upstream — a hostile server could hand us a
+		// name containing CRLF. We do not sanitize it here: net/http's
+		// outbound Transport.roundTrip runs httpguts.ValidHeaderFieldValue on
+		// every header value and refuses to send a request carrying CTL
+		// bytes, failing the call closed rather than smuggling a header.
+		req.Header.Set("Mcp-Name", o.rpcName)
 	}
 
 	resp, err := c.httpClient.Do(req)

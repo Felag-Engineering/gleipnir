@@ -319,6 +319,207 @@ func TestFakeMCPServer_A4HeaderEnforcement(t *testing.T) {
 	})
 }
 
+// postRPC sends a hand-rolled JSON-RPC POST to srv with exactly the given
+// headers, mirroring postDiscover for methods other than server/discover.
+func postRPC(t *testing.T, srv *httptest.Server, body map[string]any, headers map[string]string) (int, jsonrpcResponse) {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, srv.URL, bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var envelope jsonrpcResponse
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	return resp.StatusCode, envelope
+}
+
+// TestFakeMCPServer_StrictModern exercises WithFakeRejectLegacyHandshake:
+// the legacy handshake methods stop existing, and tool traffic must carry
+// the standard transport headers just like server/discover already does.
+func TestFakeMCPServer_StrictModern(t *testing.T) {
+	newStrictFake := func(t *testing.T) (*FakeMCPServer, *httptest.Server) {
+		t.Helper()
+		fake := NewFakeMCPServer(
+			WithFakeMode(FakeModern),
+			WithFakeRejectLegacyHandshake(),
+			WithFakeTools(Tool{Name: "tool-a", Description: "tool-a description", InputSchema: json.RawMessage(`{"type":"object"}`)}),
+		)
+		srv := httptest.NewServer(fake)
+		t.Cleanup(srv.Close)
+		return fake, srv
+	}
+
+	t.Run("initialize is rejected with -32601, it does not exist in this revision", func(t *testing.T) {
+		_, srv := newStrictFake(t)
+
+		status, envelope := postRPC(t, srv, map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{},
+		}, nil)
+		if status != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", status)
+		}
+		if envelope.Error == nil || envelope.Error.Code != -32601 {
+			t.Fatalf("error = %+v, want code -32601", envelope.Error)
+		}
+	})
+
+	t.Run("tools/list with no transport headers is rejected", func(t *testing.T) {
+		fake, srv := newStrictFake(t)
+
+		status, envelope := postRPC(t, srv, map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": map[string]any{},
+		}, nil)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", status)
+		}
+		if envelope.Error == nil || envelope.Error.Code != -32020 {
+			t.Fatalf("error = %+v, want code -32020", envelope.Error)
+		}
+		if v := fake.Violations(); len(v) != 1 {
+			t.Errorf("Violations = %v, want exactly one", v)
+		}
+	})
+
+	t.Run("tools/list with valid headers returns the configured tools", func(t *testing.T) {
+		_, srv := newStrictFake(t)
+
+		status, envelope := postRPC(t, srv, map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": map[string]any{},
+		}, map[string]string{
+			"MCP-Protocol-Version": "2026-07-28",
+			"Mcp-Method":           "tools/list",
+		})
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", status)
+		}
+		var result toolsListResult
+		if err := json.Unmarshal(envelope.Result, &result); err != nil {
+			t.Fatalf("unmarshal result: %v", err)
+		}
+		if len(result.Tools) != 1 || result.Tools[0].Name != "tool-a" {
+			t.Errorf("Tools = %v, want [tool-a]", result.Tools)
+		}
+	})
+
+	t.Run("tools/call with Mcp-Name mismatching params.name is rejected", func(t *testing.T) {
+		fake, srv := newStrictFake(t)
+
+		status, envelope := postRPC(t, srv, map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+			"params": map[string]any{"name": "tool-a", "arguments": map[string]any{}},
+		}, map[string]string{
+			"MCP-Protocol-Version": "2026-07-28",
+			"Mcp-Method":           "tools/call",
+			"Mcp-Name":             "wrong-name",
+		})
+		if status != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", status)
+		}
+		if envelope.Error == nil || envelope.Error.Code != -32020 {
+			t.Fatalf("error = %+v, want code -32020", envelope.Error)
+		}
+		if v := fake.Violations(); len(v) != 1 {
+			t.Errorf("Violations = %v, want exactly one", v)
+		}
+	})
+
+	t.Run("tools/call with matching headers echoes the tool name", func(t *testing.T) {
+		_, srv := newStrictFake(t)
+
+		status, envelope := postRPC(t, srv, map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+			"params": map[string]any{"name": "tool-a", "arguments": map[string]any{}},
+		}, map[string]string{
+			"MCP-Protocol-Version": "2026-07-28",
+			"Mcp-Method":           "tools/call",
+			"Mcp-Name":             "tool-a",
+		})
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", status)
+		}
+		var result toolsCallResult
+		if err := json.Unmarshal(envelope.Result, &result); err != nil {
+			t.Fatalf("unmarshal result: %v", err)
+		}
+		if result.IsError {
+			t.Errorf("IsError = true, want false")
+		}
+		if len(result.Content) != 1 || result.Content[0].Text != "called tool-a" {
+			t.Errorf("Content = %v, want text \"called tool-a\"", result.Content)
+		}
+	})
+
+	t.Run("tools/call with no params.name is accepted because expectedName is empty", func(t *testing.T) {
+		fake, srv := newStrictFake(t)
+
+		status, envelope := postRPC(t, srv, map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+			"params": map[string]any{"arguments": map[string]any{}},
+		}, map[string]string{
+			"MCP-Protocol-Version": "2026-07-28",
+			"Mcp-Method":           "tools/call",
+		})
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", status)
+		}
+		if envelope.Error != nil {
+			t.Errorf("error = %+v, want nil", envelope.Error)
+		}
+		if v := fake.Violations(); len(v) != 0 {
+			t.Errorf("Violations = %v, want none (a decoded-empty params.name is treated as \"names no entity\")", v)
+		}
+	})
+
+	t.Run("default (non-strict) fake still serves initialize and a header-less tools/list", func(t *testing.T) {
+		fake := NewFakeMCPServer(WithFakeMode(FakeModern))
+		srv := httptest.NewServer(fake)
+		t.Cleanup(srv.Close)
+
+		status, envelope := postRPC(t, srv, map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{},
+		}, nil)
+		if status != http.StatusOK {
+			t.Fatalf("initialize status = %d, want 200", status)
+		}
+		if envelope.Error != nil {
+			t.Errorf("initialize error = %+v, want nil", envelope.Error)
+		}
+
+		status, envelope = postRPC(t, srv, map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": map[string]any{},
+		}, nil)
+		if status != http.StatusOK {
+			t.Fatalf("tools/list status = %d, want 200", status)
+		}
+		var result toolsListResult
+		if err := json.Unmarshal(envelope.Result, &result); err != nil {
+			t.Fatalf("unmarshal result: %v", err)
+		}
+		if len(result.Tools) == 0 {
+			t.Error("Tools is empty, want the default configured tool")
+		}
+		if v := fake.Violations(); len(v) != 0 {
+			t.Errorf("Violations = %v, want none (back-compat: enforcement is off by default)", v)
+		}
+	})
+}
+
 // TestFakeMCPServer_RequestsRaceClean drives two concurrent posts and then
 // reads Requests(), so -race can prove the recorder is safe for concurrent
 // handler goroutines.
