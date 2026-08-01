@@ -3,8 +3,12 @@ package llm
 // SchemaFeatureSet declares which JSON Schema constructs a ProviderWire can
 // represent on the request wire when presenting a tool's InputSchema.
 // TranslateForFeatures uses this declaration to decide whether a canonical
-// schema can be forwarded as-is or must be simplified (or, until issue #739
-// implements the simplification, rejected).
+// schema can be forwarded as-is or must be simplified. Of the fields below,
+// simplifySchema can actually eliminate OneOf, AnyOf, and Const when a wire
+// declares them unsupported (discriminated oneOf/anyOf → enum, otherwise a
+// permissive union with prose; const folds into a single-value enum); it has
+// no rewrite for AllOf, Not, Defs, or Formats, so declaring any of those
+// false still fails closed with ErrUnsupportedSchemaFeature.
 //
 // Positive polarity is deliberate: the zero value SchemaFeatureSet{} means
 // "supports nothing", so a forgotten/unset declaration fails closed rather
@@ -35,7 +39,7 @@ type SchemaFeatureSet struct {
 	AllOf   bool // "allOf" intersection (canonicalization preserves these; flattening happens here, not at discovery)
 	Not     bool // "not" negation
 	Defs    bool // "$defs" / "definitions" / "$ref" (inseparable: a $ref without $defs is meaningless)
-	Const   bool // "const" (the discriminator #739 folds into an enum)
+	Const   bool // "const" (the shared pass folds this into a single-value enum)
 	Formats bool // the "format" annotation keyword
 }
 

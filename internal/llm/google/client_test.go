@@ -1,10 +1,12 @@
 package google
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"iter"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -1492,14 +1494,146 @@ func ptr(s string) *string { return &s }
 // ptrInt32 returns a pointer to the given int32 value.
 func ptrInt32(n int32) *int32 { return &n }
 
-// TestWire_SchemaFeatures_Full asserts the wire declares full JSON Schema
-// support and that the declaration is safe to call on a nil receiver, mirroring
-// ProviderName's existing nil-safety. Google's declaration is behavior-neutral
-// for now — issue #739 narrows it to match translateJSONSchemaToGenaiSchema's
-// actual subset and flips this assertion.
-func TestWire_SchemaFeatures_Full(t *testing.T) {
+// TestWire_SchemaFeatures_Restricted asserts the wire declares Gemini's
+// actual function-declaration subset — full support minus the three
+// constructs the shared TranslateForFeatures pass can eliminate (oneOf,
+// anyOf, const) — and that the declaration is safe to call on a nil receiver,
+// mirroring ProviderName's existing nil-safety.
+func TestWire_SchemaFeatures_Restricted(t *testing.T) {
 	var w *wire
-	if !w.SchemaFeatures().IsFull() {
-		t.Error("SchemaFeatures() is not full support")
+	got := w.SchemaFeatures()
+	if got.IsFull() {
+		t.Error("SchemaFeatures() reports full support, want restricted")
+	}
+	want := llm.SchemaFeatureSet{
+		OneOf:   false,
+		AnyOf:   false,
+		Const:   false,
+		AllOf:   true,
+		Not:     true,
+		Defs:    true,
+		Formats: true,
+	}
+	if got != want {
+		t.Errorf("SchemaFeatures() = %+v, want %+v", got, want)
+	}
+}
+
+// TestGeminiClient_OneOfHeavySchema_RoundTrips is the milestone DoD line: a
+// oneOf-heavy tool schema — a root-level discriminated oneOf, a nested
+// non-discriminated oneOf under a property, and a oneOf under an array's
+// items — must round-trip through the Google wire without error, since the
+// shared pass now eliminates oneOf/anyOf/const before schema.go ever sees them.
+//
+// The root also declares its own "kind" property (plain, no enum) alongside
+// "detail" and "items_list": mergeProperties/discriminatorSchema only ever
+// accept a oneOf variant's contributed name into the merged result when the
+// root ALSO declares that name itself (ADR-017 parameter scoping intersects
+// down to the schema's own declared properties, never widening past them —
+// see schema_simplify.go's Finding-3A/round-2-Finding-1 doc comments). A root
+// that declares "detail"/"items_list" but not "kind" would have the
+// discriminator itself scoped out, same as any other variant-only name.
+func TestGeminiClient_OneOfHeavySchema_RoundTrips(t *testing.T) {
+	original := json.RawMessage(`{
+		"type": "object",
+		"oneOf": [
+			{
+				"type": "object",
+				"properties": {"kind": {"const": "a"}, "x": {"type": "string"}},
+				"required": ["kind", "x"]
+			},
+			{
+				"type": "object",
+				"properties": {"kind": {"const": "b"}, "y": {"type": "integer"}},
+				"required": ["kind", "y"]
+			}
+		],
+		"properties": {
+			"kind": {"type": "string"},
+			"detail": {
+				"oneOf": [
+					{"type": "object", "properties": {"a": {"type": "string"}}},
+					{"type": "object", "properties": {"b": {"type": "string"}}}
+				]
+			},
+			"items_list": {
+				"type": "array",
+				"items": {
+					"oneOf": [{"const": "red"}, {"const": "green"}, {"const": "blue"}]
+				}
+			}
+		}
+	}`)
+	// Copy so mutation of the caller's slice would be visible; ToolDefinition
+	// holds InputSchema by value (a slice header), so this only protects
+	// against the test itself accidentally sharing backing arrays.
+	inputSchema := append(json.RawMessage(nil), original...)
+
+	tools := []llm.ToolDefinition{
+		{Name: "act", Description: "acts on a oneOf-heavy input", InputSchema: inputSchema},
+	}
+	mock := &mockGenerator{response: makeTextResponse("ok", genai.FinishReasonStop, 10, 5)}
+	client := newClientWithGenerator(mock)
+
+	_, err := client.CreateMessage(context.Background(), llm.MessageRequest{
+		Model:   "gemini-2.5-flash",
+		History: []llm.ConversationTurn{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "go"}}}},
+		Tools:   tools,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The caller's []ToolDefinition and its InputSchema bytes must be
+	// untouched: prepareRequest's copy-on-write must never mutate the
+	// caller's backing array, which is the run's schema of record.
+	if !bytes.Equal(tools[0].InputSchema, original) {
+		t.Errorf("caller's InputSchema = %s, want unchanged %s", tools[0].InputSchema, original)
+	}
+
+	if mock.captured.config == nil || len(mock.captured.config.Tools) != 1 {
+		t.Fatalf("expected exactly one captured *genai.Tool, got %+v", mock.captured.config)
+	}
+	decls := mock.captured.config.Tools[0].FunctionDeclarations
+	if len(decls) != 1 {
+		t.Fatalf("expected exactly one FunctionDeclaration, got %d", len(decls))
+	}
+	params := decls[0].Parameters
+	if params == nil {
+		t.Fatal("Parameters is nil")
+	}
+
+	if params.Type != genai.TypeObject {
+		t.Errorf("Parameters.Type = %v, want %v", params.Type, genai.TypeObject)
+	}
+	if got, want := params.Required, []string{"kind"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Parameters.Required = %v, want %v", got, want)
+	}
+
+	kind := params.Properties["kind"]
+	wantKind := &genai.Schema{Type: genai.TypeString, Enum: []string{"a", "b"}, Format: "enum"}
+	if !reflect.DeepEqual(kind, wantKind) {
+		t.Errorf("Properties[\"kind\"] = %+v, want %+v (discriminated oneOf flattened to an enum)", kind, wantKind)
+	}
+
+	detail := params.Properties["detail"]
+	if detail == nil || detail.Type != genai.TypeObject {
+		t.Fatalf("Properties[\"detail\"] = %+v, want a merged object schema", detail)
+	}
+	wantDetailProps := map[string]*genai.Schema{
+		"a": {Type: genai.TypeString},
+		"b": {Type: genai.TypeString},
+	}
+	if !reflect.DeepEqual(detail.Properties, wantDetailProps) {
+		t.Errorf("Properties[\"detail\"].Properties = %+v, want %+v (merged property superset)", detail.Properties, wantDetailProps)
+	}
+
+	itemsList := params.Properties["items_list"]
+	if itemsList == nil || itemsList.Type != genai.TypeArray || itemsList.Items == nil {
+		t.Fatalf("Properties[\"items_list\"] = %+v, want an array with Items set", itemsList)
+	}
+	wantItems := &genai.Schema{Type: genai.TypeString, Enum: []string{"red", "green", "blue"}, Format: "enum"}
+	if !reflect.DeepEqual(itemsList.Items, wantItems) {
+		t.Errorf("Properties[\"items_list\"].Items = %+v, want %+v (oneOf under items flattened to an enum)", itemsList.Items, wantItems)
 	}
 }

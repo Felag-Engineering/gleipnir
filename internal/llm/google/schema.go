@@ -15,6 +15,18 @@ import (
 // Unknown or unsupported top-level keys (e.g. "$schema", "additionalProperties") are
 // silently ignored. Missing or non-string "type" fields and unsupported types return
 // an error rather than producing a silently broken schema.
+//
+// For the Google wire, this function now consumes the shared translation
+// pass's pre-simplified output: TranslateForFeatures (internal/llm) has
+// already eliminated oneOf, anyOf, and const — the only constructs the
+// Google wire declares unsupported — before a schema reaches here, folding a
+// discriminated oneOf into an enum and a non-discriminated oneOf/anyOf into a
+// permissive union with a synthesized "type" whenever the variants carry
+// enough shape (an object, a shared scalar type, or a tag value) to infer one.
+// The missing-"type" error below remains the correct, unchanged catch-all for
+// what this function still cannot represent: a $ref/$defs node, an
+// allOf-only node, or a oneOf of variants too shapeless to infer a type from
+// — none of which the shared pass rewrites away.
 func translateJSONSchemaToGenaiSchema(schema map[string]any) (*genai.Schema, error) {
 	rawType, ok := schema["type"]
 	if !ok {

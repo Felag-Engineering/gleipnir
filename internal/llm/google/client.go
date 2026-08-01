@@ -82,13 +82,28 @@ func NewClientWithGenerator(gen contentGenerator) *GeminiClient {
 // ProviderName returns the Prometheus label for this provider.
 func (w *wire) ProviderName() string { return "google" }
 
-// SchemaFeatures declares full support for now so this change is
-// behavior-neutral. Gemini's function-declaration subset is genuinely
-// narrower — see translateJSONSchemaToGenaiSchema in schema.go, which today
-// drops everything except type/description/enum/required/properties/items.
-// Narrowing this declaration and implementing the lossy flattening in the
-// shared pass is issue #739; do not change it here.
-func (w *wire) SchemaFeatures() llm.SchemaFeatureSet { return llm.FullSchemaSupport() }
+// SchemaFeatures declares Gemini's function-declaration subset: only the
+// three constructs the shared TranslateForFeatures pass can actually
+// eliminate (oneOf, anyOf, const) are declared unsupported. The rule for this
+// declaration is: declare a feature false ONLY when the shared pass can
+// eliminate it. translateJSONSchemaToGenaiSchema (schema.go) builds from just
+// type/description/enum/required/properties/items and silently drops
+// everything else, so declaring AllOf/Not/Defs/Formats false here — none of
+// which the shared pass rewrites — would convert today's silent drop into a
+// hard ErrUnsupportedSchemaFeature on every request using the very common
+// {"type":"object","properties":{...},"$defs":{...}} or format:"date-time"
+// shapes. That would be a regression, not a fix.
+func (w *wire) SchemaFeatures() llm.SchemaFeatureSet {
+	return llm.SchemaFeatureSet{
+		OneOf:   false, // collapsed by the shared pass (discriminated → enum, else union)
+		AnyOf:   false, // collapsed by the same path
+		Const:   false, // folded into a single-value enum by the shared pass
+		AllOf:   true,
+		Not:     true,
+		Defs:    true,
+		Formats: true,
+	}
+}
 
 // ClassifyError maps a Gemini SDK error to the fixed error_type enum.
 // genai.APIError is a value type, so the errors.As target is a pointer-to-value.

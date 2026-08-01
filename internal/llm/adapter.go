@@ -121,9 +121,9 @@ func (a *ProviderAdapter) prepareRequest(ctx context.Context, req MessageRequest
 		}
 		// Defensive guard against a buggy translator: TranslateForFeatures's
 		// contract promises a non-empty schema whenever err is nil, but a
-		// future #739 implementation returning lossy=true with an empty out
-		// would otherwise silently present a schema-less tool to the model
-		// instead of failing loudly.
+		// translator bug returning lossy=true with an empty out would
+		// otherwise silently present a schema-less tool to the model instead
+		// of failing loudly.
 		if len(out) == 0 {
 			return MessageRequest{}, fmt.Errorf("llm: tool %q: simplified input schema for %s is empty", t.Name, a.wire.ProviderName())
 		}
