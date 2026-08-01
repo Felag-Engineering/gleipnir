@@ -32,6 +32,14 @@ func TestMain(m *testing.M) {
 	// plugin subprocess. When this test binary is re-launched as a subprocess
 	// (by setting GLEIPNIR_TEST_FIXTURE), it acts as a plugin server rather than
 	// running the test suite.
+	// Known noise: because the re-exec'd fixture is this race-instrumented test
+	// binary, its stderr may carry a "WARNING: DATA RACE" on os.Stderr between
+	// go-plugin's Serve (which reassigns os.Stderr for stdio sync, server.go:493)
+	// and yamux.DefaultConfig in the muxer's acceptSession goroutine. The race is
+	// entirely inside hashicorp/go-plugin (present unchanged through v1.8.0), is
+	// not caused by SDK or host code, and cannot fail these tests — the host only
+	// logs the subprocess stderr, and the fixture is SIGKILLed so its race exit
+	// code is never observed. Do not chase it here; it needs an upstream fix.
 	if os.Getenv("GLEIPNIR_TEST_FIXTURE") == "dispatch-serve-via-sdk" {
 		serve.Serve(
 			serve.WithChannelService(func(_ hostv1.HostServiceClient) channelv1.ChannelServiceServer {
@@ -782,6 +790,16 @@ func TestPool_QueueFull(t *testing.T) {
 		},
 	}
 
+	// claimed fires once per successful queue-slot claim. With queue depth 1
+	// the second fire is a deterministic checkpoint: the first claimant can
+	// only release its slot after semaphore admission, so at fire #2 the
+	// semaphore is held by call 1 (parked in the server hook) and the sole
+	// queue slot is held by call 2. Generous buffer so an unexpected extra
+	// claim surfaces as an assertion failure, never a blocked hook.
+	claimed := make(chan struct{}, 8)
+	restore := dispatch.SetQueueSlotClaimedHookForTest(func() { claimed <- struct{}{} })
+	t.Cleanup(restore)
+
 	pool, cleanup := newTestPool(t, srv, func(cfg *dispatch.Config) {
 		cfg.DefaultMaxConcurrent = 1
 		cfg.DefaultMaxQueueDepth = 1
@@ -798,18 +816,23 @@ func TestPool_QueueFull(t *testing.T) {
 		}()
 	}
 
-	// Wait until the in-flight call has reached the server and the queue slot is
-	// consumed. At this point a third call must be rejected with ErrQueueFull.
+	// Wait for both queue-slot claims (see the claimed comment above): after
+	// the second claim the semaphore and the queue are both provably full, so
+	// a third call must be rejected with ErrQueueFull.
+	for i := 0; i < 2; i++ {
+		select {
+		case <-claimed:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("queue-slot claim %d not observed", i+1)
+		}
+	}
+	// Sanity: the admitted call reached the server hook (it holds the
+	// semaphore either way; this just anchors the test to real execution).
 	select {
 	case <-arrived:
 	case <-time.After(5 * time.Second):
 		t.Fatal("in-flight call did not arrive at server")
 	}
-	// Give the second goroutine time to enter the queue. It does not reach the
-	// server hook (semaphore is full), so we cannot observe it via arrived.
-	// A brief runtime yield is sufficient: the goroutine is already scheduled
-	// and only needs to acquire the semaphore queue slot (not contact the server).
-	time.Sleep(5 * time.Millisecond)
 
 	_, _, err := pool.Call(context.Background(), "run-qf", "pol-1", "inst", "tool", `{}`)
 	if !errors.Is(err, dispatch.ErrQueueFull) {

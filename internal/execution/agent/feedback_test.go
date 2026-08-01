@@ -181,29 +181,23 @@ func TestFeedbackHandler_Wait_Timeout_ScannerWins(t *testing.T) {
 
 	h := NewFeedbackHandler(w, sm, time.Minute)
 
+	// The handler unconditionally blocks on its own timer in Wait's select
+	// (see feedback.go), so this test genuinely waits out handlerTimeout in
+	// wall-clock time. A generous multi-second value (rather than the original
+	// 200ms) keeps a wide margin between the row being created and the
+	// handler's own timer firing, so the scanner reliably wins the race even
+	// under -race on a loaded CI runner (CLAUDE.md "signal-don't-poll").
+	const handlerTimeout = 3 * time.Second
+
 	done := make(chan error, 1)
 	go func() {
-		_, err := h.Wait(context.Background(), "run1", AskOperatorToolName, "{}", "please answer", 200*time.Millisecond)
+		_, err := h.Wait(context.Background(), "run1", AskOperatorToolName, "{}", "please answer", handlerTimeout)
 		done <- err
 	}()
 
-	// Poll until the feedback row appears in the DB.
-	deadline := time.Now().Add(100 * time.Millisecond)
-	var feedbackID string
-	for time.Now().Before(deadline) {
-		rows, err := s.GetPendingFeedbackRequestsByRun(context.Background(), "run1")
-		if err != nil {
-			t.Fatalf("GetPendingFeedbackRequestsByRun: %v", err)
-		}
-		if len(rows) > 0 {
-			feedbackID = rows[0].ID
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
-	if feedbackID == "" {
-		t.Fatal("timed out waiting for feedback row to appear in DB")
-	}
+	// Synchronize on feedback.created instead of polling the DB on a tight
+	// wall-clock budget — the row is guaranteed present once this returns.
+	feedbackID := awaitPendingFeedbackID(t, pub, s, "run1")
 
 	// Back-date the feedback row so the scanner picks it up as expired.
 	past := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339Nano)
@@ -211,13 +205,15 @@ func TestFeedbackHandler_Wait_Timeout_ScannerWins(t *testing.T) {
 		t.Fatalf("back-date feedback: %v", err)
 	}
 
-	// Drive the scanner synchronously — it wins the guarded UPDATE (rows=1).
+	// Drive the scanner synchronously — it wins the guarded UPDATE (rows=1),
+	// resolving the row well before the handler's own handlerTimeout timer
+	// could otherwise win the race.
 	sc := timeout.NewFeedbackScanner(s, time.Minute, timeout.WithPublisher(pub))
 	if err := sc.Scan(context.Background()); err != nil {
 		t.Fatalf("scanner.Scan: %v", err)
 	}
 
-	// Wait for the handler's 200ms timer to fire.
+	// Wait for the handler's timer to fire and Wait to return.
 	select {
 	case err := <-done:
 		if err == nil {
@@ -225,8 +221,8 @@ func TestFeedbackHandler_Wait_Timeout_ScannerWins(t *testing.T) {
 		}
 		// Sentinel: does not contain "already resolved by scanner" check not required,
 		// but the error must be non-nil.
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("Wait did not return within 500ms")
+	case <-time.After(handlerTimeout + 5*time.Second):
+		t.Fatal("Wait did not return within deadline")
 	}
 
 	if err := w.Close(); err != nil {

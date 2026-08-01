@@ -102,6 +102,23 @@ func countEventsByType(pub *testutil.RecordingPublisher, eventType string) int {
 	return len(pub.EventsByType(eventType))
 }
 
+// waitForEvent polls until at least one event of the given type has been
+// published, or fails the test if the deadline expires. Tests use this as a
+// deterministic synchronization point for the scanner's background goroutine
+// instead of a fixed wall-clock sleep — see CLAUDE.md "Signal-don't-poll".
+// The deadline is a generous CI-tolerance bound, not a real assertion.
+func waitForEvent(t *testing.T, pub *testutil.RecordingPublisher, eventType string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if len(pub.EventsByType(eventType)) > 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out after %s waiting for event %q", timeout, eventType)
+}
+
 func TestScanner_NoExpiredRequests(t *testing.T) {
 	s := testutil.NewTestStore(t)
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
@@ -435,14 +452,18 @@ func TestScanner_StartStop(t *testing.T) {
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusWaitingForApproval)
 	insertApprovalRequest(t, s, "a1", "r1", "tool_z", pastTimestamp())
 
+	pub := &testutil.RecordingPublisher{}
 	ctx, cancel := context.WithCancel(context.Background())
 	// Short interval so the scan fires quickly in the test.
-	scanner := timeout.NewScanner(s, 20*time.Millisecond, approvalConfig(s))
+	scanner := timeout.NewScanner(s, 20*time.Millisecond, approvalConfig(s), timeout.WithPublisher(pub))
 	scanner.Start(ctx)
 
-	// Wait long enough for at least one scan tick.
-	time.Sleep(100 * time.Millisecond)
+	// Block on the scanner's own resolution event instead of sleeping a
+	// guessed duration — under CI load a fixed sleep can elapse without a
+	// single tick firing, leaving the row pending (flake).
+	waitForEvent(t, pub, "approval.resolved", 5*time.Second)
 	cancel()
+	scanner.Wait()
 
 	// The approval should have been resolved by now.
 	var status string
@@ -977,13 +998,16 @@ func TestPluginRequestScanner_StartStop(t *testing.T) {
 	instID := insertPluginForScanner(t, s)
 	insertPluginPendingRequest(t, s, "req1", instID, "r1", "ask_tool", pastTimestamp())
 
+	pub := &testutil.RecordingPublisher{}
 	ctx, cancel := context.WithCancel(context.Background())
 	// Short interval so the scan fires quickly in the test.
-	scanner := timeout.NewPluginRequestScanner(s, 20*time.Millisecond)
+	scanner := timeout.NewPluginRequestScanner(s, 20*time.Millisecond, timeout.WithPublisher(pub))
 	scanner.Start(ctx)
 
-	// Wait long enough for at least one scan tick.
-	time.Sleep(100 * time.Millisecond)
+	// Block on the scanner's own resolution event instead of sleeping a
+	// guessed duration — under CI load a fixed sleep can elapse without a
+	// single tick firing, leaving the row pending (flake).
+	waitForEvent(t, pub, "plugin.request.timed_out", 5*time.Second)
 	cancel()
 	scanner.Wait()
 

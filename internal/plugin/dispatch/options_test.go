@@ -38,19 +38,13 @@ func TestOptionsClient_HappyPath(t *testing.T) {
 		NextCursor: "next1",
 	}
 
+	// The capture client both serves the canned response and records the
+	// outgoing request for the field assertions below.
 	var capturedReq *optionsv1.ListOptionsRequest
-	factory := func(instanceName string) (optionsv1.ConfigOptionsServiceClient, error) {
-		return &fakeOptionsClient{
-			resp: want,
-		}, nil
-	}
-	client := NewOptionsClientWithFactory(factory, 5*time.Second)
-
-	// Override fake to capture the request.
 	captureFactory := func(instanceName string) (optionsv1.ConfigOptionsServiceClient, error) {
 		return &captureClient{resp: want, reqPtr: &capturedReq}, nil
 	}
-	client = NewOptionsClientWithFactory(captureFactory, 5*time.Second)
+	client := NewOptionsClientWithFactory(captureFactory, 5*time.Second)
 
 	resp, err := client.ListOptions(context.Background(), "my-instance", "iid-123", "channels", "gen", "cur1")
 	if err != nil {

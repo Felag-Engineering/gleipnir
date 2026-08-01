@@ -13,10 +13,12 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/infra/metrics"
 )
 
-// dedupTTL is the fixed rolling-window duration for event dedup. It matches
-// the 1-hour window advertised in the proto contract (spec §4.3). Only the
-// sweep cadence is configurable via GLEIPNIR_PLUGIN_DEDUP_SWEEP_INTERVAL.
-const dedupTTL = time.Hour
+// TTL is the fixed rolling-window duration for event dedup. It matches the
+// 1-hour window advertised in the proto contract (spec §4.3). Only the sweep
+// cadence is configurable via GLEIPNIR_PLUGIN_DEDUP_SWEEP_INTERVAL. Exported
+// so the production NewSweeper call site uses this constant rather than a
+// drifting literal; tests may pass NewSweeper shorter windows.
+const TTL = time.Hour
 
 // package-level Prometheus collectors registered once at import time via
 // promauto.With(metrics.Registry()). This mirrors internal/plugin/hostsvc/
@@ -124,7 +126,7 @@ type Sweeper struct {
 }
 
 // NewSweeper constructs a Sweeper. interval is the cadence of sweep ticks;
-// ttl is the rolling-window duration (always dedupTTL in production).
+// ttl is the rolling-window duration (always TTL in production).
 func NewSweeper(q Querier, interval, ttl time.Duration) *Sweeper {
 	return &Sweeper{
 		q:        q,

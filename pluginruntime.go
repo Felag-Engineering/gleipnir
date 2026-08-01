@@ -365,7 +365,7 @@ func startPluginRuntime(
 	// Start the dedup sweeper under bgWG so shutdown() can join it rather than
 	// abandoning a mid-sweep DB write (#562). The sweeper selects on ctx.Done()
 	// and returns promptly once the root ctx is cancelled.
-	sweeper := dedup.NewSweeper(store.Queries(), cfg.PluginDedupSweepInterval, time.Hour)
+	sweeper := dedup.NewSweeper(store.Queries(), cfg.PluginDedupSweepInterval, dedup.TTL)
 	rt.bgWG.Add(1)
 	go func() {
 		defer rt.bgWG.Done()

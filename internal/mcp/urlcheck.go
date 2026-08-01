@@ -40,6 +40,14 @@ func isUnsafeIP(ip net.IP) bool {
 	return false
 }
 
+// lookupHost resolves a hostname for ValidateServerURL. A package-level var
+// so tests can stub DNS: real lookups are network-dependent (an NXDOMAIN on a
+// slow resolver stalls ~10s per call) and the resolves-only-to-link-local
+// branch below is unreachable in tests without controlling resolution.
+var lookupHost = func(ctx context.Context, host string) ([]string, error) {
+	return net.DefaultResolver.LookupHost(ctx, host)
+}
+
 // ValidateServerURL checks that rawURL is a structurally valid MCP server URL.
 // It allows both http:// and https://, permits private IPs and loopback
 // (homelab use), and blocks only link-local ranges (169.254.x.x, fe80::)
@@ -77,7 +85,7 @@ func ValidateServerURL(ctx context.Context, rawURL string) error {
 	}
 
 	// Hostname — resolve and block only if every address is link-local.
-	addrs, err := net.DefaultResolver.LookupHost(ctx, host)
+	addrs, err := lookupHost(ctx, host)
 	if err != nil {
 		// Resolution failure is not a security issue; allow the URL and let
 		// the actual connection attempt surface the error.

@@ -17,7 +17,10 @@ import (
 
 // maxTarballBytes caps cumulative uncompressed bytes extracted from a plugin
 // tarball. Defends against gzip-bomb payloads (spec §5.1 size guidance).
-const maxTarballBytes = 100 << 20 // 100 MiB
+// A var (not a const) solely so TestInstall_TarballTooLarge can lower it —
+// materializing a real >100 MiB payload cost ~16s under -race for no extra
+// coverage. Production code must never reassign it.
+var maxTarballBytes int64 = 100 << 20 // 100 MiB
 
 // maxTarballFiles caps the number of entries (files + directories) extracted
 // from a plugin tarball. Defends against inode-exhaustion DoS where a small
@@ -112,7 +115,7 @@ func validateTarEntry(hdr *tar.Header, destDir string) error {
 	// filepath.Clean removes ".." but we want to detect it explicitly.
 	for _, part := range strings.Split(hdr.Name, "/") {
 		if part == ".." {
-			return errors.New("path traversal via ..")
+			return errors.New("path traversal via dot-dot segment")
 		}
 	}
 

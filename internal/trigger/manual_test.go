@@ -206,14 +206,23 @@ func TestManualTriggerHandler(t *testing.T) {
 			}
 
 			registry := mcp.NewRegistry(store.Queries())
-			noopClient := testutil.NewNoopLLMClient()
+			// Several cases below (parallel, skip/queue/replace with no active
+			// run) return 202 and launch a run goroutine. MockLLMClient returns
+			// an error rather than panicking once its (empty) response list is
+			// exhausted, so a launched run fails fast instead of crashing the
+			// test binary.
+			mockClient := testutil.NewMockLLMClient()
 			providerReg := llm.NewProviderRegistry()
-			providerReg.Register("anthropic", noopClient)
+			providerReg.Register("anthropic", mockClient)
 			resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
+			mgr := run.NewRunManager()
+			// Registered after NewTestStore so cleanup runs LIFO: drain any
+			// launched run goroutine before the store closes underneath it.
+			t.Cleanup(mgr.Wait)
 			launcher := run.NewRunLauncher(run.RunLauncherConfig{
 				Store:                  store,
 				Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
-				Manager:                run.NewRunManager(),
+				Manager:                mgr,
 				AgentFactory:           run.NewAgentFactory(providerReg),
 				Publisher:              nil,
 				DefaultFeedbackTimeout: 0,
@@ -234,14 +243,18 @@ func TestManualTriggerHandler_RunCreatedInDB(t *testing.T) {
 	insertTestManualPolicy(t, store, "mp-run-created", minimalManualPolicy)
 
 	registry := mcp.NewRegistry(store.Queries())
-	noopClient := testutil.NewNoopLLMClient()
+	// This handler returns 202 and launches a run goroutine; MockLLMClient
+	// fails fast (error, not panic) once exhausted.
+	mockClient := testutil.NewMockLLMClient()
 	providerReg := llm.NewProviderRegistry()
-	providerReg.Register("anthropic", noopClient)
+	providerReg.Register("anthropic", mockClient)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
+	mgr := run.NewRunManager()
+	t.Cleanup(mgr.Wait)
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
-		Manager:                run.NewRunManager(),
+		Manager:                mgr,
 		AgentFactory:           run.NewAgentFactory(providerReg),
 		Publisher:              nil,
 		DefaultFeedbackTimeout: 0,
@@ -296,16 +309,19 @@ func TestManualTriggerHandler_LaunchFailureSurfacesDetailAndRunID(t *testing.T) 
 	insertTestManualPolicy(t, store, "mp-missing-tool", policyWithMissingTool)
 
 	// No MCP servers registered, so ghost-server.nonexistent_tool will fail
-	// to resolve.
+	// to resolve — Launch fails before the run goroutine is ever spawned, so
+	// NewNoopLLMClient's panic-on-call is valuable coverage here.
 	registry := mcp.NewRegistry(store.Queries())
 	noopClient := testutil.NewNoopLLMClient()
 	providerReg := llm.NewProviderRegistry()
 	providerReg.Register("anthropic", noopClient)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
+	mgr := run.NewRunManager()
+	t.Cleanup(mgr.Wait)
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
-		Manager:                run.NewRunManager(),
+		Manager:                mgr,
 		AgentFactory:           run.NewAgentFactory(providerReg),
 		Publisher:              nil,
 		DefaultFeedbackTimeout: 0,
@@ -365,14 +381,17 @@ func TestManualTriggerHandler_EmptyBody(t *testing.T) {
 	insertTestManualPolicy(t, store, "mp-empty-body", minimalManualPolicy)
 
 	registry := mcp.NewRegistry(store.Queries())
-	noopClient := testutil.NewNoopLLMClient()
+	// Empty body is accepted and launches a run goroutine.
+	mockClient := testutil.NewMockLLMClient()
 	providerReg := llm.NewProviderRegistry()
-	providerReg.Register("anthropic", noopClient)
+	providerReg.Register("anthropic", mockClient)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
+	mgr := run.NewRunManager()
+	t.Cleanup(mgr.Wait)
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
-		Manager:                run.NewRunManager(),
+		Manager:                mgr,
 		AgentFactory:           run.NewAgentFactory(providerReg),
 		Publisher:              nil,
 		DefaultFeedbackTimeout: 0,

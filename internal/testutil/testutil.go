@@ -5,6 +5,7 @@ package testutil
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -27,19 +28,54 @@ agent:
   task: "test task"
 `
 
-// NewTestStore opens a TempDir-backed SQLite DB, applies the schema, and
-// registers cleanup. Using a temp file (not :memory:) ensures WAL mode and
-// foreign-key constraints behave identically to production.
+// templateDB builds a fully-migrated SQLite database once per test process
+// and returns its raw bytes. NewTestStore is called ~1400 times across the
+// suite; running the whole migration chain in each call dominated the DB-heavy
+// packages' runtime, so each test instead stamps out a byte-for-byte copy of
+// this template (a plain file write) and opens that. The template store is
+// closed before the file is read, so no -wal/-shm sidecar exists and the main
+// file is complete.
+var templateDB = sync.OnceValues(func() ([]byte, error) {
+	dir, err := os.MkdirTemp("", "gleipnir-db-template-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+	path := filepath.Join(dir, "template.db")
+	s, err := db.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.Migrate(context.Background()); err != nil {
+		s.Close()
+		return nil, err
+	}
+	if err := s.Close(); err != nil {
+		return nil, err
+	}
+	return os.ReadFile(path)
+})
+
+// NewTestStore opens a TempDir-backed SQLite DB with the full schema applied,
+// and registers cleanup. Using a temp file (not :memory:) ensures WAL mode and
+// foreign-key constraints behave identically to production. The schema comes
+// from a per-process migrated template (see templateDB) rather than running
+// migrations per call.
 func NewTestStore(tb testing.TB) *db.Store {
 	tb.Helper()
-	s, err := db.Open(filepath.Join(tb.TempDir(), "test.db"))
+	tmpl, err := templateDB()
+	if err != nil {
+		tb.Fatalf("building migrated template DB: %v", err)
+	}
+	path := filepath.Join(tb.TempDir(), "test.db")
+	if err := os.WriteFile(path, tmpl, 0o600); err != nil {
+		tb.Fatalf("writing template DB copy: %v", err)
+	}
+	s, err := db.Open(path)
 	if err != nil {
 		tb.Fatalf("db.Open: %v", err)
 	}
 	tb.Cleanup(func() { s.Close() })
-	if err := s.Migrate(context.Background()); err != nil {
-		tb.Fatalf("store.Migrate: %v", err)
-	}
 	return s
 }
 

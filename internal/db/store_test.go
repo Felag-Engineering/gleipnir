@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -66,16 +68,50 @@ func TestOpen(t *testing.T) {
 	}
 }
 
-// newTestStore opens a fresh in-memory-backed test DB and applies the schema.
+// testTemplateDB builds a fully-migrated database once per test process and
+// caches its raw bytes; newTestStore stamps out a file copy per test instead
+// of re-running the migration chain at every call site. Mirrors
+// testutil.NewTestStore's template (internal/db cannot import testutil —
+// import cycle). Migration behavior itself is still exercised for real by
+// TestMigrate, which builds its own stores.
+var testTemplateDB = sync.OnceValues(func() ([]byte, error) {
+	dir, err := os.MkdirTemp("", "gleipnir-db-template-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+	path := filepath.Join(dir, "template.db")
+	s, err := Open(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.Migrate(context.Background()); err != nil {
+		s.Close()
+		return nil, err
+	}
+	if err := s.Close(); err != nil {
+		return nil, err
+	}
+	return os.ReadFile(path)
+})
+
+// newTestStore opens a temp-file test DB with the full schema applied.
 // Use this in any test that needs a fully-migrated store.
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	tmpl, err := testTemplateDB()
+	if err != nil {
+		t.Fatalf("building migrated template DB: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "test.db")
+	if err := os.WriteFile(path, tmpl, 0o600); err != nil {
+		t.Fatalf("writing template DB copy: %v", err)
+	}
+	s, err := Open(path)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { s.Close() })
-	applyTestSchema(t, s)
 	return s
 }
 
@@ -265,13 +301,6 @@ func checkPragmas(t *testing.T, s *Store) {
 	}
 	if foreignKeys != 1 {
 		t.Errorf("foreign_keys = %d, want 1", foreignKeys)
-	}
-}
-
-func applyTestSchema(t *testing.T, s *Store) {
-	t.Helper()
-	if err := s.Migrate(context.Background()); err != nil {
-		t.Fatalf("apply test schema: %v", err)
 	}
 }
 

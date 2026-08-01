@@ -158,7 +158,10 @@ func TestGenerationInterceptor_ForceCancelPropagation(t *testing.T) {
 // paused (drain in progress) and a new RPC's own context expires before the
 // drain completes, the interceptor returns codes.Unavailable.
 func TestGenerationInterceptor_PauseDeadline(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel(): this test installs a per-controller afterPauseHook
+	// (generation.Controller.SetAfterPauseHookForTest), and the repo convention
+	// is that a hook-bearing test does not run in parallel with others (see the
+	// hook's doc comment in internal/plugin/generation/testhooks.go).
 
 	c := generation.New()
 	c.RegisterInstance("inst-pd")
@@ -178,6 +181,17 @@ func TestGenerationInterceptor_PauseDeadline(t *testing.T) {
 
 	<-holdStarted
 
+	// paused closes the instant BeginDrain commits paused=true for inst-pd. The
+	// hook is installed before the drain goroutine is launched, so the
+	// go-statement below establishes happens-before for BeginDrain's read of
+	// the hook (CLAUDE.md "Signal-don't-poll" — no sleep-and-hope).
+	paused := make(chan struct{})
+	c.SetAfterPauseHookForTest(func(instanceID string) {
+		if instanceID == "inst-pd" {
+			close(paused)
+		}
+	})
+
 	// Start BeginDrain in the background — it will pause traffic.
 	drainDone := make(chan struct{})
 	go func() {
@@ -185,8 +199,14 @@ func TestGenerationInterceptor_PauseDeadline(t *testing.T) {
 		c.BeginDrain(context.Background(), "inst-pd", 10*time.Second) //nolint:errcheck
 	}()
 
-	// Give BeginDrain a moment to enter the paused state.
-	time.Sleep(20 * time.Millisecond)
+	// Block until BeginDrain has committed the paused state. 5s is a
+	// CI-tolerance deadline, not a real timing assertion — BeginDrain should
+	// signal within microseconds.
+	select {
+	case <-paused:
+	case <-time.After(5 * time.Second):
+		t.Fatal("BeginDrain did not reach the paused state")
+	}
 
 	// A new RPC arrives with a context that expires quickly.
 	shortCtx, cancel := context.WithTimeout(ctxWithInstanceID("inst-pd"), 50*time.Millisecond)

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -26,7 +27,9 @@ import (
 //
 // The GLEIPNIR_TEST_FIXTURE env var selects the mode:
 //   - "serve-and-block"  — serve the plugin protocol, block until killed
-//   - "serve-and-crash"  — serve the plugin protocol, then exit(17) after 200ms
+//   - "serve-and-crash"  — serve the plugin protocol, then exit(17) once the
+//     host signals via the GLEIPNIR_TEST_CRASH_TRIGGER file (see
+//     fixtureCrashConfig / triggerCrash below)
 //   - "exit-no-handshake" — print junk to stdout and exit immediately
 func TestMain(m *testing.M) {
 	switch os.Getenv("GLEIPNIR_TEST_FIXTURE") {
@@ -105,6 +108,40 @@ func fixtureConfig(
 			opts.Env = append(opts.Env, "GLEIPNIR_TEST_FIXTURE="+mode)
 			return hostwire.Launch(ctx, binaryPath, host, opts)
 		},
+	}
+}
+
+// fixtureCrashConfig builds a Config for the "serve-and-crash" fixture mode
+// along with the crash-trigger file path. The subprocess polls for that
+// file's existence and exits(17) once it appears; callers must only create
+// the file (via triggerCrash) after process.Start has returned successfully,
+// so the crash can never race the go-plugin handshake — replacing the
+// previous fixed-sleep approach with a host-driven signal (CLAUDE.md
+// "signal-don't-poll").
+func fixtureCrashConfig(
+	t *testing.T,
+	issuer *identity.Registry,
+	healthCh chan healthCall,
+) (process.Config, string) {
+	t.Helper()
+
+	triggerPath := filepath.Join(t.TempDir(), "crash-trigger")
+	cfg := fixtureConfig(t, "serve-and-crash", issuer, healthCh)
+	launch := cfg.Launch
+	cfg.Launch = func(ctx context.Context, binaryPath string, host hostwire.HostServer, opts hostwire.Options) (*hostwire.Client, func(), error) {
+		opts.Env = append(opts.Env, "GLEIPNIR_TEST_CRASH_TRIGGER="+triggerPath)
+		return launch(ctx, binaryPath, host, opts)
+	}
+	return cfg, triggerPath
+}
+
+// triggerCrash creates the crash-trigger file, signalling the
+// "serve-and-crash" fixture subprocess to exit(17). Must only be called
+// after process.Start has returned successfully — see fixtureCrashConfig.
+func triggerCrash(t *testing.T, triggerPath string) {
+	t.Helper()
+	if err := os.WriteFile(triggerPath, []byte("crash"), 0o600); err != nil {
+		t.Fatalf("triggerCrash: write %s: %v", triggerPath, err)
 	}
 }
 
@@ -206,7 +243,7 @@ func TestStart_HandshakeFails(t *testing.T) {
 func TestStart_Crash(t *testing.T) {
 	reg := identity.New()
 	healthCh := make(chan healthCall, 1)
-	cfg := fixtureConfig(t, "serve-and-crash", reg, healthCh)
+	cfg, triggerPath := fixtureCrashConfig(t, reg, healthCh)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -215,6 +252,10 @@ func TestStart_Crash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+
+	// Only signal the crash now that Start has returned successfully — the
+	// subprocess must never exit before the host completes the handshake.
+	triggerCrash(t, triggerPath)
 
 	// Wait for the done channel to close (subprocess exited).
 	select {
@@ -315,7 +356,7 @@ func TestStop_Idempotent(t *testing.T) {
 // without needing to obtain the subprocess PID.
 func TestStart_TokenRevokedOnExit(t *testing.T) {
 	reg := identity.New()
-	cfg := fixtureConfig(t, "serve-and-crash", reg, nil)
+	cfg, triggerPath := fixtureCrashConfig(t, reg, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -329,6 +370,10 @@ func TestStart_TokenRevokedOnExit(t *testing.T) {
 	if _, ok := reg.Lookup(token); !ok {
 		t.Fatal("token should be present immediately after Start")
 	}
+
+	// Only signal the crash now that Start has returned successfully — the
+	// subprocess must never exit before the host completes the handshake.
+	triggerCrash(t, triggerPath)
 
 	// Wait for crash.
 	select {

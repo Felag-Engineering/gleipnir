@@ -120,6 +120,7 @@ func TestScheduler_SkipsPastTimestampsOnStartup(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
@@ -163,6 +164,7 @@ func TestScheduler_FiresFutureTimestamp(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
@@ -207,6 +209,7 @@ func TestScheduler_AutoPausesAfterAllTimesConsumed(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
@@ -261,6 +264,7 @@ func TestScheduler_DeduplicatesAlreadyFiredTime(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
@@ -307,6 +311,7 @@ func TestScheduler_ConcurrencySkip_BlocksWhenActive(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
@@ -355,6 +360,7 @@ func TestScheduler_ConcurrencySkip_AutoPausesWhenExhausted(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
@@ -406,6 +412,7 @@ func TestScheduler_ConcurrencySkip_ProceedsWhenIdle(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
@@ -453,6 +460,7 @@ func TestScheduler_ConcurrencyQueue_EnqueuesWhenActive(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
@@ -578,6 +586,7 @@ func TestScheduler_SkipsPolicy_WhenNoSystemDefaultAndNoModelInYAML(t *testing.T)
 	defer cancel()
 
 	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
 	// Resolver with no default configured — simulates unconfigured system default.
 	noDefault := newTestSettings("", "")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
@@ -640,10 +649,15 @@ func TestScheduler_Wait_DrainsInFlightFire(t *testing.T) {
 	release := make(chan struct{})
 
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
+	manager := run.NewRunManager()
+	// scheduler.Wait() below only drains the Scheduler's own timer/fire
+	// goroutines, not the RunManager-tracked run-execution goroutine that
+	// Launch spawns — so also drain the manager before the store closes.
+	t.Cleanup(manager.Wait)
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
-		Manager:                run.NewRunManager(),
+		Manager:                manager,
 		AgentFactory:           gatedSchedulerFactory(entered, release),
 		Publisher:              nil,
 		DefaultFeedbackTimeout: 0,

@@ -22,10 +22,6 @@ func i64(v int64) *int64     { return &v }
 
 // TestResolveRateLimit verifies the per-field independent fallback logic.
 func TestResolveRateLimit(t *testing.T) {
-	type want struct {
-		wantRate  float64
-		wantBurst int
-	}
 	tests := []struct {
 		name       string
 		ratePerSec *float64

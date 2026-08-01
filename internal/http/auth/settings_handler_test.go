@@ -29,12 +29,7 @@ func (m *mockSettingsQuerier) UpsertUserPreference(_ context.Context, arg db.Ups
 		return db.UserPreference{}, m.upsertErr
 	}
 	m.upsertedKey = arg.PreferenceKey
-	return db.UserPreference{
-		UserID:          arg.UserID,
-		PreferenceKey:   arg.PreferenceKey,
-		PreferenceValue: arg.PreferenceValue,
-		UpdatedAt:       arg.UpdatedAt,
-	}, nil
+	return db.UserPreference(arg), nil
 }
 
 func TestGetPreferences(t *testing.T) {

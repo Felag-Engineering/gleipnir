@@ -121,6 +121,9 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	r := chi.NewRouter()
 	r.Use(httputil.SecurityHeaders)
 	r.Use(middleware.RequestID)
+	// RemoteAddr feeds the access log / logctx only — never an authorization
+	// input — so the XFF-spoofing hazard is limited to log pollution here.
+	//lint:ignore SA1019 deprecated upstream for XFF spoofing; replacement with a trusted-proxy-aware resolver is tracked in #758
 	r.Use(middleware.RealIP)
 	r.Use(slogContext) // enriches context with request_id + remote_addr logger
 	r.Use(httpMetrics) // records Prometheus duration histogram and request counter
