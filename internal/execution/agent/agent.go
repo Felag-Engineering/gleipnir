@@ -667,8 +667,10 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 		return "", false, fmt.Errorf("writing tool_call step: %w", err)
 	}
 
-	// Dispatch to MCP server.
-	result, err := entry.tool.Client.CallTool(ctx, entry.tool.ToolName, input)
+	// Dispatch to MCP server. entry.tool.Capabilities is data flowing inward
+	// from the ResolvedTool the agent was constructed with — the agent never
+	// decides a capability declaration itself.
+	result, err := entry.tool.Client.CallTool(ctx, entry.tool.ToolName, input, entry.tool.Capabilities)
 	if err != nil {
 		// Context cancellation is fatal — operator intent, don't mask it.
 		if ctx.Err() != nil {

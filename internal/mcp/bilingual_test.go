@@ -16,13 +16,14 @@ import (
 // shaping unchanged.
 func TestToolTraffic_ShapingByPinnedVersion(t *testing.T) {
 	tests := []struct {
-		name   string
-		pin    string
-		modern bool // whether the fake should reject the legacy handshake
+		name     string
+		pin      string
+		modern   bool // whether the fake should reject the legacy handshake
+		wantMeta bool // whether tools/list and tools/call params must carry _meta
 	}{
 		{name: "unpinned client keeps legacy shaping", pin: ""},
 		{name: "legacy pin keeps legacy shaping", pin: ProtocolVersionLegacy},
-		{name: "modern pin gets 2026-07-28 stateless shaping", pin: ProtocolVersion20260728, modern: true},
+		{name: "modern pin gets 2026-07-28 stateless shaping", pin: ProtocolVersion20260728, modern: true, wantMeta: true},
 	}
 
 	for _, tc := range tests {
@@ -39,7 +40,7 @@ func TestToolTraffic_ShapingByPinnedVersion(t *testing.T) {
 			if _, err := c.DiscoverTools(context.Background()); err != nil {
 				t.Fatalf("DiscoverTools: %v", err)
 			}
-			if _, err := c.CallTool(context.Background(), "tool-a", nil); err != nil {
+			if _, err := c.CallTool(context.Background(), "tool-a", nil, ClientCapabilities{}); err != nil {
 				t.Fatalf("CallTool: %v", err)
 			}
 
@@ -82,6 +83,28 @@ func TestToolTraffic_ShapingByPinnedVersion(t *testing.T) {
 			assertHeaders(t, listReqs[0], wantListMethod, "")
 			assertHeaders(t, callReqs[0], wantCallMethod, wantCallName)
 
+			assertMeta := func(t *testing.T, req FakeRequest) {
+				t.Helper()
+				meta := decodeMeta(req.Params)
+				if !tc.wantMeta {
+					if meta != nil {
+						t.Errorf("params carry a _meta key, want none on the legacy path: %s", req.Params)
+					}
+					return
+				}
+				if meta == nil {
+					t.Fatalf("params carry no _meta, want one on the modern path: %s", req.Params)
+				}
+				if got := metaString(meta, metaKeyProtocolVersion); got != req.ProtocolHeader {
+					t.Errorf("_meta.protocolVersion = %q, want header value %q", got, req.ProtocolHeader)
+				}
+				if got := string(meta[metaKeyClientCapabilities]); got != "{}" {
+					t.Errorf("_meta.clientCapabilities = %s, want {}", got)
+				}
+			}
+			assertMeta(t, listReqs[0])
+			assertMeta(t, callReqs[0])
+
 			if got := len(fake.RequestsFor("initialize")); got != wantInitCount {
 				t.Errorf("len(RequestsFor(initialize)) = %d, want %d", got, wantInitCount)
 			}
@@ -89,6 +112,78 @@ func TestToolTraffic_ShapingByPinnedVersion(t *testing.T) {
 				t.Errorf("Violations = %v, want none", v)
 			}
 		})
+	}
+}
+
+// TestNoRequestEverDeclaresSampling is the "any fixture" DoD assertion: sampling
+// must never appear on the wire, on any transport, under any capability grant.
+// It drives three call paths against three fakes — (a) an unpinned client
+// through ProbeProtocolVersion's legacy fallback (initialize +
+// notifications/initialized) followed by tools/list and a tool call, (b) a
+// client explicitly pinned to the legacy constant, and (c) a modern-pinned
+// client against a strict-modern fake, granting Elicitation — the one
+// capability this repo can ever declare — to prove that granting the
+// capability that DOES exist still never produces the one that must not
+// exist. It then inspects every fake's recorded Requests() for the literal
+// substring "sampling"; Params is sufficient coverage because "sampling"
+// could only ever appear inside a capabilities object, which lives in params
+// on both the legacy initialize body and the modern _meta.
+func TestNoRequestEverDeclaresSampling(t *testing.T) {
+	var fakes []*FakeMCPServer
+
+	// (a) unpinned client: ProbeProtocolVersion's legacy fallback, then
+	// tools/list, then a tool call.
+	legacyFake := NewFakeMCPServer(WithFakeMode(FakeLegacy))
+	legacySrv := httptest.NewServer(legacyFake)
+	t.Cleanup(legacySrv.Close)
+	fakes = append(fakes, legacyFake)
+
+	unpinned := NewClient(legacySrv.URL)
+	if _, err := unpinned.ProbeProtocolVersion(context.Background()); err != nil {
+		t.Fatalf("ProbeProtocolVersion (unpinned): %v", err)
+	}
+	if _, err := unpinned.DiscoverTools(context.Background()); err != nil {
+		t.Fatalf("DiscoverTools (unpinned): %v", err)
+	}
+	if _, err := unpinned.CallTool(context.Background(), "tool-a", nil, ClientCapabilities{}); err != nil {
+		t.Fatalf("CallTool (unpinned): %v", err)
+	}
+
+	// (b) a client explicitly pinned to the legacy constant.
+	legacyPinnedFake := NewFakeMCPServer(WithFakeMode(FakeLegacy))
+	legacyPinnedSrv := httptest.NewServer(legacyPinnedFake)
+	t.Cleanup(legacyPinnedSrv.Close)
+	fakes = append(fakes, legacyPinnedFake)
+
+	legacyPinned := NewClient(legacyPinnedSrv.URL, WithProtocolVersion(ProtocolVersionLegacy))
+	if _, err := legacyPinned.CallTool(context.Background(), "tool-a", nil, ClientCapabilities{}); err != nil {
+		t.Fatalf("CallTool (legacy pin): %v", err)
+	}
+
+	// (c) a modern-pinned client against a strict-modern fake, with
+	// Elicitation granted.
+	modernFake := NewFakeMCPServer(WithFakeMode(FakeModern), WithFakeRejectLegacyHandshake())
+	modernSrv := httptest.NewServer(modernFake)
+	t.Cleanup(modernSrv.Close)
+	fakes = append(fakes, modernFake)
+
+	modern := NewClient(modernSrv.URL, WithProtocolVersion(ProtocolVersion20260728))
+	if _, err := modern.DiscoverTools(context.Background()); err != nil {
+		t.Fatalf("DiscoverTools (modern): %v", err)
+	}
+	if _, err := modern.CallTool(context.Background(), "tool-a", nil, ClientCapabilities{Elicitation: true}); err != nil {
+		t.Fatalf("CallTool (modern): %v", err)
+	}
+
+	for i, fake := range fakes {
+		for _, req := range fake.Requests() {
+			if strings.Contains(string(req.Params), "sampling") {
+				t.Errorf("fake[%d] %s Params contains \"sampling\": %s", i, req.Method, req.Params)
+			}
+		}
+		if v := fake.Violations(); len(v) != 0 {
+			t.Errorf("fake[%d] Violations = %v, want none", i, v)
+		}
 	}
 }
 
@@ -161,7 +256,7 @@ func TestBilingualRegistry_LegacyAndModernServersInOneInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveToolByName(legacy): %v", err)
 	}
-	legacyResult, err := legacyClient.CallTool(ctx, legacyToolName, nil)
+	legacyResult, err := legacyClient.CallTool(ctx, legacyToolName, nil, ClientCapabilities{})
 	if err != nil {
 		t.Fatalf("CallTool(legacy): %v", err)
 	}
@@ -176,7 +271,7 @@ func TestBilingualRegistry_LegacyAndModernServersInOneInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveToolByName(modern): %v", err)
 	}
-	modernResult, err := modernClient.CallTool(ctx, modernToolName, nil)
+	modernResult, err := modernClient.CallTool(ctx, modernToolName, nil, ClientCapabilities{})
 	if err != nil {
 		t.Fatalf("CallTool(modern): %v", err)
 	}

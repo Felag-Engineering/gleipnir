@@ -49,6 +49,14 @@ type ResolvedTool struct {
 	// this field must still construct its JSON Schema compiler with a
 	// deny-all URLLoader, and must not read "canonical" as "vetted".
 	CanonicalSchema json.RawMessage
+
+	// Capabilities is the per-call client capability declaration sent in a
+	// modern-protocol tools/call request's _meta.clientCapabilities (spec §11). This
+	// is the policy-scoped enforcement seam: the HITL milestone (ADR-055) is what will
+	// set Elicitation from the policy's grants. ResolveForPolicy deliberately leaves
+	// it at its zero value today, so nothing is declared on any call path, and the
+	// type has no way to express sampling at all.
+	Capabilities ClientCapabilities
 }
 
 // ToolDiff describes the set of changes detected between two successive tool
@@ -301,6 +309,7 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 			canonical = json.RawMessage(*tool.CanonicalSchema)
 		}
 
+		// Capabilities is intentionally left zero until ADR-055 wires policy grants in.
 		result = append(result, ResolvedTool{
 			GrantedTool: model.GrantedTool{
 				ServerName: serverName,

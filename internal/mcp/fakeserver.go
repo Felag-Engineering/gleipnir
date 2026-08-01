@@ -53,6 +53,8 @@ type FakeMCPServer struct {
 	legacyNegotiatedVersion string
 	discoverStatusOverride  int // 0 = no override
 	rejectLegacyHandshake   bool
+	serverInfoName          string
+	serverInfoVersion       string
 
 	requests   []FakeRequest
 	violations []string
@@ -140,11 +142,22 @@ func WithFakeDiscoverStatus(code int) FakeServerOption {
 // existing call site is unchanged and a pinned-modern fake still tolerates
 // legacy-shaped tool traffic.
 //
-// NOTE: this mode deliberately does NOT enforce the _meta body fields on
-// tool traffic — the client does not inject _meta on tools/list or
-// tools/call yet. handleDiscover keeps enforcing both regimes.
+// NOTE: this mode now also enforces the _meta body fields (enforceMetaFields)
+// on tool traffic, in addition to the standard transport headers — the
+// client injects _meta on tools/list and tools/call under a modern pin.
+// handleDiscover keeps enforcing both regimes as before.
 func WithFakeRejectLegacyHandshake() FakeServerOption {
 	return func(f *FakeMCPServer) { f.rejectLegacyHandshake = true }
+}
+
+// WithFakeServerInfo sets the name/version the fake reports in its server/discover
+// result _meta. Both empty omits the _meta block entirely, modeling a compliant
+// server that sends no serverInfo. Default: "fake-mcp-server" / "1.0.0".
+func WithFakeServerInfo(name, version string) FakeServerOption {
+	return func(f *FakeMCPServer) {
+		f.serverInfoName = name
+		f.serverInfoVersion = version
+	}
 }
 
 // NewFakeMCPServer returns a ready FakeMCPServer. Wrap it in
@@ -156,6 +169,8 @@ func NewFakeMCPServer(opts ...FakeServerOption) *FakeMCPServer {
 		tools: []Tool{
 			{Name: "tool-a", Description: "tool-a description", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		},
+		serverInfoName:    "fake-mcp-server",
+		serverInfoVersion: "1.0.0",
 	}
 	for _, opt := range opts {
 		opt(f)
@@ -285,9 +300,10 @@ func (f *FakeMCPServer) strictModern() bool {
 // looks identical to a malformed body — and this package's own
 // classifyDiscoverResponse maps -32602 to discoverLegacy, so getting this
 // wrong would silently misread a client compliance bug as "this server is
-// old". Only the header regime (enforceStandardHeaders) applies to tool
-// traffic — tools/list and tools/call carry no _meta body at all, so
-// enforceMetaFields is never called for them.
+// old". Both regimes apply to tool traffic under strict mode — tools/list
+// and tools/call now carry _meta, so enforceMetaFields runs for them too,
+// and the header-vs-body protocolVersion comparison in
+// enforceStandardHeaders is consequently live there as well.
 const (
 	errCodeHeaderMismatch = -32020
 	errCodeInvalidParams  = -32602
@@ -416,6 +432,8 @@ func (f *FakeMCPServer) handleDiscover(w http.ResponseWriter, req FakeRequest) {
 	override := f.discoverStatusOverride
 	mode := f.mode
 	supported := append([]string(nil), f.supportedVersions...)
+	serverInfoName := f.serverInfoName
+	serverInfoVersion := f.serverInfoVersion
 	f.mu.Unlock()
 
 	if override != 0 {
@@ -449,23 +467,29 @@ func (f *FakeMCPServer) handleDiscover(w http.ResponseWriter, req FakeRequest) {
 		if !f.enforceMetaFields(w, req) {
 			return
 		}
+		result := map[string]any{
+			"resultType":        "complete",
+			"supportedVersions": supported,
+			"capabilities": map[string]any{
+				"tools": map[string]any{},
+			},
+		}
+		// Both empty models a compliant server that sends no serverInfo at
+		// all — the _meta key is omitted entirely rather than sent with
+		// empty strings.
+		if serverInfoName != "" || serverInfoVersion != "" {
+			result["_meta"] = map[string]any{
+				metaKeyServerInfo: map[string]any{
+					"name":    serverInfoName,
+					"version": serverInfoVersion,
+				},
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
 			"jsonrpc": "2.0",
 			"id":      1,
-			"result": map[string]any{
-				"resultType":        "complete",
-				"supportedVersions": supported,
-				"capabilities": map[string]any{
-					"tools": map[string]any{},
-				},
-				"_meta": map[string]any{
-					"io.modelcontextprotocol/serverInfo": map[string]any{
-						"name":    "fake-mcp-server",
-						"version": "1.0.0",
-					},
-				},
-			},
+			"result":  result,
 		})
 	}
 }
@@ -492,11 +516,14 @@ func (f *FakeMCPServer) handleInitialize(w http.ResponseWriter) {
 
 // handleToolsList serves the configured tools by default (see the
 // file-level compatibility note); under WithFakeRejectLegacyHandshake it
-// also enforces the standard transport headers first — tools/list names no
-// entity, so expectedName is "".
+// also enforces the standard transport headers, then the _meta body fields
+// — tools/list names no entity, so expectedName is "".
 func (f *FakeMCPServer) handleToolsList(w http.ResponseWriter, req FakeRequest) {
 	if f.strictModern() {
 		if !f.enforceStandardHeaders(w, req, "") {
+			return
+		}
+		if !f.enforceMetaFields(w, req) {
 			return
 		}
 	}
@@ -529,11 +556,15 @@ func (f *FakeMCPServer) handleToolsList(w http.ResponseWriter, req FakeRequest) 
 // unknown-tool rejection, and no resultType field — resultType fixtures
 // belong to the follow-up that implements it. Under
 // WithFakeRejectLegacyHandshake it enforces the standard transport headers
-// first, with expectedName set to the tool name the request body names.
+// first, with expectedName set to the tool name the request body names, then
+// the _meta body fields.
 func (f *FakeMCPServer) handleToolsCall(w http.ResponseWriter, req FakeRequest) {
 	name := paramsName(req.Params)
 	if f.strictModern() {
 		if !f.enforceStandardHeaders(w, req, name) {
+			return
+		}
+		if !f.enforceMetaFields(w, req) {
 			return
 		}
 	}

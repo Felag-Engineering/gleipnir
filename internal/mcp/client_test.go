@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -168,7 +169,7 @@ func TestCallTool_HappyPath(t *testing.T) {
 	})
 
 	c := NewClient(srv.URL)
-	result, err := c.CallTool(context.Background(), "my-tool", map[string]any{"key": "val"})
+	result, err := c.CallTool(context.Background(), "my-tool", map[string]any{"key": "val"}, ClientCapabilities{})
 	if err != nil {
 		t.Fatalf("CallTool: unexpected error: %v", err)
 	}
@@ -195,7 +196,7 @@ func TestCallTool_IsErrorTrue(t *testing.T) {
 	})
 
 	c := NewClient(srv.URL)
-	result, err := c.CallTool(context.Background(), "failing-tool", nil)
+	result, err := c.CallTool(context.Background(), "failing-tool", nil, ClientCapabilities{})
 	if err != nil {
 		t.Fatalf("CallTool: unexpected Go error: %v", err)
 	}
@@ -217,7 +218,7 @@ func TestCallTool_JSONRPCError(t *testing.T) {
 	})
 
 	c := NewClient(srv.URL)
-	_, err := c.CallTool(context.Background(), "some-tool", nil)
+	_, err := c.CallTool(context.Background(), "some-tool", nil, ClientCapabilities{})
 	if err == nil {
 		t.Fatal("expected non-nil error for JSON-RPC error response, got nil")
 	}
@@ -232,7 +233,7 @@ func TestCallTool_Non200Response(t *testing.T) {
 	})
 
 	c := NewClient(srv.URL)
-	_, err := c.CallTool(context.Background(), "some-tool", nil)
+	_, err := c.CallTool(context.Background(), "some-tool", nil, ClientCapabilities{})
 	if err == nil {
 		t.Fatal("expected non-nil error for 502 response, got nil")
 	}
@@ -258,7 +259,7 @@ func TestCallTool_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel before the call
 
-	_, err := c.CallTool(ctx, "some-tool", nil)
+	_, err := c.CallTool(ctx, "some-tool", nil, ClientCapabilities{})
 	if err == nil {
 		t.Fatal("expected non-nil error for cancelled context, got nil")
 	}
@@ -370,10 +371,10 @@ func TestEnsureSession_CachesSessionID(t *testing.T) {
 
 	c := NewClient(srv.URL)
 
-	if _, err := c.CallTool(context.Background(), "tool-x", nil); err != nil {
+	if _, err := c.CallTool(context.Background(), "tool-x", nil, ClientCapabilities{}); err != nil {
 		t.Fatalf("first CallTool: %v", err)
 	}
-	if _, err := c.CallTool(context.Background(), "tool-x", nil); err != nil {
+	if _, err := c.CallTool(context.Background(), "tool-x", nil, ClientCapabilities{}); err != nil {
 		t.Fatalf("second CallTool: %v", err)
 	}
 
@@ -412,7 +413,7 @@ func TestEnsureSession_RetriesOn401(t *testing.T) {
 	})
 
 	c := NewClient(srv.URL)
-	if _, err := c.CallTool(context.Background(), "tool-x", nil); err != nil {
+	if _, err := c.CallTool(context.Background(), "tool-x", nil, ClientCapabilities{}); err != nil {
 		t.Fatalf("CallTool: unexpected error: %v", err)
 	}
 
@@ -434,7 +435,7 @@ func TestEnsureSession_ConcurrentCalls(t *testing.T) {
 	for range goroutines {
 		go func() {
 			defer wg.Done()
-			if _, err := c.CallTool(context.Background(), "tool-x", nil); err != nil {
+			if _, err := c.CallTool(context.Background(), "tool-x", nil, ClientCapabilities{}); err != nil {
 				t.Errorf("CallTool: %v", err)
 			}
 		}()
@@ -467,7 +468,7 @@ func TestPostRaw_InjectsAuthHeaders(t *testing.T) {
 		{Name: "X-Api-Key", Value: "sk-test-123"},
 	}))
 
-	if _, err := c.CallTool(context.Background(), "tool-x", nil); err != nil {
+	if _, err := c.CallTool(context.Background(), "tool-x", nil, ClientCapabilities{}); err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
 
@@ -492,7 +493,7 @@ func TestPostRaw_NoAuthHeaders_BackwardCompat(t *testing.T) {
 	// No WithAuthHeaders — default client.
 	c := NewClient(srv.URL)
 
-	if _, err := c.CallTool(context.Background(), "tool-x", nil); err != nil {
+	if _, err := c.CallTool(context.Background(), "tool-x", nil, ClientCapabilities{}); err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
 
@@ -518,7 +519,7 @@ func TestPostRaw_AuthHeaderCannotOverrideSessionID(t *testing.T) {
 		{Name: "Mcp-Session-Id", Value: "injected-session"},
 	}))
 
-	if _, err := c.CallTool(context.Background(), "tool-x", nil); err != nil {
+	if _, err := c.CallTool(context.Background(), "tool-x", nil, ClientCapabilities{}); err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
 
@@ -615,7 +616,7 @@ func TestLegacyPostShapeUnchanged(t *testing.T) {
 		{Name: "X-Api-Key", Value: "sk-test-123"},
 	}))
 
-	if _, err := c.CallTool(context.Background(), "tool-x", nil); err != nil {
+	if _, err := c.CallTool(context.Background(), "tool-x", nil, ClientCapabilities{}); err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
 
@@ -693,7 +694,7 @@ func TestCallTool_ModernPath_CRLFToolNameFailsClosed(t *testing.T) {
 
 	c := NewClient(srv.URL, WithProtocolVersion(ProtocolVersion20260728))
 
-	_, err := c.CallTool(context.Background(), "evil\r\nX-Injected: pwned", nil)
+	_, err := c.CallTool(context.Background(), "evil\r\nX-Injected: pwned", nil, ClientCapabilities{})
 	if err == nil {
 		t.Fatal("expected non-nil error for a CRLF-containing tool name, got nil")
 	}
@@ -704,4 +705,229 @@ func TestCallTool_ModernPath_CRLFToolNameFailsClosed(t *testing.T) {
 	if capturedInjected != "" {
 		t.Errorf("X-Injected = %q, want empty (no header was smuggled through)", capturedInjected)
 	}
+}
+
+// legacyRequestBodyCapture is a routing handler that records the raw request
+// body (before decoding) for each method, so a test can assert exact wire
+// bytes. Unlike routingHandler, which decodes into a map[string]any and
+// discards the original bytes, this captures what the client actually sent.
+type legacyRequestBodyCapture struct {
+	initBody   []byte
+	listBody   []byte
+	callBodies [][]byte // in arrival order
+}
+
+func (c *legacyRequestBodyCapture) handler(t *testing.T) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "bad request body", http.StatusBadRequest)
+			return
+		}
+		var decoded struct {
+			Method string `json:"method"`
+		}
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			http.Error(w, "bad request body", http.StatusBadRequest)
+			return
+		}
+		switch decoded.Method {
+		case "initialize":
+			c.initBody = body
+			w.Header().Set("Mcp-Session-Id", "test-session")
+			writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"protocolVersion": "2024-11-05"}})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusOK)
+		case methodToolsList:
+			c.listBody = body
+			writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": 2, "result": map[string]any{"tools": []any{}}})
+		case methodToolsCall:
+			c.callBodies = append(c.callBodies, body)
+			successToolCallHandler(w, r)
+		}
+	}
+}
+
+// TestLegacyRequestBodyBytesUnchanged is the DoD guarantee: an unpinned
+// client and a client explicitly pinned to the legacy constant must send
+// exactly the same request bytes _meta injection produced before this
+// change — no "_meta" key anywhere, and the tools/call "arguments" field
+// still marshals as a bare (non-omitempty) "null" for a nil input.
+func TestLegacyRequestBodyBytesUnchanged(t *testing.T) {
+	tests := []struct {
+		name string
+		pin  string
+	}{
+		{name: "unpinned client", pin: ""},
+		{name: "legacy pin", pin: ProtocolVersionLegacy},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			capture := &legacyRequestBodyCapture{}
+			srv := makeServer(t, capture.handler(t))
+
+			c := NewClient(srv.URL, WithProtocolVersion(tc.pin))
+
+			if _, err := c.DiscoverTools(context.Background()); err != nil {
+				t.Fatalf("DiscoverTools: %v", err)
+			}
+			if _, err := c.CallTool(context.Background(), "tool-x", nil, ClientCapabilities{}); err != nil {
+				t.Fatalf("CallTool(nil input): %v", err)
+			}
+			if _, err := c.CallTool(context.Background(), "tool-x", map[string]any{"k": "v"}, ClientCapabilities{}); err != nil {
+				t.Fatalf("CallTool(non-nil input): %v", err)
+			}
+
+			if got, want := string(capture.listBody), `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`; got != want {
+				t.Errorf("tools/list body = %s, want %s", got, want)
+			}
+			if len(capture.callBodies) != 2 {
+				t.Fatalf("len(callBodies) = %d, want 2", len(capture.callBodies))
+			}
+			if got, want := string(capture.callBodies[0]), `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tool-x","arguments":null}}`; got != want {
+				t.Errorf("tools/call(nil) body = %s, want %s", got, want)
+			}
+			if got, want := string(capture.callBodies[1]), `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tool-x","arguments":{"k":"v"}}}`; got != want {
+				t.Errorf("tools/call(non-nil) body = %s, want %s", got, want)
+			}
+			if strings.Contains(string(capture.initBody), `"_meta"`) {
+				t.Errorf("initialize body carries a _meta key, want none: %s", capture.initBody)
+			}
+		})
+	}
+}
+
+// TestCallTool_LegacyPinIgnoresGrantedCapabilities is the no-leak test: a
+// capability granted to CallTool on a legacy-pinned client must never reach
+// the wire, because requestMeta returns nil for a non-modern client
+// regardless of what caps says.
+func TestCallTool_LegacyPinIgnoresGrantedCapabilities(t *testing.T) {
+	capture := &legacyRequestBodyCapture{}
+	srv := makeServer(t, capture.handler(t))
+
+	c := NewClient(srv.URL, WithProtocolVersion(ProtocolVersionLegacy))
+
+	if _, err := c.CallTool(context.Background(), "tool-x", nil, ClientCapabilities{Elicitation: true}); err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+
+	if len(capture.callBodies) != 1 {
+		t.Fatalf("len(callBodies) = %d, want 1", len(capture.callBodies))
+	}
+	got := string(capture.callBodies[0])
+	want := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tool-x","arguments":null}}`
+	if got != want {
+		t.Errorf("tools/call body = %s, want %s (byte-identical to the zero-caps golden)", got, want)
+	}
+	for _, substr := range []string{"_meta", "elicitation", "sampling"} {
+		if strings.Contains(got, substr) {
+			t.Errorf("tools/call body contains %q, want it absent: %s", substr, got)
+		}
+	}
+}
+
+// TestCallTool_ModernPath_MetaShape asserts the exact wire shape of
+// _meta.clientCapabilities on a modern-pinned client, for both an ungranted
+// and a granted capability.
+func TestCallTool_ModernPath_MetaShape(t *testing.T) {
+	tests := []struct {
+		name         string
+		caps         ClientCapabilities
+		wantCapsWire string
+	}{
+		{name: "zero caps declares nothing", caps: ClientCapabilities{}, wantCapsWire: `{}`},
+		{name: "elicitation granted", caps: ClientCapabilities{Elicitation: true}, wantCapsWire: `{"elicitation":{}}`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var body []byte
+			var protocolHeader string
+			srv := makeServer(t, func(w http.ResponseWriter, r *http.Request) {
+				var err error
+				body, err = io.ReadAll(r.Body)
+				if err != nil {
+					http.Error(w, "bad request body", http.StatusBadRequest)
+					return
+				}
+				protocolHeader = r.Header.Get("MCP-Protocol-Version")
+				successToolCallHandler(w, r)
+			})
+
+			c := NewClient(srv.URL, WithProtocolVersion(ProtocolVersion20260728))
+			if _, err := c.CallTool(context.Background(), "tool-x", nil, tc.caps); err != nil {
+				t.Fatalf("CallTool: %v", err)
+			}
+
+			meta := decodeMeta(json.RawMessage(mustExtractParams(t, body)))
+			if meta == nil {
+				t.Fatal("params carries no _meta")
+			}
+			pv := metaString(meta, metaKeyProtocolVersion)
+			if pv != ProtocolVersion20260728 {
+				t.Errorf("_meta.protocolVersion = %q, want %q", pv, ProtocolVersion20260728)
+			}
+			if protocolHeader != ProtocolVersion20260728 {
+				t.Errorf("MCP-Protocol-Version header = %q, want %q", protocolHeader, ProtocolVersion20260728)
+			}
+			if pv != protocolHeader {
+				t.Errorf("_meta.protocolVersion (%q) != MCP-Protocol-Version header (%q)", pv, protocolHeader)
+			}
+			if _, ok := meta[metaKeyClientInfo]; !ok {
+				t.Error("_meta missing clientInfo")
+			}
+			if got := string(meta[metaKeyClientCapabilities]); got != tc.wantCapsWire {
+				t.Errorf("_meta.clientCapabilities = %s, want %s", got, tc.wantCapsWire)
+			}
+		})
+	}
+}
+
+// TestDiscoverTools_ModernPath_InjectsMeta asserts that a modern-pinned
+// client's tools/list request carries all three _meta keys, with an empty
+// clientCapabilities object since DiscoverTools never declares one.
+func TestDiscoverTools_ModernPath_InjectsMeta(t *testing.T) {
+	var body []byte
+	srv := makeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		body, err = io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "bad request body", http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": 2, "result": map[string]any{"tools": []any{}}})
+	})
+
+	c := NewClient(srv.URL, WithProtocolVersion(ProtocolVersion20260728))
+	if _, err := c.DiscoverTools(context.Background()); err != nil {
+		t.Fatalf("DiscoverTools: %v", err)
+	}
+
+	meta := decodeMeta(json.RawMessage(mustExtractParams(t, body)))
+	if meta == nil {
+		t.Fatal("params carries no _meta")
+	}
+	for _, key := range []string{metaKeyProtocolVersion, metaKeyClientInfo, metaKeyClientCapabilities} {
+		if _, ok := meta[key]; !ok {
+			t.Errorf("_meta missing %q", key)
+		}
+	}
+	if got := string(meta[metaKeyClientCapabilities]); got != "{}" {
+		t.Errorf("_meta.clientCapabilities = %s, want {}", got)
+	}
+}
+
+// mustExtractParams decodes body's top-level "params" field, raw, so a test
+// can hand it to decodeMeta the same way the fake server does.
+func mustExtractParams(t *testing.T, body []byte) json.RawMessage {
+	t.Helper()
+	var envelope struct {
+		Params json.RawMessage `json:"params"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatalf("unmarshal request envelope: %v", err)
+	}
+	return envelope.Params
 }

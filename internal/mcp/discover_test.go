@@ -15,7 +15,7 @@ import (
 // isZeroProbeResult reports whether res is the zero ProbeResult. ProbeResult
 // contains a slice field, so it is not comparable with ==.
 func isZeroProbeResult(res ProbeResult) bool {
-	return res.Version == "" && res.Era == "" && res.ServerSupported == nil
+	return res.Version == "" && res.Era == "" && res.ServerSupported == nil && res.ServerInfo == (ServerInfo{})
 }
 
 func TestClassifyDiscoverResponse(t *testing.T) {
@@ -25,7 +25,8 @@ func TestClassifyDiscoverResponse(t *testing.T) {
 		payload        string
 		wantOutcome    discoverOutcome
 		wantAdvertised []string
-		wantErrCode    int // 0 when no ModernErr is expected
+		wantErrCode    int        // 0 when no ModernErr is expected
+		wantServerInfo ServerInfo // zero value when the result carries no serverInfo
 	}{
 		{
 			name:           "200 result with supportedVersions",
@@ -33,6 +34,50 @@ func TestClassifyDiscoverResponse(t *testing.T) {
 			payload:        `{"jsonrpc":"2.0","id":1,"result":{"supportedVersions":["2026-07-28"]}}`,
 			wantOutcome:    discoverModern,
 			wantAdvertised: []string{"2026-07-28"},
+		},
+		{
+			name:           "200 result with serverInfo is captured",
+			status:         http.StatusOK,
+			payload:        `{"jsonrpc":"2.0","id":1,"result":{"supportedVersions":["2026-07-28"],"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"acme-mcp","version":"2.3.1"}}}}`,
+			wantOutcome:    discoverModern,
+			wantAdvertised: []string{"2026-07-28"},
+			wantServerInfo: ServerInfo{Name: "acme-mcp", Version: "2.3.1"},
+		},
+		{
+			name:           "200 result without _meta has zero ServerInfo",
+			status:         http.StatusOK,
+			payload:        `{"jsonrpc":"2.0","id":1,"result":{"supportedVersions":["2026-07-28"]}}`,
+			wantOutcome:    discoverModern,
+			wantAdvertised: []string{"2026-07-28"},
+			wantServerInfo: ServerInfo{},
+		},
+		{
+			// Regression for #742 cycle 1 Finding 1: a non-object _meta must
+			// never fail discoverResult's Unmarshal and fall through to
+			// discoverLegacy — that would silently drop the #741 header
+			// binding on a server that is definitively modern.
+			name:           "200 result with non-object _meta (string) still classifies modern",
+			status:         http.StatusOK,
+			payload:        `{"jsonrpc":"2.0","id":1,"result":{"supportedVersions":["2026-07-28"],"_meta":"not-an-object"}}`,
+			wantOutcome:    discoverModern,
+			wantAdvertised: []string{"2026-07-28"},
+			wantServerInfo: ServerInfo{},
+		},
+		{
+			name:           "200 result with non-object _meta (array) still classifies modern",
+			status:         http.StatusOK,
+			payload:        `{"jsonrpc":"2.0","id":1,"result":{"supportedVersions":["2026-07-28"],"_meta":[1,2,3]}}`,
+			wantOutcome:    discoverModern,
+			wantAdvertised: []string{"2026-07-28"},
+			wantServerInfo: ServerInfo{},
+		},
+		{
+			name:           "200 result with non-object _meta (number) still classifies modern",
+			status:         http.StatusOK,
+			payload:        `{"jsonrpc":"2.0","id":1,"result":{"supportedVersions":["2026-07-28"],"_meta":42}}`,
+			wantOutcome:    discoverModern,
+			wantAdvertised: []string{"2026-07-28"},
+			wantServerInfo: ServerInfo{},
 		},
 		{
 			name:           "200 result with multiple supportedVersions",
@@ -182,6 +227,9 @@ func TestClassifyDiscoverResponse(t *testing.T) {
 				}
 			} else if got.ModernErr != nil {
 				t.Errorf("ModernErr = %v, want nil", got.ModernErr)
+			}
+			if got.ServerInfo != tc.wantServerInfo {
+				t.Errorf("ServerInfo = %+v, want %+v", got.ServerInfo, tc.wantServerInfo)
 			}
 		})
 	}
@@ -447,6 +495,81 @@ func TestProbeProtocolVersion_RequestShape(t *testing.T) {
 		t.Error("_meta missing clientCapabilities")
 	} else if string(raw) != "{}" {
 		t.Errorf("_meta.clientCapabilities = %s, want {}", raw)
+	}
+}
+
+// TestProbeProtocolVersion_CapturesServerInfo proves ProbeResult.ServerInfo
+// is populated end to end from a FakeModern server's configured identity,
+// and that an empty configuration (WithFakeServerInfo("", "")) yields a zero
+// ServerInfo without failing the probe.
+func TestProbeProtocolVersion_CapturesServerInfo(t *testing.T) {
+	tests := []struct {
+		name string
+		opts []FakeServerOption
+		want ServerInfo
+	}{
+		{
+			name: "server reports its identity",
+			opts: []FakeServerOption{WithFakeMode(FakeModern), WithFakeServerInfo("acme-mcp", "2.3.1")},
+			want: ServerInfo{Name: "acme-mcp", Version: "2.3.1"},
+		},
+		{
+			name: "server reports nothing",
+			opts: []FakeServerOption{WithFakeMode(FakeModern), WithFakeServerInfo("", "")},
+			want: ServerInfo{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := NewFakeMCPServer(tc.opts...)
+			srv := httptest.NewServer(fake)
+			t.Cleanup(srv.Close)
+
+			c := NewClient(srv.URL)
+			res, err := c.ProbeProtocolVersion(context.Background())
+			if err != nil {
+				t.Fatalf("ProbeProtocolVersion: %v", err)
+			}
+			if res.ServerInfo != tc.want {
+				t.Errorf("ServerInfo = %+v, want %+v", res.ServerInfo, tc.want)
+			}
+		})
+	}
+}
+
+// TestProbeProtocolVersion_ServerInfoIsBounded mirrors
+// TestProbeProtocolVersion_ErrorMessageIsBounded: a hostile server's
+// self-reported serverInfo.name must be bounded before it can ever reach a
+// log line, not merely bounded in the parseServerInfo unit test.
+func TestProbeProtocolVersion_ServerInfoIsBounded(t *testing.T) {
+	huge := strings.Repeat("x", 1<<20)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result": map[string]any{
+				"supportedVersions": []string{ProtocolVersion20260728},
+				"_meta": map[string]any{
+					metaKeyServerInfo: map[string]any{
+						"name":    huge,
+						"version": "1.0.0",
+					},
+				},
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewClient(srv.URL)
+	res, err := c.ProbeProtocolVersion(context.Background())
+	if err != nil {
+		t.Fatalf("ProbeProtocolVersion: %v", err)
+	}
+	maxLen := maxServerInfoFieldLen + len("…")
+	if len(res.ServerInfo.Name) > maxLen {
+		t.Errorf("len(ServerInfo.Name) = %d, want <= %d", len(res.ServerInfo.Name), maxLen)
 	}
 }
 
