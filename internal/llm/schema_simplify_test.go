@@ -1003,6 +1003,191 @@ func TestSimplify_Required_SurvivesWhenPropertyPresent(t *testing.T) {
 	}
 }
 
+// TestSimplify_DiscriminatorExcludedByScope_NotInjected is round-2 Finding
+// 1's regression test (the HIGH blocker): mergeProperties's Finding-3A scope
+// intersection was never applied to the discriminator entry
+// mergeObjectVariants synthesizes separately, so a discriminated property a
+// policy's params scoping excluded (ADR-017) was still shown, and REQUIRED,
+// to the model — mirroring the security review's own {path, mode} PoC. The
+// discriminator name ("mode") must be neither injected into "properties" nor
+// into "required", and must not be named in the prose ("selected by ...").
+func TestSimplify_DiscriminatorExcludedByScope_NotInjected(t *testing.T) {
+	in := mustMarshalSchema(t, map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"path": map[string]any{"type": "string"}},
+		"oneOf": []any{
+			map[string]any{"type": "object", "properties": map[string]any{"mode": map[string]any{"const": "read"}}, "required": []any{"mode"}},
+			map[string]any{"type": "object", "properties": map[string]any{"mode": map[string]any{"const": "delete"}}, "required": []any{"mode"}},
+		},
+	})
+	m := assertRewritten(t, in, googleLike())
+
+	props := properties(t, m)
+	if _, ok := props["path"]; !ok {
+		t.Error(`properties["path"] missing (the parent's own property)`)
+	}
+	if _, ok := props["mode"]; ok {
+		t.Error(`properties["mode"] present, want stripped (parent declares only "path"; the discriminator must not bypass Finding-3A scoping)`)
+	}
+	if got, present := m["required"]; present {
+		t.Errorf(`required = %#v, want absent ("mode" is out of scope, so it cannot be required either)`, got)
+	}
+	// The prose must not name "mode" as a discriminator ("selected by
+	// \"mode\""; variantLabel must not quote its per-variant tag values
+	// either) — describeVariant's own per-variant "properties: ..." summary
+	// is a separate, already-covered concern (TestSimplify_NonDiscriminatedOneOf_PermissiveUnion
+	// shows a stripped name can still appear there) and is not what this
+	// finding is about.
+	desc, _ := m["description"].(string)
+	if strings.Contains(desc, "selected by") {
+		t.Errorf("description = %q, want no discriminator naming (the property is out of scope)", desc)
+	}
+	wantLead := "Exactly one of the following variants applies; do not mix properties from different variants."
+	if !strings.HasPrefix(desc, wantLead) {
+		t.Errorf("description = %q, want the non-discriminated lead %q", desc, wantLead)
+	}
+}
+
+// TestSimplify_MergeFirstVariant_DropsRequiredWithoutMatchingProperty is
+// round-2 Finding 2's regression test: mergeFirstVariant copies variant[0]'s
+// "required" into m verbatim whenever m does not already declare one, with no
+// check against what ends up in m["properties"] — unlike Finding 5's filter
+// on the mergeObjectVariants path. Here the parent scopes its own properties
+// to {"path"}, and the fallback variant (a propertyless "type":"array")
+// declares "required":["force"], which must not survive: it would make the
+// tool permanently uninvokable once dispatch-time enforcement rejects any
+// call containing "force".
+func TestSimplify_MergeFirstVariant_DropsRequiredWithoutMatchingProperty(t *testing.T) {
+	in := mustMarshalSchema(t, map[string]any{
+		"properties": map[string]any{"path": map[string]any{"type": "string"}},
+		"oneOf": []any{
+			map[string]any{"type": "array", "required": []any{"force"}},
+			map[string]any{"type": "string"},
+		},
+	})
+	m := assertRewritten(t, in, googleLike())
+
+	if got, present := m["required"]; present {
+		t.Errorf(`required = %#v, want absent ("force" has no corresponding properties entry)`, got)
+	}
+	props := properties(t, m)
+	if _, ok := props["force"]; ok {
+		t.Error(`properties["force"] present, want absent`)
+	}
+	if _, ok := props["path"]; !ok {
+		t.Error(`properties["path"] missing (the parent's own property)`)
+	}
+}
+
+// TestSimplify_MergeRequired_DeletesStaleParentRequired is round-2 Finding
+// 3's regression test: mergeRequired can compute an empty result (every
+// candidate name filtered out because it has no corresponding entry in the
+// merged properties), but the assignment `if len(req) > 0 { m["required"] =
+// req }` never runs the ELSE branch — so m's own pre-existing "required",
+// already folded into mergeRequired's starting set, survives on m completely
+// unfiltered. Here the parent declares "required":["force"] but scopes its
+// own properties to {"path"}, and neither oneOf variant requires anything, so
+// the merge result is empty and the stale "required" must be deleted.
+func TestSimplify_MergeRequired_DeletesStaleParentRequired(t *testing.T) {
+	in := mustMarshalSchema(t, map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"path": map[string]any{"type": "string"}},
+		"required":   []any{"force"},
+		"oneOf": []any{
+			map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}},
+			map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}},
+		},
+	})
+	m := assertRewritten(t, in, googleLike())
+
+	if got, present := m["required"]; present {
+		t.Errorf(`required = %#v, want absent (the parent's stale "force" was filtered out and must not survive)`, got)
+	}
+}
+
+// TestSimplify_DiscriminatorEmptyIntersection_LeavesParentPropertyUntouched
+// is round-2 Finding 4's regression test: when the parent's own declared
+// enum for the discriminator property shares no value with any variant's
+// tag, the narrowed intersection is empty — and an empty "enum" is not "no
+// constraint" to the Google wire (internal/llm/google/schema.go drops an
+// empty enum, presenting an UNCONSTRAINED string instead). The fix must
+// leave the parent's own declared property entry untouched rather than
+// overriding it with an empty-enum schema. Two reachable shapes are covered,
+// per the finding: a single branch keyword whose variants are all disjoint
+// from the parent's enum, and two branch keywords (oneOf then anyOf)
+// discriminating on the same property name where only the SECOND is
+// disjoint.
+func TestSimplify_DiscriminatorEmptyIntersection_LeavesParentPropertyUntouched(t *testing.T) {
+	t.Run("single branch keyword, all variant tags disjoint from parent enum", func(t *testing.T) {
+		in := mustMarshalSchema(t, map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"mode": map[string]any{"type": "string", "enum": []any{"execute"}}},
+			"oneOf": []any{
+				map[string]any{"type": "object", "properties": map[string]any{"mode": map[string]any{"const": "read"}}},
+				map[string]any{"type": "object", "properties": map[string]any{"mode": map[string]any{"const": "delete"}}},
+			},
+		})
+		m := assertRewritten(t, in, googleLike())
+
+		props := properties(t, m)
+		wantMode := map[string]any{"type": "string", "enum": []any{"execute"}}
+		if got := props["mode"]; !mapsEqual(got, wantMode) {
+			t.Errorf(`properties["mode"] = %#v, want %#v (parent's own entry left untouched, not overridden with an empty enum)`, got, wantMode)
+		}
+	})
+
+	t.Run("oneOf leaves the property untouched, anyOf's tags are disjoint from the parent enum", func(t *testing.T) {
+		in := mustMarshalSchema(t, map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"mode": map[string]any{"type": "string", "enum": []any{"read"}},
+			},
+			"oneOf": []any{
+				// Discriminates on unrelated names, so mode passes through
+				// oneOf's collapse unchanged (still scoped out, since only
+				// "mode" is in the parent's own declared properties).
+				map[string]any{"type": "object", "properties": map[string]any{"x": map[string]any{"type": "string"}}},
+				map[string]any{"type": "object", "properties": map[string]any{"y": map[string]any{"type": "string"}}},
+			},
+			"anyOf": []any{
+				map[string]any{"type": "object", "properties": map[string]any{"mode": map[string]any{"const": "delete"}}},
+				map[string]any{"type": "object", "properties": map[string]any{"mode": map[string]any{"const": "execute"}}},
+			},
+		})
+		m := assertRewritten(t, in, googleLike())
+
+		props := properties(t, m)
+		wantMode := map[string]any{"type": "string", "enum": []any{"read"}}
+		if got := props["mode"]; !mapsEqual(got, wantMode) {
+			t.Errorf(`properties["mode"] = %#v, want %#v (anyOf's discriminator override must not widen past the parent's own enum)`, got, wantMode)
+		}
+	})
+}
+
+// TestSimplify_DiscriminatorPreservesOtherParentConstraints is round-2
+// Finding 5's regression test: discriminatorSchema used to rebuild the
+// property from scratch as {type, enum, description}, discarding any other
+// constraint the parent had already declared on that name (a "pattern",
+// "format", "minLength", ...). The fix starts from the parent's own
+// declaration and only adds/narrows "enum".
+func TestSimplify_DiscriminatorPreservesOtherParentConstraints(t *testing.T) {
+	in := mustMarshalSchema(t, map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"mode": map[string]any{"type": "string", "pattern": "^read$"}},
+		"oneOf": []any{
+			map[string]any{"type": "object", "properties": map[string]any{"mode": map[string]any{"const": "read"}}},
+			map[string]any{"type": "object", "properties": map[string]any{"mode": map[string]any{"const": "delete"}}},
+		},
+	})
+	m := assertRewritten(t, in, googleLike())
+
+	props := properties(t, m)
+	wantMode := map[string]any{"type": "string", "pattern": "^read$", "enum": []any{"read", "delete"}}
+	if got := props["mode"]; !mapsEqual(got, wantMode) {
+		t.Errorf(`properties["mode"] = %#v, want %#v (discriminator adds/narrows "enum" but keeps the parent's other declared constraints)`, got, wantMode)
+	}
+}
+
 // mapsEqual compares two decoded JSON values for structural equality. Every
 // call site in this file compares a value assertRewritten decoded (numbers
 // arrive as json.Number, but every value under test here is a string, bool,

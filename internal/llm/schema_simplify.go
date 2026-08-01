@@ -379,9 +379,10 @@ func classifyVariants(objVariants []map[string]any) variantKind {
 // superset)" strategy: every variant's properties are folded into one
 // properties map, required becomes exact rather than a guess (the
 // intersection across variants, unioned with the parent's own required), a
-// discriminating tag property (if found) is flattened into an exact enum,
-// and — unless there was only one variant — prose describing the collapsed
-// variants is appended to the node's description.
+// discriminating tag property (if found and in scope — see the scope check
+// below) is flattened into an exact enum, and — unless there was only one
+// variant — prose describing the collapsed variants is appended to the
+// node's description.
 func mergeObjectVariants(m map[string]any, keyword string, objVariants []map[string]any, noProse bool, scopeProperties map[string]any, hasScopeProperties bool) {
 	if _, ok := m["type"]; !ok {
 		m["type"] = "object"
@@ -390,14 +391,39 @@ func mergeObjectVariants(m map[string]any, keyword string, objVariants []map[str
 	merged := mergeProperties(m, objVariants, scopeProperties, hasScopeProperties)
 
 	discName, discValues, hasDisc := findDiscriminator(objVariants)
-	if hasDisc {
-		if merged == nil {
-			merged = map[string]any{}
+	if hasDisc && hasScopeProperties {
+		if _, allowed := scopeProperties[discName]; !allowed {
+			// round-2 Finding 1: mergeProperties's own scope intersection
+			// (Finding 3A, above) only guards variant-contributed names
+			// copied verbatim from a variant's "properties" map. The
+			// discriminator entry bypassed that guard entirely — it is
+			// synthesized separately, from every variant, and was
+			// unconditionally injected below as "the single exception to
+			// parent wins", so a discName the parent never declared
+			// (ADR-017 scoping excluded it) was shown to, and REQUIRED of,
+			// the model regardless. Treat an out-of-scope discriminator
+			// exactly like any other variant-only name: drop it here, and
+			// fall through to the plain (non-discriminated) prose below so
+			// it is not named there either.
+			hasDisc = false
+			discName = ""
 		}
+	}
+	if hasDisc {
 		// The single exception to "parent wins": this entry is derived from
-		// every variant and is exact, not a guess, so it always replaces
-		// whatever the parent (or a variant) declared for the same name.
-		merged[discName] = discriminatorSchema(m, objVariants, discName, discValues)
+		// every variant and is exact, not a guess, so it replaces whatever
+		// the parent (or a variant) declared for the same name — UNLESS the
+		// parent's own enum for discName shares no value with the derived
+		// set, in which case discriminatorSchema returns nil and the
+		// parent's own entry, already sitting in merged from
+		// mergeProperties's copy above, is left exactly as declared
+		// (round-2 Finding 4).
+		if schema := discriminatorSchema(m, objVariants, discName, discValues); schema != nil {
+			if merged == nil {
+				merged = map[string]any{}
+			}
+			merged[discName] = schema
+		}
 	}
 	if len(merged) > 0 {
 		m["properties"] = merged
@@ -405,6 +431,16 @@ func mergeObjectVariants(m map[string]any, keyword string, objVariants []map[str
 
 	if req := mergeRequired(m, objVariants, merged); len(req) > 0 {
 		m["required"] = req
+	} else {
+		// round-2 Finding 3: mergeRequired can legitimately compute "nothing
+		// is required" (for example every name that would have been
+		// required was itself stripped from merged by Finding 3A's scope
+		// intersection). Without this delete, m's OWN pre-merge "required" —
+		// already folded into mergeRequired's starting set before that
+		// filter ran — would survive untouched on m: exactly the stale,
+		// uninvokable "required" name mergeRequired's own filter exists to
+		// remove.
+		delete(m, "required")
 	}
 
 	if noProse {
@@ -649,9 +685,14 @@ func tagValues(sub map[string]any) []any {
 }
 
 // discriminatorSchema builds the exact enum schema for the discriminator
-// property, carrying over a description from the parent's own (pre-merge)
-// declaration of that property if present, else from the first variant's tag
-// subschema.
+// property, or nil when the override must not happen at all (round-2 Finding
+// 4 — see below). When it does build a schema, it starts from the parent's
+// own (pre-merge) declaration for name, if any, so constraints beyond "enum"
+// (a "pattern", "format", "minLength", ...) survive the override instead of
+// being silently discarded (round-2 Finding 5) — "type" and "enum" are the
+// only parts this function's derivation actually overrides. The description
+// carried over is the parent's own (pre-merge) declaration of that property
+// if present, else the first variant's tag subschema's.
 //
 // The discriminator override is documented elsewhere as "the single
 // exception to parent wins" — it replaces whatever the parent (or a variant)
@@ -667,8 +708,32 @@ func tagValues(sub map[string]any) []any {
 // declares the discriminator property" test has a plain "type":"string" with
 // no enum), there is nothing to narrow against, so the derived values apply
 // in full, exactly as before.
+//
+// round-2 Finding 4: when the parent DOES declare an enum and the narrowed
+// intersection comes back empty (the parent's allowed values share nothing
+// with any variant's tag — for example two branch keywords collapsing at
+// the same node, oneOf then anyOf, discriminating on the same name with
+// disjoint tag sets), an empty "enum" is not "no constraint" downstream: the
+// Google wire (internal/llm/google/schema.go) treats an empty or absent
+// "enum" as an UNCONSTRAINED string, which would widen the presented schema
+// past the parent's own declaration — a different flavor of the same
+// widening this function otherwise prevents. Returning nil tells the caller
+// to skip the assignment entirely, leaving whatever mergeProperties already
+// copied from the parent's own declared properties (untouched) in place.
 func discriminatorSchema(m map[string]any, objVariants []map[string]any, name string, values []any) map[string]any {
-	schema := map[string]any{"type": "string", "enum": intersectWithParentEnum(m, name, values)}
+	narrowed, hadParentEnum := intersectWithParentEnum(m, name, values)
+	if hadParentEnum && len(narrowed) == 0 {
+		return nil
+	}
+
+	schema := map[string]any{}
+	if parentSchema, ok := parentPropertySchema(m, name); ok {
+		for k, v := range parentSchema {
+			schema[k] = v
+		}
+	}
+	schema["type"] = "string"
+	schema["enum"] = narrowed
 	if desc := discriminatorDescription(m, objVariants, name); desc != "" {
 		schema["description"] = desc
 	}
@@ -676,14 +741,19 @@ func discriminatorSchema(m map[string]any, objVariants []map[string]any, name st
 }
 
 // intersectWithParentEnum narrows values down to the ones also present in
-// m's own declared enum for name, when m declares one; otherwise it returns
-// values unchanged. Membership is a marshal-once map lookup (like
-// dedupJSONValues), not a marshal-per-comparison scan, for the same reason
-// BLOCKER 2 replaced containsJSONValue elsewhere in this file.
-func intersectWithParentEnum(m map[string]any, name string, values []any) []any {
+// m's own declared enum for name, reporting whether m declared one at all —
+// the caller (discriminatorSchema) needs to distinguish "no parent enum, so
+// nothing to narrow against" from "parent enum present, but the narrowed
+// result happens to be empty" (round-2 Finding 4); only the latter must
+// suppress the override entirely. When m declares no enum for name, values
+// is returned unchanged and hadParentEnum is false. Membership is a
+// marshal-once map lookup (like dedupJSONValues), not a marshal-per-comparison
+// scan, for the same reason BLOCKER 2 replaced containsJSONValue elsewhere in
+// this file.
+func intersectWithParentEnum(m map[string]any, name string, values []any) (narrowed []any, hadParentEnum bool) {
 	parentEnum, ok := parentPropertyEnum(m, name)
 	if !ok {
-		return values
+		return values, false
 	}
 
 	allowed := make(map[string]struct{}, len(parentEnum))
@@ -695,7 +765,7 @@ func intersectWithParentEnum(m map[string]any, name string, values []any) []any 
 		allowed[string(key)] = struct{}{}
 	}
 
-	narrowed := make([]any, 0, len(values))
+	narrowed = make([]any, 0, len(values))
 	for _, v := range values {
 		key, err := marshalSchema(v)
 		if err != nil {
@@ -705,17 +775,37 @@ func intersectWithParentEnum(m map[string]any, name string, values []any) []any 
 			narrowed = append(narrowed, v)
 		}
 	}
-	return narrowed
+	return narrowed, true
 }
 
-// parentPropertyEnum returns m.properties[name].enum, or ok == false if any
-// step of that path is absent or not the expected shape.
-func parentPropertyEnum(m map[string]any, name string) (enum []any, ok bool) {
+// parentPropertySchema returns m.properties[name] itself, or ok == false if
+// either step of that path is absent or not the expected shape.
+func parentPropertySchema(m map[string]any, name string) (sub map[string]any, ok bool) {
 	props, ok := m["properties"].(map[string]any)
 	if !ok {
 		return nil, false
 	}
-	sub, ok := props[name].(map[string]any)
+	sub, ok = props[name].(map[string]any)
+	return sub, ok
+}
+
+// parentPropertyEnum returns m.properties[name].enum, or ok == false if any
+// step of that path is absent or not the expected shape.
+//
+// This only recognizes the "enum" spelling, not "const". That is safe today
+// only because simplifySchema recurses bottom-up and folds a node's own
+// "const" into a single-element "enum" (foldConst) before that node's own
+// oneOf/anyOf ever collapses — by the time a Google-wire schema reaches this
+// function, a parent property declared via "const" has already become
+// enum-shaped. A future wire that declares
+// SchemaFeatureSet{OneOf: false, Const: true} (oneOf eliminable, const left
+// alone) would reach this function with a parent property still in "const"
+// form, silently skip the Finding-4 narrowing this function exists for, and
+// re-open the widening bug it fixes. If that combination is ever declared,
+// this needs a const-aware lookup (or an explicit rejection), not a silent
+// pass-through.
+func parentPropertyEnum(m map[string]any, name string) (enum []any, ok bool) {
+	sub, ok := parentPropertySchema(m, name)
 	if !ok {
 		return nil, false
 	}
@@ -871,6 +961,21 @@ func dedupJSONValues(values []any) []any {
 // prose to fall back on (a single, typeless, propertyless variant, so
 // noProse is true), the description is still copied so the information is
 // not silently dropped — there is nothing else to convey it.
+//
+// round-2 Finding 2: the copy loop above can bring in variant[0]'s own
+// "required" verbatim whenever m does not already declare one of its own —
+// unlike "properties", "required" is copied with no relationship check to
+// whatever ends up in m["properties"] afterward. That misses two ways a
+// dangling name can result: m already had its own "properties" (so
+// "properties" is NOT copied here, m keeps its own, but "required" from a
+// propertyless variant — a bare "type":"array" with its own "required" —
+// still gets copied), or variant[0] itself declares "required" for a name
+// its own "properties" doesn't carry. Either way the tool ends up with a
+// required name that has no properties entry, permanently uninvokable once
+// dispatch-time enforcement rejects any call containing it (the same failure
+// mode Finding 5's mergeRequired filter exists to prevent on the
+// mergeObjectVariants path). filterRequiredAgainstProperties applies that
+// same filter here.
 func mergeFirstVariant(m map[string]any, keyword string, objVariants []map[string]any, noProse bool) {
 	for key, v := range objVariants[0] {
 		if key == "description" && !noProse {
@@ -880,11 +985,46 @@ func mergeFirstVariant(m map[string]any, keyword string, objVariants []map[strin
 			m[key] = v
 		}
 	}
+	filterRequiredAgainstProperties(m)
 
 	if noProse {
 		return
 	}
 	appendDescription(m, variantProse(keyword, objVariants, "", true))
+}
+
+// filterRequiredAgainstProperties drops any name from m["required"] that is
+// not also a key of m["properties"], deleting "required" entirely if that
+// empties it. It is a no-op when m declares no "properties" at all — with
+// nothing to check membership against, the "required" copied by
+// mergeFirstVariant is left as-is, matching the copy loop's own "parent's
+// own declaration always wins" rule for every other key.
+func filterRequiredAgainstProperties(m map[string]any) {
+	props, ok := m["properties"].(map[string]any)
+	if !ok {
+		return
+	}
+	req, ok := m["required"].([]any)
+	if !ok {
+		return
+	}
+
+	filtered := make([]any, 0, len(req))
+	for _, v := range req {
+		name, ok := v.(string)
+		if !ok {
+			continue
+		}
+		if _, present := props[name]; present {
+			filtered = append(filtered, v)
+		}
+	}
+
+	if len(filtered) == 0 {
+		delete(m, "required")
+		return
+	}
+	m["required"] = filtered
 }
 
 // foldConst replaces m's "const" with an equivalent single-value "enum",

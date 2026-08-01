@@ -1524,6 +1524,15 @@ func TestWire_SchemaFeatures_Restricted(t *testing.T) {
 // non-discriminated oneOf under a property, and a oneOf under an array's
 // items — must round-trip through the Google wire without error, since the
 // shared pass now eliminates oneOf/anyOf/const before schema.go ever sees them.
+//
+// The root also declares its own "kind" property (plain, no enum) alongside
+// "detail" and "items_list": mergeProperties/discriminatorSchema only ever
+// accept a oneOf variant's contributed name into the merged result when the
+// root ALSO declares that name itself (ADR-017 parameter scoping intersects
+// down to the schema's own declared properties, never widening past them —
+// see schema_simplify.go's Finding-3A/round-2-Finding-1 doc comments). A root
+// that declares "detail"/"items_list" but not "kind" would have the
+// discriminator itself scoped out, same as any other variant-only name.
 func TestGeminiClient_OneOfHeavySchema_RoundTrips(t *testing.T) {
 	original := json.RawMessage(`{
 		"type": "object",
@@ -1540,6 +1549,7 @@ func TestGeminiClient_OneOfHeavySchema_RoundTrips(t *testing.T) {
 			}
 		],
 		"properties": {
+			"kind": {"type": "string"},
 			"detail": {
 				"oneOf": [
 					{"type": "object", "properties": {"a": {"type": "string"}}},
