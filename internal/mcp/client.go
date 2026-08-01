@@ -96,6 +96,23 @@ func (e *HTTPStatusError) Error() string {
 	return fmt.Sprintf("mcp server returned status %d", e.StatusCode)
 }
 
+// toolsListParams is the params object for tools/list. The zero value marshals to
+// exactly `{}` — the same bytes the previous `struct{}{}` produced — so a legacy
+// request is unchanged.
+type toolsListParams struct {
+	Meta map[string]any `json:"_meta,omitempty"`
+}
+
+// toolsCallParams is the params object for tools/call. Name and Arguments are
+// declared first and _meta last with omitempty, so a legacy request marshals to
+// exactly `{"name":...,"arguments":...}` — byte-for-byte what the previous
+// anonymous struct produced.
+type toolsCallParams struct {
+	Name      string         `json:"name"`
+	Arguments map[string]any `json:"arguments"`
+	Meta      map[string]any `json:"_meta,omitempty"`
+}
+
 type toolsListResult struct {
 	Tools []toolWire `json:"tools"`
 }
@@ -408,11 +425,13 @@ const (
 // DiscoverTools calls the MCP server's tool list endpoint and returns all
 // available tools. Used during server registration to populate mcp_tools.
 func (c *Client) DiscoverTools(ctx context.Context) ([]Tool, error) {
+	// tools/list invokes nothing, so it never declares a capability; the empty
+	// clientCapabilities object is still required on the modern path.
 	body, err := json.Marshal(jsonrpcRequest{
 		JSONRPC: "2.0",
 		ID:      2,
 		Method:  methodToolsList,
-		Params:  struct{}{},
+		Params:  toolsListParams{Meta: c.requestMeta(ClientCapabilities{})},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal tools/list request: %w", err)
@@ -446,7 +465,12 @@ func (c *Client) DiscoverTools(ctx context.Context) ([]Tool, error) {
 
 // CallTool invokes a named tool on the MCP server with the given input.
 // The input must be a JSON-serialisable value matching the tool's inputSchema.
-func (c *Client) CallTool(ctx context.Context, name string, input map[string]any) (res ToolResult, err error) {
+//
+// caps is the per-request client capability declaration (spec §11). It is
+// honored only on the 2026-07-28 transport; on the legacy transport it is
+// structurally inert because requestMeta returns nil for a non-modern client,
+// so a granted capability can never leak into a legacy request body.
+func (c *Client) CallTool(ctx context.Context, name string, input map[string]any, caps ClientCapabilities) (res ToolResult, err error) {
 	start := time.Now()
 	defer func() {
 		mcpCallDurationSeconds.
@@ -464,13 +488,7 @@ func (c *Client) CallTool(ctx context.Context, name string, input map[string]any
 		JSONRPC: "2.0",
 		ID:      2,
 		Method:  methodToolsCall,
-		Params: struct {
-			Name      string         `json:"name"`
-			Arguments map[string]any `json:"arguments"`
-		}{
-			Name:      name,
-			Arguments: input,
-		},
+		Params:  toolsCallParams{Name: name, Arguments: input, Meta: c.requestMeta(caps)},
 	})
 	if err != nil {
 		err = fmt.Errorf("marshal tools/call request: %w", err)

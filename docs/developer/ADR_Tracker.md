@@ -84,7 +84,7 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 - **ADR-025 and ADR-027 were never assigned** — the numbering intentionally skips them; there is no missing record.
 - **ADR-011, ADR-012, ADR-013, ADR-014, and ADR-043 are index-only** (no dedicated `## ADR-NNN` body below). ADR-011's approval lifecycle is documented under ADR-008 + ADR-029; ADR-043's signing tooling is documented inside the ADR-045 body.
 - **ADR-036 was deferred and never implemented** — see its body for the per-loop trigger architecture that shipped instead.
-- **ADR-053 through ADR-060 share a single body**: [mcp-realignment-spec.md](mcp-realignment-spec.md) (MCP 2026 realignment, target tag `v0.2.0-alpha`). Decided 2026-07-30; the §10/§11 MCP-client-compliance and schema-policy half is landing incrementally (#733–#737, #741 — the client already speaks the 2026-07-28 request shaping to pinned-modern servers), while the plugin/container/HITL half is not started. Note the phase label `v0.2.0-alpha` is a deliberate version re-baseline that post-dates the shipped `v1.0.0`/`v1.1.0` tags.
+- **ADR-053 through ADR-060 share a single body**: [mcp-realignment-spec.md](mcp-realignment-spec.md) (MCP 2026 realignment, target tag `v0.2.0-alpha`). Decided 2026-07-30; the §10/§11 MCP-client-compliance and schema-policy half is landing incrementally (#733–#737, #741, #742 — the client already speaks the 2026-07-28 request shaping to pinned-modern servers), while the plugin/container/HITL half is not started. Note the phase label `v0.2.0-alpha` is a deliberate version re-baseline that post-dates the shipped `v1.0.0`/`v1.1.0` tags.
 
 ---
 

@@ -79,6 +79,27 @@ func TestFakeMCPServer_DiscoverModeShapes(t *testing.T) {
 		}
 	})
 
+	t.Run("WithFakeServerInfo empty/empty omits the discover result's _meta entirely", func(t *testing.T) {
+		fake := NewFakeMCPServer(WithFakeMode(FakeModern), WithFakeServerInfo("", ""))
+		srv := httptest.NewServer(fake)
+		t.Cleanup(srv.Close)
+
+		status, envelope := postDiscover(t, srv, discoverBody("2026-07-28"), map[string]string{
+			"MCP-Protocol-Version": "2026-07-28",
+			"Mcp-Method":           "server/discover",
+		})
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", status)
+		}
+		var rawResult map[string]json.RawMessage
+		if err := json.Unmarshal(envelope.Result, &rawResult); err != nil {
+			t.Fatalf("unmarshal result: %v", err)
+		}
+		if _, ok := rawResult["_meta"]; ok {
+			t.Errorf("result carries a _meta key, want it omitted entirely: %s", envelope.Result)
+		}
+	})
+
 	t.Run("FakeVersionMismatch returns 400 with -32022 and data.supported", func(t *testing.T) {
 		fake := NewFakeMCPServer(WithFakeMode(FakeVersionMismatch), WithFakeSupportedVersions("2025-11-25"))
 		srv := httptest.NewServer(fake)
@@ -319,6 +340,15 @@ func TestFakeMCPServer_A4HeaderEnforcement(t *testing.T) {
 	})
 }
 
+// toolMeta builds a minimal, valid _meta object for tool traffic, mirroring
+// discoverBody's inner _meta shape.
+func toolMeta(protocolVersion string) map[string]any {
+	return map[string]any{
+		metaKeyProtocolVersion:    protocolVersion,
+		metaKeyClientCapabilities: map[string]any{},
+	}
+}
+
 // postRPC sends a hand-rolled JSON-RPC POST to srv with exactly the given
 // headers, mirroring postDiscover for methods other than server/discover.
 func postRPC(t *testing.T, srv *httptest.Server, body map[string]any, headers map[string]string) (int, jsonrpcResponse) {
@@ -400,7 +430,7 @@ func TestFakeMCPServer_StrictModern(t *testing.T) {
 		_, srv := newStrictFake(t)
 
 		status, envelope := postRPC(t, srv, map[string]any{
-			"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": map[string]any{},
+			"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": map[string]any{"_meta": toolMeta("2026-07-28")},
 		}, map[string]string{
 			"MCP-Protocol-Version": "2026-07-28",
 			"Mcp-Method":           "tools/list",
@@ -414,6 +444,26 @@ func TestFakeMCPServer_StrictModern(t *testing.T) {
 		}
 		if len(result.Tools) != 1 || result.Tools[0].Name != "tool-a" {
 			t.Errorf("Tools = %v, want [tool-a]", result.Tools)
+		}
+	})
+
+	t.Run("strict-modern tools/list whose _meta.protocolVersion disagrees with the header is -32020", func(t *testing.T) {
+		fake, srv := newStrictFake(t)
+
+		status, envelope := postRPC(t, srv, map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": map[string]any{"_meta": toolMeta("1900-01-01")},
+		}, map[string]string{
+			"MCP-Protocol-Version": "2026-07-28",
+			"Mcp-Method":           "tools/list",
+		})
+		if status != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", status)
+		}
+		if envelope.Error == nil || envelope.Error.Code != -32020 {
+			t.Fatalf("error = %+v, want code -32020", envelope.Error)
+		}
+		if v := fake.Violations(); len(v) != 1 {
+			t.Errorf("Violations = %v, want exactly one", v)
 		}
 	})
 
@@ -444,7 +494,7 @@ func TestFakeMCPServer_StrictModern(t *testing.T) {
 
 		status, envelope := postRPC(t, srv, map[string]any{
 			"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-			"params": map[string]any{"name": "tool-a", "arguments": map[string]any{}},
+			"params": map[string]any{"name": "tool-a", "arguments": map[string]any{}, "_meta": toolMeta("2026-07-28")},
 		}, map[string]string{
 			"MCP-Protocol-Version": "2026-07-28",
 			"Mcp-Method":           "tools/call",
@@ -465,12 +515,34 @@ func TestFakeMCPServer_StrictModern(t *testing.T) {
 		}
 	})
 
+	t.Run("strict-modern tools/call with valid headers but no _meta is rejected with -32602", func(t *testing.T) {
+		fake, srv := newStrictFake(t)
+
+		status, envelope := postRPC(t, srv, map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+			"params": map[string]any{"name": "tool-a", "arguments": map[string]any{}},
+		}, map[string]string{
+			"MCP-Protocol-Version": "2026-07-28",
+			"Mcp-Method":           "tools/call",
+			"Mcp-Name":             "tool-a",
+		})
+		if status != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", status)
+		}
+		if envelope.Error == nil || envelope.Error.Code != -32602 {
+			t.Fatalf("error = %+v, want code -32602", envelope.Error)
+		}
+		if v := fake.Violations(); len(v) != 1 {
+			t.Errorf("Violations = %v, want exactly one", v)
+		}
+	})
+
 	t.Run("tools/call with no params.name is accepted because expectedName is empty", func(t *testing.T) {
 		fake, srv := newStrictFake(t)
 
 		status, envelope := postRPC(t, srv, map[string]any{
 			"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-			"params": map[string]any{"arguments": map[string]any{}},
+			"params": map[string]any{"arguments": map[string]any{}, "_meta": toolMeta("2026-07-28")},
 		}, map[string]string{
 			"MCP-Protocol-Version": "2026-07-28",
 			"Mcp-Method":           "tools/call",

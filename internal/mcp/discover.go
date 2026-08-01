@@ -5,22 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
-
-	"github.com/felag-engineering/gleipnir/internal/infra/version"
 )
 
 // methodServerDiscover is the JSON-RPC method name for the 2026-07-28
 // protocol-discovery probe.
 const methodServerDiscover = "server/discover"
-
-// _meta reserved keys used on every 2026-07-28 request (basic/index.md
-// "Per-request protocol fields").
-const (
-	metaKeyProtocolVersion    = "io.modelcontextprotocol/protocolVersion"
-	metaKeyClientInfo         = "io.modelcontextprotocol/clientInfo"
-	metaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
-)
 
 // MCP reserves JSON-RPC codes -32020..-32099 for spec-defined errors; a code
 // in this range is proof the peer speaks a modern revision.
@@ -167,12 +158,27 @@ func summarizeAdvertised(advertised []string) string {
 	return out
 }
 
+// discoverParams is the params object for server/discover.
+type discoverParams struct {
+	Meta map[string]any `json:"_meta,omitempty"`
+}
+
 // discoverResult is the wire shape of a successful server/discover response
 // (spec A2). Note the field is "supportedVersions", NOT "supported" — the
 // latter is only used in the -32022 error's data (see unsupportedVersionData).
 type discoverResult struct {
 	ResultType        string   `json:"resultType"` // absent ⇒ "complete"
 	SupportedVersions []string `json:"supportedVersions"`
+	// Meta is untrusted, optional, and purely diagnostic — it must never be
+	// able to influence protocol-era classification. json.RawMessage never
+	// fails to decode for any valid JSON value (object, string, number, bool,
+	// array, or null), so a malformed/non-object _meta cannot fail this
+	// struct's Unmarshal and cannot flip a definitively-modern result to the
+	// discoverLegacy fallback below (security review, #742 cycle 1 Finding 1:
+	// a strict `map[string]json.RawMessage` field did exactly that, silently
+	// pinning the server LEGACY and dropping the #741 header binding).
+	// parseServerInfo does its own tolerant decode of this raw value.
+	Meta json.RawMessage `json:"_meta"`
 }
 
 // unsupportedVersionData is the "data" payload of a -32022
@@ -198,6 +204,7 @@ type ProbeResult struct {
 	Version         string      // version to pin; always non-empty on success
 	Era             ProtocolEra // where Version came from
 	ServerSupported []string    // raw advertised list, server order; diagnostic only
+	ServerInfo      ServerInfo  // server's self-reported identity; zero when it sent none
 }
 
 // ErrNoCompatibleProtocolVersion reports a server that is definitively
@@ -223,6 +230,7 @@ type discoverClassification struct {
 	Outcome    discoverOutcome
 	Advertised []string      // supportedVersions, or -32022 data.supported
 	ModernErr  *JSONRPCError // the recognized MCP-reserved error, if any
+	ServerInfo ServerInfo    // captured from a discoverModern result's _meta; zero on an error envelope
 }
 
 // classifyDiscoverResponse implements the HTTP era-detection algorithm from
@@ -276,7 +284,11 @@ func classifyDiscoverResponse(status int, payload []byte) discoverClassification
 		// tools/list-shaped fake, or "{}") gives us nothing to pin, so it is
 		// classified legacy rather than unclassified.
 		if err := json.Unmarshal(envelope.Result, &result); err == nil && len(result.SupportedVersions) > 0 {
-			return discoverClassification{Outcome: discoverModern, Advertised: result.SupportedVersions}
+			return discoverClassification{
+				Outcome:    discoverModern,
+				Advertised: result.SupportedVersions,
+				ServerInfo: parseServerInfo(result.Meta),
+			}
 		}
 		return discoverClassification{Outcome: discoverLegacy}
 	}
@@ -309,20 +321,15 @@ func (c *Client) ProbeProtocolVersion(ctx context.Context) (ProbeResult, error) 
 	// protocolVersion (A4); write it from one variable so they cannot drift.
 	const requestedVersion = ProtocolVersion20260728
 
+	// This call site uses newRequestMeta directly, NOT c.requestMeta — the
+	// probe must send modern _meta from an UNPINNED client (that is the whole
+	// point of a probe), so it deliberately bypasses the isModernProtocol
+	// gate.
 	body, err := json.Marshal(jsonrpcRequest{
 		JSONRPC: "2.0",
 		ID:      1,
 		Method:  methodServerDiscover,
-		Params: map[string]any{
-			"_meta": map[string]any{
-				metaKeyProtocolVersion: requestedVersion,
-				metaKeyClientInfo: map[string]any{
-					"name":    "gleipnir",
-					"version": version.Version,
-				},
-				metaKeyClientCapabilities: map[string]any{},
-			},
-		},
+		Params:  discoverParams{Meta: newRequestMeta(requestedVersion, ClientCapabilities{})},
 	})
 	if err != nil {
 		return ProbeResult{}, fmt.Errorf("marshal server/discover request: %w", err)
@@ -363,7 +370,14 @@ func (c *Client) ProbeProtocolVersion(ctx context.Context) (ProbeResult, error) 
 		// A modern classification is definitive: the server is not legacy,
 		// so the legacy handshake is never attempted from this branch.
 		if v := selectProtocolVersion(cls.Advertised); v != "" {
-			return ProbeResult{Version: v, Era: EraModern, ServerSupported: cls.Advertised}, nil
+			if cls.ServerInfo != (ServerInfo{}) {
+				slog.Info("mcp server identified itself",
+					"server_name", c.serverName,
+					"reported_name", cls.ServerInfo.Name,
+					"reported_version", cls.ServerInfo.Version,
+					"protocol_version", v)
+			}
+			return ProbeResult{Version: v, Era: EraModern, ServerSupported: cls.Advertised, ServerInfo: cls.ServerInfo}, nil
 		}
 		// Confirmed modern, nothing in common. basic/versioning.md §Protocol
 		// Version Negotiation gives exactly two options — retry with a

@@ -292,8 +292,11 @@ func (p *Poller) poll(ctx context.Context, policyID string, parsed *model.Parsed
 			continue
 		}
 
+		// A poll check runs on a timer with no operator attached to answer
+		// anything, so this path declares no client capability — permanently,
+		// not "not yet".
 		evalCtx, cancel := context.WithTimeout(ctx, parsed.Trigger.Interval)
-		result, err := client.CallTool(evalCtx, toolName, check.Input)
+		result, err := client.CallTool(evalCtx, toolName, check.Input, mcp.ClientCapabilities{})
 		cancel()
 		if err != nil {
 			if errors.Is(evalCtx.Err(), context.DeadlineExceeded) {
