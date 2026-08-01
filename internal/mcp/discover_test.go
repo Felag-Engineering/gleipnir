@@ -450,10 +450,13 @@ func TestProbeProtocolVersion_RequestShape(t *testing.T) {
 	}
 }
 
-// TestProbeProtocolVersion_DoesNotReshapeToolCalls is the scope-discipline
-// guard: #737 threads the protocol-version pin but must not re-shape any
-// tool traffic. #741 inverts this assertion.
-func TestProbeProtocolVersion_DoesNotReshapeToolCalls(t *testing.T) {
+// TestProbeProtocolVersion_UnpinnedClientKeepsLegacyShaping guards the
+// branch-on-the-pin design: request shaping branches on the
+// WithProtocolVersion pin the Registry threads from mcp_servers.protocol_version,
+// never on a probe result, so a client that was never constructed with a pin
+// stays legacy-shaped even right after ProbeProtocolVersion classifies the
+// server as modern.
+func TestProbeProtocolVersion_UnpinnedClientKeepsLegacyShaping(t *testing.T) {
 	fake := NewFakeMCPServer(WithFakeMode(FakeModern))
 	srv := httptest.NewServer(fake)
 	t.Cleanup(srv.Close)

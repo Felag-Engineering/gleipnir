@@ -44,8 +44,12 @@ var supportedProtocolVersions = []string{ProtocolVersion20260728}
 // clause, evaluated against the row's live state, not here.
 func modernVersionsForQuery() []*string {
 	out := make([]*string, len(supportedProtocolVersions))
-	for i := range supportedProtocolVersions {
-		out[i] = &supportedProtocolVersions[i]
+	for i, v := range supportedProtocolVersions {
+		// supportedProtocolVersions now decides request shaping process-wide
+		// (isModernProtocol, client.go), so callers must never be handed a
+		// pointer into the global itself. Take the address of v (the
+		// per-iteration range copy, Go 1.22+), not &supportedProtocolVersions[i].
+		out[i] = &v
 	}
 	return out
 }

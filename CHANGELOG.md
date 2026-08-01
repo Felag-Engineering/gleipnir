@@ -8,8 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- **`mcp_servers.protocol_version` column.** Schema groundwork for pinning the MCP protocol version negotiated per registry entry at `server/discover` time (mcp-realignment-spec.md §11); nullable, unread by any code path yet (#733).
+- **`mcp_servers.protocol_version` column.** Pins the MCP protocol version negotiated per registry entry at `server/discover` time (mcp-realignment-spec.md §11); nullable, NULL/`""` means unpinned (#733).
 - **`mcp_tools.canonical_schema` column.** Populated at discovery with schemanorm-normalized bytes (ADR-059 / mcp-realignment-spec.md §10 step 1) alongside the raw schema. Drift detection now compares the canonical form so key-order-only schema changes no longer flag a tool as modified. `Registry.ResolveForPolicy` already reads the column into `ResolvedTool.CanonicalSchema`, but nothing consumes it yet (#738).
+- **Bilingual MCP request path.** A server pinned to `2026-07-28` now gets stateless `tools/list`/`tools/call` POSTs carrying `MCP-Protocol-Version`, `Mcp-Method`, and (on `tools/call`) `Mcp-Name`, with no session, no `Mcp-Session-Id`, and no 401 re-init retry; unpinned and legacy-pinned servers stay byte-for-byte unchanged (#741). `resultType` handling and the 2026-07-28 error-code renumbering remain outstanding (#762).
 
 ### Changed
 

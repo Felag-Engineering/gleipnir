@@ -22,24 +22,28 @@ import (
 // package is never coupled to *testing.T and a handler goroutine can never
 // be tempted to call t.Fatal (which is illegal outside the test goroutine).
 //
-// IMPORTANT compatibility note: in EVERY mode the fake also serves the
-// legacy `initialize` (minting `Mcp-Session-Id: fake-session`, echoing
+// IMPORTANT compatibility note: by default the fake serves the legacy
+// `initialize` (minting `Mcp-Session-Id: fake-session`, echoing
 // `protocolVersion` when configured via WithFakeLegacyNegotiatedVersion),
-// `notifications/initialized`, and `tools/list` (the configured tools).
-// #737 deliberately does not re-shape tool traffic, so even a
-// pinned-modern server still receives legacy-shaped `initialize` +
-// `tools/list`; a modern fake that rejected them would break RefreshTools.
-// #741 flips this by adding a WithFakeRejectLegacyHandshake() option.
+// `notifications/initialized`, and a header-less `tools/list` (the
+// configured tools) in EVERY mode — a pinned-modern server still receives
+// legacy-shaped `initialize` + `tools/list` unless the test opts into
+// WithFakeRejectLegacyHandshake(), which makes the fake behave like a real
+// stateless 2026-07-28 server: the legacy handshake methods are rejected and
+// tool traffic (tools/list, tools/call) must carry the standard transport
+// headers. Every existing call site that does not pass that option keeps
+// today's permissive behavior unchanged.
 //
 // Extension contract: a new era gets a new FakeServerMode constant plus a
 // switch case in handleDiscover; new behavior gets a new WithFake… option
 // with a zero-value-safe default. The variadic constructor means no
 // existing call site changes when a new option is added. FakeRequest
-// already captures Mcp-Name and the full header set, so #742's tools/call
+// already captures Mcp-Name and the full header set, so tools/call
 // assertions need no recorder change.
 //
-// Error codes emitted by this fake are the de-facto oracle for #741/#742 —
-// every one carries a spec citation in a comment for that reason.
+// Error codes emitted by this fake are the de-facto oracle for the
+// transport-header rules — every one carries a spec citation in a comment
+// for that reason.
 type FakeMCPServer struct {
 	mu sync.Mutex
 
@@ -48,6 +52,7 @@ type FakeMCPServer struct {
 	tools                   []Tool
 	legacyNegotiatedVersion string
 	discoverStatusOverride  int // 0 = no override
+	rejectLegacyHandshake   bool
 
 	requests   []FakeRequest
 	violations []string
@@ -85,7 +90,7 @@ type FakeRequest struct {
 	Params         json.RawMessage // raw body "params" (for _meta assertions)
 	ProtocolHeader string          // MCP-Protocol-Version
 	MethodHeader   string          // Mcp-Method
-	NameHeader     string          // Mcp-Name  (always "" until #742)
+	NameHeader     string          // Mcp-Name (set on tools/call under a modern pin; "" on tools/list/server/discover)
 	SessionHeader  string          // Mcp-Session-Id
 	Header         http.Header     // full clone, for anything else
 }
@@ -126,6 +131,22 @@ func WithFakeDiscoverStatus(code int) FakeServerOption {
 	return func(f *FakeMCPServer) { f.discoverStatusOverride = code }
 }
 
+// WithFakeRejectLegacyHandshake makes the fake behave like a real stateless
+// 2026-07-28 server rather than the deliberately permissive default:
+// `initialize` / `notifications/initialized` are answered -32601 Method not
+// found (they do not exist in this revision), and every non-discover method
+// requires the standard transport headers (MCP-Protocol-Version, Mcp-Method,
+// and Mcp-Name where the method names an entity). Default off, so every
+// existing call site is unchanged and a pinned-modern fake still tolerates
+// legacy-shaped tool traffic.
+//
+// NOTE: this mode deliberately does NOT enforce the _meta body fields on
+// tool traffic — the client does not inject _meta on tools/list or
+// tools/call yet. handleDiscover keeps enforcing both regimes.
+func WithFakeRejectLegacyHandshake() FakeServerOption {
+	return func(f *FakeMCPServer) { f.rejectLegacyHandshake = true }
+}
+
 // NewFakeMCPServer returns a ready FakeMCPServer. Wrap it in
 // httptest.NewServer to use it as an MCP server target.
 func NewFakeMCPServer(opts ...FakeServerOption) *FakeMCPServer {
@@ -164,9 +185,10 @@ func (f *FakeMCPServer) RequestsFor(method string) []FakeRequest {
 	return out
 }
 
-// Violations returns a mutex-guarded copy of every A4 rule breach the fake
-// has observed. Populated only in FakeModern/FakeVersionMismatch mode (a
-// legacy server knows nothing of the modern transport headers).
+// Violations returns a mutex-guarded copy of every transport-header rule
+// breach the fake has observed: server/discover enforcement in
+// FakeModern/FakeVersionMismatch mode, plus tool-traffic (tools/list,
+// tools/call) enforcement whenever WithFakeRejectLegacyHandshake is set.
 func (f *FakeMCPServer) Violations() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -221,15 +243,34 @@ func (f *FakeMCPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch decoded.Method {
 	case methodServerDiscover:
 		f.handleDiscover(w, req)
-	case "initialize":
-		f.handleInitialize(w)
-	case "notifications/initialized":
-		w.WriteHeader(http.StatusOK)
-	case "tools/list":
-		f.handleToolsList(w)
+	case "initialize", "notifications/initialized":
+		// A real stateless 2026-07-28 server has no session handshake at
+		// all, so under WithFakeRejectLegacyHandshake these methods do not
+		// exist — the same -32601 a compliant server would return for any
+		// unrecognized method.
+		if f.strictModern() {
+			writeJSONRPCError(w, http.StatusNotFound, -32601, "Method not found", nil)
+			return
+		}
+		if decoded.Method == "initialize" {
+			f.handleInitialize(w)
+		} else {
+			w.WriteHeader(http.StatusOK)
+		}
+	case methodToolsList:
+		f.handleToolsList(w, req)
+	case methodToolsCall:
+		f.handleToolsCall(w, req)
 	default:
 		writeJSONRPCError(w, http.StatusNotFound, -32601, "Method not found", nil)
 	}
+}
+
+// strictModern reports whether WithFakeRejectLegacyHandshake was configured.
+func (f *FakeMCPServer) strictModern() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.rejectLegacyHandshake
 }
 
 // errCodeHeaderMismatch and errCodeInvalidParams are the two JSON-RPC error
@@ -244,35 +285,42 @@ func (f *FakeMCPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // looks identical to a malformed body — and this package's own
 // classifyDiscoverResponse maps -32602 to discoverLegacy, so getting this
 // wrong would silently misread a client compliance bug as "this server is
-// old".
+// old". Only the header regime (enforceStandardHeaders) applies to tool
+// traffic — tools/list and tools/call carry no _meta body at all, so
+// enforceMetaFields is never called for them.
 const (
 	errCodeHeaderMismatch = -32020
 	errCodeInvalidParams  = -32602
 )
 
-// enforceA4 validates the streamable-HTTP transport header rules (A4) and
-// the _meta body-field rules (A1) for a server/discover request, ORDER
-// FIXED: headers first, body second — a server cannot trust the body until
-// the headers that mirror it validate. On a rejecting violation it writes
-// the compliant-server response AND records a human-readable Violations()
-// entry, then returns false so the caller does not also write a success
-// response. A non-rejecting violation (a superfluous Mcp-Name) is recorded
-// only; enforceA4 returns true and the caller proceeds normally.
-func (f *FakeMCPServer) enforceA4(w http.ResponseWriter, req FakeRequest) bool {
+// enforceStandardHeaders validates the streamable-HTTP transport header
+// rules (A4): MCP-Protocol-Version and Mcp-Method are always required, and
+// Mcp-Name's rule depends on whether the method names an entity.
+//   - expectedName == "" (server/discover, tools/list): today's behavior — a
+//     present Mcp-Name is a superfluous header with no spec-defined
+//     rejection, so it is recorded as a non-rejecting violation and
+//     enforceStandardHeaders still returns true.
+//   - expectedName != "" (tools/call): a missing Mcp-Name, or one that does
+//     not equal expectedName, is a rejecting violation — errCodeHeaderMismatch
+//     / HTTP 400 — same as MCP-Protocol-Version and Mcp-Method.
+//
+// On a rejecting violation it writes the compliant-server response AND
+// records a human-readable Violations() entry, then returns false so the
+// caller does not also write a success response.
+func (f *FakeMCPServer) enforceStandardHeaders(w http.ResponseWriter, req FakeRequest, expectedName string) bool {
 	meta := decodeMeta(req.Params)
 	_, hasProtocolVersionField := meta[metaKeyProtocolVersion]
-	_, hasClientCapsField := meta[metaKeyClientCapabilities]
 	bodyProtocolVersion := metaString(meta, metaKeyProtocolVersion)
 
-	// STEP 1 — required standard headers.
 	if req.ProtocolHeader == "" {
 		f.recordViolation("Header mismatch: MCP-Protocol-Version header is missing")
 		writeJSONRPCError(w, http.StatusBadRequest, errCodeHeaderMismatch, "Header mismatch: MCP-Protocol-Version header is missing", nil)
 		return false
 	}
 	// A missing _meta.protocolVersion BODY field cannot be compared against
-	// the header — that is the STEP 2 body-regime failure instead, so the
-	// comparison only applies when the body field is actually present.
+	// the header — that is enforceMetaFields's failure instead, so the
+	// comparison only applies when the body field is actually present (inert
+	// on tool traffic, which carries no _meta at all).
 	if hasProtocolVersionField && req.ProtocolHeader != bodyProtocolVersion {
 		msg := fmt.Sprintf("Header mismatch: MCP-Protocol-Version header value %q does not match body value %q",
 			req.ProtocolHeader, bodyProtocolVersion)
@@ -291,14 +339,33 @@ func (f *FakeMCPServer) enforceA4(w http.ResponseWriter, req FakeRequest) bool {
 		writeJSONRPCError(w, http.StatusBadRequest, errCodeHeaderMismatch, msg, nil)
 		return false
 	}
-	if req.NameHeader != "" {
-		// Mcp-Name does not apply to server/discover. No spec-defined
-		// rejection exists for a superfluous header, so record it and
-		// continue; the assertion lives in the caller.
-		f.recordViolation(fmt.Sprintf("Mcp-Name header %q present on server/discover (not applicable)", req.NameHeader))
+	if expectedName == "" {
+		if req.NameHeader != "" {
+			// Mcp-Name does not apply to this method. No spec-defined
+			// rejection exists for a superfluous header, so record it and
+			// continue; the assertion lives in the caller.
+			f.recordViolation(fmt.Sprintf("Mcp-Name header %q present on %s (not applicable)", req.NameHeader, req.Method))
+		}
+		return true
 	}
+	if req.NameHeader != expectedName {
+		msg := fmt.Sprintf("Header mismatch: Mcp-Name header value %q does not match expected %q", req.NameHeader, expectedName)
+		f.recordViolation(msg)
+		writeJSONRPCError(w, http.StatusBadRequest, errCodeHeaderMismatch, msg, nil)
+		return false
+	}
+	return true
+}
 
-	// STEP 2 — required _meta body fields.
+// enforceMetaFields validates the _meta body-field rules (A1) for a
+// server/discover request: the client's own request must carry both
+// required _meta fields. Callers run enforceStandardHeaders first — a
+// server cannot trust the body until the headers that mirror it validate.
+func (f *FakeMCPServer) enforceMetaFields(w http.ResponseWriter, req FakeRequest) bool {
+	meta := decodeMeta(req.Params)
+	_, hasProtocolVersionField := meta[metaKeyProtocolVersion]
+	_, hasClientCapsField := meta[metaKeyClientCapabilities]
+
 	if !hasProtocolVersionField {
 		msg := "Invalid params: missing required _meta field " + metaKeyProtocolVersion
 		f.recordViolation(msg)
@@ -366,14 +433,20 @@ func (f *FakeMCPServer) handleDiscover(w http.ResponseWriter, req FakeRequest) {
 		w.Write([]byte("404 page not found")) //nolint:errcheck
 
 	case FakeVersionMismatch:
-		if !f.enforceA4(w, req) {
+		if !f.enforceStandardHeaders(w, req, "") {
+			return
+		}
+		if !f.enforceMetaFields(w, req) {
 			return
 		}
 		writeJSONRPCError(w, http.StatusBadRequest, errCodeUnsupportedProtocolVersion, "Unsupported protocol version",
 			unsupportedVersionData{Supported: supported, Requested: ProtocolVersion20260728})
 
 	default: // FakeModern
-		if !f.enforceA4(w, req) {
+		if !f.enforceStandardHeaders(w, req, "") {
+			return
+		}
+		if !f.enforceMetaFields(w, req) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -417,9 +490,17 @@ func (f *FakeMCPServer) handleInitialize(w http.ResponseWriter) {
 	})
 }
 
-// handleToolsList serves the configured tools in every mode (see the
-// file-level compatibility note).
-func (f *FakeMCPServer) handleToolsList(w http.ResponseWriter) {
+// handleToolsList serves the configured tools by default (see the
+// file-level compatibility note); under WithFakeRejectLegacyHandshake it
+// also enforces the standard transport headers first — tools/list names no
+// entity, so expectedName is "".
+func (f *FakeMCPServer) handleToolsList(w http.ResponseWriter, req FakeRequest) {
+	if f.strictModern() {
+		if !f.enforceStandardHeaders(w, req, "") {
+			return
+		}
+	}
+
 	f.mu.Lock()
 	tools := make([]Tool, len(f.tools))
 	copy(tools, f.tools)
@@ -441,6 +522,49 @@ func (f *FakeMCPServer) handleToolsList(w http.ResponseWriter) {
 			"tools": wireTools,
 		},
 	})
+}
+
+// handleToolsCall serves a deliberately dumb tools/call response (same
+// discipline as FakeModern's documented "do not cross-check" note): no
+// unknown-tool rejection, and no resultType field — resultType fixtures
+// belong to the follow-up that implements it. Under
+// WithFakeRejectLegacyHandshake it enforces the standard transport headers
+// first, with expectedName set to the tool name the request body names.
+func (f *FakeMCPServer) handleToolsCall(w http.ResponseWriter, req FakeRequest) {
+	name := paramsName(req.Params)
+	if f.strictModern() {
+		if !f.enforceStandardHeaders(w, req, name) {
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+		"jsonrpc": "2.0",
+		"id":      1,
+		"result": map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": "called " + name},
+			},
+			"isError": false,
+		},
+	})
+}
+
+// paramsName decodes a tools/call request body's params.name, returning ""
+// on any decode failure. An empty result is indistinguishable from "this
+// method names no entity", so handleToolsCall passes it to
+// enforceStandardHeaders as expectedName "" — the same non-rejecting branch
+// tools/list and server/discover take — meaning an absent or malformed
+// params.name is silently absorbed, not validated.
+func paramsName(params json.RawMessage) string {
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(params, &body); err != nil {
+		return ""
+	}
+	return body.Name
 }
 
 // writeJSONRPCError writes a JSON-RPC error envelope with the given HTTP
