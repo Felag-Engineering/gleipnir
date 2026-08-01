@@ -212,6 +212,52 @@ func TestTranslateJSONSchemaToGenaiSchema(t *testing.T) {
 			want: &genai.Schema{Type: genai.TypeString},
 		},
 		{
+			// The shared TranslateForFeatures pass (internal/llm) merges a
+			// non-discriminated oneOf's variants into a permissive union
+			// before a schema reaches here; this is the exact shape it emits.
+			name: "merged union object (post-simplification)",
+			input: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"kind": map[string]any{"type": "string", "enum": []any{"a", "b"}},
+					"x":    map[string]any{"type": "string"},
+					"y":    map[string]any{"type": "integer"},
+				},
+				"required": []any{"kind"},
+			},
+			want: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"kind": {Type: genai.TypeString, Enum: []string{"a", "b"}, Format: "enum"},
+					"x":    {Type: genai.TypeString},
+					"y":    {Type: genai.TypeInteger},
+				},
+				Required: []string{"kind"},
+			},
+		},
+		{
+			// A discriminated oneOf's tag property, as the shared pass emits
+			// it: an exact "type":"string" enum of every variant's tag value.
+			name:  "discriminator property (post-simplification)",
+			input: map[string]any{"type": "string", "enum": []any{"a", "b"}},
+			want: &genai.Schema{
+				Type:   genai.TypeString,
+				Enum:   []string{"a", "b"},
+				Format: "enum",
+			},
+		},
+		{
+			// A pure-scalar oneOf flattened to an enum by the shared pass
+			// ("discriminated oneOf flattens to an enum" in its scalar form).
+			name:  "scalar enum union (post-simplification)",
+			input: map[string]any{"type": "string", "enum": []any{"red", "green", "blue"}},
+			want: &genai.Schema{
+				Type:   genai.TypeString,
+				Enum:   []string{"red", "green", "blue"},
+				Format: "enum",
+			},
+		},
+		{
 			// Real-world MCP schema: kubectl get_pods style tool with multiple field types.
 			name: "real-world MCP schema: kubectl get_pods",
 			input: map[string]any{

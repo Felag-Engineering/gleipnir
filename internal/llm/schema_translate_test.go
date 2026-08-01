@@ -104,18 +104,8 @@ func TestTranslateForFeatures_Restricted_UnsupportedKeyword(t *testing.T) {
 		{"$defs", json.RawMessage(`{"$defs":{"T":{"type":"string"}}}`), withoutDefs(), "$defs", "/$defs"},
 		{"definitions", json.RawMessage(`{"definitions":{"T":{"type":"string"}}}`), withoutDefs(), "definitions", "/definitions"},
 		{"allOf", json.RawMessage(`{"allOf":[{"type":"string"}]}`), withoutAllOf(), "allOf", "/allOf"},
-		{"anyOf", json.RawMessage(`{"anyOf":[{"type":"string"}]}`), withoutAnyOf(), "anyOf", "/anyOf"},
-		{"oneOf", json.RawMessage(`{"oneOf":[{"type":"string"}]}`), withoutOneOf(), "oneOf", "/oneOf"},
 		{"not", json.RawMessage(`{"not":{"type":"string"}}`), withoutNot(), "not", "/not"},
-		{"const", json.RawMessage(`{"const":"fixed"}`), withoutConst(), "const", "/const"},
 		{"format", json.RawMessage(`{"type":"string","format":"date-time"}`), withoutFormats(), "format", "/format"},
-		{
-			"nested under properties/items",
-			json.RawMessage(`{"type":"object","properties":{"x":{"type":"array","items":{"oneOf":[{"type":"string"},{"type":"integer"}]}}}}`),
-			withoutOneOf(),
-			"oneOf",
-			"/properties/x/items/oneOf",
-		},
 		{
 			"nested under $defs",
 			json.RawMessage(`{"$defs":{"T":{"type":"string","format":"date-time"}}}`),
@@ -125,10 +115,10 @@ func TestTranslateForFeatures_Restricted_UnsupportedKeyword(t *testing.T) {
 		},
 		{
 			"property name needing JSON Pointer escaping",
-			json.RawMessage(`{"type":"object","properties":{"a/b~c":{"oneOf":[{"type":"string"}]}}}`),
-			withoutOneOf(),
-			"oneOf",
-			"/properties/a~1b~0c/oneOf",
+			json.RawMessage(`{"type":"object","properties":{"a/b~c":{"format":"date-time"}}}`),
+			withoutFormats(),
+			"format",
+			"/properties/a~1b~0c/format",
 		},
 		{
 			"nested under dependentSchemas",

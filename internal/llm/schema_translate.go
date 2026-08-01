@@ -11,10 +11,19 @@ import (
 )
 
 // ErrUnsupportedSchemaFeature is returned when a wire declares it cannot
-// represent a JSON Schema keyword that the canonical schema uses. The
-// simplifying transformations (discriminated oneOf → enum, permissive union
-// with prose variants) land in issue #739; until then this pass fails closed
-// rather than forwarding a construct the wire will silently mangle.
+// represent a JSON Schema keyword that the canonical schema uses, and
+// simplifySchema has no rewrite that eliminates it. simplifySchema eliminates
+// oneOf/anyOf (discriminated → enum, otherwise a permissive union with prose)
+// and const (folded into a single-value enum); this error now reports only
+// the constructs the pass leaves standing: $ref/$dynamicRef/$recursiveRef,
+// $defs/definitions, allOf, not, and format.
+//
+// See also ErrSchemaLimitExceeded (schema_simplify.go): a schema that is too
+// large, too deeply nested, or has too many nodes fails closed with that
+// error before simplifySchema ever runs, and the simplified output is
+// re-checked against a size cap after marshalling. Both errors mean the
+// caller's request fails outright — TranslateForFeatures never truncates or
+// otherwise silently repairs a schema that violates a bound.
 var ErrUnsupportedSchemaFeature = errors.New("llm: schema feature not supported by provider")
 
 // TranslateForFeatures adapts canonical — a tool's InputSchema in canonical
@@ -25,9 +34,11 @@ var ErrUnsupportedSchemaFeature = errors.New("llm: schema feature not supported 
 // valid JSON Schema document that the caller may present to the wire; lossy
 // reports whether out is merely a byte-identical view of canonical (false —
 // safe to treat the two as the same schema) or a genuinely different,
-// simplified rendering (true — issue #739 is the first caller that returns
-// true; ProviderAdapter.prepareRequest is the consumer that copies-on-write
-// and logs when it sees lossy == true).
+// rewritten rendering (true — ProviderAdapter.prepareRequest is the consumer
+// that copies-on-write and logs when it sees lossy == true). lossy == true
+// means "simplifySchema rewrote something", not "the schema's meaning
+// changed" — a discriminated oneOf flattened to an exact enum is still
+// lossy == true even though nothing was lost.
 //
 // canonical is READ-ONLY: this function never writes into the bytes it is
 // given, it only ever returns canonical itself or a distinct slice. That
@@ -35,7 +46,8 @@ var ErrUnsupportedSchemaFeature = errors.New("llm: schema feature not supported 
 // run's schema of record, which the runtime also reads later to enforce
 // policy parameter scoping against the tool call the model actually makes.
 // A hypothetical in-place edit here would silently corrupt what enforcement
-// checks against, not just what the model is shown.
+// checks against, not just what the model is shown. simplifySchema instead
+// mutates a private, freshly decoded copy of the tree (see its doc comment).
 //
 // When f is full support, canonical is returned unmodified WITHOUT being
 // parsed: a json.Unmarshal→json.Marshal round-trip would sort object keys and
@@ -43,12 +55,21 @@ var ErrUnsupportedSchemaFeature = errors.New("llm: schema feature not supported 
 // invalid-JSON errors out of the wires' own request building into this pass,
 // changing the error text callers see. Both are unacceptable.
 //
-// For a restricted wire, the canonical schema is parsed and walked; a schema
-// that uses only constructs f supports still gets byte-identical passthrough
-// — this is not a stub, it is the real "compatible schema" path. A schema
-// that uses an unsupported construct fails closed with
+// For a restricted wire, canonical's byte length, then the decoded tree's
+// depth and node count, are checked against the fixed, non-disableable
+// bounds in schema_simplify.go BEFORE simplification runs, and the
+// simplified output is checked against its own size bound after marshalling.
+// Any of those checks failing returns ErrSchemaLimitExceeded.
+//
+// The canonical schema is then parsed, simplified, and walked: a schema that
+// uses only constructs f supports (after simplification) still gets
+// byte-identical passthrough when nothing needed rewriting — this is not a
+// stub, it is the real "compatible schema" path. A schema that still uses an
+// unsupported construct after simplification fails closed with
 // ErrUnsupportedSchemaFeature rather than being forwarded and silently
-// mangled by the wire.
+// mangled by the wire. Because the gate runs AFTER simplification, the JSON
+// Pointer in a gate error names a position in the post-simplification
+// document, which may not appear verbatim in canonical.
 //
 // "Compatible" is scoped to the features SchemaFeatureSet models. Passthrough
 // here does NOT promise the wire transmits the schema intact — a wire may still
@@ -63,9 +84,12 @@ func TranslateForFeatures(canonical json.RawMessage, f SchemaFeatureSet) (json.R
 	if len(canonical) == 0 {
 		return canonical, false, nil
 	}
+	if err := checkSchemaInputSize(canonical); err != nil {
+		return canonical, false, err
+	}
 
 	dec := json.NewDecoder(bytes.NewReader(canonical))
-	dec.UseNumber() // preserve numeric literals for #739's eventual re-marshal path
+	dec.UseNumber() // preserve numeric literals verbatim through simplifySchema's re-marshal path
 	var node any
 	if err := dec.Decode(&node); err != nil {
 		return canonical, false, fmt.Errorf("llm: parsing canonical schema: %w", err)
@@ -76,14 +100,40 @@ func TranslateForFeatures(canonical json.RawMessage, f SchemaFeatureSet) (json.R
 
 	m, ok := node.(map[string]any)
 	if !ok {
-		// Boolean schema (true/false) or null: no keywords to gate.
+		// Boolean schema (true/false) or null: no keywords to gate, and
+		// trivially within every bound below.
 		return canonical, false, nil
 	}
 
+	// Bound the decoded tree BEFORE simplifySchema walks it: depth and node
+	// count (which also bounds oneOf/anyOf variant count — see the const
+	// block in schema_simplify.go) are non-disableable, so an adversarial
+	// document fails closed here rather than reaching collapseBranch's
+	// per-variant merge/dedup work at all.
+	if err := checkSchemaShape(m); err != nil {
+		return canonical, false, err
+	}
+
+	// Simplify FIRST, gate SECOND, both against the real f. The gate is the
+	// last word and inspects exactly the tree that will be marshalled, so a
+	// recursion position simplifySchema forgets can only produce a hard
+	// error (fail-closed), never a silent pass-through of a construct the
+	// wire cannot represent.
+	changed := simplifySchema(m, f)
 	if kw, path, found := firstUnsupported(m, f, nil); found {
 		return canonical, false, fmt.Errorf("%w: %q at %q", ErrUnsupportedSchemaFeature, kw, path)
 	}
-	return canonical, false, nil
+	if !changed {
+		return canonical, false, nil // byte-identical passthrough preserved
+	}
+	out, err := marshalSchema(m)
+	if err != nil {
+		return canonical, false, fmt.Errorf("llm: re-marshalling simplified schema: %w", err)
+	}
+	if err := checkSchemaOutputSize(out); err != nil {
+		return canonical, false, err
+	}
+	return out, true, nil
 }
 
 // gate pairs a JSON Schema keyword with the SchemaFeatureSet accessor that
@@ -181,8 +231,13 @@ var arrayOfSchemasKeywords = []string{"allOf", "anyOf", "oneOf"}
 //
 // Both the gated-keyword check order and the subschema-recursion order are
 // fixed so that a schema with multiple violations always reports the same
-// one. This walker is the artifact issue #739 reuses to decide WHERE to
-// transform.
+// one. simplifySchema walks the exact same recursion positions, reusing
+// mapOfSchemasKeywords, singleSchemaOrBoolKeywords, singleSchemaKeywords, and
+// arrayOfSchemasKeywords rather than its own copies, precisely so the two
+// walkers cannot drift apart: a position added here without a matching
+// position in simplifySchema would leave a construct in that position
+// unsimplified, which this gate would then (correctly) still reject — a
+// recursion mismatch fails closed, never open.
 //
 // path accumulates JSON Pointer segments as a slice, not a concatenated
 // string: building the pointer is deferred to pointerString, which is called
