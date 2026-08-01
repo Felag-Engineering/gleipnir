@@ -1,11 +1,13 @@
-.PHONY: help build test security security-go security-frontend proto lint-plugins lint-plugins-self-test lint lint-go-fmt lint-staticcheck ci-local ci-local-lint ci-local-drift ci-local-backend ci-local-sdk ci-local-frontend
+.PHONY: help build test security security-go security-frontend proto lint-plugins lint-plugins-self-test lint lint-go-fmt lint-staticcheck ci-local ci-local-lanes ci-local-lint ci-local-drift ci-local-backend ci-local-sdk ci-local-frontend
 
 help:
 	@echo "Targets:"
 	@echo "  build                      go build ./..."
 	@echo "  test                       go test -race ./..."
 	@echo "  ci-local                   run the full PR CI gate locally (see lanes below);"
-	@echo "                             fastest as: make -j4 -O ci-local"
+	@echo "                             self-parallelizing — do NOT pass -j, it sizes"
+	@echo "                             itself to available RAM and serializes across"
+	@echo "                             worktrees so two gates can't OOM the machine"
 	@echo "  security                   run all security scans (govulncheck + npm audit)"
 	@echo "  security-go                govulncheck ./..."
 	@echo "  security-frontend          npm audit --omit=dev (in frontend/)"
@@ -91,13 +93,29 @@ lint-staticcheck:
 # "regeneration changed something", regardless of what was already dirty. On
 # failure the regenerated files are left in place: the fix is to stage them.
 #
-# Lanes are independent phony targets so `make -j4 -O ci-local` runs them in
-# parallel (-O keeps output per-target). Build/test lanes order after the
-# drift lanes: the drift lanes rewrite generated sources, and a concurrent
-# compile reading a half-written file would fail spuriously.
+# Lanes are independent phony targets so they can run in parallel (-O keeps
+# output per-target). Build/test lanes order after the drift lanes: the drift
+# lanes rewrite generated sources, and a concurrent compile reading a
+# half-written file would fail spuriously.
+#
+# `ci-local` does NOT take a -j from you. The lanes are memory-bound, not
+# CPU-bound, so scripts/ci-local.sh sizes the job count from RAM and holds a
+# machine-wide lock while it runs — two concurrent gates (the dev-loop drives
+# several worktrees at once) is what OOM-killed a 4 GiB host mid-gate. Run the
+# raw unbudgeted aggregate as `make -j4 -O ci-local-lanes` if you know your
+# machine can take it. See the script header for the measurements.
 # ---------------------------------------------------------------------------
 
-ci-local: ci-local-lint ci-local-drift ci-local-backend ci-local-sdk ci-local-frontend
+# Deliberately assigned to a differently-named variable: GNU make scans the
+# *unexpanded* recipe for "$(MAKE)" and, on finding it, runs the line even
+# under `-n`. Hiding it behind MAKE_BIN keeps `make -n ci-local` a dry run.
+# The jobserver is not inherited either way — ci-local.sh clears MAKEFLAGS.
+MAKE_BIN := $(MAKE)
+
+ci-local:
+	@scripts/ci-local.sh $(MAKE_BIN)
+
+ci-local-lanes: ci-local-lint ci-local-drift ci-local-backend ci-local-sdk ci-local-frontend
 	@echo ""
 	@echo "ci-local ✅  lanes: backend build+race tests · gofmt · staticcheck · plugin import boundary · sqlc drift · proto lint+gen drift · plugin-sdk+examples+plugins tests · frontend typecheck+unit"
 	@echo "not covered locally (CI-only): docker/arm64/podman image jobs, vuln scans (make security)"
@@ -127,12 +145,19 @@ ci-local-drift:
 		exit 1; \
 	fi
 
+# `go test ./...` links one test binary per package, and the Go linker peaks at
+# 150-690 MiB per concurrent link — the single largest memory draw in the gate.
+# -p bounds how many packages are in flight at once. scripts/ci-local.sh sets
+# this from the RAM budget; the default here is Go's own (GOMAXPROCS-ish) sizing
+# for anyone invoking the lanes directly.
+CI_LOCAL_TEST_P ?= 4
+
 ci-local-backend: ci-local-drift
-	GOWORK=off go build ./...
-	GOWORK=off go test -race ./...
+	GOWORK=off go build -p $(CI_LOCAL_TEST_P) ./...
+	GOWORK=off go test -race -p $(CI_LOCAL_TEST_P) ./...
 
 ci-local-sdk: ci-local-drift
-	cd plugin-sdk && GOWORK=off go build ./... && GOWORK=off go test ./...
+	cd plugin-sdk && GOWORK=off go build -p $(CI_LOCAL_TEST_P) ./... && GOWORK=off go test -p $(CI_LOCAL_TEST_P) ./...
 	go test ./plugin-sdk/examples/minimal-tool/...
 	@for dir in plugins/*/; do \
 		echo "go test $$dir..."; \

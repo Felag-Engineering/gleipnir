@@ -7,10 +7,16 @@ Gleipnir is a homelab-scale autonomous agent orchestrator. It runs AI agents wit
 **Backend:**
 ```bash
 sqlc generate            # regenerate internal/db/ from internal/db/queries/*.sql
-make -j4 -O ci-local     # full PR CI gate locally (all lanes CI runs, minus the
+make ci-local            # full PR CI gate locally (all lanes CI runs, minus the
                          # container jobs and vuln scans); safe on a dirty tree —
                          # this is the dev-loop's pre-PR merge gate
 ```
+
+**Do not pass `-j` to `ci-local`.** The lanes are memory-bound (Go linker, staticcheck,
+`tsc`), so the target sizes its own parallelism from available RAM and holds a
+machine-wide lock while it runs — two concurrent gates OOM-killed a 4 GiB host mid-run.
+A second worktree's gate queues instead of racing. `scripts/ci-local.sh` has the
+measurements and the `CI_LOCAL_JOBS` / `CI_LOCAL_NO_LOCK` escape hatches.
 
 **Frontend:** see `frontend/CLAUDE.md` for dev/build/test commands.
 
