@@ -1,0 +1,8 @@
+# internal/llm — provider seam notes
+
+Moved from the root CLAUDE.md `Key packages` entry (2026-07-31); loads when working under this package.
+
+```
+  llm/                — LLM provider abstraction (ADR-026). The shallow `ProviderWire` seam (wire.go) splits each provider into wire-level translation behind a single shared `ProviderAdapter` (adapter.go) that owns the common choreography (request-duration/token/error metrics defer); each provider's exported Client embeds the adapter and promotes only CreateMessage/StreamMessage, keeping thin forwarders for the model/option methods so a zero-value client stays panic-free. `FakeWire` (fake_wire.go, exposed via testutil.NewFakeClient) is the fifth wire used to drive agent/trigger tests through the real adapter (ADR-022, undeferred). Streaming state machines stay per-provider (#506). `ProviderWire.SchemaFeatures()` declares which JSON Schema constructs a wire can represent; `ProviderAdapter.prepareRequest` checks that declaration before `Call`/`Stream` and only runs the shared `TranslateForFeatures` pass over a tool's `InputSchema` when the wire is restricted (ADR-059/spec §10) — its `IsFull()` fast path skips the parse entirely for a fully-supporting wire, which is every wire today, so Google's restricted declaration + the lossy flattening landing in #739 is what will actually make this pass execute in production.
+    contract/         — cross-wire contract test suite (external test package); table-driven over all four real wires, asserting continuity-state round-trip, tool-name round-trip, stop-reason normalization, and usage extraction uniformly. Sits outside internal/llm to avoid the provider-import cycle (same reason as factory/). #506
+```
