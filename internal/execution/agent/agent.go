@@ -530,20 +530,52 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 		return "", false, err
 	}
 
-	// Validate input against narrowed schema. This runs for both MCP and plugin
+	// Validate input against the schema. This runs for both MCP and plugin
 	// tools — schema enforcement is source-agnostic (ADR-017). Running it before
 	// source-specific routing means a call with a bad parameter shape surfaces a
 	// schema error regardless of whether the plugin is also stale.
+	//
+	// Two gates, both unconditional, in order, with DELIBERATELY DIFFERENT
+	// fatality — this asymmetry is a decided product behavior, not an
+	// oversight:
+	//  1. ADR-017 key-allowlist gate (ValidateCall) — the operator-authored
+	//     params boundary. The LLM is only ever handed a schema narrowed to
+	//     the permitted keys, so a call naming a scoped-out key is an
+	//     anomaly (model confusion, or injection-steered probing at the
+	//     capability boundary) rather than an ordinary mistake the model can
+	//     reason its way out of. It FAILS THE RUN, exactly as on main,
+	//     specifically so it lands in the operator attention queue —
+	//     ListAttentionItems (internal/http/api/attention_handler.go) is
+	//     built from runs with status "failed"; a correctable result here
+	//     would silently disappear from that queue. Always runs, even when
+	//     gate 2 also runs: a compiled JSON Schema with no
+	//     "additionalProperties" accepts unknown keys, so skipping this gate
+	//     whenever a validator compiled would silently delete the operator's
+	//     parameter scoping for every such tool.
+	//  2. Exact enforcement against the stored canonical schema (spec §10
+	//     step 3) — type/branch/required-field correctness. This is the
+	//     tool SERVER's own contract, which an honestly-reasoning agent can
+	//     misjudge (wrong type, missing field), so it is correctable — the
+	//     agent gets another turn instead of failing the run. Only runs
+	//     when a validator compiled (entry.argValidator != nil); NULL or
+	//     uncompilable canonical schemas fall back to gate 1 alone.
+	// Both run BEFORE approval gating (ADR-008, immediately below) — a
+	// malformed call must never reach the approval queue.
 	if err := mcp.ValidateCall(entry.narrowedSchema, input); err != nil {
 		a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeSchemaViolation)
 		return "", false, fmt.Errorf("schema validation for %s: %w", toolName, err)
+	}
+	if entry.argValidator != nil {
+		if err := entry.argValidator.Validate(input); err != nil {
+			return a.schemaViolation(ctx, runID, toolName, err)
+		}
 	}
 
 	// Approval gating for tools with approval: required (ADR-008).
 	// This interceptor is source-agnostic and runs BEFORE any source-specific
 	// dispatch (plugin generation guard, MCP transport). A single chokepoint
-	// here mirrors how ValidateCall is structured — it is impossible for any
-	// future dispatch path to accidentally bypass it.
+	// here mirrors how the validation block above is structured — it is
+	// impossible for any future dispatch path to accidentally bypass it.
 	//
 	// Note: an operator who approves a call for a plugin with a stale generation
 	// will still receive a structural tool_result error below. Approval is

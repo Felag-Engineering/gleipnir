@@ -858,6 +858,13 @@ func TestRun_CapabilitySnapshotFirst(t *testing.T) {
 	}
 }
 
+// TestHandleToolCall_SchemaValidation verifies that an ADR-017 key-presence
+// violation (an undeclared key, rejected by mcp.ValidateCall) fails the run.
+// This is the operator-authored capability boundary — the LLM is only ever
+// handed a schema narrowed to the permitted keys, so a call naming a
+// scoped-out key must reach the operator via the attention queue
+// (attention_handler.go builds it from failed runs), not silently
+// self-correct like a gate-2 (canonical schema) violation does (#744).
 func TestHandleToolCall_SchemaValidation(t *testing.T) {
 	var serverCallCount int
 	fakeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -889,7 +896,7 @@ func TestHandleToolCall_SchemaValidation(t *testing.T) {
 	runErr := ba.Run(context.Background(), "r1", "trigger")
 
 	if runErr == nil {
-		t.Fatal("expected schema validation error, got nil")
+		t.Fatal("expected schema validation error, got nil (ADR-017 key-presence violations must fail the run)")
 	}
 	if serverCallCount > 0 {
 		t.Errorf("MCP server called %d times; want 0 (schema violation blocks execution)", serverCallCount)
@@ -3971,10 +3978,12 @@ func TestHandleToolCall_PluginTool_ApprovalGated_GateFiredBeforeGenerationGuard(
 	}
 }
 
-// TestNew_PluginToolValidateCallRejectsUndeclared verifies that handleToolCall
-// runs ValidateCall against the narrowed plugin schema before reaching the plugin
-// generation guard or dispatch placeholder. The reorder in agent.go ensures
-// schema errors surface even for plugin tools.
+// TestNew_PluginToolValidateCallRejectsUndeclared verifies that
+// handleToolCall runs ValidateCall against the narrowed plugin schema before
+// reaching the plugin generation guard or dispatch placeholder, and that the
+// rejection fails the run (the ADR-017 key-presence gate, gate 1, is fatal —
+// see the comment above the two gates in agent.go). The reorder in agent.go
+// ensures schema errors surface even for plugin tools.
 func TestNew_PluginToolValidateCallRejectsUndeclared(t *testing.T) {
 	s := testutil.NewTestStore(t)
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")

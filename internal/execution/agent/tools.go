@@ -22,10 +22,13 @@ type pluginToolSource struct {
 // narrowedSchema is the policy-scoped view of the tool's input schema (ADR-017)
 // and is what the LLM sees; tool.InputSchema is the raw schema of record.
 // pluginSource is non-nil for plugin-backed tools; nil for MCP-source tools.
+// argValidator is the compiled exact-enforcement validator; nil when
+// unavailable (see argvalidate.go).
 type resolvedToolEntry struct {
 	tool           mcp.ResolvedTool
 	narrowedSchema json.RawMessage
 	pluginSource   *pluginToolSource // nil for MCP-source tools
+	argValidator   *mcp.ArgValidator // nil when exact enforcement is unavailable; see argvalidate.go
 }
 
 // sourceString returns the source identifier for the tool: "plugin:<name>@<gen>"
@@ -54,6 +57,7 @@ func buildResolvedToolMap(tools []mcp.ResolvedTool) (map[string]resolvedToolEntr
 		toolsByName[dotName] = resolvedToolEntry{
 			tool:           rt,
 			narrowedSchema: narrowed,
+			argValidator:   compileArgValidator(rt, dotName),
 		}
 	}
 	return toolsByName, nil
