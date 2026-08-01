@@ -335,7 +335,7 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// A network failure here is non-fatal; we still create the server so the
 	// operator can correct the URL later.
 	var (
-		probedTools    []mcp.Tool
+		probedTools    []mcp.DiscoveredTool
 		discoveryError *string
 	)
 	probed, probeErr := h.registry.ProbeTools(probeCtx, body.Name, body.URL, ciphertext)
@@ -411,12 +411,13 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if len(probedTools) > 0 {
 		for _, t := range probedTools {
 			if _, err := h.store.UpsertMCPTool(r.Context(), db.UpsertMCPToolParams{
-				ID:          model.NewULID(),
-				ServerID:    server.ID,
-				Name:        t.Name,
-				Description: t.Description,
-				InputSchema: string(t.InputSchema),
-				CreatedAt:   now,
+				ID:              model.NewULID(),
+				ServerID:        server.ID,
+				Name:            t.Name,
+				Description:     t.Description,
+				InputSchema:     string(t.InputSchema),
+				CanonicalSchema: t.CanonicalSchemaPtr(),
+				CreatedAt:       now,
 			}); err != nil {
 				if h.arbiter != nil {
 					h.arbiter.ReleaseAllFor(mcpSrc)

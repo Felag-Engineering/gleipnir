@@ -119,16 +119,20 @@
 // This package is a leaf: it imports only the Go standard library. It must
 // not import any internal/* package.
 //
-// # Future call site (not wired by this package)
+// # Call site
 //
-// internal/mcp's Registry.RefreshTools (internal/mcp/registry.go) currently
-// compares tool schemas by raw byte equality to decide whether a tool
-// changed. A later change will normalize the freshly-discovered schema with
-// this package before that comparison and before UpsertMCPTool, so a schema
-// change that is only cosmetic (member order) does not spuriously mark a
-// tool as modified. $ref resolution and allOf flattening for LLM-provider
-// presentation (Google's function-declaration subset has neither) belong in
-// a later per-provider translation step, not here -- see
+// internal/mcp discovery (canonicalizeDiscovered in internal/mcp/canonical.go,
+// used by both RefreshTools and ProbeTools) normalizes each freshly-discovered
+// tool schema with this package and persists the result alongside the raw
+// bytes in mcp_tools.canonical_schema. Drift detection then compares that
+// canonical form so a schema change that is only cosmetic (member order) does
+// not spuriously mark a tool as modified, falling back to raw byte comparison
+// when either side has no canonical form stored. The call site is fail-open:
+// a schema this package rejects is still discovered and stored, just with a
+// NULL canonical_schema and a logged warning -- normalization failure never
+// drops a tool or fails discovery. $ref resolution and allOf flattening for
+// LLM-provider presentation (Google's function-declaration subset has
+// neither) belong in a later per-provider translation step, not here -- see
 // docs/developer/mcp-realignment-spec.md §10 step 2, where lossiness is the
 // declared, accepted policy because exact enforcement runs separately
 // against the untransformed, normalized schema (§10 step 3).

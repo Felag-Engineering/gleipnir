@@ -19,6 +19,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/schemanorm"
 	"github.com/felag-engineering/gleipnir/internal/testutil"
 	"github.com/felag-engineering/gleipnir/internal/toolregistry"
 )
@@ -251,6 +252,54 @@ func TestMCPServerCreateHandler(t *testing.T) {
 		wantLocation := "/api/v1/mcp/servers/" + envelope.Data.ID
 		if loc := resp.Header.Get("Location"); loc != wantLocation {
 			t.Errorf("Location = %q, want %q", loc, wantLocation)
+		}
+	})
+
+	t.Run("create persists canonical_schema alongside the raw discovered schema", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+
+		fakeMCP := makeFakeMCPServer(t, []string{"tool-a"})
+		srv := httptest.NewServer(newMCPRouter(store, registry))
+		t.Cleanup(srv.Close)
+
+		body, _ := json.Marshal(map[string]string{"name": "canonical-server", "url": fakeMCP.URL})
+		resp, err := http.Post(srv.URL+"/servers", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST /servers: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("status = %d, want 201", resp.StatusCode)
+		}
+
+		var envelope struct {
+			Data struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+
+		tools, err := store.ListMCPToolsByServer(context.Background(), envelope.Data.ID)
+		if err != nil {
+			t.Fatalf("ListMCPToolsByServer: %v", err)
+		}
+		if len(tools) != 1 {
+			t.Fatalf("len(tools) = %d, want 1", len(tools))
+		}
+
+		wantCanonical, err := schemanorm.Normalize(json.RawMessage(`{"type":"object"}`))
+		if err != nil {
+			t.Fatalf("schemanorm.Normalize: %v", err)
+		}
+		if tools[0].CanonicalSchema == nil {
+			t.Fatal("CanonicalSchema is nil, want the normalized schema from the Create/ProbeTools write path")
+		}
+		if *tools[0].CanonicalSchema != string(wantCanonical) {
+			t.Errorf("CanonicalSchema = %q, want %q", *tools[0].CanonicalSchema, wantCanonical)
 		}
 	})
 

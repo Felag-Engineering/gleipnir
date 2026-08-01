@@ -1,9 +1,12 @@
+-- canonical_schema is always rewritten alongside input_schema (including back
+-- to NULL) so the two columns can never describe different schemas.
 -- name: UpsertMCPTool :one
-INSERT INTO mcp_tools (id, server_id, name, description, input_schema, created_at)
-VALUES (:id, :server_id, :name, :description, :input_schema, :created_at)
+INSERT INTO mcp_tools (id, server_id, name, description, input_schema, canonical_schema, created_at)
+VALUES (:id, :server_id, :name, :description, :input_schema, :canonical_schema, :created_at)
 ON CONFLICT (server_id, name) DO UPDATE SET
-    description  = excluded.description,
-    input_schema = excluded.input_schema
+    description      = excluded.description,
+    input_schema     = excluded.input_schema,
+    canonical_schema = excluded.canonical_schema
 RETURNING *;
 
 -- name: ListEnabledMCPToolsByServer :many

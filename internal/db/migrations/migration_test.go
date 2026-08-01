@@ -557,3 +557,138 @@ func TestAddMCPServerProtocolVersionSkipsOnFreshSchema(t *testing.T) {
 		t.Fatal("ShouldSkip returned false on a fresh initial schema — did 0001_initial.sql forget the protocol_version column?")
 	}
 }
+
+// seedPreCanonicalSchemaMCPTools hand-creates the end-of-0042 schema shape:
+// schema_migrations plus an mcp_tools table WITHOUT canonical_schema. This is
+// the only way to make 0043's Up() body actually execute, because
+// 0001_initial.sql already ships canonical_schema and would cause ShouldSkip
+// to return true (see the equivalent note on seedPreProtocolVersionMCPServers).
+// No FK to mcp_servers is needed — the seed is self-contained.
+func seedPreCanonicalSchemaMCPTools(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	stmts := []string{
+		`CREATE TABLE schema_migrations (
+			version     INTEGER PRIMARY KEY,
+			applied_at  TEXT    NOT NULL
+		)`,
+		`INSERT INTO schema_migrations(version, applied_at) VALUES (1, '2024-01-01T00:00:00Z')`,
+
+		// mcp_tools — end-of-0042 shape: OMITS canonical_schema so ShouldSkip
+		// returns false and Up() actually runs.
+		`CREATE TABLE mcp_tools (
+			id              TEXT    PRIMARY KEY,
+			server_id       TEXT    NOT NULL,
+			name            TEXT    NOT NULL,
+			description     TEXT    NOT NULL,
+			input_schema    TEXT    NOT NULL,
+			created_at      TEXT    NOT NULL,
+			enabled         INTEGER NOT NULL DEFAULT 1,
+			UNIQUE(server_id, name)
+		)`,
+	}
+
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seedPreCanonicalSchemaMCPTools: %v\nstatement: %s", err, stmt)
+		}
+	}
+}
+
+// TestAddMCPToolCanonicalSchema verifies that migration 0043 adds
+// canonical_schema to mcp_tools on the existing-database upgrade path, leaves
+// pre-existing rows NULL ("no canonical form stored"), and round-trips values.
+func TestAddMCPToolCanonicalSchema(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+
+	// Build the pre-0043 schema by hand — do NOT call applyInitialSchema.
+	seedPreCanonicalSchemaMCPTools(t, db)
+
+	// Confirm ShouldSkip is false so the test fails loudly if a future schema
+	// change makes the migration skip again (which would make the rest of this
+	// test a vacuous pass).
+	m := &migrations.AddMCPToolCanonicalSchema{}
+	skip, err := m.ShouldSkip(ctx, db)
+	if err != nil {
+		t.Fatalf("ShouldSkip: %v", err)
+	}
+	if skip {
+		t.Fatal("ShouldSkip returned true against the pre-target baseline — the hand-crafted DDL must omit canonical_schema")
+	}
+
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO mcp_tools(id, server_id, name, description, input_schema, created_at) VALUES ('t1', 's1', 'tool-a', 'desc', '{}', '2024-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("seed mcp_tools row: %v", err)
+	}
+
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	var count int64
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('mcp_tools') WHERE name = 'canonical_schema'`,
+	).Scan(&count); err != nil {
+		t.Fatalf("query pragma_table_info: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("canonical_schema column count = %d, want 1", count)
+	}
+
+	// The pre-existing row must backfill to NULL, not some default.
+	var cs sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT canonical_schema FROM mcp_tools WHERE id = 't1'`).Scan(&cs); err != nil {
+		t.Fatalf("read canonical_schema: %v", err)
+	}
+	if cs.Valid {
+		t.Errorf("canonical_schema = %q after migration, want NULL", cs.String)
+	}
+
+	// Round-trip: set, read back, clear, read back.
+	if _, err := db.ExecContext(ctx, `UPDATE mcp_tools SET canonical_schema = '{}' WHERE id = 't1'`); err != nil {
+		t.Fatalf("set canonical_schema: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT canonical_schema FROM mcp_tools WHERE id = 't1'`).Scan(&cs); err != nil {
+		t.Fatalf("read canonical_schema after set: %v", err)
+	}
+	if !cs.Valid || cs.String != "{}" {
+		t.Errorf("canonical_schema = %v after set, want '{}'", cs)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE mcp_tools SET canonical_schema = NULL WHERE id = 't1'`); err != nil {
+		t.Fatalf("clear canonical_schema: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT canonical_schema FROM mcp_tools WHERE id = 't1'`).Scan(&cs); err != nil {
+		t.Fatalf("read canonical_schema after clear: %v", err)
+	}
+	if cs.Valid {
+		t.Errorf("canonical_schema = %q after clear, want NULL", cs.String)
+	}
+
+	// Second Apply must be a no-op — proves ShouldSkip flips to true after Up,
+	// not just on a fresh schema.
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("second Apply (idempotency): %v", err)
+	}
+}
+
+// TestAddMCPToolCanonicalSchemaSkipsOnFreshSchema is a regression gate for
+// forgetting to hand-sync 0001_initial.sql: on a fresh database built from the
+// initial schema, canonical_schema must already exist, so ShouldSkip must
+// return true. If someone adds the Go migration without editing
+// 0001_initial.sql, this test fails (and sqlc would silently not see the
+// column, since sqlc.yaml only reads 0001_initial.sql).
+func TestAddMCPToolCanonicalSchemaSkipsOnFreshSchema(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	applyInitialSchema(t, db)
+
+	skip, err := (&migrations.AddMCPToolCanonicalSchema{}).ShouldSkip(ctx, db)
+	if err != nil {
+		t.Fatalf("ShouldSkip: %v", err)
+	}
+	if !skip {
+		t.Fatal("ShouldSkip returned false on a fresh initial schema — did 0001_initial.sql forget the canonical_schema column?")
+	}
+}

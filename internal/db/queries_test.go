@@ -508,6 +508,9 @@ func TestMCPToolQueries(t *testing.T) {
 	if got.ID != "tool1" || got.Name != "alpha" {
 		t.Errorf("GetMCPTool mismatch: %+v", got)
 	}
+	if got.CanonicalSchema != nil {
+		t.Errorf("CanonicalSchema = %q, want nil when UpsertMCPToolParams left it unset", *got.CanonicalSchema)
+	}
 
 	if _, err := s.UpsertMCPTool(ctx, UpsertMCPToolParams{
 		ID:          "tool2",
@@ -533,13 +536,16 @@ func TestMCPToolQueries(t *testing.T) {
 	}
 
 	// Conflict/update path: upsert same server+name — should update, not insert.
+	// Also sets a non-nil canonical_schema so the ON CONFLICT clause's coverage
+	// of that column can be verified.
 	upserted, err := s.UpsertMCPTool(ctx, UpsertMCPToolParams{
-		ID:          "tool3",
-		ServerID:    "srv1",
-		Name:        "alpha", // same server+name as tool1
-		Description: "updated desc",
-		InputSchema: `{"type":"object"}`,
-		CreatedAt:   now,
+		ID:              "tool3",
+		ServerID:        "srv1",
+		Name:            "alpha", // same server+name as tool1
+		Description:     "updated desc",
+		InputSchema:     `{"type":"object"}`,
+		CanonicalSchema: strPtr(`{"type":"object"}`),
+		CreatedAt:       now,
 	})
 	if err != nil {
 		t.Fatalf("UpsertMCPTool conflict path: %v", err)
@@ -547,6 +553,43 @@ func TestMCPToolQueries(t *testing.T) {
 	// RETURNING * must reflect the updated columns, not the attempted insert values.
 	if upserted.Description != "updated desc" || upserted.InputSchema != `{"type":"object"}` {
 		t.Errorf("UpsertMCPTool conflict path: returned row wrong: %+v", upserted)
+	}
+	if upserted.CanonicalSchema == nil || *upserted.CanonicalSchema != `{"type":"object"}` {
+		t.Errorf("UpsertMCPTool conflict path: CanonicalSchema = %v, want %q", upserted.CanonicalSchema, `{"type":"object"}`)
+	}
+
+	// GetMCPTool must reflect the same canonical_schema written above.
+	gotAfterConflict, err := s.GetMCPTool(ctx, "tool1") // id preserved: ON CONFLICT keys on (server_id, name), not id
+	if err != nil {
+		t.Fatalf("GetMCPTool after conflict upsert: %v", err)
+	}
+	if gotAfterConflict.CanonicalSchema == nil || *gotAfterConflict.CanonicalSchema != `{"type":"object"}` {
+		t.Errorf("GetMCPTool after conflict upsert: CanonicalSchema = %v, want %q", gotAfterConflict.CanonicalSchema, `{"type":"object"}`)
+	}
+
+	// A further conflict-path upsert with CanonicalSchema nil must clear the
+	// column back to NULL, not leave the previous canonical stranded next to a
+	// new raw schema.
+	clearedUpsert, err := s.UpsertMCPTool(ctx, UpsertMCPToolParams{
+		ID:          "tool4",
+		ServerID:    "srv1",
+		Name:        "alpha",
+		Description: "cleared canonical desc",
+		InputSchema: `{"type":"string"}`,
+		CreatedAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertMCPTool clear-canonical conflict path: %v", err)
+	}
+	if clearedUpsert.CanonicalSchema != nil {
+		t.Errorf("CanonicalSchema = %q after nil upsert, want NULL", *clearedUpsert.CanonicalSchema)
+	}
+	gotAfterClear, err := s.GetMCPTool(ctx, "tool1")
+	if err != nil {
+		t.Fatalf("GetMCPTool after clear-canonical upsert: %v", err)
+	}
+	if gotAfterClear.CanonicalSchema != nil {
+		t.Errorf("GetMCPTool CanonicalSchema = %q after nil upsert, want NULL", *gotAfterClear.CanonicalSchema)
 	}
 
 	tools, err = s.ListMCPToolsByServer(ctx, "srv1")

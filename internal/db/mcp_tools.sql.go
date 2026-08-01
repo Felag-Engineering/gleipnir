@@ -33,7 +33,7 @@ func (q *Queries) DeleteMCPToolsByServer(ctx context.Context, serverID string) e
 }
 
 const getMCPTool = `-- name: GetMCPTool :one
-SELECT id, server_id, name, description, input_schema, created_at, enabled FROM mcp_tools WHERE id = ?1
+SELECT id, server_id, name, description, input_schema, created_at, enabled, canonical_schema FROM mcp_tools WHERE id = ?1
 `
 
 func (q *Queries) GetMCPTool(ctx context.Context, id string) (McpTool, error) {
@@ -47,12 +47,13 @@ func (q *Queries) GetMCPTool(ctx context.Context, id string) (McpTool, error) {
 		&i.InputSchema,
 		&i.CreatedAt,
 		&i.Enabled,
+		&i.CanonicalSchema,
 	)
 	return i, err
 }
 
 const getMCPToolByServerAndName = `-- name: GetMCPToolByServerAndName :one
-SELECT t.id, t.server_id, t.name, t.description, t.input_schema, t.created_at, t.enabled
+SELECT t.id, t.server_id, t.name, t.description, t.input_schema, t.created_at, t.enabled, t.canonical_schema
 FROM mcp_tools t
 JOIN mcp_servers s ON t.server_id = s.id
 WHERE s.name = ?1 AND t.name = ?2
@@ -74,12 +75,13 @@ func (q *Queries) GetMCPToolByServerAndName(ctx context.Context, arg GetMCPToolB
 		&i.InputSchema,
 		&i.CreatedAt,
 		&i.Enabled,
+		&i.CanonicalSchema,
 	)
 	return i, err
 }
 
 const listEnabledMCPToolsByServer = `-- name: ListEnabledMCPToolsByServer :many
-SELECT id, server_id, name, description, input_schema, created_at, enabled FROM mcp_tools WHERE server_id = ?1 AND enabled = 1 ORDER BY name ASC
+SELECT id, server_id, name, description, input_schema, created_at, enabled, canonical_schema FROM mcp_tools WHERE server_id = ?1 AND enabled = 1 ORDER BY name ASC
 `
 
 // Returns only enabled tools. Used by the capability registry API so policy
@@ -101,6 +103,7 @@ func (q *Queries) ListEnabledMCPToolsByServer(ctx context.Context, serverID stri
 			&i.InputSchema,
 			&i.CreatedAt,
 			&i.Enabled,
+			&i.CanonicalSchema,
 		); err != nil {
 			return nil, err
 		}
@@ -116,7 +119,7 @@ func (q *Queries) ListEnabledMCPToolsByServer(ctx context.Context, serverID stri
 }
 
 const listMCPToolsByServer = `-- name: ListMCPToolsByServer :many
-SELECT id, server_id, name, description, input_schema, created_at, enabled FROM mcp_tools WHERE server_id = ?1 ORDER BY name ASC
+SELECT id, server_id, name, description, input_schema, created_at, enabled, canonical_schema FROM mcp_tools WHERE server_id = ?1 ORDER BY name ASC
 `
 
 // Returns all tools including disabled ones. Used by RefreshTools (which must
@@ -138,6 +141,7 @@ func (q *Queries) ListMCPToolsByServer(ctx context.Context, serverID string) ([]
 			&i.InputSchema,
 			&i.CreatedAt,
 			&i.Enabled,
+			&i.CanonicalSchema,
 		); err != nil {
 			return nil, err
 		}
@@ -167,23 +171,27 @@ func (q *Queries) SetMCPToolEnabled(ctx context.Context, arg SetMCPToolEnabledPa
 }
 
 const upsertMCPTool = `-- name: UpsertMCPTool :one
-INSERT INTO mcp_tools (id, server_id, name, description, input_schema, created_at)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+INSERT INTO mcp_tools (id, server_id, name, description, input_schema, canonical_schema, created_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
 ON CONFLICT (server_id, name) DO UPDATE SET
-    description  = excluded.description,
-    input_schema = excluded.input_schema
-RETURNING id, server_id, name, description, input_schema, created_at, enabled
+    description      = excluded.description,
+    input_schema     = excluded.input_schema,
+    canonical_schema = excluded.canonical_schema
+RETURNING id, server_id, name, description, input_schema, created_at, enabled, canonical_schema
 `
 
 type UpsertMCPToolParams struct {
-	ID          string `json:"id"`
-	ServerID    string `json:"server_id"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	InputSchema string `json:"input_schema"`
-	CreatedAt   string `json:"created_at"`
+	ID              string  `json:"id"`
+	ServerID        string  `json:"server_id"`
+	Name            string  `json:"name"`
+	Description     string  `json:"description"`
+	InputSchema     string  `json:"input_schema"`
+	CanonicalSchema *string `json:"canonical_schema"`
+	CreatedAt       string  `json:"created_at"`
 }
 
+// canonical_schema is always rewritten alongside input_schema (including back
+// to NULL) so the two columns can never describe different schemas.
 func (q *Queries) UpsertMCPTool(ctx context.Context, arg UpsertMCPToolParams) (McpTool, error) {
 	row := q.db.QueryRowContext(ctx, upsertMCPTool,
 		arg.ID,
@@ -191,6 +199,7 @@ func (q *Queries) UpsertMCPTool(ctx context.Context, arg UpsertMCPToolParams) (M
 		arg.Name,
 		arg.Description,
 		arg.InputSchema,
+		arg.CanonicalSchema,
 		arg.CreatedAt,
 	)
 	var i McpTool
@@ -202,6 +211,7 @@ func (q *Queries) UpsertMCPTool(ctx context.Context, arg UpsertMCPToolParams) (M
 		&i.InputSchema,
 		&i.CreatedAt,
 		&i.Enabled,
+		&i.CanonicalSchema,
 	)
 	return i, err
 }
