@@ -15,6 +15,7 @@ const server: ApiMcpServer = {
   created_at: new Date(Date.now() - 86_400_000).toISOString(),
   is_arcade_gateway: true,
   auth_header_keys: ['Authorization', 'Arcade-User-ID'],
+  protocol_version: '2026-07-28',
 }
 
 const tools: ApiMcpTool[] = [

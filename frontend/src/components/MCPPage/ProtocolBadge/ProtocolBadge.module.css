@@ -1,0 +1,17 @@
+.badge {
+  composes: badgePill from '../../../styles/badges.module.css';
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+}
+
+.modern {
+  composes: colorGreen from '../../../styles/badges.module.css';
+}
+
+.legacy {
+  composes: colorAmber from '../../../styles/badges.module.css';
+}
+
+.unknown {
+  composes: colorMuted from '../../../styles/badges.module.css';
+}

@@ -1,4 +1,5 @@
 import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
+import { ProtocolBadge } from '@/components/MCPPage/ProtocolBadge'
 import { SkeletonBlock } from '@/components/SkeletonBlock'
 import { formatTimeAgo } from '@/utils/format'
 import styles from './ServerCard.module.css'
@@ -46,6 +47,7 @@ export function ServerCard({
           <span className={styles.toolCountBadge}>
             {toolCount} {toolCount === 1 ? 'tool' : 'tools'}
           </span>
+          <ProtocolBadge version={server.protocol_version} />
           {isDiscovering && <span className={styles.discoveringBadge}>Discovering...</span>}
           {!isDiscovering && hasDrift && <span className={styles.driftBadge}>Drift</span>}
           {!isDiscovering && isUnreachable && (

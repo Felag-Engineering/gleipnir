@@ -35,6 +35,7 @@ const SERVER_1: ApiMcpServer = {
   has_drift: false,
   created_at: '2026-03-01T00:00:00Z',
   is_arcade_gateway: false,
+  protocol_version: '2026-07-28',
 }
 
 const SERVER_2: ApiMcpServer = {
@@ -45,6 +46,7 @@ const SERVER_2: ApiMcpServer = {
   has_drift: false,
   created_at: '2026-03-02T00:00:00Z',
   is_arcade_gateway: false,
+  protocol_version: null,
 }
 
 const TOOL_1: ApiMcpTool = {
@@ -186,6 +188,23 @@ describe('ToolsPage — servers loaded', () => {
     mockNoopMutations()
     renderPage()
     expect(screen.getByText('Drift')).toBeInTheDocument()
+  })
+
+  it('shows the modern protocol badge for a pinned server', () => {
+    renderPage()
+    expect(screen.getByText('Protocol 2026-07-28')).toBeInTheDocument()
+  })
+
+  it('shows the unknown protocol badge for a never-probed server', () => {
+    renderPage()
+    expect(screen.getByText('Protocol unknown')).toBeInTheDocument()
+  })
+
+  it('shows the legacy protocol badge for a server pinned to an older revision', () => {
+    mockServersLoaded([{ ...SERVER_1, protocol_version: '2024-11-05' }], new Map([['srv-1', [TOOL_1]]]))
+    mockNoopMutations()
+    renderPage()
+    expect(screen.getByText('Legacy protocol')).toBeInTheDocument()
   })
 
   it('shows tool name chips on server card', () => {

@@ -82,6 +82,7 @@ type mcpServerResponse struct {
 	CreatedAt        string   `json:"created_at"`
 	AuthHeaderKeys   []string `json:"auth_header_keys"` // sorted header names; never includes values
 	IsArcadeGateway  bool     `json:"is_arcade_gateway"`
+	ProtocolVersion  *string  `json:"protocol_version"` // negotiated MCP revision pinned at probe time; null = never probed
 }
 
 type mcpServerCreateResponse struct {
@@ -131,6 +132,7 @@ func (h *MCPHandler) serverToResponse(s db.McpServer) mcpServerResponse {
 		CreatedAt:        s.CreatedAt,
 		AuthHeaderKeys:   keys,
 		IsArcadeGateway:  arcade.IsArcadeGateway(s.Url, keys),
+		ProtocolVersion:  s.ProtocolVersion,
 	}
 }
 
@@ -440,11 +442,16 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}); err != nil {
 			slog.Warn("failed to clear has_drift after create", "server_id", server.ID, "err", err)
 		}
+	}
 
-		// Re-fetch so the response reflects the updated last_discovered_at.
-		if updated, err := h.store.GetMCPServer(r.Context(), server.ID); err == nil {
-			resp.mcpServerResponse = h.serverToResponse(updated)
-		}
+	// Re-fetch so the response reflects every write made after the row was created:
+	// the protocol-version pin (step 3a) and, when tools were discovered,
+	// last_discovered_at / has_drift. Best-effort — on error the pre-write snapshot
+	// is still a valid response.
+	if updated, err := h.store.GetMCPServer(r.Context(), server.ID); err == nil {
+		resp.mcpServerResponse = h.serverToResponse(updated)
+	} else {
+		slog.Warn("failed to re-fetch MCP server after create", "server_id", server.ID, "err", err)
 	}
 
 	httputil.WriteCreated(w, "/api/v1/mcp/servers/"+server.ID, resp)

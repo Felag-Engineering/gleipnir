@@ -203,6 +203,61 @@ func TestMCPServerListHandler(t *testing.T) {
 			t.Errorf("has_drift = true, want false for a freshly inserted server")
 		}
 	})
+
+	t.Run("list surfaces protocol_version, explicit null when unpinned", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		ctx := context.Background()
+
+		pinnedID := insertTestMCPServer(t, store, "pinned", "http://localhost:9999")
+		v := mcp.ProtocolVersion20260728
+		if err := store.UpdateMCPServerProtocolVersion(ctx, db.UpdateMCPServerProtocolVersionParams{
+			ProtocolVersion: &v, ID: pinnedID,
+		}); err != nil {
+			t.Fatalf("UpdateMCPServerProtocolVersion: %v", err)
+		}
+		insertTestMCPServer(t, store, "unpinned", "http://localhost:9998")
+
+		srv := httptest.NewServer(newMCPRouter(store, registry))
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Get(srv.URL + "/servers")
+		if err != nil {
+			t.Fatalf("GET /servers: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var envelope struct {
+			Data []map[string]json.RawMessage `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if len(envelope.Data) != 2 {
+			t.Fatalf("len(data) = %d, want 2", len(envelope.Data))
+		}
+
+		for _, row := range envelope.Data {
+			raw, ok := row["protocol_version"]
+			if !ok {
+				t.Fatalf("row %s missing protocol_version key", row["id"])
+			}
+			var id string
+			if err := json.Unmarshal(row["id"], &id); err != nil {
+				t.Fatalf("unmarshal id: %v", err)
+			}
+			switch id {
+			case pinnedID:
+				if string(raw) != `"2026-07-28"` {
+					t.Errorf("pinned protocol_version = %s, want %q", raw, "2026-07-28")
+				}
+			default:
+				if string(raw) != "null" {
+					t.Errorf("unpinned protocol_version = %s, want null", raw)
+				}
+			}
+		}
+	})
 }
 
 func TestMCPServerCreateHandler(t *testing.T) {
@@ -367,11 +422,15 @@ func TestMCPServerCreateHandler(t *testing.T) {
 
 		var envelope struct {
 			Data struct {
-				ID string `json:"id"`
+				ID              string  `json:"id"`
+				ProtocolVersion *string `json:"protocol_version"`
 			} `json:"data"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
 			t.Fatalf("decode response: %v", err)
+		}
+		if envelope.Data.ProtocolVersion == nil || *envelope.Data.ProtocolVersion != "2026-07-28" {
+			t.Errorf("body protocol_version = %v, want %q", envelope.Data.ProtocolVersion, "2026-07-28")
 		}
 
 		got, err := store.GetMCPServer(context.Background(), envelope.Data.ID)
@@ -380,6 +439,44 @@ func TestMCPServerCreateHandler(t *testing.T) {
 		}
 		if got.ProtocolVersion == nil || *got.ProtocolVersion != "2026-07-28" {
 			t.Errorf("ProtocolVersion = %v, want %q", got.ProtocolVersion, "2026-07-28")
+		}
+	})
+
+	t.Run("create with zero tools still returns the pinned protocol version", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+
+		fakeMCP := httptest.NewServer(mcp.NewFakeMCPServer(mcp.WithFakeMode(mcp.FakeModern), mcp.WithFakeTools()))
+		t.Cleanup(fakeMCP.Close)
+
+		srv := httptest.NewServer(newMCPRouter(store, registry))
+		t.Cleanup(srv.Close)
+
+		body, _ := json.Marshal(map[string]string{"name": "zero-tools-server", "url": fakeMCP.URL})
+		resp, err := http.Post(srv.URL+"/servers", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST /servers: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("status = %d, want 201", resp.StatusCode)
+		}
+
+		var envelope struct {
+			Data struct {
+				ProtocolVersion *string `json:"protocol_version"`
+				DiscoveryError  *string `json:"discovery_error"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if envelope.Data.ProtocolVersion == nil || *envelope.Data.ProtocolVersion != "2026-07-28" {
+			t.Errorf("protocol_version = %v, want %q", envelope.Data.ProtocolVersion, "2026-07-28")
+		}
+		if envelope.Data.DiscoveryError != nil {
+			t.Errorf("discovery_error = %v, want nil", *envelope.Data.DiscoveryError)
 		}
 	})
 
@@ -450,8 +547,9 @@ func TestMCPServerCreateHandler(t *testing.T) {
 
 		var envelope struct {
 			Data struct {
-				ID             string  `json:"id"`
-				DiscoveryError *string `json:"discovery_error"`
+				ID              string  `json:"id"`
+				DiscoveryError  *string `json:"discovery_error"`
+				ProtocolVersion *string `json:"protocol_version"`
 			} `json:"data"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
@@ -459,6 +557,9 @@ func TestMCPServerCreateHandler(t *testing.T) {
 		}
 		if envelope.Data.DiscoveryError == nil {
 			t.Error("expected discovery_error to be set, got nil")
+		}
+		if envelope.Data.ProtocolVersion != nil {
+			t.Errorf("body protocol_version = %v, want nil", *envelope.Data.ProtocolVersion)
 		}
 
 		got, err := store.GetMCPServer(context.Background(), envelope.Data.ID)

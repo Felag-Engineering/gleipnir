@@ -89,6 +89,7 @@ export interface ApiMcpServer {
   created_at: string
   auth_header_keys?: string[] // sorted header names; values are never returned
   is_arcade_gateway: boolean
+  protocol_version: string | null // pinned MCP revision; null = never probed
 }
 
 // Matches mcp_handler.go → mcpServerCreateResponse (POST /api/v1/mcp/servers)

@@ -13,6 +13,7 @@ const server: ApiMcpServer = {
   has_drift: false,
   created_at: new Date(Date.now() - 86_400_000).toISOString(),
   is_arcade_gateway: false,
+  protocol_version: '2026-07-28',
 }
 
 const tools: ApiMcpTool[] = [
