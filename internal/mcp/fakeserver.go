@@ -42,8 +42,8 @@ import (
 // assertions need no recorder change.
 //
 // Error codes emitted by this fake are the de-facto oracle for the
-// transport-header rules — every one carries a spec citation in a comment
-// for that reason.
+// transport-header rules; their values and spec citations now live in
+// errorcodes.go, the package's single authoritative registry.
 type FakeMCPServer struct {
 	mu sync.Mutex
 
@@ -55,6 +55,7 @@ type FakeMCPServer struct {
 	rejectLegacyHandshake   bool
 	serverInfoName          string
 	serverInfoVersion       string
+	toolResultType          string
 
 	requests   []FakeRequest
 	violations []string
@@ -158,6 +159,16 @@ func WithFakeServerInfo(name, version string) FakeServerOption {
 		f.serverInfoName = name
 		f.serverInfoVersion = version
 	}
+}
+
+// WithFakeToolResultType sets the resultType the fake reports on tools/call.
+// "" (the default) OMITS the field entirely — the pre-2026 shape, and the
+// fixture for spec §11's "absent ⇒ complete" rule. "complete" / "task" /
+// "input_required" model a 2026-07-28 server. The fake deliberately does NOT
+// validate the value (same "keep the fake dumb" discipline as FakeModern's
+// documented no-cross-check note), so a test can drive an unrecognized value.
+func WithFakeToolResultType(rt string) FakeServerOption {
+	return func(f *FakeMCPServer) { f.toolResultType = rt }
 }
 
 // NewFakeMCPServer returns a ready FakeMCPServer. Wrap it in
@@ -288,26 +299,13 @@ func (f *FakeMCPServer) strictModern() bool {
 	return f.rejectLegacyHandshake
 }
 
-// errCodeHeaderMismatch and errCodeInvalidParams are the two JSON-RPC error
-// regimes server/discover validation can produce. They are DISTINCT and
-// must not be conflated: errCodeHeaderMismatch (-32020) covers every
-// required-standard-header failure per streamable-http.md §Server
-// Validation ("A required standard header (MCP-Protocol-Version, Mcp-Method,
-// Mcp-Name) is missing" / "A header value does not match the corresponding
-// request body value"); errCodeInvalidParams (-32602) covers ONLY a missing
-// required _meta BODY field, per basic/index.md "Per-request protocol
-// fields". Conflating them would teach a client that a forgotten Mcp-Method
-// looks identical to a malformed body — and this package's own
-// classifyDiscoverResponse maps -32602 to discoverLegacy, so getting this
-// wrong would silently misread a client compliance bug as "this server is
-// old". Both regimes apply to tool traffic under strict mode — tools/list
-// and tools/call now carry _meta, so enforceMetaFields runs for them too,
-// and the header-vs-body protocolVersion comparison in
+// errCodeHeaderMismatch and errCodeInvalidParams (errorcodes.go) are the two
+// JSON-RPC error regimes server/discover validation can produce. They are
+// DISTINCT and must not be conflated — see errorcodes.go for the full
+// rationale. Both regimes apply to tool traffic under strict mode —
+// tools/list and tools/call now carry _meta, so enforceMetaFields runs for
+// them too, and the header-vs-body protocolVersion comparison in
 // enforceStandardHeaders is consequently live there as well.
-const (
-	errCodeHeaderMismatch = -32020
-	errCodeInvalidParams  = -32602
-)
 
 // enforceStandardHeaders validates the streamable-HTTP transport header
 // rules (A4): MCP-Protocol-Version and Mcp-Method are always required, and
@@ -553,8 +551,8 @@ func (f *FakeMCPServer) handleToolsList(w http.ResponseWriter, req FakeRequest) 
 
 // handleToolsCall serves a deliberately dumb tools/call response (same
 // discipline as FakeModern's documented "do not cross-check" note): no
-// unknown-tool rejection, and no resultType field — resultType fixtures
-// belong to the follow-up that implements it. Under
+// unknown-tool rejection. Its resultType field is driven by
+// WithFakeToolResultType, which omits the field by default. Under
 // WithFakeRejectLegacyHandshake it enforces the standard transport headers
 // first, with expectedName set to the tool name the request body names, then
 // the _meta body fields.
@@ -569,16 +567,25 @@ func (f *FakeMCPServer) handleToolsCall(w http.ResponseWriter, req FakeRequest) 
 		}
 	}
 
+	f.mu.Lock()
+	resultType := f.toolResultType
+	f.mu.Unlock()
+
+	result := map[string]any{
+		"content": []map[string]any{
+			{"type": "text", "text": "called " + name},
+		},
+		"isError": false,
+	}
+	if resultType != "" {
+		result["resultType"] = resultType
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
 		"jsonrpc": "2.0",
 		"id":      1,
-		"result": map[string]any{
-			"content": []map[string]any{
-				{"type": "text", "text": "called " + name},
-			},
-			"isError": false,
-		},
+		"result":  result,
 	})
 }
 

@@ -142,7 +142,7 @@ func TestClassifyDiscoverResponse(t *testing.T) {
 		{
 			name:        "400 error -32021 MissingRequiredClientCapability with data.requiredCapabilities",
 			status:      http.StatusBadRequest,
-			payload:     `{"jsonrpc":"2.0","id":1,"error":{"code":-32021,"message":"Missing required client capability","data":{"requiredCapabilities":["tools"]}}}`,
+			payload:     `{"jsonrpc":"2.0","id":1,"error":{"code":-32021,"message":"Missing required client capability","data":{"requiredCapabilities":{"elicitation":{}}}}}`,
 			wantOutcome: discoverModern,
 			wantErrCode: -32021,
 		},
@@ -150,6 +150,16 @@ func TestClassifyDiscoverResponse(t *testing.T) {
 			name:        "400 error -32602 Invalid params",
 			status:      http.StatusBadRequest,
 			payload:     `{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"Invalid params"}}`,
+			wantOutcome: discoverLegacy,
+		},
+		{
+			// -32002 is the pre-2026-07-28 spelling of "resource not found"
+			// (renumbered to -32602 in the modern spec, additively — see
+			// errorcodes.go). It sits outside the MCP-reserved range, so it
+			// can never be misread as a modern peer.
+			name:        "400 error -32002 legacy resource-not-found",
+			status:      http.StatusBadRequest,
+			payload:     `{"jsonrpc":"2.0","id":1,"error":{"code":-32002,"message":"Resource not found"}}`,
 			wantOutcome: discoverLegacy,
 		},
 		{

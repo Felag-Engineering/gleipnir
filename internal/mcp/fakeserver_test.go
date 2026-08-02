@@ -633,3 +633,60 @@ func TestFakeMCPServer_RequestsRaceClean(t *testing.T) {
 		t.Errorf("len(Requests()) = %d, want 2", len(got))
 	}
 }
+
+// TestFakeMCPServer_ToolResultTypeFixture pins the fake's resultType
+// fixture behavior: WithFakeToolResultType's default is real field omission,
+// not an empty string, and a configured value is echoed verbatim.
+func TestFakeMCPServer_ToolResultTypeFixture(t *testing.T) {
+	toolsCallBody := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "tool-a",
+		},
+	}
+
+	t.Run("default fake omits resultType entirely", func(t *testing.T) {
+		fake := NewFakeMCPServer()
+		srv := httptest.NewServer(fake)
+		t.Cleanup(srv.Close)
+
+		status, envelope := postRPC(t, srv, toolsCallBody, nil)
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", status)
+		}
+
+		// Unmarshal into raw fields, not a struct decode: a struct decode
+		// would report "" for both an absent key and an empty string, which
+		// is the exact distinction this test exists to catch. If the fake
+		// emitted "resultType":"", every client-side "absent ⇒ complete"
+		// assertion would still pass while testing nothing.
+		var result map[string]json.RawMessage
+		if err := json.Unmarshal(envelope.Result, &result); err != nil {
+			t.Fatalf("unmarshal result: %v", err)
+		}
+		if _, present := result["resultType"]; present {
+			t.Errorf("result has a resultType key, want it entirely absent: %s", envelope.Result)
+		}
+	})
+
+	t.Run("WithFakeToolResultType is echoed verbatim", func(t *testing.T) {
+		fake := NewFakeMCPServer(WithFakeToolResultType("task"))
+		srv := httptest.NewServer(fake)
+		t.Cleanup(srv.Close)
+
+		status, envelope := postRPC(t, srv, toolsCallBody, nil)
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", status)
+		}
+
+		var result toolsCallResult
+		if err := json.Unmarshal(envelope.Result, &result); err != nil {
+			t.Fatalf("unmarshal result: %v", err)
+		}
+		if got := decodeResultType(result.ResultType); got != "task" {
+			t.Errorf("ResultType = %q, want %q", got, "task")
+		}
+	})
+}

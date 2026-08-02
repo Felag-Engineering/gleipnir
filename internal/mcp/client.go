@@ -42,6 +42,78 @@ type Tool struct {
 type ToolResult struct {
 	Output  json.RawMessage
 	IsError bool
+
+	// ResultType is the tool call's resultType (spec §11), verbatim from the
+	// server (bounded to maxResultTypeLen) except an absent, empty, or
+	// non-string value is normalised to ResultTypeComplete — never empty on
+	// a value returned by CallTool.
+	//
+	// A value other than ResultTypeComplete is DATA, not an error: CallTool
+	// still returns a nil error, nothing in this package branches on it, and
+	// it is deliberately not written into the run's LLM-visible audit trail.
+	// Interpreting it belongs to the milestone that consumes it.
+	ResultType string
+}
+
+// ResultTypeComplete is the tools/call resultType every pre-2026-07-28
+// server implies by omitting the field, and the value CallTool normalises
+// an absent or empty resultType to (spec §11: "absent ⇒ complete for older
+// servers").
+//
+// The other 2026-07-28 values — "task" and "input_required" — are
+// deliberately NOT declared here: this package must not branch on
+// resultType, and naming a value nothing compares against would imply it
+// does. The milestone that consumes them declares them where it does.
+const ResultTypeComplete = "complete"
+
+// maxResultTypeLen bounds a server-controlled resultType string before it is
+// returned in a ToolResult, matching the maxServerInfoFieldLen /
+// legacyVersionMaxLen / maxModernErrMessageLen bounded-untrusted-string
+// discipline elsewhere in this package. Every spec-defined value ("complete",
+// "task", "input_required") is well under 14 bytes, so this is headroom, not
+// a realistic limit — it is a length bound only, not semantic validation: an
+// unrecognized value of sane length still passes through verbatim.
+const maxResultTypeLen = 64
+
+// normalizeResultType is the ONLY place the "absent ⇒ complete" rule lives;
+// every ToolResult this package returns passes its resultType through here.
+//
+// It is deliberately NOT gated on isModernProtocol: a legacy server never
+// sends the field at all, so the gate would buy nothing on the compliant
+// path and would break precisely the "for older servers" case the rule
+// exists for. A non-empty value is passed through verbatim (bounded to
+// maxResultTypeLen), including an unrecognized one, because this package
+// does not interpret the field — validating it here would put policy in the
+// transport.
+func normalizeResultType(raw string) string {
+	if raw == "" {
+		return ResultTypeComplete
+	}
+	return truncateForLog(raw, maxResultTypeLen)
+}
+
+// decodeResultType extracts the resultType field's string value out of a
+// tools/call result, tolerating a non-compliant server. raw is nil when the
+// field was absent (toolsCallResult.ResultType is the json.RawMessage zero
+// value); it is treated identically to absent — "" — when the field is
+// present but is not a JSON string, e.g. a server sending
+// {"resultType":1} or {"resultType":{}}.
+//
+// That tolerance matters: before ToolResult had a ResultType field at all,
+// an unrecognized "resultType" key was just an unknown key that
+// json.Unmarshal silently ignored, and the call succeeded. Decoding straight
+// into a string-typed struct field would turn a non-string value into an
+// UnmarshalTypeError that fails the whole CallTool — a behavior regression
+// against a non-compliant server that this package's "don't change behavior
+// for older/non-modern servers" premise forbids. The caller feeds the result
+// through normalizeResultType, so a malformed value ends up
+// ResultTypeComplete exactly like a genuinely absent one.
+func decodeResultType(raw json.RawMessage) string {
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return ""
+	}
+	return s
 }
 
 // JSON-RPC 2.0 wire types used for MCP HTTP transport.
@@ -123,9 +195,19 @@ type toolWire struct {
 	InputSchema json.RawMessage `json:"inputSchema"`
 }
 
+// toolsCallResult is decode-only — its sole uses are the json.Unmarshal in
+// CallTool and one test unmarshal in fakeserver_test.go — so field order is
+// cosmetic and no request bytes are affected by it.
+//
+// ResultType is json.RawMessage rather than string so a non-compliant
+// server sending a non-string resultType cannot fail the whole
+// json.Unmarshal call — see decodeResultType, which extracts the string
+// value and tolerates exactly that case. Absent ⇒ ResultTypeComplete
+// (spec §11).
 type toolsCallResult struct {
-	Content []contentItem `json:"content"`
-	IsError bool          `json:"isError"`
+	Content    []contentItem   `json:"content"`
+	IsError    bool            `json:"isError"`
+	ResultType json.RawMessage `json:"resultType"`
 }
 
 type contentItem struct {
@@ -566,8 +648,9 @@ func (c *Client) CallTool(ctx context.Context, name string, input map[string]any
 	}
 
 	res = ToolResult{
-		Output:  output,
-		IsError: result.IsError,
+		Output:     output,
+		IsError:    result.IsError,
+		ResultType: normalizeResultType(decodeResultType(result.ResultType)),
 	}
 	return
 }

@@ -495,7 +495,14 @@ versions for the 12-month deprecation window.
 - `_meta` on every request (`protocolVersion`, `clientInfo`, `clientCapabilities`);
   `Mcp-Method` / `Mcp-Name` headers on POSTs; `resultType` handling (absent ⇒
   `"complete"` for older servers); error-code renumbering; no session handling for
-  new-protocol servers.
+  new-protocol servers. **As shipped (#762)**: `resultType` is decoded onto
+  `mcp.ToolResult` and normalised, but never interpreted in `internal/mcp` — a
+  non-`complete` value is data, not an error, left for a later milestone to
+  consume. The error-code work is a consolidation of the package's existing
+  constants into one registry plus the previously-unrecorded `-32021`; the
+  `-32002` → `-32602` renumbering is `resources/read`-only, so it is inert for a
+  client that speaks only `initialize` / `tools/list` / `tools/call` /
+  `server/discover`.
 - Reserved-header blocklist (ADR-039 / `internal/infra/headervalidate`): add
   `Mcp-Method`, `Mcp-Name`; retain `Mcp-Session-Id` through the window.
 - `x-mcp-header` tool-parameter headers (SEP-2243): honored only through
