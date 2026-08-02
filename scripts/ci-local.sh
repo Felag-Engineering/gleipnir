@@ -27,9 +27,16 @@ set -euo pipefail
 #   2. the gate takes an exclusive machine-wide lock, so a second worktree
 #      queues behind the first instead of racing it for memory.
 #
-# Overrides (both intended for hosts with RAM to spare):
+# The other half of the fix is scripts/ci-local-scope.sh: the race lane now
+# covers only the packages the diff can reach, so the common inner-loop run
+# links a handful of test binaries instead of 53. That shrinks the peak the
+# budget below has to defend against, but does not remove the need for it — a
+# diff that touches a core package still fans out to most of the tree.
+#
+# Overrides:
 #   CI_LOCAL_JOBS=N     lane parallelism; skips the RAM-derived budget
 #   CI_LOCAL_NO_LOCK=1  don't serialize against other worktrees
+#   CI_LOCAL_FULL=1     no narrowing — every lane, every package
 
 make_bin="${1:-make}"
 
@@ -61,15 +68,61 @@ fi
 # as strong a race check as the remote one.
 export CI_LOCAL_TEST_P="$jobs"
 
+# Narrow the gate to the diff. Everything the scoper reports is exported so the
+# Makefile lanes can branch on it; see scripts/ci-local-scope.sh for the rules.
+scope="full"
+scope_reason="CI_LOCAL_FULL=1"
+if [ -z "${CI_LOCAL_FULL:-}" ]; then
+	scope_env=$("$(dirname "$0")/ci-local-scope.sh")
+	while IFS='=' read -r key value; do
+		[ -z "$key" ] && continue
+		case "$key" in
+		CI_LOCAL_SCOPE) scope="$value" ;;
+		CI_LOCAL_SCOPE_REASON) scope_reason="$value" ;;
+		*) export "$key=$value" ;;
+		esac
+	done <<<"$scope_env"
+fi
+
+# The gate's whole job is to be a trustworthy merge signal, so a narrowed run
+# has to say so on the way in and on the way out. Never let "ci-local ✅" stand
+# alone for a run that skipped lanes.
+summarize() {
+	local pkg_count="all"
+	if [ "$scope" = "scoped" ]; then
+		pkg_count=$(printf '%s' "${CI_LOCAL_GO_PKGS:-}" | wc -w | tr -d ' ')
+	fi
+	echo ""
+	if [ "$scope" = "full" ]; then
+		echo "ci-local ✅  FULL gate ($scope_reason)"
+		echo "  lanes: backend build + race tests (all packages) · gofmt · staticcheck · plugin import boundary · gate scoper self-test · sqlc drift · proto lint+gen drift · plugin-sdk+examples+plugins · frontend typecheck+unit"
+	else
+		echo "ci-local ✅  SCOPED gate — $scope_reason"
+		echo "  always run:  go build ./... · gofmt · staticcheck · plugin import boundary · gate scoper self-test · sqlc drift · proto lint+gen drift"
+		echo "  race tests:  ${pkg_count} of $(GOWORK=off go list ./... 2>/dev/null | wc -l | tr -d ' ') root packages"
+		echo "  sdk lane:    $([ "${CI_LOCAL_RUN_SDK:-1}" = "1" ] && echo "run" || echo "skipped — no plugin-sdk/, plugins/, or go.work change")"
+		echo "  frontend:    $([ "${CI_LOCAL_RUN_FRONTEND:-1}" = "1" ] && echo "run" || echo "skipped — no frontend/ change")"
+		echo "  ⚠ a scoped pass is an inner-loop signal, not full coverage — CI runs the whole matrix on the pushed branch."
+		echo "  run 'make ci-local-full' for the unnarrowed gate."
+	fi
+	echo "not covered locally (CI-only): docker/arm64/podman image jobs, vuln scans (make security)"
+}
+
 lock_file="${TMPDIR:-/tmp}/gleipnir-ci-local-$(id -u).lock"
 lock_wait_seconds=3600
 
 run_lanes() {
+	if [ "$scope" = "full" ]; then
+		echo "ci-local: FULL gate ($scope_reason)" >&2
+	else
+		echo "ci-local: scoped gate — $scope_reason" >&2
+	fi
 	echo "ci-local: $jobs lane(s) in parallel, go test -p $CI_LOCAL_TEST_P" >&2
 	# MAKEFLAGS is cleared so an outer `make -jN ci-local` cannot leak its own
 	# job count (or its jobserver) into the lanes and undo the budget.
 	env -u MAKEFLAGS -u MAKELEVEL -u MFLAGS \
 		"$make_bin" --no-print-directory -j"$jobs" -O ci-local-lanes
+	summarize
 }
 
 if [ -n "${CI_LOCAL_NO_LOCK:-}" ]; then

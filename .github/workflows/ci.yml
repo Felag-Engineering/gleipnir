@@ -205,6 +205,13 @@ jobs:
       - name: gofmt
         run: make lint-go-fmt
 
+      # scripts/ci-local-scope.sh decides how much of the *local* merge gate
+      # runs, so a regression in it would surface as a green gate that tested
+      # less than the developer thought. CI is the only place that can catch
+      # that, because CI is the run it cannot narrow.
+      - name: Gate scoper self-test
+        run: make ci-local-scope-self-test
+
   # staticcheck was previously local-only (`make lint`), which let dead code and
   # style regressions reach PRs that a local `make lint` would have caught —
   # silent drift between the local vocabulary and the CI gate. The Makefile pins
