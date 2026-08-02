@@ -232,7 +232,14 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 		r.Get("/api/v1/config", cfg.Handlers.AdminHandler.GetPublicConfig)
 
 		// Policies, MCP, stats, models, and attention — mounted under /api/v1.
-		policySvc := policy.NewService(cfg.Services.Store, nil, cfg.Services.ProviderRegistry, cfg.Services.ProviderRegistry, cfg.Services.Settings)
+		// *mcp.Registry satisfies policy.ToolLookup. Assign through a nil check: a
+		// typed-nil *mcp.Registry stored in the interface would make Service.lookup
+		// non-nil and panic on first use.
+		var toolLookup policy.ToolLookup
+		if cfg.Services.Registry != nil {
+			toolLookup = cfg.Services.Registry
+		}
+		policySvc := policy.NewService(cfg.Services.Store, toolLookup, cfg.Services.ProviderRegistry, cfg.Services.ProviderRegistry, cfg.Services.Settings)
 		r.Mount("/api/v1", newAPISubRouter(cfg.Services.Store, policySvc, cfg.Services.Registry, cfg.Services.ModelLister, cfg.Services.ModelFilter, cfg.Handlers.PolicyWebhookHandler, cfg.Services.Poller, cfg.Services.Scheduler, cfg.Services.Cron, cfg.Services.EncryptionKey, cfg.Services.Arbiter, cfg.Services.ProviderRegistry))
 
 		// Plugin install and create-instance endpoints are registered outside the

@@ -1819,3 +1819,176 @@ func TestResolvedTool_SchemaForHeaderParams(t *testing.T) {
 		})
 	}
 }
+
+// TestResolvedTool_SchemaForNarrowing mirrors TestResolvedTool_SchemaForHeaderParams
+// exactly: SchemaForNarrowing shares the same canonical-first, raw-fallback
+// selection rule.
+func TestResolvedTool_SchemaForNarrowing(t *testing.T) {
+	canonical := json.RawMessage(`{"properties":{"a":{}}}`)
+	raw := json.RawMessage(`{"properties":{"a":{},"b":{}}}`)
+
+	tests := []struct {
+		name            string
+		canonicalSchema json.RawMessage
+		inputSchema     json.RawMessage
+		want            json.RawMessage
+	}{
+		{
+			name:            "canonical present → canonical returned",
+			canonicalSchema: canonical,
+			inputSchema:     raw,
+			want:            canonical,
+		},
+		{
+			name:            "canonical nil → InputSchema returned",
+			canonicalSchema: nil,
+			inputSchema:     raw,
+			want:            raw,
+		},
+		{
+			name:            "canonical empty-but-non-nil → InputSchema returned",
+			canonicalSchema: json.RawMessage{},
+			inputSchema:     raw,
+			want:            raw,
+		},
+		{
+			name:            "both empty → nil",
+			canonicalSchema: nil,
+			inputSchema:     nil,
+			want:            nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := ResolvedTool{
+				CanonicalSchema: tc.canonicalSchema,
+				InputSchema:     tc.inputSchema,
+			}
+			got := rt.SchemaForNarrowing()
+			if string(got) != string(tc.want) {
+				t.Errorf("SchemaForNarrowing() = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLookupTool_MissingTool(t *testing.T) {
+	reg, _ := newTestRegistry(t)
+
+	exists, canonical, err := reg.LookupTool(context.Background(), "no-such-server", "no-such-tool")
+	if err != nil {
+		t.Fatalf("LookupTool: %v", err)
+	}
+	if exists {
+		t.Error("exists = true, want false")
+	}
+	if canonical != nil {
+		t.Errorf("canonical = %v, want nil", canonical)
+	}
+}
+
+func TestLookupTool_ReturnsCanonicalSchema(t *testing.T) {
+	reg, store := newTestRegistry(t)
+
+	tools := []map[string]any{
+		{"name": "tool-a", "description": "desc", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"a": map[string]any{}}}},
+	}
+	srv := makeMCPServer(t, tools)
+
+	if _, err := RegisterServerForTest(context.Background(), store.Queries(), reg, "my-server", srv.URL); err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
+	}
+
+	registered, err := store.Queries().GetMCPToolByServerAndName(context.Background(), db.GetMCPToolByServerAndNameParams{
+		ServerName: "my-server",
+		ToolName:   "tool-a",
+	})
+	if err != nil {
+		t.Fatalf("GetMCPToolByServerAndName: %v", err)
+	}
+	if registered.CanonicalSchema == nil {
+		t.Fatal("expected the discovered tool to have a stored canonical_schema")
+	}
+
+	exists, canonical, err := reg.LookupTool(context.Background(), "my-server", "tool-a")
+	if err != nil {
+		t.Fatalf("LookupTool: %v", err)
+	}
+	if !exists {
+		t.Fatal("exists = false, want true")
+	}
+	if string(canonical) != *registered.CanonicalSchema {
+		t.Errorf("canonical = %s, want %s", canonical, *registered.CanonicalSchema)
+	}
+}
+
+func TestLookupTool_NullCanonicalReturnsNil(t *testing.T) {
+	reg, store := newTestRegistry(t)
+	rawDB := store.DB()
+
+	tools := []map[string]any{
+		{"name": "tool-null", "description": "desc", "inputSchema": map[string]any{"type": "object"}},
+		{"name": "tool-empty", "description": "desc", "inputSchema": map[string]any{"type": "object"}},
+	}
+	srv := makeMCPServer(t, tools)
+
+	if _, err := RegisterServerForTest(context.Background(), store.Queries(), reg, "my-server", srv.URL); err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
+	}
+
+	if _, err := rawDB.Exec(`UPDATE mcp_tools SET canonical_schema = NULL WHERE name = ?`, "tool-null"); err != nil {
+		t.Fatalf("null out canonical_schema: %v", err)
+	}
+	if _, err := rawDB.Exec(`UPDATE mcp_tools SET canonical_schema = '' WHERE name = ?`, "tool-empty"); err != nil {
+		t.Fatalf("empty out canonical_schema: %v", err)
+	}
+
+	for _, toolName := range []string{"tool-null", "tool-empty"} {
+		exists, canonical, err := reg.LookupTool(context.Background(), "my-server", toolName)
+		if err != nil {
+			t.Fatalf("LookupTool(%s): %v", toolName, err)
+		}
+		if !exists {
+			t.Errorf("LookupTool(%s): exists = false, want true", toolName)
+		}
+		if canonical != nil {
+			t.Errorf("LookupTool(%s): canonical = %v, want nil", toolName, canonical)
+		}
+	}
+}
+
+func TestLookupTool_DisabledToolStillExists(t *testing.T) {
+	reg, store := newTestRegistry(t)
+
+	tools := []map[string]any{
+		{"name": "tool-a", "description": "desc", "inputSchema": map[string]any{"type": "object"}},
+	}
+	srv := makeMCPServer(t, tools)
+
+	if _, err := RegisterServerForTest(context.Background(), store.Queries(), reg, "my-server", srv.URL); err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
+	}
+
+	registered, err := store.Queries().GetMCPToolByServerAndName(context.Background(), db.GetMCPToolByServerAndNameParams{
+		ServerName: "my-server",
+		ToolName:   "tool-a",
+	})
+	if err != nil {
+		t.Fatalf("GetMCPToolByServerAndName: %v", err)
+	}
+	if err := store.Queries().SetMCPToolEnabled(context.Background(), db.SetMCPToolEnabledParams{
+		ID:      registered.ID,
+		Enabled: 0,
+	}); err != nil {
+		t.Fatalf("SetMCPToolEnabled: %v", err)
+	}
+
+	exists, _, err := reg.LookupTool(context.Background(), "my-server", "tool-a")
+	if err != nil {
+		t.Fatalf("LookupTool: %v", err)
+	}
+	if !exists {
+		t.Error("exists = false, want true — a disabled tool must still count as existing (enablement is a run-start gate, not a save gate)")
+	}
+}

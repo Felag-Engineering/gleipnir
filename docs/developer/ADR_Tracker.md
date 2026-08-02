@@ -1570,6 +1570,51 @@ it is a structural constraint on the tool description the agent reasons from.
 - **Policy validator:** Warn if a tool in a policy accepts a parameter that is scoped on
   some tool entries but not others — the cross-tool bleed check.
 
+**Amendment (2026-08, #745/#769):** The "Validator warns at save time if a param name
+doesn't appear in the tool's discovered input schema" bullet above is superseded, subject
+to the two qualifiers below. Under ADR-059's canonical-schema regime, an unresolvable
+`params` key is now a BLOCKING rejection at policy save — but ONLY for a tool reference
+that resolves against `mcp_tools` (i.e. a row exists for `server_name.tool_name`) —
+validated against that row's stored canonical schema (`mcp_tools.canonical_schema`)
+rather than the raw discovered schema. A `params` block on such a tool whose canonical
+schema branches at the top level (`oneOf`/`anyOf`/`allOf`/`$ref`/`not`/`if`) is rejected
+outright — such schemas cannot be narrowed structurally, and narrowing had been a silent
+no-op for them (#769). A `params` block on such a tool with no stored canonical schema is
+likewise rejected (fail closed); granting the tool without `params` remains saveable in
+both cases.
+
+*Qualifier 1 — save-path carve-out.* A tool reference that does NOT resolve against
+`mcp_tools` at all is NOT covered by the rejection above; its `params` block is saved
+unvalidated, with only a non-blocking warning. This covers four cases indistinguishable
+from each other at the policy-service layer: a genuine plugin-sourced tool (plugin tools
+are never registered in `mcp_tools`, and shipped plugin policies rely on this), a
+misspelled tool reference, a tool on an MCP server that has never been
+discovered/refreshed, and a tool on a server not yet registered. The latter two create a
+save-ordering gap: a policy saved today with an unvalidated `params` block against a
+not-yet-registered server can become exploitable later, without the policy being
+re-saved, the moment that server is registered and discovered with a branching or
+otherwise-unnarrowable schema. A reliable plugin-vs-MCP classifier at the policy-save call
+site would close this gap; the one candidate evaluated for #745 — `toolregistry.Registry`,
+the in-memory cross-source namespace arbiter — was rejected for the purpose: it is not
+reliably populated at policy-save time (empty on every process restart until each MCP
+server is manually refreshed; released the moment a plugin instance is deactivated or its
+subprocess stops). This is the identical reason `main.go`'s `manifestClassifier`
+deliberately classifies plugin tools from the installed-instance row and manifest snapshot
+rather than the arbiter (#399) — using the arbiter here would reintroduce the same
+liveness-coupled misclassification #399 already fixed elsewhere. Closing this gap needs a
+static (DB + manifest) classifier threaded into `policy.Service`; tracked as a follow-up,
+not fixed in #745.
+
+*Qualifier 2 — save-time only.* Even for a tool that DOES resolve against `mcp_tools`,
+this rejection is enforced only at the moment the policy is saved. `RefreshTools`
+(`internal/mcp/registry.go`) unconditionally overwrites `input_schema` and
+`canonical_schema` for a server on every refresh — including writing NULL when the newly
+discovered schema fails canonicalization — with no re-consent and no re-validation of
+policies that already grant that tool with a `params` block. An MCP server update
+(compromised or benign) that introduces a top-level branch keyword after a policy was
+saved and accepted therefore disarms narrowing for every future run of that policy,
+silently, until the policy is re-saved.
+
 ---
 
 ## ADR-018: Capability snapshot as the first step of every run

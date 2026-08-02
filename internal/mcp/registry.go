@@ -50,12 +50,16 @@ type ResolvedTool struct {
 	// this field must still construct its JSON Schema compiler with a
 	// deny-all URLLoader, and must not read "canonical" as "vetted".
 	//
-	// SchemaForHeaderParams is the one sanctioned exception to "consumers
-	// must NOT silently fall back to InputSchema" above: it falls back
-	// specifically because the SET of x-mcp-header annotations is provably
-	// invariant under schemanorm's byte-level-only normalization, which is
-	// not true of exact schema enforcement in general. See that method's doc
-	// for the full argument; keep the two comments in sync.
+	// SchemaForHeaderParams and SchemaForNarrowing are the two sanctioned
+	// exceptions to "consumers must NOT silently fall back to InputSchema"
+	// above. Each falls back for its own separately-argued invariance reason:
+	// SchemaForHeaderParams because the SET of x-mcp-header annotations is
+	// provably invariant under schemanorm's byte-level-only normalization,
+	// and SchemaForNarrowing because the selected property/required SET
+	// produced by narrowing is provably invariant under that same
+	// normalization. Neither argument holds for exact schema enforcement in
+	// general. See each method's doc for its full argument; keep the three
+	// comments in sync.
 	CanonicalSchema json.RawMessage
 
 	// Capabilities is the per-call client capability declaration sent in a
@@ -85,6 +89,40 @@ type ResolvedTool struct {
 // prohibits. This is the one explicit, documented, single-site fallback —
 // not a silent one.
 func (rt ResolvedTool) SchemaForHeaderParams() json.RawMessage {
+	if len(rt.CanonicalSchema) > 0 {
+		return rt.CanonicalSchema
+	}
+	return rt.InputSchema
+}
+
+// SchemaForNarrowing returns the schema ADR-017 parameter narrowing operates
+// on: CanonicalSchema when one is stored, otherwise the raw InputSchema.
+//
+// NarrowSchema reads only the root "properties" map and filters the root
+// "required" array; both operations are insensitive to JSON member order,
+// and internal/schemanorm performs byte-level member reordering ONLY (no
+// structural transform), so narrowing the raw schema and narrowing the
+// canonical schema select the same property set and the same required set —
+// the same invariance argument that licenses SchemaForHeaderParams's
+// fallback above, applied to narrowing instead of annotation reads.
+//
+// The fallback is required, not optional: a run of a policy saved before
+// save-time params validation existed (or whose server has not been
+// refreshed since the canonical_schema column was added) has a NULL
+// canonical column, and failing those runs closed would take down every
+// params-scoped policy on upgrade.
+//
+// This is a DIFFERENT call site from compileArgValidator
+// (execution/agent/argvalidate.go), which is deliberately left unmodified:
+// that function reads rt.CanonicalSchema DIRECTLY and returns nil when it is
+// empty, on purpose — compiling an ArgValidator from a raw,
+// non-canonicalized, non-$ref-vetted schema would be unsafe, so exact
+// enforcement degrades rather than falls back. The two schema-selection call
+// sites sit one file apart and look superficially alike; they must NOT be
+// unified: narrowing is order-invariant, compilation is not.
+//
+// Keep this comment, SchemaForHeaderParams's, and CanonicalSchema's in sync.
+func (rt ResolvedTool) SchemaForNarrowing() json.RawMessage {
 	if len(rt.CanonicalSchema) > 0 {
 		return rt.CanonicalSchema
 	}
@@ -391,6 +429,32 @@ func (r *Registry) ResolveToolByName(ctx context.Context, dotName string) (*Clie
 	}
 
 	return r.newClientForServer(srv), toolName, nil
+}
+
+// LookupTool reports whether server_name.tool_name is registered and, when it
+// is, returns the tool's stored canonical schema. Satisfies policy.ToolLookup
+// structurally, so internal/policy never imports internal/mcp.
+//
+// A DISABLED tool still counts as existing here — enablement is a run-start
+// gate (see ResolveForPolicy), not a save gate, and reporting a disabled tool
+// as "not found in MCP registry" would mislead the operator.
+func (r *Registry) LookupTool(ctx context.Context, serverName, toolName string) (bool, json.RawMessage, error) {
+	tool, err := r.queries.GetMCPToolByServerAndName(ctx, db.GetMCPToolByServerAndNameParams{
+		ServerName: serverName,
+		ToolName:   toolName,
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil, nil
+		}
+		return false, nil, fmt.Errorf("look up tool %s.%s: %w", serverName, toolName, err)
+	}
+
+	var canonical json.RawMessage
+	if tool.CanonicalSchema != nil && *tool.CanonicalSchema != "" {
+		canonical = json.RawMessage(*tool.CanonicalSchema)
+	}
+	return true, canonical, nil
 }
 
 // ProbeTools performs a one-shot tool discovery against the MCP server at
