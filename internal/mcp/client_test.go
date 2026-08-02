@@ -1281,3 +1281,102 @@ func TestCallTool_HeaderParam_CannotDisplaceClientManagedHeaders(t *testing.T) {
 		t.Errorf("Content-Type = %q, want %q (transport requirement)", got, "application/json")
 	}
 }
+
+// TestDiscoverToolsWithHint_ModernServerCapturesHint verifies that a
+// modern-pinned client parses and returns a well-formed tools/list cache
+// hint alongside the discovered tools.
+func TestDiscoverToolsWithHint_ModernServerCapturesHint(t *testing.T) {
+	fake := NewFakeMCPServer(
+		WithFakeMode(FakeModern),
+		WithFakeRejectLegacyHandshake(),
+		WithFakeToolsListCacheHint(30000, "public"),
+	)
+	srv := httptest.NewServer(fake)
+	t.Cleanup(srv.Close)
+
+	c := NewClient(srv.URL, WithProtocolVersion(ProtocolVersion20260728))
+	tools, hint, err := c.discoverToolsWithHint(context.Background())
+	if err != nil {
+		t.Fatalf("discoverToolsWithHint: %v", err)
+	}
+	if !hint.Present {
+		t.Fatal("hint.Present = false, want true")
+	}
+	if hint.TTL != 30*time.Second {
+		t.Errorf("hint.TTL = %v, want 30s", hint.TTL)
+	}
+	if hint.Scope != cacheScopePublic {
+		t.Errorf("hint.Scope = %q, want %q", hint.Scope, cacheScopePublic)
+	}
+	if len(tools) != 1 || tools[0].Name != "tool-a" {
+		t.Errorf("tools = %+v, want the fake's default single tool-a", tools)
+	}
+}
+
+// TestDiscoverToolsWithHint_LegacyClientIgnoresHint verifies that an
+// unpinned client never honors a cache hint even when the server sends one —
+// the modern gate is on the CLIENT's own pin, not on what the response
+// happens to contain. The fake is deliberately built WITHOUT
+// WithFakeRejectLegacyHandshake so the legacy initialize handshake this
+// unpinned client performs still succeeds (see FakeMCPServer's file-level
+// compatibility note): this test is about hint parsing, not transport
+// rejection.
+func TestDiscoverToolsWithHint_LegacyClientIgnoresHint(t *testing.T) {
+	fake := NewFakeMCPServer(
+		WithFakeMode(FakeModern),
+		WithFakeToolsListCacheHint(30000, "public"),
+	)
+	srv := httptest.NewServer(fake)
+	t.Cleanup(srv.Close)
+
+	c := NewClient(srv.URL) // unpinned: legacy transport shaping
+	tools, hint, err := c.discoverToolsWithHint(context.Background())
+	if err != nil {
+		t.Fatalf("discoverToolsWithHint: %v", err)
+	}
+	if hint.Present {
+		t.Error("hint.Present = true, want false — an unpinned client must never honor a hint, even one the server sent")
+	}
+	if len(tools) != 1 || tools[0].Name != "tool-a" {
+		t.Errorf("tools = %+v, want the fake's default single tool-a", tools)
+	}
+}
+
+// TestDiscoverTools_MalformedCacheHintDoesNotFailTheCall is the direct
+// analogue of TestCallTool_ResultType_NonStringIsTreatedAsAbsent for the
+// tools/list cache hint: a non-compliant ttlMs or cacheScope value must
+// disable caching for that response, never fail the whole DiscoverTools
+// call.
+func TestDiscoverTools_MalformedCacheHintDoesNotFailTheCall(t *testing.T) {
+	tests := []struct {
+		name       string
+		ttlMs      any
+		cacheScope any
+	}{
+		{name: "ttlMs is a non-numeric string", ttlMs: "soon", cacheScope: "public"},
+		{name: "ttlMs is an object", ttlMs: map[string]any{}, cacheScope: "public"},
+		{name: "ttlMs is negative", ttlMs: -1, cacheScope: "public"},
+		{name: "cacheScope is a bogus value", ttlMs: 30000, cacheScope: "bogus"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := NewFakeMCPServer(
+				WithFakeMode(FakeModern),
+				WithFakeRejectLegacyHandshake(),
+				WithFakeToolsListCacheHint(tc.ttlMs, tc.cacheScope),
+			)
+			srv := httptest.NewServer(fake)
+			t.Cleanup(srv.Close)
+
+			c := NewClient(srv.URL, WithProtocolVersion(ProtocolVersion20260728))
+			tools, err := c.DiscoverTools(context.Background())
+			if err != nil {
+				t.Fatalf("DiscoverTools: unexpected error for malformed hint (ttlMs=%v, cacheScope=%v): %v", tc.ttlMs, tc.cacheScope, err)
+			}
+			if len(tools) != 1 || tools[0].Name != "tool-a" {
+				t.Errorf("tools = %+v, want the fake's default single tool-a", tools)
+			}
+		})
+	}
+}

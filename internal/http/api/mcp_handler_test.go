@@ -793,9 +793,10 @@ func TestMCPServerDiscoverHandler(t *testing.T) {
 
 		var envelope struct {
 			Data struct {
-				Added    []string `json:"added"`
-				Removed  []string `json:"removed"`
-				Modified []string `json:"modified"`
+				Added           []string `json:"added"`
+				Removed         []string `json:"removed"`
+				Modified        []string `json:"modified"`
+				ServedFromCache bool     `json:"served_from_cache"`
 			} `json:"data"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
@@ -810,6 +811,12 @@ func TestMCPServerDiscoverHandler(t *testing.T) {
 		}
 		if envelope.Data.Modified == nil {
 			t.Error("modified must not be null — want empty array")
+		}
+		// makeFakeMCPServer has no server/discover surface, so this server
+		// classifies as legacy and never caches — served_from_cache must
+		// always be false for it.
+		if envelope.Data.ServedFromCache {
+			t.Error("served_from_cache = true, want false — makeFakeMCPServer is legacy-classified and never caches")
 		}
 
 		// First discovery establishes the baseline: has_drift must be false even
@@ -835,6 +842,52 @@ func TestMCPServerDiscoverHandler(t *testing.T) {
 		}
 		if listEnvelope.Data[0].HasDrift {
 			t.Errorf("has_drift = true after first discovery, want false")
+		}
+	})
+
+	t.Run("second discover within TTL is served from cache", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+
+		fakeMCP := httptest.NewServer(mcp.NewFakeMCPServer(
+			mcp.WithFakeMode(mcp.FakeModern),
+			mcp.WithFakeRejectLegacyHandshake(),
+			mcp.WithFakeToolsListCacheHint(30000, "public"),
+		))
+		t.Cleanup(fakeMCP.Close)
+		id := insertTestMCPServer(t, store, "cache-hint-server", fakeMCP.URL)
+
+		srv := httptest.NewServer(newMCPRouter(store, registry))
+		t.Cleanup(srv.Close)
+
+		discover := func() bool {
+			req, _ := http.NewRequest(http.MethodPost, srv.URL+"/servers/"+id+"/discover", nil)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("POST /servers/%s/discover: %v", id, err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200", resp.StatusCode)
+			}
+
+			var envelope struct {
+				Data struct {
+					ServedFromCache bool `json:"served_from_cache"`
+				} `json:"data"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			return envelope.Data.ServedFromCache
+		}
+
+		if servedFromCache := discover(); servedFromCache {
+			t.Error("first discover: served_from_cache = true, want false (a real fetch)")
+		}
+		if servedFromCache := discover(); !servedFromCache {
+			t.Error("second discover within TTL: served_from_cache = false, want true (a cache hit)")
 		}
 	})
 

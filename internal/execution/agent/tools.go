@@ -5,6 +5,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/felag-engineering/gleipnir/internal/llm"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
@@ -176,9 +177,29 @@ func (a *BoundAgent) checkCapabilities() error {
 // agent's registered tools. The LLMClient handles provider-specific name
 // sanitization and schema formatting. When feedback is enabled, the synthetic
 // gleipnir.ask_operator tool is appended so the LLM can call it directly.
+//
+// Tools are emitted sorted by dot-name (ascending), not in toolsByName's map
+// iteration order. Go randomizes map iteration order per run, so the tool
+// array a provider received previously changed shape on every single run of
+// the same policy — sorting makes it byte-stable instead, which is a
+// prerequisite for a provider's prompt cache to ever treat two runs' tool
+// arrays as identical (mcp-realignment-spec.md §11). This is a distinct
+// ordering from buildCapabilitySnapshotTools, which deliberately keeps
+// policy grant order for the ADR-018 audit snapshot — the two orderings are
+// allowed to differ; nothing requires them to match. askOperator is appended
+// after the sorted block, not merged into it, because it is a synthetic tool
+// with no dot-name in the <source>.<tool> namespace those sorted entries
+// come from.
 func (a *BoundAgent) buildToolDefinitions() []llm.ToolDefinition {
+	dotNames := make([]string, 0, len(a.toolsByName))
+	for dotName := range a.toolsByName {
+		dotNames = append(dotNames, dotName)
+	}
+	sort.Strings(dotNames)
+
 	defs := make([]llm.ToolDefinition, 0, len(a.toolsByName))
-	for dotName, entry := range a.toolsByName {
+	for _, dotName := range dotNames {
+		entry := a.toolsByName[dotName]
 		defs = append(defs, llm.ToolDefinition{
 			Name:        dotName,
 			Description: entry.tool.Description,

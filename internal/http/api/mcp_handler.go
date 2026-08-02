@@ -94,6 +94,14 @@ type toolDiffResponse struct {
 	Added    []string `json:"added"`
 	Removed  []string `json:"removed"`
 	Modified []string `json:"modified"`
+
+	// ServedFromCache mirrors mcp.ToolDiff.ServedFromCache: true when this
+	// Discover call skipped the tools/list network round trip because a live
+	// cache entry satisfied it (a modern server's ttlMs/cacheScope hint,
+	// host-clamped to 60s). Added/Removed/Modified are still meaningful on a
+	// cache hit; this field only tells the operator that "check now" did not
+	// actually reach the server this time.
+	ServedFromCache bool `json:"served_from_cache"`
 }
 
 // serverToResponse converts a DB row to the API response struct. It decrypts
@@ -150,9 +158,10 @@ func diffToResponse(d mcp.ToolDiff) toolDiffResponse {
 		modified = make([]string, 0)
 	}
 	return toolDiffResponse{
-		Added:    added,
-		Removed:  removed,
-		Modified: modified,
+		Added:           added,
+		Removed:         removed,
+		Modified:        modified,
+		ServedFromCache: d.ServedFromCache,
 	}
 }
 
@@ -506,6 +515,10 @@ func (h *MCPHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete MCP server", err.Error())
 		return
 	}
+
+	// Drop any cached client/tool-catalog for this server so the process does
+	// not go on serving state built for a row that no longer exists (#748).
+	h.registry.ForgetServer(id)
 
 	w.WriteHeader(http.StatusNoContent)
 }

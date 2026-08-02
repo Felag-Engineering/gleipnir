@@ -56,6 +56,9 @@ type FakeMCPServer struct {
 	serverInfoName          string
 	serverInfoVersion       string
 	toolResultType          string
+	toolsListTTLMs          any
+	toolsListCacheScope     any
+	toolsListHintSet        bool
 
 	requests   []FakeRequest
 	violations []string
@@ -169,6 +172,25 @@ func WithFakeServerInfo(name, version string) FakeServerOption {
 // documented no-cross-check note), so a test can drive an unrecognized value.
 func WithFakeToolResultType(rt string) FakeServerOption {
 	return func(f *FakeMCPServer) { f.toolResultType = rt }
+}
+
+// WithFakeToolsListCacheHint sets the ttlMs/cacheScope pair the fake reports
+// on tools/list, next to "tools" in the result object. Default (option not
+// applied): both keys omitted entirely — the pre-2026 shape, and the fixture
+// for a legacy/unpinned server or a modern server that has not opted into
+// caching.
+//
+// The fake does NOT validate either value — same "keep the fake dumb"
+// discipline as WithFakeToolResultType (see its doc) — so a test can drive a
+// non-compliant hint, e.g. ttlMs: "soon" or cacheScope: "shared", to prove
+// the client absorbs it (parseCacheHint, cache.go) rather than failing the
+// call.
+func WithFakeToolsListCacheHint(ttlMs, cacheScope any) FakeServerOption {
+	return func(f *FakeMCPServer) {
+		f.toolsListTTLMs = ttlMs
+		f.toolsListCacheScope = cacheScope
+		f.toolsListHintSet = true
+	}
 }
 
 // NewFakeMCPServer returns a ready FakeMCPServer. Wrap it in
@@ -529,6 +551,9 @@ func (f *FakeMCPServer) handleToolsList(w http.ResponseWriter, req FakeRequest) 
 	f.mu.Lock()
 	tools := make([]Tool, len(f.tools))
 	copy(tools, f.tools)
+	hintSet := f.toolsListHintSet
+	ttlMs := f.toolsListTTLMs
+	toolsListCacheScope := f.toolsListCacheScope
 	f.mu.Unlock()
 
 	wireTools := make([]map[string]any, len(tools))
@@ -539,13 +564,18 @@ func (f *FakeMCPServer) handleToolsList(w http.ResponseWriter, req FakeRequest) 
 			"inputSchema": t.InputSchema,
 		}
 	}
+	result := map[string]any{
+		"tools": wireTools,
+	}
+	if hintSet {
+		result["ttlMs"] = ttlMs
+		result["cacheScope"] = toolsListCacheScope
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
 		"jsonrpc": "2.0",
 		"id":      1,
-		"result": map[string]any{
-			"tools": wireTools,
-		},
+		"result":  result,
 	})
 }
 

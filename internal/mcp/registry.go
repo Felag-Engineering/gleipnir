@@ -97,6 +97,15 @@ type ToolDiff struct {
 	Added    []string
 	Removed  []string
 	Modified []string
+
+	// ServedFromCache is true when RefreshTools skipped the tools/list
+	// network round trip because a live cache entry (cache.go) satisfied the
+	// request. Added/Removed/Modified are still computed and meaningful on a
+	// cache hit — they are diffed against the cached catalog, which is
+	// exactly what the last real fetch returned — this field only tells the
+	// caller that no network request happened just now. MCPHandler.Discover
+	// surfaces it to the operator as served_from_cache.
+	ServedFromCache bool
 }
 
 // Registry resolves policy capability references to live MCP clients.
@@ -107,6 +116,7 @@ type Registry struct {
 	mcpTimeout time.Duration
 	encKey     []byte                 // AES-256-GCM key for decrypting auth_headers_encrypted; nil if unset
 	arbiter    *toolregistry.Registry // cross-source tool namespace arbiter; nil means no uniqueness enforcement
+	cache      *registryCache         // per-server client + tool-catalog cache (cache.go)
 }
 
 // RegistryOption configures a Registry.
@@ -188,7 +198,7 @@ func WithToolNamespaceArbiter(a *toolregistry.Registry) RegistryOption {
 
 // NewRegistry returns a Registry backed by the given sqlc Queries.
 func NewRegistry(queries *db.Queries, opts ...RegistryOption) *Registry {
-	r := &Registry{queries: queries}
+	r := &Registry{queries: queries, cache: newRegistryCache()}
 	for _, opt := range opts {
 		opt(r)
 	}
@@ -390,7 +400,15 @@ func (r *Registry) ResolveToolByName(ctx context.Context, dotName string) (*Clie
 		return nil, "", fmt.Errorf("get server for tool %q: %w", dotName, err)
 	}
 
-	return r.newClientForServer(srv), toolName, nil
+	// The two DB reads above stay on every call — they are cheap local SQLite
+	// reads, and they are what makes the serverConfig comparison inside
+	// clientForServer see live state on every resolve. What clientForServer
+	// eliminates is the per-tick legacy initialize + notifications/initialized
+	// handshake a brand-new Client would otherwise pay: it hands back the same
+	// *Client, already holding a negotiated session, for as long as srv's
+	// config is unchanged. No signature change here, so internal/trigger/poll.go
+	// needs no production edit at all.
+	return r.clientForServer(srv), toolName, nil
 }
 
 // ProbeTools performs a one-shot tool discovery against the MCP server at
@@ -511,6 +529,12 @@ func (r *Registry) refreshProtocolVersion(ctx context.Context, srv *db.McpServer
 // canonical_schema for rows that predate this column. Normalization failure
 // is fail-open: the tool is still discovered and stored, just with a NULL
 // canonical_schema and a logged warning.
+//
+// Tool discovery itself may be served from cache (discoverToolsCached,
+// cache.go) instead of a real tools/list round trip; see
+// ToolDiff.ServedFromCache. Every step here runs the same regardless — diff,
+// upsert, delete, last_discovered_at — EXCEPT has_drift, which is written
+// only on a real fetch; see the comment at that write for why.
 func (r *Registry) RefreshTools(ctx context.Context, serverID string) (ToolDiff, error) {
 	// Fetch current tool state from DB so we can compute the diff and
 	// preserve tool IDs for existing tools.
@@ -547,7 +571,15 @@ func (r *Registry) RefreshTools(ctx context.Context, serverID string) (ToolDiff,
 
 	r.refreshProtocolVersion(probeCtx, &srv)
 
-	freshTools, err := r.newClientForServer(srv).DiscoverTools(probeCtx)
+	// The protocol probe above is deliberately NOT cached, even though
+	// DiscoverResult also carries a ttlMs/cacheScope hint — protocol-era
+	// pinning is security-relevant (it gates whether #741's header-binding
+	// protections apply) and is separate work from this tools/list cache.
+	// discoverToolsCached (cache.go) only ever skips the tools/list round
+	// trip; every other step below (diff, upsert, last_discovered_at) runs
+	// identically whether this call is a cache hit or a miss. has_drift is
+	// the one exception — see the comment at its write below.
+	freshTools, servedFromCache, err := r.discoverToolsCached(probeCtx, srv)
 	if err != nil {
 		return ToolDiff{}, fmt.Errorf("discover tools for server %q: %w", serverID, err)
 	}
@@ -560,6 +592,7 @@ func (r *Registry) RefreshTools(ctx context.Context, serverID string) (ToolDiff,
 
 	// Compute diff.
 	var diff ToolDiff
+	diff.ServedFromCache = servedFromCache
 	for name := range freshByName {
 		if _, exists := oldByName[name]; !exists {
 			diff.Added = append(diff.Added, name)
@@ -666,16 +699,28 @@ func (r *Registry) RefreshTools(ctx context.Context, serverID string) (ToolDiff,
 		return ToolDiff{}, fmt.Errorf("update last_discovered_at: %w", err)
 	}
 
-	hasDrift := int64(0)
-	isFirstDiscovery := len(oldTools) == 0
-	if !isFirstDiscovery && (len(diff.Added) > 0 || len(diff.Removed) > 0 || len(diff.Modified) > 0) {
-		hasDrift = 1
-	}
-	if err := r.queries.UpdateMCPServerDrift(ctx, db.UpdateMCPServerDriftParams{
-		HasDrift: hasDrift,
-		ID:       serverID,
-	}); err != nil {
-		return ToolDiff{}, fmt.Errorf("update has_drift: %w", err)
+	// has_drift is a tamper-detection signal: it must only ever be recomputed
+	// from a REAL tools/list fetch, never from a cache hit. freshTools on a
+	// cache hit is whatever the last real fetch already wrote to the DB, so
+	// diff above is (almost always) empty relative to that same DB state —
+	// writing has_drift here on a cache hit would therefore silently clear a
+	// drift flag a genuine prior fetch had set, turning the operator's "check
+	// now" press into a false all-clear. Skip the write entirely on a cache
+	// hit and leave whatever has_drift a real fetch last computed untouched;
+	// every other field on diff (Added/Removed/Modified/ServedFromCache) is
+	// still returned to the caller.
+	if !servedFromCache {
+		hasDrift := int64(0)
+		isFirstDiscovery := len(oldTools) == 0
+		if !isFirstDiscovery && (len(diff.Added) > 0 || len(diff.Removed) > 0 || len(diff.Modified) > 0) {
+			hasDrift = 1
+		}
+		if err := r.queries.UpdateMCPServerDrift(ctx, db.UpdateMCPServerDriftParams{
+			HasDrift: hasDrift,
+			ID:       serverID,
+		}); err != nil {
+			return ToolDiff{}, fmt.Errorf("update has_drift: %w", err)
+		}
 	}
 
 	return diff, nil
