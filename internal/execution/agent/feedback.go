@@ -347,8 +347,12 @@ func (h *FeedbackHandler) HandleAskOperator(ctx context.Context, runID, toolName
 		return "", true, err
 	}
 
-	// Extract required "reason" field. A missing or non-string reason is a
-	// schema violation — fail the run, consistent with MCP schema violations.
+	// Extract required "reason" field. A missing or non-string reason still
+	// fails the run here, unlike MCP/plugin tool schema violations (which
+	// #744 made correctable): gleipnir.ask_operator's schema is host-authored
+	// and non-negotiable, not a third-party server's contract the agent
+	// might reasonably misjudge, so there is nothing for the agent to
+	// self-correct toward.
 	reasonRaw, ok := input["reason"]
 	if !ok {
 		err := fmt.Errorf("gleipnir.ask_operator: missing required field 'reason'")

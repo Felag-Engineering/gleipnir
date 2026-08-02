@@ -38,7 +38,8 @@ type ResolvedTool struct {
 	// execution/agent/tools.go for plugin tools never populate this field).
 	// Consumers must NOT silently fall back to InputSchema: nil means "no
 	// canonical form", and treating raw as canonical would defeat the point
-	// of storing it. Nothing consumes this field in this issue.
+	// of storing it. The first consumer is internal/execution/agent's
+	// pre-dispatch ArgValidator (#744).
 	//
 	// A non-nil CanonicalSchema is NOT a safety attestation: schemanorm only
 	// performs byte-level normalization (sorted keys, canonical escapes) and
