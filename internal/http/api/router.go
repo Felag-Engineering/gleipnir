@@ -240,7 +240,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 			toolLookup = cfg.Services.Registry
 		}
 		policySvc := policy.NewService(cfg.Services.Store, toolLookup, cfg.Services.ProviderRegistry, cfg.Services.ProviderRegistry, cfg.Services.Settings)
-		r.Mount("/api/v1", newAPISubRouter(cfg.Services.Store, policySvc, cfg.Services.Registry, cfg.Services.ModelLister, cfg.Services.ModelFilter, cfg.Handlers.PolicyWebhookHandler, cfg.Services.Poller, cfg.Services.Scheduler, cfg.Services.Cron, cfg.Services.EncryptionKey, cfg.Services.Arbiter))
+		r.Mount("/api/v1", newAPISubRouter(cfg.Services.Store, policySvc, cfg.Services.Registry, cfg.Services.ModelLister, cfg.Services.ModelFilter, cfg.Handlers.PolicyWebhookHandler, cfg.Services.Poller, cfg.Services.Scheduler, cfg.Services.Cron, cfg.Services.EncryptionKey, cfg.Services.Arbiter, cfg.Services.ProviderRegistry))
 
 		// Plugin install and create-instance endpoints are registered outside the
 		// /api/v1/admin route group so each can carry its own body-size limit.
@@ -389,7 +389,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 
 // newAPISubRouter builds the sub-router that was previously returned by NewRouter.
 // It is mounted at /api/v1 inside the authenticated group in BuildRouter.
-func newAPISubRouter(store *db.Store, svc *policy.Service, registry *mcp.Registry, modelLister llm.ModelLister, modelFilter ModelFilter, policyWebhook *PolicyWebhookHandler, poller, scheduler, cron PolicyNotifier, encKey []byte, arbiter *toolregistry.Registry) chi.Router {
+func newAPISubRouter(store *db.Store, svc *policy.Service, registry *mcp.Registry, modelLister llm.ModelLister, modelFilter ModelFilter, policyWebhook *PolicyWebhookHandler, poller, scheduler, cron PolicyNotifier, encKey []byte, arbiter *toolregistry.Registry, providerRegistry *llm.ProviderRegistry) chi.Router {
 	r := chi.NewRouter()
 	r.Use(httputil.BodySizeLimit(httputil.MaxRequestBodySize))
 
@@ -428,7 +428,15 @@ func newAPISubRouter(store *db.Store, svc *policy.Service, registry *mcp.Registr
 
 	r.Route("/mcp", func(r chi.Router) {
 		r.Use(httputil.RequireJSON)
-		mcpH := NewMCPHandler(store, registry, encKey, WithToolNamespaceArbiter(arbiter))
+		// A nil *llm.ProviderRegistry must never become a non-nil
+		// SchemaFeatureLister interface value holding a nil pointer — build
+		// the options slice conditionally rather than always appending
+		// WithSchemaFeatures.
+		mcpOpts := []MCPHandlerOption{WithToolNamespaceArbiter(arbiter)}
+		if providerRegistry != nil {
+			mcpOpts = append(mcpOpts, WithSchemaFeatures(providerRegistry))
+		}
+		mcpH := NewMCPHandler(store, registry, encKey, mcpOpts...)
 		r.Route("/servers", func(r chi.Router) {
 			r.With(auth.RequireRole(model.RoleOperator, model.RoleAuditor)).Get("/", mcpH.List)
 			r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).Post("/", mcpH.Create)
