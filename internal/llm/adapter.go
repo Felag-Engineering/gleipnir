@@ -19,11 +19,14 @@ import (
 // The streaming state machine, error-classification errors.As ladders, and all
 // wire-format translation stay inside each provider's ProviderWire implementation.
 //
-// Concrete provider Client types embed *ProviderAdapter and promote only
-// CreateMessage and StreamMessage from it. The four model/option methods
-// (ValidateOptions, ValidateModelName, ListModels, InvalidateModelCache) stay as
-// thin explicit forwarders on each concrete Client so zero-value clients remain
-// safe — see BLOCKING-1 in the plan for issue #506.
+// Concrete provider Client types embed *ProviderAdapter and promote
+// CreateMessage, StreamMessage, and SchemaFeatures from it — SchemaFeatures is
+// promoted rather than forwarded because a zero-value Client is never
+// registered, so it is not a reachable path (see its own doc comment below
+// for the full argument). The four model/option methods (ValidateOptions,
+// ValidateModelName, ListModels, InvalidateModelCache) stay as thin explicit
+// forwarders on each concrete Client so zero-value clients remain safe — see
+// BLOCKING-1 in the plan for issue #506.
 //
 // The adapter itself implements the full LLMClient interface so FakeWire can be
 // wrapped directly (without a concrete provider type in front).
@@ -164,4 +167,21 @@ func (a *ProviderAdapter) ListModels(ctx context.Context) ([]ModelInfo, error) {
 // InvalidateModelCache delegates to the wire.
 func (a *ProviderAdapter) InvalidateModelCache() {
 	a.wire.InvalidateModelCache()
+}
+
+// SchemaFeatures reports the wire's declared JSON Schema support without
+// issuing any request — a read-side accessor for callers (e.g. the Tools
+// page's "simplified for this provider" computation) that need to know what
+// a wire CAN represent. prepareRequest remains the only production consumer
+// on the write path.
+//
+// Unlike the four model/option methods above, this method is deliberately
+// NOT shadowed by a thin forwarder on each concrete Client
+// (anthropic.Client, openai.Client, google.GeminiClient, openaicompat.Client
+// — all embed *ProviderAdapter): it is promoted onto all four as-is. A
+// zero-value Client is never registered in production, so
+// SchemaFeatures on a zero-value Client is not a reachable path, and four
+// forwarder copies would only invite drift.
+func (a *ProviderAdapter) SchemaFeatures() SchemaFeatureSet {
+	return a.wire.SchemaFeatures()
 }

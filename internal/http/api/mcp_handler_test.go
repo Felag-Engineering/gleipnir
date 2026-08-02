@@ -8,6 +8,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -17,12 +19,37 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/http/api"
 	"github.com/felag-engineering/gleipnir/internal/http/auth"
 	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
+	"github.com/felag-engineering/gleipnir/internal/llm"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/schemanorm"
 	"github.com/felag-engineering/gleipnir/internal/testutil"
 	"github.com/felag-engineering/gleipnir/internal/toolregistry"
 )
+
+// fakeFeatureLister is a test double for api.SchemaFeatureLister.
+type fakeFeatureLister struct {
+	features map[string]llm.SchemaFeatureSet
+}
+
+func (f fakeFeatureLister) SchemaFeaturesByProvider() map[string]llm.SchemaFeatureSet {
+	return f.features
+}
+
+// googleShapedFeatures mirrors the Google wire's declared SchemaFeatureSet
+// (internal/llm/google/client.go): oneOf/anyOf/const are eliminable by the
+// shared pass and declared unsupported; everything else is supported.
+func googleShapedFeatures() llm.SchemaFeatureSet {
+	return llm.SchemaFeatureSet{
+		OneOf:   false,
+		AnyOf:   false,
+		Const:   false,
+		AllOf:   true,
+		Not:     true,
+		Defs:    true,
+		Formats: true,
+	}
+}
 
 // newMCPRouter wires a chi router with the MCP handler, mirroring how
 // NewRouter mounts the routes in production. encKey may be nil to simulate
@@ -92,6 +119,29 @@ func insertTestMCPTool(t *testing.T, s *db.Store, serverID, name string) string 
 	})
 	if err != nil {
 		t.Fatalf("insertTestMCPTool %s: %v", name, err)
+	}
+	return id
+}
+
+// insertTestMCPToolWithSchema inserts an MCP tool row with a caller-supplied
+// input_schema and canonical_schema — a sibling of insertTestMCPTool rather
+// than a signature change, since insertTestMCPTool has 19 existing call
+// sites with no schema parameter. canonicalSchema may be nil to leave the
+// column NULL (the pre-#738 / normalization-failure state).
+func insertTestMCPToolWithSchema(t *testing.T, s *db.Store, serverID, name, inputSchema string, canonicalSchema *string) string {
+	t.Helper()
+	id := model.NewULID()
+	_, err := s.UpsertMCPTool(context.Background(), db.UpsertMCPToolParams{
+		ID:              id,
+		ServerID:        serverID,
+		Name:            name,
+		Description:     name + " description",
+		InputSchema:     inputSchema,
+		CanonicalSchema: canonicalSchema,
+		CreatedAt:       "2024-01-01T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("insertTestMCPToolWithSchema %s: %v", name, err)
 	}
 	return id
 }
@@ -2409,4 +2459,339 @@ func TestUpdate_RenameRefreshesArbiter(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestSimplifiedForProviders drives api.SimplifiedForProviders (exported via
+// export_test.go) — the DTO-mapping helper deciding which configured
+// providers get listed against a tool. This is the DoD's "DTO mapping" test
+// on the Go side.
+func TestSimplifiedForProviders(t *testing.T) {
+	// oneOfFalse and constFalse are two DISTINCT SchemaFeatureSets, each
+	// restricting exactly one of the two constructs the test schema below
+	// uses, so a schema can be lossy under either independently.
+	oneOfFalse := llm.SchemaFeatureSet{OneOf: false, AnyOf: true, AllOf: true, Not: true, Defs: true, Const: true, Formats: true}
+	constFalse := llm.SchemaFeatureSet{OneOf: true, AnyOf: true, AllOf: true, Not: true, Defs: true, Const: false, Formats: true}
+	defsFalse := llm.SchemaFeatureSet{OneOf: true, AnyOf: true, AllOf: true, Not: true, Defs: false, Const: true, Formats: true}
+
+	oversizedSchema := json.RawMessage(`{"type":"object","description":"` + strings.Repeat("a", 1<<20) + `"}`)
+
+	// thresholdExceedingSchema is otherwise lossy under oneOfFalse (it has a
+	// top-level "oneOf") but sits well under TranslateForFeatures' own 1 MiB
+	// input cap, so a [] result here can only come from
+	// api.SimplifiedForProviders' own maxSimplificationHintBytes gate, not
+	// from ErrSchemaLimitExceeded.
+	thresholdExceedingSchema := json.RawMessage(
+		`{"oneOf":[{"type":"string"},{"type":"integer"}],"description":"` + strings.Repeat("a", 100*1024) + `"}`)
+
+	tests := []struct {
+		name       string
+		schema     json.RawMessage
+		restricted map[llm.SchemaFeatureSet][]string
+		want       []string
+	}{
+		{
+			name:       "empty restricted map",
+			schema:     json.RawMessage(`{"oneOf":[{"type":"string"},{"type":"integer"}]}`),
+			restricted: map[llm.SchemaFeatureSet][]string{},
+			want:       []string{},
+		},
+		{
+			name:       "empty schema",
+			schema:     json.RawMessage(``),
+			restricted: map[llm.SchemaFeatureSet][]string{oneOfFalse: {"google"}},
+			want:       []string{},
+		},
+		{
+			name:       "restricted set, schema with no oneOf/const passes through byte-identical",
+			schema:     json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}}}`),
+			restricted: map[llm.SchemaFeatureSet][]string{oneOfFalse: {"google"}},
+			want:       []string{},
+		},
+		{
+			name:       "restricted set OneOf:false, schema with oneOf is lossy",
+			schema:     json.RawMessage(`{"oneOf":[{"type":"string"},{"type":"integer"}]}`),
+			restricted: map[llm.SchemaFeatureSet][]string{oneOfFalse: {"google"}},
+			want:       []string{"google"},
+		},
+		{
+			name:       "restricted set Const:false, schema with const is lossy",
+			schema:     json.RawMessage(`{"const":"fixed"}`),
+			restricted: map[llm.SchemaFeatureSet][]string{constFalse: {"google"}},
+			want:       []string{"google"},
+		},
+		{
+			name:   "two distinct restricted sets, both lossy, sorted",
+			schema: json.RawMessage(`{"oneOf":[{"type":"string"},{"type":"integer"}],"const":"fixed"}`),
+			restricted: map[llm.SchemaFeatureSet][]string{
+				oneOfFalse: {"google"},
+				constFalse: {"other"},
+			},
+			want: []string{"google", "other"},
+		},
+		{
+			name:       "one restricted set shared by two provider names, both returned sorted",
+			schema:     json.RawMessage(`{"oneOf":[{"type":"string"},{"type":"integer"}]}`),
+			restricted: map[llm.SchemaFeatureSet][]string{oneOfFalse: {"zeta", "alpha"}},
+			want:       []string{"alpha", "zeta"},
+		},
+		{
+			name:       "unrewritable feature ($ref with Defs:false) omits the provider rather than erroring",
+			schema:     json.RawMessage(`{"$ref":"#/foo"}`),
+			restricted: map[llm.SchemaFeatureSet][]string{defsFalse: {"google"}},
+			want:       []string{},
+		},
+		{
+			name:       "schema exceeding TranslateForFeatures' own 1 MiB input limit omits the provider",
+			schema:     oversizedSchema,
+			restricted: map[llm.SchemaFeatureSet][]string{oneOfFalse: {"google"}},
+			want:       []string{},
+		},
+		{
+			name:       "schema exceeding the per-tool size threshold omits the provider without erroring",
+			schema:     thresholdExceedingSchema,
+			restricted: map[llm.SchemaFeatureSet][]string{oneOfFalse: {"google"}},
+			want:       []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := api.SimplifiedForProviders("srv-1", "my-tool", tt.schema, tt.restricted)
+			if got == nil {
+				t.Fatal("result is nil, want non-nil ([] must render as [] in JSON, not null)")
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRestrictedFeatureSets drives api.RestrictedFeatureSets (exported via
+// export_test.go).
+func TestRestrictedFeatureSets(t *testing.T) {
+	t.Run("empty input yields empty map", func(t *testing.T) {
+		got := api.RestrictedFeatureSets(map[string]llm.SchemaFeatureSet{})
+		if len(got) != 0 {
+			t.Fatalf("got %v, want empty map", got)
+		}
+	})
+
+	t.Run("full-support providers are dropped", func(t *testing.T) {
+		got := api.RestrictedFeatureSets(map[string]llm.SchemaFeatureSet{
+			"anthropic": llm.FullSchemaSupport(),
+			"openai":    llm.FullSchemaSupport(),
+		})
+		if len(got) != 0 {
+			t.Fatalf("got %v, want empty map (every provider declares full support)", got)
+		}
+	})
+
+	t.Run("restricted providers are grouped by identical SchemaFeatureSet", func(t *testing.T) {
+		restricted := googleShapedFeatures()
+		got := api.RestrictedFeatureSets(map[string]llm.SchemaFeatureSet{
+			"anthropic": llm.FullSchemaSupport(),
+			"google":    restricted,
+			"other":     restricted,
+		})
+		if len(got) != 1 {
+			t.Fatalf("len(got) = %d, want 1 distinct restricted set", len(got))
+		}
+		names := got[restricted]
+		sort.Strings(names)
+		want := []string{"google", "other"}
+		if !reflect.DeepEqual(names, want) {
+			t.Errorf("got %v, want %v", names, want)
+		}
+	})
+}
+
+// TestListTools_SimplifiedFor exercises simplified_for at the HTTP handler
+// level, following TestListTools_SourceField's shape.
+func TestListTools_SimplifiedFor(t *testing.T) {
+	oneOfSchema := `{"oneOf":[{"type":"string"},{"type":"integer"}]}`
+	plainSchema := `{"type":"object"}`
+
+	listTools := func(t *testing.T, store *db.Store, registry *mcp.Registry, serverID string, opts ...api.MCPHandlerOption) map[string][]string {
+		t.Helper()
+		h := api.NewMCPHandler(store, registry, nil, opts...)
+		req := httptest.NewRequest(http.MethodGet, "/?include_disabled=true", nil)
+		req = setChiURLParams(req, "id", serverID)
+		w := httptest.NewRecorder()
+		h.ListTools(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		var envelope struct {
+			Data []struct {
+				Name          string   `json:"name"`
+				SimplifiedFor []string `json:"simplified_for"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		out := make(map[string][]string, len(envelope.Data))
+		for _, tool := range envelope.Data {
+			out[tool.Name] = tool.SimplifiedFor
+		}
+		return out
+	}
+
+	t.Run("handler built WITHOUT WithSchemaFeatures: every row has []", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		serverID := insertTestMCPServer(t, store, "srv", "http://localhost:9999")
+		insertTestMCPToolWithSchema(t, store, serverID, "oneof-tool", oneOfSchema, &oneOfSchema)
+
+		got := listTools(t, store, registry, serverID)
+		if len(got["oneof-tool"]) != 0 {
+			t.Errorf("simplified_for = %v, want empty (no feature lister configured)", got["oneof-tool"])
+		}
+	})
+
+	t.Run("handler built WITH a lister declaring only full-support wires: every row has []", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		serverID := insertTestMCPServer(t, store, "srv", "http://localhost:9999")
+		insertTestMCPToolWithSchema(t, store, serverID, "oneof-tool", oneOfSchema, &oneOfSchema)
+
+		lister := fakeFeatureLister{features: map[string]llm.SchemaFeatureSet{"anthropic": llm.FullSchemaSupport()}}
+		got := listTools(t, store, registry, serverID, api.WithSchemaFeatures(lister))
+		if len(got["oneof-tool"]) != 0 {
+			t.Errorf("simplified_for = %v, want empty (every configured wire is full-support)", got["oneof-tool"])
+		}
+	})
+
+	t.Run("handler built WITH a Google-shaped restricted set", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		serverID := insertTestMCPServer(t, store, "srv", "http://localhost:9999")
+		insertTestMCPToolWithSchema(t, store, serverID, "oneof-tool", oneOfSchema, &oneOfSchema)
+		insertTestMCPToolWithSchema(t, store, serverID, "plain-tool", plainSchema, &plainSchema)
+
+		lister := fakeFeatureLister{features: map[string]llm.SchemaFeatureSet{"google": googleShapedFeatures()}}
+		got := listTools(t, store, registry, serverID, api.WithSchemaFeatures(lister))
+		if want := []string{"google"}; !reflect.DeepEqual(got["oneof-tool"], want) {
+			t.Errorf("oneof-tool simplified_for = %v, want %v", got["oneof-tool"], want)
+		}
+		if len(got["plain-tool"]) != 0 {
+			t.Errorf("plain-tool simplified_for = %v, want empty", got["plain-tool"])
+		}
+	})
+
+	t.Run("NULL canonical_schema yields no chip (no fallback to raw input_schema)", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		serverID := insertTestMCPServer(t, store, "srv", "http://localhost:9999")
+		insertTestMCPToolWithSchema(t, store, serverID, "oneof-tool", oneOfSchema, nil)
+
+		lister := fakeFeatureLister{features: map[string]llm.SchemaFeatureSet{"google": googleShapedFeatures()}}
+		got := listTools(t, store, registry, serverID, api.WithSchemaFeatures(lister))
+		if len(got["oneof-tool"]) != 0 {
+			t.Errorf("simplified_for = %v, want empty (NULL canonical_schema must not fall back to raw "+
+				"input_schema — the chip must shadow #744's exact enforcement, which also degrades to "+
+				"key-presence validation for this row)", got["oneof-tool"])
+		}
+	})
+
+	t.Run("non-nil but empty canonical_schema yields no chip", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		serverID := insertTestMCPServer(t, store, "srv", "http://localhost:9999")
+		empty := "   " // whitespace-only: exercises the TrimSpace branch, not just nil
+		insertTestMCPToolWithSchema(t, store, serverID, "oneof-tool", oneOfSchema, &empty)
+
+		lister := fakeFeatureLister{features: map[string]llm.SchemaFeatureSet{"google": googleShapedFeatures()}}
+		got := listTools(t, store, registry, serverID, api.WithSchemaFeatures(lister))
+		if len(got["oneof-tool"]) != 0 {
+			t.Errorf("simplified_for = %v, want empty (non-nil-but-empty canonical_schema must not fall "+
+				"back to raw input_schema)", got["oneof-tool"])
+		}
+	})
+
+	t.Run("a tool whose canonical schema exceeds the size threshold does not 500 the list; every other tool is still present", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		serverID := insertTestMCPServer(t, store, "srv", "http://localhost:9999")
+		oversized := `{"type":"object","description":"` + strings.Repeat("a", 1<<20) + `"}`
+		insertTestMCPToolWithSchema(t, store, serverID, "oversized-tool", oversized, &oversized)
+		insertTestMCPToolWithSchema(t, store, serverID, "plain-tool", plainSchema, &plainSchema)
+
+		lister := fakeFeatureLister{features: map[string]llm.SchemaFeatureSet{"google": googleShapedFeatures()}}
+		got := listTools(t, store, registry, serverID, api.WithSchemaFeatures(lister))
+		if _, ok := got["oversized-tool"]; !ok {
+			t.Fatal("oversized-tool missing from the list; a single bad schema must not drop it")
+		}
+		if len(got["oversized-tool"]) != 0 {
+			t.Errorf("oversized-tool simplified_for = %v, want empty (exceeds the per-tool size threshold, "+
+				"skipped before translate runs)", got["oversized-tool"])
+		}
+		if _, ok := got["plain-tool"]; !ok {
+			t.Error("plain-tool missing from the list after a sibling tool's schema was skipped")
+		}
+	})
+
+	t.Run("a tool whose schema fails translation (not size) does not 500 the list; every other tool is still present", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		serverID := insertTestMCPServer(t, store, "srv", "http://localhost:9999")
+		refSchema := `{"$ref":"#/foo"}`
+		insertTestMCPToolWithSchema(t, store, serverID, "ref-tool", refSchema, &refSchema)
+		insertTestMCPToolWithSchema(t, store, serverID, "plain-tool", plainSchema, &plainSchema)
+
+		// Defs:false makes $ref unrewritable (ErrUnsupportedSchemaFeature),
+		// unlike googleShapedFeatures above (Defs: true) — this exercises the
+		// translate-error path specifically, distinct from the size-threshold
+		// skip in the sub-test above.
+		unsupportedRefs := llm.SchemaFeatureSet{OneOf: true, AnyOf: true, AllOf: true, Not: true, Defs: false, Const: true, Formats: true}
+		lister := fakeFeatureLister{features: map[string]llm.SchemaFeatureSet{"google": unsupportedRefs}}
+		got := listTools(t, store, registry, serverID, api.WithSchemaFeatures(lister))
+		if _, ok := got["ref-tool"]; !ok {
+			t.Fatal("ref-tool missing from the list; a single bad schema must not drop it")
+		}
+		if len(got["ref-tool"]) != 0 {
+			t.Errorf("ref-tool simplified_for = %v, want empty (translation failed, omitted)", got["ref-tool"])
+		}
+		if _, ok := got["plain-tool"]; !ok {
+			t.Error("plain-tool missing from the list after a sibling tool's schema errored")
+		}
+	})
+}
+
+// TestSetToolEnabled_ReturnsSimplifiedFor verifies the mutation response
+// carries simplified_for, matching ListTools' shape — the frontend replaces
+// the cached row from this response, so omitting the field here would make
+// the chip vanish on toggle.
+func TestSetToolEnabled_ReturnsSimplifiedFor(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	registry := mcp.NewRegistry(store.Queries())
+	serverID := insertTestMCPServer(t, store, "srv", "http://localhost:9999")
+	oneOfSchema := `{"oneOf":[{"type":"string"},{"type":"integer"}]}`
+	toolID := insertTestMCPToolWithSchema(t, store, serverID, "oneof-tool", oneOfSchema, &oneOfSchema)
+
+	lister := fakeFeatureLister{features: map[string]llm.SchemaFeatureSet{"google": googleShapedFeatures()}}
+	h := api.NewMCPHandler(store, registry, nil, api.WithSchemaFeatures(lister))
+
+	body, _ := json.Marshal(map[string]bool{"enabled": false})
+	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = setChiURLParams(req, "id", serverID, "toolID", toolID)
+	w := httptest.NewRecorder()
+	h.SetToolEnabled(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	var envelope struct {
+		Data struct {
+			SimplifiedFor []string `json:"simplified_for"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if want := []string{"google"}; !reflect.DeepEqual(envelope.Data.SimplifiedFor, want) {
+		t.Errorf("simplified_for = %v, want %v", envelope.Data.SimplifiedFor, want)
+	}
 }

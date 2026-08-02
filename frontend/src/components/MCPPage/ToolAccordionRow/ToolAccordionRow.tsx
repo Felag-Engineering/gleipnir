@@ -1,5 +1,6 @@
 import type { ApiMcpTool } from '@/api/types'
 import { ParamChip } from '@/components/MCPPage/ParamChip'
+import { SimplifiedBadge } from '@/components/MCPPage/SimplifiedBadge'
 import styles from './ToolAccordionRow.module.css'
 
 interface Props {
@@ -63,6 +64,7 @@ export function ToolAccordionRow({
         </span>
         <span className={styles.toolName}>{tool.name}</span>
         {isDisabled && <span className={styles.disabledBadge}>Disabled</span>}
+        <SimplifiedBadge providers={tool.simplified_for ?? []} />
         <span className={styles.paramHint}>{paramCountLabel(params.length)}</span>
       </button>
 
