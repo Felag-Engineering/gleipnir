@@ -701,13 +701,28 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 
 	// Dispatch to MCP server. entry.tool.Capabilities is data flowing inward
 	// from the ResolvedTool the agent was constructed with — the agent never
-	// decides a capability declaration itself.
-	result, err := entry.tool.Client.CallTool(ctx, entry.tool.ToolName, input, entry.tool.Capabilities)
+	// decides a capability declaration itself. entry.tool.SchemaForHeaderParams()
+	// is the source of SEP-2243 x-mcp-header annotations, canonical when
+	// available.
+	result, err := entry.tool.Client.CallTool(ctx, entry.tool.ToolName, input, mcp.CallOptions{
+		Capabilities:      entry.tool.Capabilities,
+		HeaderParamSchema: entry.tool.SchemaForHeaderParams(),
+	})
 	if err != nil {
 		// Context cancellation is fatal — operator intent, don't mask it.
 		if ctx.Err() != nil {
 			a.logAuditError(ctx, runID, "run cancelled", model.ErrorCodeCancelled)
 			return "", false, fmt.Errorf("calling tool %s: %w", toolName, err)
+		}
+
+		// An unusable x-mcp-header declaration is a structural error the
+		// agent can see and route around, not a transport failure — render
+		// it through the same machinery as a #744 schema violation. Pass
+		// hpErr, not err, so the operator-facing message is the clean
+		// structural sentence and not the "post tools/call:"-wrapped chain.
+		var hpErr *mcp.HeaderParamError
+		if errors.As(err, &hpErr) {
+			return a.schemaViolation(ctx, runID, toolName, hpErr)
 		}
 
 		// Transport/MCP errors become tool_result steps so the agent can reason

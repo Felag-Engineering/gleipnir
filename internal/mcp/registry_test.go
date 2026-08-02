@@ -1765,3 +1765,57 @@ func TestRefreshTools_ProbeSequenceBoundedBySingleTimeout(t *testing.T) {
 		t.Errorf("RefreshTools took %s, want under %s (single shared timeout, not per-round-trip)", elapsed, ceiling)
 	}
 }
+
+// TestResolvedTool_SchemaForHeaderParams locks the one sanctioned fallback
+// from CanonicalSchema to InputSchema: canonical when present, raw
+// InputSchema otherwise (nil, empty-but-non-nil, or absent canonical all
+// fall back), never neither.
+func TestResolvedTool_SchemaForHeaderParams(t *testing.T) {
+	canonical := json.RawMessage(`{"properties":{"a":{}}}`)
+	raw := json.RawMessage(`{"properties":{"a":{},"b":{}}}`)
+
+	tests := []struct {
+		name            string
+		canonicalSchema json.RawMessage
+		inputSchema     json.RawMessage
+		want            json.RawMessage
+	}{
+		{
+			name:            "canonical present → canonical returned",
+			canonicalSchema: canonical,
+			inputSchema:     raw,
+			want:            canonical,
+		},
+		{
+			name:            "canonical nil → InputSchema returned",
+			canonicalSchema: nil,
+			inputSchema:     raw,
+			want:            raw,
+		},
+		{
+			name:            "canonical empty-but-non-nil → InputSchema returned",
+			canonicalSchema: json.RawMessage{},
+			inputSchema:     raw,
+			want:            raw,
+		},
+		{
+			name:            "both empty → nil",
+			canonicalSchema: nil,
+			inputSchema:     nil,
+			want:            nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := ResolvedTool{
+				CanonicalSchema: tc.canonicalSchema,
+				InputSchema:     tc.inputSchema,
+			}
+			got := rt.SchemaForHeaderParams()
+			if string(got) != string(tc.want) {
+				t.Errorf("SchemaForHeaderParams() = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}

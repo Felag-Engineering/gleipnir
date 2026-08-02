@@ -294,9 +294,14 @@ func (p *Poller) poll(ctx context.Context, policyID string, parsed *model.Parsed
 
 		// A poll check runs on a timer with no operator attached to answer
 		// anything, so this path declares no client capability — permanently,
-		// not "not yet".
+		// not "not yet". It also passes no HeaderParamSchema: ToolResolver.
+		// ResolveToolByName (internal/mcp/registry.go) returns only a client
+		// and a bare tool name, no schema. Consequence, stated plainly: a
+		// poll check against a tool that declares x-mcp-header sends no such
+		// header. Widening ResolveToolByName's signature to also return a
+		// schema is out of scope here.
 		evalCtx, cancel := context.WithTimeout(ctx, parsed.Trigger.Interval)
-		result, err := client.CallTool(evalCtx, toolName, check.Input, mcp.ClientCapabilities{})
+		result, err := client.CallTool(evalCtx, toolName, check.Input, mcp.CallOptions{})
 		cancel()
 		if err != nil {
 			if errors.Is(evalCtx.Err(), context.DeadlineExceeded) {

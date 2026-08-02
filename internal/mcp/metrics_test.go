@@ -75,6 +75,11 @@ func TestClassifyMCPErrorType(t *testing.T) {
 			want: "protocol",
 		},
 		{
+			name: "HeaderParamError → protocol",
+			err:  &mcp.HeaderParamError{Property: "api_key", HeaderName: "Mcp-Method", Reason: "header name is reserved"},
+			want: "protocol",
+		},
+		{
 			name: "unknown error → connection",
 			err:  fmt.Errorf("something completely unknown"),
 			want: "connection",

@@ -49,6 +49,13 @@ type ResolvedTool struct {
 	// is deliberately out of scope here. A future enforcement consumer of
 	// this field must still construct its JSON Schema compiler with a
 	// deny-all URLLoader, and must not read "canonical" as "vetted".
+	//
+	// SchemaForHeaderParams is the one sanctioned exception to "consumers
+	// must NOT silently fall back to InputSchema" above: it falls back
+	// specifically because the SET of x-mcp-header annotations is provably
+	// invariant under schemanorm's byte-level-only normalization, which is
+	// not true of exact schema enforcement in general. See that method's doc
+	// for the full argument; keep the two comments in sync.
 	CanonicalSchema json.RawMessage
 
 	// Capabilities is the per-call client capability declaration sent in a
@@ -58,6 +65,30 @@ type ResolvedTool struct {
 	// it at its zero value today, so nothing is declared on any call path, and the
 	// type has no way to express sampling at all.
 	Capabilities ClientCapabilities
+}
+
+// SchemaForHeaderParams returns the schema to read SEP-2243 x-mcp-header
+// annotations from: CanonicalSchema when one is stored, otherwise the raw
+// InputSchema.
+//
+// CanonicalSchema's own doc forbids silently falling back to InputSchema for
+// exact enforcement — but reading x-mcp-header annotations is not exact
+// enforcement. schemanorm performs byte-level key sorting only, no
+// structural transform, no keyword stripping (internal/schemanorm), so the
+// SET of x-mcp-header annotations present in a schema is provably invariant
+// under normalization: normalizing never adds, removes, or moves a
+// "x-mcp-header" key relative to the property that carries it. Reading
+// annotations from raw InputSchema when canonical_schema is NULL (every
+// pre-#738 row until its next refresh, or any row whose schema failed
+// normalization) therefore yields an identical annotation set to reading
+// canonical, and is NOT "treating raw as canonical" in the sense that doc
+// prohibits. This is the one explicit, documented, single-site fallback —
+// not a silent one.
+func (rt ResolvedTool) SchemaForHeaderParams() json.RawMessage {
+	if len(rt.CanonicalSchema) > 0 {
+		return rt.CanonicalSchema
+	}
+	return rt.InputSchema
 }
 
 // ToolDiff describes the set of changes detected between two successive tool
