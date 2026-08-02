@@ -1,13 +1,18 @@
-.PHONY: help build test security security-go security-frontend proto lint-plugins lint-plugins-self-test lint lint-go-fmt lint-staticcheck ci-local ci-local-lanes ci-local-lint ci-local-drift ci-local-backend ci-local-sdk ci-local-frontend
+.PHONY: help build test security security-go security-frontend proto lint-plugins lint-plugins-self-test lint lint-go-fmt lint-staticcheck ci-local ci-local-full ci-local-lanes ci-local-lint ci-local-drift ci-local-backend ci-local-sdk ci-local-frontend ci-local-scope-self-test
 
 help:
 	@echo "Targets:"
 	@echo "  build                      go build ./..."
 	@echo "  test                       go test -race ./..."
-	@echo "  ci-local                   run the full PR CI gate locally (see lanes below);"
+	@echo "  ci-local                   run the PR CI gate locally, narrowed to the"
+	@echo "                             packages your diff can actually reach; CI still"
+	@echo "                             runs the full matrix on the pushed branch."
 	@echo "                             self-parallelizing — do NOT pass -j, it sizes"
 	@echo "                             itself to available RAM and serializes across"
 	@echo "                             worktrees so two gates can't OOM the machine"
+	@echo "  ci-local-full              same gate with no narrowing — every lane, every"
+	@echo "                             package (what ci-local did before scoping)"
+	@echo "  ci-local-scope-self-test   prove the gate scoper never drops coverage"
 	@echo "  security                   run all security scans (govulncheck + npm audit)"
 	@echo "  security-go                govulncheck ./..."
 	@echo "  security-frontend          npm audit --omit=dev (in frontend/)"
@@ -73,15 +78,28 @@ lint-staticcheck:
 	GOWORK=off go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
 
 # ---------------------------------------------------------------------------
-# ci-local — the full PR gate, runnable on a dirty tree.
+# ci-local — the PR gate, runnable on a dirty tree, narrowed to your diff.
 #
 # Mirrors every per-PR CI job that a laptop can run: backend build + race
 # tests, gofmt, plugin import boundary (+ self-test), sqlc drift, proto lint +
 # gen drift, plugin-sdk build/tests + examples + first-party plugin modules,
 # frontend typecheck + unit tests. This is the dev-loop's Stage 5.5 merge
 # gate — when CI is unavailable, a green ci-local is the signal a human
-# merges on, so it must not silently skip lanes: a missing tool is a hard
-# failure, never a skip.
+# merges on, so a missing tool is a hard failure, never a skip.
+#
+# SCOPING. The gate is narrowed by scripts/ci-local-scope.sh to the lanes and
+# packages the current diff can actually reach: a docs-only change races no
+# packages, a frontend-only change runs no Go tests, and a leaf-package change
+# races that package plus its reverse-dependency closure. `go build ./...` and
+# every lint/drift lane stay whole-tree regardless. This is a *latency*
+# optimization for the inner loop and nothing more — CI still runs the entire
+# matrix on the pushed branch, which is what a merge decision rests on. Anything
+# the scoper cannot reason about (a change to this Makefile, to scripts/, or to
+# the root go.mod) widens back to the full gate. `make ci-local-full` forces it.
+#
+# The narrowing is never silent: ci-local.sh prints what it selected and what it
+# skipped, and its final line says "scoped" or "full" so a green result is never
+# mistaken for more coverage than it had.
 #
 # NOT covered locally (CI-only): docker multi-arch build, arm64 QEMU boot,
 # podman smoke, and the vuln scans (`make security` — network-dependent).
@@ -115,12 +133,16 @@ MAKE_BIN := $(MAKE)
 ci-local:
 	@scripts/ci-local.sh $(MAKE_BIN)
 
-ci-local-lanes: ci-local-lint ci-local-drift ci-local-backend ci-local-sdk ci-local-frontend
-	@echo ""
-	@echo "ci-local ✅  lanes: backend build+race tests · gofmt · staticcheck · plugin import boundary · sqlc drift · proto lint+gen drift · plugin-sdk+examples+plugins tests · frontend typecheck+unit"
-	@echo "not covered locally (CI-only): docker/arm64/podman image jobs, vuln scans (make security)"
+ci-local-full:
+	@CI_LOCAL_FULL=1 scripts/ci-local.sh $(MAKE_BIN)
 
-ci-local-lint: lint-go-fmt lint-plugins lint-plugins-self-test lint-staticcheck
+ci-local-lanes: ci-local-lint ci-local-drift ci-local-backend ci-local-sdk ci-local-frontend
+
+ci-local-lint: lint-go-fmt lint-plugins lint-plugins-self-test ci-local-scope-self-test lint-staticcheck
+
+# The scoper decides how much of this gate runs, so it is gated by the gate.
+ci-local-scope-self-test:
+	@./scripts/ci-local-scope-self-test.sh
 
 ci-local-drift:
 	@command -v sqlc >/dev/null || { echo "ci-local: sqlc is required for the sqlc-drift lane (CI pins 1.30.0) — https://docs.sqlc.dev/en/latest/overview/install.html"; exit 1; }
@@ -152,20 +174,47 @@ ci-local-drift:
 # for anyone invoking the lanes directly.
 CI_LOCAL_TEST_P ?= 4
 
+# Which packages the race lane covers, and which optional lanes run at all.
+# scripts/ci-local.sh exports these from the scoper before invoking make; the
+# defaults below are the unnarrowed gate, so invoking any lane directly (or
+# running make with no scoper in front of it) still behaves exactly as it did
+# before scoping existed.
+CI_LOCAL_GO_PKGS ?= ./...
+CI_LOCAL_RUN_SDK ?= 1
+CI_LOCAL_RUN_FRONTEND ?= 1
+CI_LOCAL_PLUGIN_DIRS ?= $(wildcard plugins/*/)
+
+# `go build ./...` stays whole-tree even when the race lane is narrowed: it
+# links no test binaries, so it is cheap next to `go test -race`, and it is the
+# cheapest possible proof that nothing else in the tree stopped compiling.
 ci-local-backend: ci-local-drift
 	GOWORK=off go build -p $(CI_LOCAL_TEST_P) ./...
-	GOWORK=off go test -race -p $(CI_LOCAL_TEST_P) ./...
+ifeq ($(strip $(CI_LOCAL_GO_PKGS)),)
+	@echo "ci-local: no root-module Go package is reachable from this diff — race lane skipped"
+else
+	GOWORK=off go test -race -p $(CI_LOCAL_TEST_P) $(CI_LOCAL_GO_PKGS)
+endif
 
+ifeq ($(CI_LOCAL_RUN_SDK),1)
 ci-local-sdk: ci-local-drift
 	cd plugin-sdk && GOWORK=off go build -p $(CI_LOCAL_TEST_P) ./... && GOWORK=off go test -p $(CI_LOCAL_TEST_P) ./...
 	go test ./plugin-sdk/examples/minimal-tool/...
-	@for dir in plugins/*/; do \
+	@for dir in $(CI_LOCAL_PLUGIN_DIRS); do \
 		echo "go test $$dir..."; \
 		(cd "$$dir" && go test ./...) || exit 1; \
 	done
+else
+ci-local-sdk:
+	@echo "ci-local: no plugin-sdk/, plugins/, or go.work change in this diff — SDK lane skipped"
+endif
 
+ifneq ($(CI_LOCAL_RUN_FRONTEND),1)
+ci-local-frontend:
+	@echo "ci-local: no frontend/ change in this diff — frontend lane skipped"
+else
 ci-local-frontend:
 	@command -v npm >/dev/null || { echo "ci-local: npm is required for the frontend lane (CI uses Node 22)"; exit 1; }
 	@if [ ! -d frontend/node_modules ]; then echo "ci-local: frontend/node_modules missing — running npm ci"; cd frontend && npm ci; fi
 	cd frontend && npx tsc --noEmit
 	cd frontend && npm run test:unit
+endif

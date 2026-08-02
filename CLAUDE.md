@@ -7,16 +7,30 @@ Gleipnir is a homelab-scale autonomous agent orchestrator. It runs AI agents wit
 **Backend:**
 ```bash
 sqlc generate            # regenerate internal/db/ from internal/db/queries/*.sql
-make ci-local            # full PR CI gate locally (all lanes CI runs, minus the
-                         # container jobs and vuln scans); safe on a dirty tree —
-                         # this is the dev-loop's pre-PR merge gate
+make ci-local            # PR CI gate locally, narrowed to your diff; safe on a
+                         # dirty tree — this is the dev-loop's pre-PR merge gate
+make ci-local-full       # same gate, no narrowing (every lane, every package)
 ```
+
+**`ci-local` is scoped to your diff.** `scripts/ci-local-scope.sh` picks the lanes and
+packages the change can actually reach: a docs-only change races no Go packages, a
+frontend-only change runs no Go tests, and a leaf-package change races that package plus
+its reverse-dependency closure. `go build ./...` and every lint/drift lane always run
+whole-tree. Anything the scoper can't reason about — a change to the `Makefile`,
+`scripts/`, or the root `go.mod` — widens back to the full gate automatically.
+
+**A scoped pass is an inner-loop signal, not full coverage.** CI runs the entire matrix
+on the pushed branch, and that is what a merge decision rests on. The gate prints
+`SCOPED` or `FULL` on both ends of the run so a green result is never read as more
+coverage than it had. `scripts/ci-local-scope-self-test.sh` (gated in CI, and part of
+`ci-local`'s own lint lane) pins the properties that make narrowing safe — chiefly that
+the changed package and its transitive dependents are never dropped.
 
 **Do not pass `-j` to `ci-local`.** The lanes are memory-bound (Go linker, staticcheck,
 `tsc`), so the target sizes its own parallelism from available RAM and holds a
 machine-wide lock while it runs — two concurrent gates OOM-killed a 4 GiB host mid-run.
 A second worktree's gate queues instead of racing. `scripts/ci-local.sh` has the
-measurements and the `CI_LOCAL_JOBS` / `CI_LOCAL_NO_LOCK` escape hatches.
+measurements and the `CI_LOCAL_JOBS` / `CI_LOCAL_NO_LOCK` / `CI_LOCAL_FULL` escape hatches.
 
 **Frontend:** see `frontend/CLAUDE.md` for dev/build/test commands.
 
