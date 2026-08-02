@@ -526,6 +526,12 @@ versions for the 12-month deprecation window.
 - Adopt `ttlMs`/`cacheScope` hints (poll trigger, discovery caching); rely on
   deterministic `tools/list` ordering for prompt-cache stability.
 
+**Operator-facing notes** for the shipped client half of §10 and §11 —
+protocol probing and per-server pinning, the Tools-page protocol badge, the
+"schema simplified for this provider" notice (§10 step 2), `x-mcp-header`
+behavior, and the `ttlMs`/`cacheScope` discovery cache — live in
+[docs/user/mcp-protocol-migration.md](../user/mcp-protocol-migration.md).
+
 ## 12. Migration: aggressive hard cutover
 
 There are no known third-party plugins and no install base to strand (decision:

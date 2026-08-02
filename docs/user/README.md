@@ -8,5 +8,6 @@ For people running a Gleipnir instance. If you're looking for how to *build* Gle
 - [Policies](policies.md) — trigger types, capability grants, run states, concurrency modes.
 - [Roles](roles.md) — what each role (admin, operator, approver, auditor) can and cannot do.
 - [Plugins](plugins.md) — installing, signing, approving, and key-rotating plugins; the unsigned escape hatch.
+- [MCP protocol migration](mcp-protocol-migration.md) — protocol version pinning and the Tools-page badge, what changes on a 2026-07-28 server, the "Simplified for …" notice, and `x-mcp-header` behavior.
 - [Operations](operations.md) — upgrading, environment variables, database backups, viewing logs, resetting stuck runs.
 - [Troubleshooting](troubleshooting.md) — first-run failures and known issues.
