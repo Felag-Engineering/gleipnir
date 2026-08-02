@@ -45,6 +45,38 @@ func (r *ProviderRegistry) Providers() []string {
 	return names
 }
 
+// SchemaFeatureDeclarer is implemented by any LLMClient that can report the
+// JSON Schema constructs its wire represents. All four concrete provider
+// clients satisfy it through their embedded *ProviderAdapter.
+type SchemaFeatureDeclarer interface {
+	SchemaFeatures() SchemaFeatureSet
+}
+
+// SchemaFeaturesByProvider snapshots the declared schema-feature set of every
+// registered provider that reports one. A client that does not implement
+// SchemaFeatureDeclarer (test doubles) is omitted rather than guessed at —
+// omission means "not reported", never "full support", so a caller can never
+// silently under-report simplification.
+//
+// "Registered" is the definition of "enabled" here: main.go registers a
+// provider exactly when a decryptable API key exists, and unregisters it
+// when the admin removes the key — so the registry IS the set of providers a
+// run can actually reach.
+func (r *ProviderRegistry) SchemaFeaturesByProvider() map[string]SchemaFeatureSet {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string]SchemaFeatureSet, len(r.providers))
+	for name, client := range r.providers {
+		if d, ok := client.(SchemaFeatureDeclarer); ok {
+			out[name] = d.SchemaFeatures()
+		}
+	}
+	return out
+}
+
 // Get returns the client registered under name.
 // Returns an error containing the provider name if no client is registered.
 func (r *ProviderRegistry) Get(name string) (LLMClient, error) {
