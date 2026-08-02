@@ -500,7 +500,19 @@ versions for the 12-month deprecation window.
   `Mcp-Method`, `Mcp-Name`; retain `Mcp-Session-Id` through the window.
 - `x-mcp-header` tool-parameter headers (SEP-2243): honored only through
   `headervalidate` (reserved list applies) and never permitted to override
-  admin-configured ADR-039 auth headers.
+  admin-configured ADR-039 auth headers. **As shipped (#747) the gate is
+  deliberately stricter than this line**, because the name is chosen by the
+  remote server and the value by the model: on top of `headervalidate`,
+  `internal/mcp` applies its own `x-mcp-header`-specific denylist (hop-by-hop
+  and proxy-control headers, `Authorization`/`Cookie`, the forwarding and
+  client-IP families, method-override spellings, `User-Agent`) plus an
+  `[A-Za-z0-9-]` name allowlist — the allowlist exists because CGI/FastCGI
+  backends fold every non-alphanumeric byte to `_`, so `X-Api-Key`,
+  `X-Api_Key` and `X.Api.Key` all collapse to one env var and the twin written
+  last wins. A collision with a configured ADR-039 auth header fails the call
+  closed with a visible error rather than relying on header ordering to make
+  the admin value win (the ordering guarantee is retained as defense in depth).
+  Honored only on the 2026-07-28 transport; legacy request shaping is unchanged.
 - Capability declaration is a per-request enforcement seam: Gleipnir declares
   `elicitation` (form + url) only where the policy allows it, and **never**
   declares `sampling` — a server cannot request what the client doesn't declare.

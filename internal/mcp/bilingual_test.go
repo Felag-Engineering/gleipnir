@@ -40,7 +40,7 @@ func TestToolTraffic_ShapingByPinnedVersion(t *testing.T) {
 			if _, err := c.DiscoverTools(context.Background()); err != nil {
 				t.Fatalf("DiscoverTools: %v", err)
 			}
-			if _, err := c.CallTool(context.Background(), "tool-a", nil, ClientCapabilities{}); err != nil {
+			if _, err := c.CallTool(context.Background(), "tool-a", nil, CallOptions{}); err != nil {
 				t.Fatalf("CallTool: %v", err)
 			}
 
@@ -145,7 +145,7 @@ func TestNoRequestEverDeclaresSampling(t *testing.T) {
 	if _, err := unpinned.DiscoverTools(context.Background()); err != nil {
 		t.Fatalf("DiscoverTools (unpinned): %v", err)
 	}
-	if _, err := unpinned.CallTool(context.Background(), "tool-a", nil, ClientCapabilities{}); err != nil {
+	if _, err := unpinned.CallTool(context.Background(), "tool-a", nil, CallOptions{}); err != nil {
 		t.Fatalf("CallTool (unpinned): %v", err)
 	}
 
@@ -156,7 +156,7 @@ func TestNoRequestEverDeclaresSampling(t *testing.T) {
 	fakes = append(fakes, legacyPinnedFake)
 
 	legacyPinned := NewClient(legacyPinnedSrv.URL, WithProtocolVersion(ProtocolVersionLegacy))
-	if _, err := legacyPinned.CallTool(context.Background(), "tool-a", nil, ClientCapabilities{}); err != nil {
+	if _, err := legacyPinned.CallTool(context.Background(), "tool-a", nil, CallOptions{}); err != nil {
 		t.Fatalf("CallTool (legacy pin): %v", err)
 	}
 
@@ -171,7 +171,7 @@ func TestNoRequestEverDeclaresSampling(t *testing.T) {
 	if _, err := modern.DiscoverTools(context.Background()); err != nil {
 		t.Fatalf("DiscoverTools (modern): %v", err)
 	}
-	if _, err := modern.CallTool(context.Background(), "tool-a", nil, ClientCapabilities{Elicitation: true}); err != nil {
+	if _, err := modern.CallTool(context.Background(), "tool-a", nil, CallOptions{Capabilities: ClientCapabilities{Elicitation: true}}); err != nil {
 		t.Fatalf("CallTool (modern): %v", err)
 	}
 
@@ -256,7 +256,7 @@ func TestBilingualRegistry_LegacyAndModernServersInOneInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveToolByName(legacy): %v", err)
 	}
-	legacyResult, err := legacyClient.CallTool(ctx, legacyToolName, nil, ClientCapabilities{})
+	legacyResult, err := legacyClient.CallTool(ctx, legacyToolName, nil, CallOptions{})
 	if err != nil {
 		t.Fatalf("CallTool(legacy): %v", err)
 	}
@@ -271,7 +271,7 @@ func TestBilingualRegistry_LegacyAndModernServersInOneInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveToolByName(modern): %v", err)
 	}
-	modernResult, err := modernClient.CallTool(ctx, modernToolName, nil, ClientCapabilities{})
+	modernResult, err := modernClient.CallTool(ctx, modernToolName, nil, CallOptions{})
 	if err != nil {
 		t.Fatalf("CallTool(modern): %v", err)
 	}

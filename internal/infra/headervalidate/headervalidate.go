@@ -36,9 +36,12 @@ import (
 //     Client is built from stored headers — see
 //     internal/mcp.dropReservedAuthHeaders, which drops any stored header
 //     matching this list (logging a WARN) before it ever reaches
-//     WithAuthHeaders. The two checks together, not ValidateName alone,
-//     are what keep a reserved-name header off the wire regardless of when
-//     it was configured.
+//     WithAuthHeaders. A third enforcement point is internal/mcp.extractHeaderParams,
+//     which applies ValidateName to every SEP-2243 x-mcp-header annotation on
+//     a tool's input schema so a remote MCP server cannot smuggle a reserved
+//     name through a tool parameter. These three checks together, not
+//     ValidateName alone, are what keep a reserved-name header off the wire
+//     regardless of when or how it was introduced.
 //   - Required HTTP transport headers that must remain under client control.
 var ReservedHeaderNames = []string{
 	"Mcp-Session-Id",

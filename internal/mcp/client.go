@@ -399,11 +399,14 @@ func (c *Client) callWithSession(ctx context.Context, body []byte) (*http.Respon
 // it would double every auth failure.
 //
 // Legacy: unchanged, byte for byte — callWithSession keeps owning the
-// handshake and the single 401 re-init retry.
+// handshake and the single 401 re-init retry. headerParams is deliberately
+// not forwarded on the legacy branch — callWithSession/postRaw carry no
+// tool-parameter headers, the same era-gating discipline requestMeta
+// (meta.go) applies to _meta.
 //
 // rpcName is "" for methods that address no named entity (tools/list,
 // server/discover); see the Mcp-Name decision in Key decisions.
-func (c *Client) sendRPC(ctx context.Context, body []byte, method, rpcName string) (*http.Response, error) {
+func (c *Client) sendRPC(ctx context.Context, body []byte, method, rpcName string, headerParams []headerParam) (*http.Response, error) {
 	if !c.isModernProtocol() {
 		return c.callWithSession(ctx, body)
 	}
@@ -411,6 +414,7 @@ func (c *Client) sendRPC(ctx context.Context, body []byte, method, rpcName strin
 		protocolVersion: c.protocolVersion,
 		rpcMethod:       method,
 		rpcName:         rpcName,
+		headerParams:    headerParams,
 	})
 }
 
@@ -437,7 +441,7 @@ func (c *Client) DiscoverTools(ctx context.Context) ([]Tool, error) {
 		return nil, fmt.Errorf("marshal tools/list request: %w", err)
 	}
 
-	resp, err := c.sendRPC(ctx, body, methodToolsList, "")
+	resp, err := c.sendRPC(ctx, body, methodToolsList, "", nil)
 	if err != nil {
 		return nil, fmt.Errorf("post tools/list: %w", err)
 	}
@@ -463,14 +467,35 @@ func (c *Client) DiscoverTools(ctx context.Context) ([]Tool, error) {
 	return tools, nil
 }
 
+// CallOptions carries the per-call inputs to CallTool that are not part of
+// the JSON-RPC arguments object. The zero value is today's behavior: declare
+// nothing, send no tool-parameter headers.
+type CallOptions struct {
+	// Capabilities is the per-request client capability declaration (spec
+	// §11). It is honored only on the 2026-07-28 transport; on the legacy
+	// transport it is structurally inert because requestMeta returns nil for
+	// a non-modern client, so a granted capability can never leak into a
+	// legacy request body.
+	Capabilities ClientCapabilities
+
+	// HeaderParamSchema is the tool's input schema, used ONLY as the source
+	// of SEP-2243 x-mcp-header annotations — never for argument validation
+	// (that is the agent's pre-dispatch ArgValidator, #744). Empty means "no
+	// annotations to honor".
+	HeaderParamSchema json.RawMessage
+}
+
 // CallTool invokes a named tool on the MCP server with the given input.
 // The input must be a JSON-serialisable value matching the tool's inputSchema.
 //
-// caps is the per-request client capability declaration (spec §11). It is
-// honored only on the 2026-07-28 transport; on the legacy transport it is
-// structurally inert because requestMeta returns nil for a non-modern client,
-// so a granted capability can never leak into a legacy request body.
-func (c *Client) CallTool(ctx context.Context, name string, input map[string]any, caps ClientCapabilities) (res ToolResult, err error) {
+// A property in input that opts.HeaderParamSchema annotates with
+// x-mcp-header is ALSO still sent in the JSON-RPC arguments object below —
+// it is not stripped. The property is declared in the server's own
+// inputSchema (and may be in its "required" list), the tool_call audit step
+// records input before dispatch, and the pre-dispatch ArgValidator validates
+// the full argument set — stripping the property afterwards would disagree
+// with all three.
+func (c *Client) CallTool(ctx context.Context, name string, input map[string]any, opts CallOptions) (res ToolResult, err error) {
 	start := time.Now()
 	defer func() {
 		mcpCallDurationSeconds.
@@ -483,12 +508,26 @@ func (c *Client) CallTool(ctx context.Context, name string, input map[string]any
 		}
 	}()
 
+	// x-mcp-header is a 2026-07-28 feature (spec §11). A legacy-pinned or
+	// never-probed server never negotiated it, so the annotation is not even
+	// read there: legacy request shaping stays byte-identical and a legacy
+	// server's schema can never introduce a new failure mode for a tool that
+	// works today.
+	var headerParams []headerParam
+	if c.isModernProtocol() {
+		headerParams, err = extractHeaderParams(opts.HeaderParamSchema, input, c.authHeaders)
+		if err != nil {
+			err = fmt.Errorf("resolving x-mcp-header parameters for tool %q: %w", name, err)
+			return
+		}
+	}
+
 	var body []byte
 	body, err = json.Marshal(jsonrpcRequest{
 		JSONRPC: "2.0",
 		ID:      2,
 		Method:  methodToolsCall,
-		Params:  toolsCallParams{Name: name, Arguments: input, Meta: c.requestMeta(caps)},
+		Params:  toolsCallParams{Name: name, Arguments: input, Meta: c.requestMeta(opts.Capabilities)},
 	})
 	if err != nil {
 		err = fmt.Errorf("marshal tools/call request: %w", err)
@@ -496,7 +535,7 @@ func (c *Client) CallTool(ctx context.Context, name string, input map[string]any
 	}
 
 	var resp *http.Response
-	resp, err = c.sendRPC(ctx, body, methodToolsCall, name)
+	resp, err = c.sendRPC(ctx, body, methodToolsCall, name, headerParams)
 	if err != nil {
 		err = fmt.Errorf("post tools/call: %w", err)
 		return
@@ -581,25 +620,63 @@ func decodeResponse(resp *http.Response, dst any) error {
 // postOptions carries the per-request client-managed transport headers.
 // The zero value is today's legacy shaping.
 type postOptions struct {
-	sessionID       string // Mcp-Session-Id      (legacy transport)
-	protocolVersion string // MCP-Protocol-Version (2026-07-28 transport)
-	rpcMethod       string // Mcp-Method           (2026-07-28 transport)
-	rpcName         string // Mcp-Name             (2026-07-28 transport; "" when the method targets no named entity)
+	sessionID       string        // Mcp-Session-Id      (legacy transport)
+	protocolVersion string        // MCP-Protocol-Version (2026-07-28 transport)
+	rpcMethod       string        // Mcp-Method           (2026-07-28 transport)
+	rpcName         string        // Mcp-Name             (2026-07-28 transport; "" when the method targets no named entity)
+	headerParams    []headerParam // x-mcp-header tool-parameter headers (2026-07-28 transport)
 }
 
 // post sends a JSON-RPC request body to c.serverURL and returns the HTTP
 // response. It returns an error for non-2xx status codes.
 //
 // Header injection order:
-//  1. Content-Type and Accept (transport requirements)
-//  2. c.authHeaders (operator-configured, applied in registration order)
-//  3. all client-managed headers (session, protocol version, method, name),
+//  1. o.headerParams — x-mcp-header tool-parameter headers (spec §11),
+//     agent-supplied. This is the WEAKEST layer: set first so every other
+//     layer below overrides it on a same-name collision, including
+//     Content-Type/Accept. Ordering alone is NOT the whole invariant, though:
+//     a header whose semantics act on OTHER headers (Connection, Upgrade,
+//     TE, ...) is never "overridden" by a later layer just because that
+//     layer is set afterward, so extractHeaderParams rejects those names
+//     outright via a dedicated denylist (headerparams.go) before
+//     o.headerParams is ever populated — and rejects a name colliding with a
+//     configured ADR-039 auth header the same way, rather than leaving that
+//     collision to this ordering to resolve silently. A byte-different name
+//     can also collide with another layer's header downstream of this
+//     client without ever colliding here: http.CanonicalHeaderKey only
+//     capitalizes the letter after a "-", so it treats every other RFC 7230
+//     token character (including "_", ".", "^", "`", "|", "~") as an
+//     ordinary letter rather than a word separator, and e.g. "X-Api-Key",
+//     "X-Api_Key", and "X.Api.Key" are three distinct headers to every check
+//     in this package even though many CGI/WSGI backends fold all three onto
+//     the same env var — extractHeaderParams closes that gap by rejecting
+//     any x-mcp-header name containing a byte outside "[A-Za-z0-9-]"
+//     outright, rather than trying to widen every name/collision check to
+//     treat each of those separators as equivalent to "-". The invariant "a
+//     tool parameter can never displace, or substitute for, a transport or
+//     operator header" therefore depends on that denylist, the ADR-039
+//     collision check, and the name allowlist together with this ordering,
+//     not on ordering alone: ordering is what makes a same-name VALUE
+//     collision resolve correctly; it cannot make an out-of-band or
+//     byte-different header name harmless.
+//  2. Content-Type and Accept (transport requirements)
+//  3. c.authHeaders (ADR-039 operator-configured, applied in registration
+//     order) — overrides 1.
+//  4. all client-managed headers (session, protocol version, method, name),
 //     each only when non-empty — set last so they always win, even if an
 //     operator configures a colliding auth header.
+//
+// req.Header.Set canonicalizes the header name (textproto.CanonicalMIMEHeaderKey),
+// so a case-differing collision between layers still overwrites rather than
+// appending — this is what makes "the admin value wins" true regardless of
+// the casing a layer's source (e.g. a remote server's schema) used.
 func (c *Client) post(ctx context.Context, body []byte, o postOptions) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.serverURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
+	}
+	for _, h := range o.headerParams {
+		req.Header.Set(h.Name, h.Value)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	// MCP streamable-HTTP transport requires the client to accept both JSON
@@ -650,7 +727,9 @@ func (c *Client) post(ctx context.Context, body []byte, o postOptions) (*http.Re
 
 // postRaw is a backward-compatible wrapper over post for the legacy
 // session-based transport. sessionID is included as "Mcp-Session-Id" when
-// non-empty.
+// non-empty. It never carries headerParams: x-mcp-header is a 2026-07-28
+// transport feature (see sendRPC), and postRaw only ever serves the legacy
+// path.
 func (c *Client) postRaw(ctx context.Context, body []byte, sessionID string) (*http.Response, error) {
 	return c.post(ctx, body, postOptions{sessionID: sessionID})
 }

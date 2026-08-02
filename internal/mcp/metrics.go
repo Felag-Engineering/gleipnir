@@ -53,6 +53,12 @@ func ClassifyMCPErrorType(err error) string {
 			return metrics.ErrorTypeProtocol
 		}
 	}
+	var hpErr *HeaderParamError
+	if errors.As(err, &hpErr) {
+		// The server's own tool schema declares an unusable header
+		// annotation: a protocol-level defect, not a connection failure.
+		return metrics.ErrorTypeProtocol
+	}
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
 		return metrics.ErrorTypeConnection

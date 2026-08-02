@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -169,7 +170,7 @@ func TestCallTool_HappyPath(t *testing.T) {
 	})
 
 	c := NewClient(srv.URL)
-	result, err := c.CallTool(context.Background(), "my-tool", map[string]any{"key": "val"}, ClientCapabilities{})
+	result, err := c.CallTool(context.Background(), "my-tool", map[string]any{"key": "val"}, CallOptions{})
 	if err != nil {
 		t.Fatalf("CallTool: unexpected error: %v", err)
 	}
@@ -196,7 +197,7 @@ func TestCallTool_IsErrorTrue(t *testing.T) {
 	})
 
 	c := NewClient(srv.URL)
-	result, err := c.CallTool(context.Background(), "failing-tool", nil, ClientCapabilities{})
+	result, err := c.CallTool(context.Background(), "failing-tool", nil, CallOptions{})
 	if err != nil {
 		t.Fatalf("CallTool: unexpected Go error: %v", err)
 	}
@@ -218,7 +219,7 @@ func TestCallTool_JSONRPCError(t *testing.T) {
 	})
 
 	c := NewClient(srv.URL)
-	_, err := c.CallTool(context.Background(), "some-tool", nil, ClientCapabilities{})
+	_, err := c.CallTool(context.Background(), "some-tool", nil, CallOptions{})
 	if err == nil {
 		t.Fatal("expected non-nil error for JSON-RPC error response, got nil")
 	}
@@ -233,7 +234,7 @@ func TestCallTool_Non200Response(t *testing.T) {
 	})
 
 	c := NewClient(srv.URL)
-	_, err := c.CallTool(context.Background(), "some-tool", nil, ClientCapabilities{})
+	_, err := c.CallTool(context.Background(), "some-tool", nil, CallOptions{})
 	if err == nil {
 		t.Fatal("expected non-nil error for 502 response, got nil")
 	}
@@ -259,7 +260,7 @@ func TestCallTool_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel before the call
 
-	_, err := c.CallTool(ctx, "some-tool", nil, ClientCapabilities{})
+	_, err := c.CallTool(ctx, "some-tool", nil, CallOptions{})
 	if err == nil {
 		t.Fatal("expected non-nil error for cancelled context, got nil")
 	}
@@ -371,10 +372,10 @@ func TestEnsureSession_CachesSessionID(t *testing.T) {
 
 	c := NewClient(srv.URL)
 
-	if _, err := c.CallTool(context.Background(), "tool-x", nil, ClientCapabilities{}); err != nil {
+	if _, err := c.CallTool(context.Background(), "tool-x", nil, CallOptions{}); err != nil {
 		t.Fatalf("first CallTool: %v", err)
 	}
-	if _, err := c.CallTool(context.Background(), "tool-x", nil, ClientCapabilities{}); err != nil {
+	if _, err := c.CallTool(context.Background(), "tool-x", nil, CallOptions{}); err != nil {
 		t.Fatalf("second CallTool: %v", err)
 	}
 
@@ -413,7 +414,7 @@ func TestEnsureSession_RetriesOn401(t *testing.T) {
 	})
 
 	c := NewClient(srv.URL)
-	if _, err := c.CallTool(context.Background(), "tool-x", nil, ClientCapabilities{}); err != nil {
+	if _, err := c.CallTool(context.Background(), "tool-x", nil, CallOptions{}); err != nil {
 		t.Fatalf("CallTool: unexpected error: %v", err)
 	}
 
@@ -435,7 +436,7 @@ func TestEnsureSession_ConcurrentCalls(t *testing.T) {
 	for range goroutines {
 		go func() {
 			defer wg.Done()
-			if _, err := c.CallTool(context.Background(), "tool-x", nil, ClientCapabilities{}); err != nil {
+			if _, err := c.CallTool(context.Background(), "tool-x", nil, CallOptions{}); err != nil {
 				t.Errorf("CallTool: %v", err)
 			}
 		}()
@@ -468,7 +469,7 @@ func TestPostRaw_InjectsAuthHeaders(t *testing.T) {
 		{Name: "X-Api-Key", Value: "sk-test-123"},
 	}))
 
-	if _, err := c.CallTool(context.Background(), "tool-x", nil, ClientCapabilities{}); err != nil {
+	if _, err := c.CallTool(context.Background(), "tool-x", nil, CallOptions{}); err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
 
@@ -493,7 +494,7 @@ func TestPostRaw_NoAuthHeaders_BackwardCompat(t *testing.T) {
 	// No WithAuthHeaders — default client.
 	c := NewClient(srv.URL)
 
-	if _, err := c.CallTool(context.Background(), "tool-x", nil, ClientCapabilities{}); err != nil {
+	if _, err := c.CallTool(context.Background(), "tool-x", nil, CallOptions{}); err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
 
@@ -519,7 +520,7 @@ func TestPostRaw_AuthHeaderCannotOverrideSessionID(t *testing.T) {
 		{Name: "Mcp-Session-Id", Value: "injected-session"},
 	}))
 
-	if _, err := c.CallTool(context.Background(), "tool-x", nil, ClientCapabilities{}); err != nil {
+	if _, err := c.CallTool(context.Background(), "tool-x", nil, CallOptions{}); err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
 
@@ -616,7 +617,7 @@ func TestLegacyPostShapeUnchanged(t *testing.T) {
 		{Name: "X-Api-Key", Value: "sk-test-123"},
 	}))
 
-	if _, err := c.CallTool(context.Background(), "tool-x", nil, ClientCapabilities{}); err != nil {
+	if _, err := c.CallTool(context.Background(), "tool-x", nil, CallOptions{}); err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
 
@@ -694,7 +695,7 @@ func TestCallTool_ModernPath_CRLFToolNameFailsClosed(t *testing.T) {
 
 	c := NewClient(srv.URL, WithProtocolVersion(ProtocolVersion20260728))
 
-	_, err := c.CallTool(context.Background(), "evil\r\nX-Injected: pwned", nil, ClientCapabilities{})
+	_, err := c.CallTool(context.Background(), "evil\r\nX-Injected: pwned", nil, CallOptions{})
 	if err == nil {
 		t.Fatal("expected non-nil error for a CRLF-containing tool name, got nil")
 	}
@@ -773,10 +774,10 @@ func TestLegacyRequestBodyBytesUnchanged(t *testing.T) {
 			if _, err := c.DiscoverTools(context.Background()); err != nil {
 				t.Fatalf("DiscoverTools: %v", err)
 			}
-			if _, err := c.CallTool(context.Background(), "tool-x", nil, ClientCapabilities{}); err != nil {
+			if _, err := c.CallTool(context.Background(), "tool-x", nil, CallOptions{}); err != nil {
 				t.Fatalf("CallTool(nil input): %v", err)
 			}
-			if _, err := c.CallTool(context.Background(), "tool-x", map[string]any{"k": "v"}, ClientCapabilities{}); err != nil {
+			if _, err := c.CallTool(context.Background(), "tool-x", map[string]any{"k": "v"}, CallOptions{}); err != nil {
 				t.Fatalf("CallTool(non-nil input): %v", err)
 			}
 
@@ -809,7 +810,7 @@ func TestCallTool_LegacyPinIgnoresGrantedCapabilities(t *testing.T) {
 
 	c := NewClient(srv.URL, WithProtocolVersion(ProtocolVersionLegacy))
 
-	if _, err := c.CallTool(context.Background(), "tool-x", nil, ClientCapabilities{Elicitation: true}); err != nil {
+	if _, err := c.CallTool(context.Background(), "tool-x", nil, CallOptions{Capabilities: ClientCapabilities{Elicitation: true}}); err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
 
@@ -857,7 +858,7 @@ func TestCallTool_ModernPath_MetaShape(t *testing.T) {
 			})
 
 			c := NewClient(srv.URL, WithProtocolVersion(ProtocolVersion20260728))
-			if _, err := c.CallTool(context.Background(), "tool-x", nil, tc.caps); err != nil {
+			if _, err := c.CallTool(context.Background(), "tool-x", nil, CallOptions{Capabilities: tc.caps}); err != nil {
 				t.Fatalf("CallTool: %v", err)
 			}
 
@@ -930,4 +931,261 @@ func mustExtractParams(t *testing.T, body []byte) json.RawMessage {
 		t.Fatalf("unmarshal request envelope: %v", err)
 	}
 	return envelope.Params
+}
+
+// TestCallTool_HeaderParam_SetOnTheWire is DoD 1: a schema annotating a
+// property with x-mcp-header, on a modern-pinned client, sets the header on
+// the wire AND leaves the annotated property in the JSON-RPC arguments body
+// (the "not stripped" decision).
+func TestCallTool_HeaderParam_SetOnTheWire(t *testing.T) {
+	var capturedHeaders http.Header
+	var capturedBody []byte
+	srv := makeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedHeaders = r.Header.Clone()
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "bad request body", http.StatusBadRequest)
+			return
+		}
+		capturedBody = body
+		successToolCallHandler(w, r)
+	})
+
+	c := NewClient(srv.URL, WithProtocolVersion(ProtocolVersion20260728))
+	schema := json.RawMessage(`{"properties":{"api_key":{"type":"string","x-mcp-header":"X-Api-Key"}}}`)
+
+	if _, err := c.CallTool(context.Background(), "tool-x", map[string]any{"api_key": "sk-agent-supplied"}, CallOptions{HeaderParamSchema: schema}); err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+
+	if got := capturedHeaders.Get("X-Api-Key"); got != "sk-agent-supplied" {
+		t.Errorf("X-Api-Key = %q, want %q", got, "sk-agent-supplied")
+	}
+
+	var envelope struct {
+		Params struct {
+			Arguments map[string]any `json:"arguments"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(capturedBody, &envelope); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	if _, ok := envelope.Params.Arguments["api_key"]; !ok {
+		t.Error("params.arguments does not contain api_key — the annotated parameter must not be stripped")
+	}
+}
+
+// TestCallTool_HeaderParam_ReservedNameRejected is DoD 2: an x-mcp-header
+// annotation naming a reserved header (Mcp-Method) makes CallTool return a
+// *HeaderParamError, and the rejection happens before the request is ever
+// sent — the fake server records zero requests.
+func TestCallTool_HeaderParam_ReservedNameRejected(t *testing.T) {
+	var requestCount int
+	srv := makeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		successToolCallHandler(w, r)
+	})
+
+	c := NewClient(srv.URL, WithProtocolVersion(ProtocolVersion20260728))
+	schema := json.RawMessage(`{"properties":{"method_override":{"type":"string","x-mcp-header":"Mcp-Method"}}}`)
+
+	_, err := c.CallTool(context.Background(), "tool-x", map[string]any{"method_override": "evil"}, CallOptions{HeaderParamSchema: schema})
+	if err == nil {
+		t.Fatal("CallTool: expected an error for a reserved x-mcp-header name, got nil")
+	}
+	var hpErr *HeaderParamError
+	if !errors.As(err, &hpErr) {
+		t.Fatalf("CallTool error is not a *HeaderParamError: %v", err)
+	}
+	if requestCount != 0 {
+		t.Errorf("server received %d requests, want 0 (rejection must be pre-dispatch)", requestCount)
+	}
+}
+
+// TestCallTool_HeaderParam_DeniedNameCannotReachTheWire is the wire-level
+// counterpart to TestExtractHeaderParams_DeniedNamesRejected (S1/S2 of the
+// security review): each of these names passes headervalidate.ValidateName
+// (none is in headervalidate.ReservedHeaderNames), so only the
+// x-mcp-header-specific denylist stops it. This proves the rejection holds
+// at the CallTool boundary a real MCP server would exercise, not merely
+// inside extractHeaderParams in isolation — the fake server records zero
+// requests for every name.
+func TestCallTool_HeaderParam_DeniedNameCannotReachTheWire(t *testing.T) {
+	for _, name := range []string{"Connection", "Upgrade", "TE", "Transfer-Encoding", "Authorization", "Cookie", "X-Forwarded-For"} {
+		t.Run(name, func(t *testing.T) {
+			var requestCount int
+			srv := makeServer(t, func(w http.ResponseWriter, r *http.Request) {
+				requestCount++
+				successToolCallHandler(w, r)
+			})
+
+			c := NewClient(srv.URL, WithProtocolVersion(ProtocolVersion20260728))
+			schema, err := json.Marshal(map[string]any{
+				"properties": map[string]any{
+					"a": map[string]any{"x-mcp-header": name},
+				},
+			})
+			if err != nil {
+				t.Fatalf("marshal schema: %v", err)
+			}
+
+			_, err = c.CallTool(context.Background(), "tool-x", map[string]any{"a": "attacker-value"}, CallOptions{HeaderParamSchema: schema})
+			if err == nil {
+				t.Fatalf("CallTool: expected an error for x-mcp-header %q, got nil", name)
+			}
+			var hpErr *HeaderParamError
+			if !errors.As(err, &hpErr) {
+				t.Fatalf("CallTool error is not a *HeaderParamError: %v", err)
+			}
+			if requestCount != 0 {
+				t.Errorf("server received %d requests for x-mcp-header %q, want 0 (must be rejected before dispatch)", requestCount, name)
+			}
+		})
+	}
+}
+
+// TestCallTool_HeaderParam_CollidesWithAuthHeader_FailsClosed is DoD 3, as
+// corrected by the security review (S2(b)): when a tool's x-mcp-header
+// annotation canonicalizes to the name of an ADR-039 auth header configured
+// for that server, CallTool fails CLOSED with a *HeaderParamError instead of
+// silently relying on post's ordering to make the admin value win. A silent
+// override would never surface the collision to the operator; an error
+// does. Rejection is pre-dispatch: the fake server records zero requests.
+// The casing differs from the auth header's configured name on purpose —
+// the collision check must canonicalize before comparing.
+func TestCallTool_HeaderParam_CollidesWithAuthHeader_FailsClosed(t *testing.T) {
+	var requestCount int
+	srv := makeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		successToolCallHandler(w, r)
+	})
+
+	c := NewClient(srv.URL,
+		WithProtocolVersion(ProtocolVersion20260728),
+		WithAuthHeaders([]AuthHeader{{Name: "X-Api-Key", Value: "admin-secret"}}),
+	)
+	schema := json.RawMessage(`{"properties":{"api_key":{"type":"string","x-mcp-header":"x-api-key"}}}`)
+
+	_, err := c.CallTool(context.Background(), "tool-x", map[string]any{"api_key": "agent-supplied"}, CallOptions{HeaderParamSchema: schema})
+	if err == nil {
+		t.Fatal("CallTool: expected an error for an x-mcp-header colliding with a configured auth header, got nil")
+	}
+	var hpErr *HeaderParamError
+	if !errors.As(err, &hpErr) {
+		t.Fatalf("CallTool error is not a *HeaderParamError: %v", err)
+	}
+	if requestCount != 0 {
+		t.Errorf("server received %d requests, want 0 (collision rejection must be pre-dispatch)", requestCount)
+	}
+}
+
+// TestPost_AuthHeaderWinsOverHeaderParam is defense-in-depth for the
+// ordering invariant in post, independently of the ADR-039 collision check
+// TestCallTool_HeaderParam_CollidesWithAuthHeader_FailsClosed locks above —
+// same shape as TestPostRaw_AuthHeaderCannotOverrideProtocolVersion. It
+// builds postOptions directly, bypassing extractHeaderParams' own name
+// validation and collision check entirely, so the operator's auth header
+// still wins over a same-name headerParam even if that upstream check is
+// ever bypassed or removed. This is the original DoD-3 case ("collision
+// with an ADR-039 auth header — admin value wins"), preserved rather than
+// deleted.
+func TestPost_AuthHeaderWinsOverHeaderParam(t *testing.T) {
+	var capturedHeaders http.Header
+	srv := makeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedHeaders = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	})
+
+	c := NewClient(srv.URL, WithAuthHeaders([]AuthHeader{{Name: "X-Api-Key", Value: "admin-secret"}}))
+
+	_, err := c.post(context.Background(), []byte(`{}`), postOptions{
+		headerParams: []headerParam{{Name: "x-api-key", Value: "agent-supplied"}},
+	})
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+
+	if got := capturedHeaders.Get("X-Api-Key"); got != "admin-secret" {
+		t.Errorf("X-Api-Key = %q, want %q (admin-configured value must win)", got, "admin-secret")
+	}
+	if got := len(capturedHeaders.Values("X-Api-Key")); got != 1 {
+		t.Errorf("len(X-Api-Key values) = %d, want 1 (Set, not Add — canonicalization must collapse the casing difference)", got)
+	}
+}
+
+// TestCallTool_HeaderParam_NotSentOnLegacyTransport asserts that
+// x-mcp-header is honored only on the 2026-07-28 transport: the same
+// annotated schema and input, against an unpinned client and a
+// legacy-pinned client, sends no such header and produces no error.
+func TestCallTool_HeaderParam_NotSentOnLegacyTransport(t *testing.T) {
+	tests := []struct {
+		name string
+		pin  string
+	}{
+		{name: "unpinned client", pin: ""},
+		{name: "legacy pin", pin: ProtocolVersionLegacy},
+	}
+
+	schema := json.RawMessage(`{"properties":{"api_key":{"type":"string","x-mcp-header":"X-Api-Key"}}}`)
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var capturedHeaders http.Header
+			srv := makeServer(t, routingHandler(t, nil, func(w http.ResponseWriter, r *http.Request) {
+				capturedHeaders = r.Header.Clone()
+				successToolCallHandler(w, r)
+			}))
+
+			c := NewClient(srv.URL, WithProtocolVersion(tc.pin))
+
+			if _, err := c.CallTool(context.Background(), "tool-x", map[string]any{"api_key": "secret"}, CallOptions{HeaderParamSchema: schema}); err != nil {
+				t.Fatalf("CallTool: %v", err)
+			}
+
+			if _, ok := capturedHeaders["X-Api-Key"]; ok {
+				t.Error("X-Api-Key header present, want absent on the legacy transport")
+			}
+		})
+	}
+}
+
+// TestCallTool_HeaderParam_CannotDisplaceClientManagedHeaders asserts the
+// ordering invariant in post independently of the headervalidate blocklist:
+// even a headerParam constructed directly (bypassing extractHeaderParams'
+// own name validation entirely) cannot override Content-Type or any
+// client-managed transport header, because post sets headerParams first and
+// everything else after. Same defense-in-depth shape as
+// TestPostRaw_AuthHeaderCannotOverrideProtocolVersion.
+func TestCallTool_HeaderParam_CannotDisplaceClientManagedHeaders(t *testing.T) {
+	var captured http.Header
+	srv := makeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		captured = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	})
+
+	c := NewClient(srv.URL)
+
+	_, err := c.post(context.Background(), []byte(`{}`), postOptions{
+		protocolVersion: "2026-07-28",
+		rpcMethod:       "tools/call",
+		rpcName:         "tool-a",
+		headerParams: []headerParam{
+			{Name: "Mcp-Method", Value: "injected-method"},
+			{Name: "MCP-Protocol-Version", Value: "injected-version"},
+			{Name: "Content-Type", Value: "text/plain"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+
+	if got := captured.Get("Mcp-Method"); got != "tools/call" {
+		t.Errorf("Mcp-Method = %q, want %q (client-managed)", got, "tools/call")
+	}
+	if got := captured.Get("MCP-Protocol-Version"); got != "2026-07-28" {
+		t.Errorf("MCP-Protocol-Version = %q, want %q (client-managed)", got, "2026-07-28")
+	}
+	if got := captured.Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want %q (transport requirement)", got, "application/json")
+	}
 }

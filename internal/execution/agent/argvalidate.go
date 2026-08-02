@@ -44,12 +44,23 @@ func compileArgValidator(rt mcp.ResolvedTool, dotName string) *mcp.ArgValidator 
 	return v
 }
 
-// schemaViolation renders an exact-enforcement (gate 2, ArgValidator)
-// violation as the codebase's structural-error shape: a tagged error step
-// for the audit trail, a tool_result step with is_error: true for the agent
-// to read, and (msg, true, nil) so the caller returns it as a correctable
-// error instead of failing the run. Mirrors the plugin generation guard
-// (agent.go) and MCP transport failures (agent.go).
+// schemaViolation renders a structural tool-call violation as the
+// codebase's structural-error shape: a tagged error step for the audit
+// trail, a tool_result step with is_error: true for the agent to read, and
+// (msg, true, nil) so the caller returns it as a correctable error instead
+// of failing the run. Mirrors the plugin generation guard (agent.go) and MCP
+// transport failures (agent.go).
+//
+// Two producers, with different audit-trail shapes:
+//   - gate 2, ArgValidator (exact enforcement, #744): runs BEFORE the
+//     tool_call audit step is written, so its violation's run has no
+//     tool_call step for the rejected call.
+//   - CallTool's *mcp.HeaderParamError (#747): reached from inside
+//     entry.tool.Client.CallTool, which is dispatched AFTER the tool_call
+//     step is already written (agent.go). So a rejected x-mcp-header
+//     declaration's run DOES have a tool_call step — that is correct, and
+//     matches how every other MCP transport failure is already audited; it
+//     is not "behavior unchanged" relative to the ArgValidator case.
 //
 // NOT used by the ADR-017 key-presence gate (gate 1, mcp.ValidateCall) —
 // that gate fails the run instead, so its violation reaches the operator
