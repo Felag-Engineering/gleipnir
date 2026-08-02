@@ -111,6 +111,70 @@ func errorResultServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
+// pollSessionCountingServer starts a test HTTP server behaving as a minimal
+// legacy MCP server for the poll trigger — same shape as pollResultServer —
+// but (a) mints "Mcp-Session-Id: poll-session" on initialize, mandatory
+// per the plan's correction (E): a session-less initialize response makes
+// even a reused *Client re-initialize on every call, defeating the very
+// thing this fixture exists to observe; (b) counts initialize requests
+// atomically; and (c) does a non-blocking send on the returned buffered
+// channel for every tools/call, so a test can synchronize on ticks
+// (signal-don't-poll) instead of a wall-clock sleep.
+func pollSessionCountingServer(t *testing.T, content []map[string]any) (srv *httptest.Server, initCount *atomic.Int64, tick chan struct{}) {
+	t.Helper()
+	initCount = &atomic.Int64{}
+	tick = make(chan struct{}, 8)
+
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		json.NewDecoder(r.Body).Decode(&req) //nolint:errcheck
+		w.Header().Set("Content-Type", "application/json")
+		method, _ := req["method"].(string)
+		switch method {
+		case "initialize":
+			initCount.Add(1)
+			w.Header().Set("Mcp-Session-Id", "poll-session")
+			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+				"jsonrpc": "2.0", "id": req["id"], "result": map[string]any{},
+			})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusOK)
+		case "tools/list":
+			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+				"jsonrpc": "2.0", "id": req["id"],
+				"result": map[string]any{
+					"tools": []map[string]any{{
+						"name":        "check",
+						"description": "poll check tool",
+						"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+					}},
+				},
+			})
+		case "tools/call":
+			select {
+			case tick <- struct{}{}:
+			default:
+				// Buffer is full; the test only needs to observe that ticks
+				// keep happening, not count every one of them.
+			}
+			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+				"jsonrpc": "2.0", "id": req["id"],
+				"result": map[string]any{
+					"content": content,
+					"isError": false,
+				},
+			})
+		default:
+			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+				"jsonrpc": "2.0", "id": req["id"],
+				"result": map[string]any{},
+			})
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, initCount, tick
+}
+
 // setupPollerFixture opens a temp SQLite store and registers the given test
 // MCP server under the name "poll-server".
 func setupPollerFixture(t *testing.T, mcpSrv *httptest.Server) (*db.Store, *mcp.Registry) {
@@ -303,6 +367,64 @@ func TestPoller_CheckNoMatchNoRun(t *testing.T) {
 	}
 	if len(runs) != 0 {
 		t.Errorf("expected no runs when check does not match, got %d", len(runs))
+	}
+}
+
+// TestPoller_ReusesResolvedClientAcrossTicks verifies the poll engine's #748
+// win: the resolved MCP client is reused across ticks, so the poller pays
+// the legacy initialize + notifications/initialized handshake exactly once,
+// not once per check per tick. Content deliberately never matches the check
+// ($.status equals "degraded" against a "healthy" response) so no run is
+// ever launched — this test is only about client reuse, already-covered
+// match/launch behavior belongs to TestPoller_CheckMatchFires /
+// TestPoller_CheckNoMatchNoRun.
+func TestPoller_ReusesResolvedClientAcrossTicks(t *testing.T) {
+	mcpSrv, initCount, tick := pollSessionCountingServer(t, textContent(`{"status":"healthy"}`))
+	store, registry := setupPollerFixture(t, mcpSrv)
+
+	yamlStr := pollPolicyYAML("poll-reuse-client", "100ms")
+	insertTestPollPolicy(t, store, "pol-reuse-client", "poll-reuse-client", yamlStr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
+		Manager:                manager,
+		AgentFactory:           pollerFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
+	poller := trigger.NewPoller(store, launcher, registry, resolver)
+
+	// setupPollerFixture's RegisterServerForTest already paid for its own
+	// initialize handshakes (protocol probe + discovery); only ticks from
+	// here on, driven by the poller itself, are under test.
+	initBefore := initCount.Load()
+
+	if err := poller.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// signal-don't-poll: block on at least two tools/call ticks instead of a
+	// wall-clock sleep, with a generous CI deadline.
+	deadline := time.After(10 * time.Second)
+	for received := 0; received < 2; {
+		select {
+		case <-tick:
+			received++
+		case <-deadline:
+			t.Fatalf("timed out waiting for poll ticks; got %d of 2", received)
+		}
+	}
+
+	if got := initCount.Load() - initBefore; got != 1 {
+		t.Errorf("initialize delta = %d, want 1 — the poller should reuse the resolved client's session across ticks", got)
 	}
 }
 

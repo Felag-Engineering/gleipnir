@@ -187,6 +187,17 @@ type toolsCallParams struct {
 
 type toolsListResult struct {
 	Tools []toolWire `json:"tools"`
+
+	// TTLMs and CacheScope are the 2026-07-28 CacheableResult cache hint
+	// (spec §11): "ttlMs" (minimum 0, "0 ⇒ immediately stale") and
+	// "cacheScope" ("private"/"public"), both required by the schema on a
+	// result that actually implements caching. json.RawMessage rather than
+	// typed fields for the same reason toolsCallResult.ResultType is (see
+	// decodeResultType's doc below): a non-compliant value must not fail the
+	// whole tools/list unmarshal. parseCacheHint (cache.go) does the
+	// tolerant decode and gates on isModernProtocol().
+	TTLMs      json.RawMessage `json:"ttlMs"`
+	CacheScope json.RawMessage `json:"cacheScope"`
 }
 
 type toolWire struct {
@@ -204,6 +215,15 @@ type toolWire struct {
 // json.Unmarshal call — see decodeResultType, which extracts the string
 // value and tolerates exactly that case. Absent ⇒ ResultTypeComplete
 // (spec §11).
+//
+// Deliberately no TTLMs/CacheScope fields here: CallToolResult carries NO
+// cache hint in the 2026-07-28 schema. CacheableResult (which toolsListResult
+// above embeds the fields of) requires ["cacheScope","resultType","ttlMs"]
+// and covers tools/list, prompts/list, resources/list,
+// resources/templates/list, and resources/read — CallToolResult's required
+// fields are only ["content","resultType"]. There is nothing to parse for a
+// cache hint on a tool call result; do not add one here to "complete the
+// symmetry" with toolsListResult.
 type toolsCallResult struct {
 	Content    []contentItem   `json:"content"`
 	IsError    bool            `json:"isError"`
@@ -510,7 +530,22 @@ const (
 
 // DiscoverTools calls the MCP server's tool list endpoint and returns all
 // available tools. Used during server registration to populate mcp_tools.
+//
+// Thin wrapper over discoverToolsWithHint that discards the parsed cache
+// hint, so every existing production and test call site keeps this exact
+// two-return-value signature; the hint is only useful to
+// Registry.discoverToolsCached (cache.go), the sole caller of
+// discoverToolsWithHint.
 func (c *Client) DiscoverTools(ctx context.Context) ([]Tool, error) {
+	tools, _, err := c.discoverToolsWithHint(ctx)
+	return tools, err
+}
+
+// discoverToolsWithHint is DiscoverTools plus the tools/list result's
+// ttlMs/cacheScope cache hint (spec §11), parsed by parseCacheHint
+// (cache.go). Unexported: its only caller is Registry.discoverToolsCached in
+// this same package.
+func (c *Client) discoverToolsWithHint(ctx context.Context) ([]Tool, cacheHint, error) {
 	// tools/list invokes nothing, so it never declares a capability; the empty
 	// clientCapabilities object is still required on the modern path.
 	body, err := json.Marshal(jsonrpcRequest{
@@ -520,33 +555,34 @@ func (c *Client) DiscoverTools(ctx context.Context) ([]Tool, error) {
 		Params:  toolsListParams{Meta: c.requestMeta(ClientCapabilities{})},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("marshal tools/list request: %w", err)
+		return nil, cacheHint{}, fmt.Errorf("marshal tools/list request: %w", err)
 	}
 
 	resp, err := c.sendRPC(ctx, body, methodToolsList, "", nil)
 	if err != nil {
-		return nil, fmt.Errorf("post tools/list: %w", err)
+		return nil, cacheHint{}, fmt.Errorf("post tools/list: %w", err)
 	}
 	defer resp.Body.Close()
 
 	var envelope jsonrpcResponse
 	if err := decodeResponse(resp, &envelope); err != nil {
-		return nil, fmt.Errorf("decode tools/list response: %w", err)
+		return nil, cacheHint{}, fmt.Errorf("decode tools/list response: %w", err)
 	}
 	if envelope.Error != nil {
-		return nil, envelope.Error
+		return nil, cacheHint{}, envelope.Error
 	}
 
 	var result toolsListResult
 	if err := json.Unmarshal(envelope.Result, &result); err != nil {
-		return nil, fmt.Errorf("unmarshal tools/list result: %w", err)
+		return nil, cacheHint{}, fmt.Errorf("unmarshal tools/list result: %w", err)
 	}
 
 	tools := make([]Tool, len(result.Tools))
 	for i, tw := range result.Tools {
 		tools[i] = Tool(tw)
 	}
-	return tools, nil
+	hint := parseCacheHint(c.isModernProtocol(), result.TTLMs, result.CacheScope)
+	return tools, hint, nil
 }
 
 // CallOptions carries the per-call inputs to CallTool that are not part of
