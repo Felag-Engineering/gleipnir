@@ -157,6 +157,7 @@ export interface ApiMcpTool {
   description: string
   input_schema: Record<string, unknown>
   enabled: boolean
+  simplified_for?: string[] // LLM providers shown a simplified parameter schema
 }
 
 // --- Settings ---

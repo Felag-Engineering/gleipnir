@@ -1,0 +1,7 @@
+.badge {
+  composes: badgePill from '../../../styles/badges.module.css';
+  composes: colorTeal from '../../../styles/badges.module.css';
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+  flex-shrink: 0;
+}

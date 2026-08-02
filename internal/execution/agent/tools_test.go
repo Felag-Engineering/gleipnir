@@ -7,6 +7,7 @@ package agent
 // isolation so the sync invariant and snapshot ordering have a focused surface.
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -206,5 +207,78 @@ func TestBuildCapabilitySnapshotTools_ApprovalAndTimeoutPreserved(t *testing.T) 
 	}
 	if got[0].Timeout != 5*time.Second {
 		t.Errorf("Timeout = %v, want 5s", got[0].Timeout)
+	}
+}
+
+// TestBuildResolvedToolMap_NarrowsCanonicalSchema locks that narrowing runs on
+// the tool's stored canonical schema, falling back to the raw InputSchema only
+// when no canonical form is stored (mcp.ResolvedTool.SchemaForNarrowing). The
+// raw and canonical schemas below declare DIFFERENT property sets so a test
+// failure proves which one narrowing actually read.
+func TestBuildResolvedToolMap_NarrowsCanonicalSchema(t *testing.T) {
+	rawSchema := json.RawMessage(`{"type":"object","properties":{"a":{},"raw_only":{}}}`)
+	canonicalSchema := json.RawMessage(`{"type":"object","properties":{"a":{},"canon_only":{}}}`)
+
+	tests := []struct {
+		name            string
+		canonicalSchema json.RawMessage
+		params          map[string]any
+		wantKeys        []string
+		wantByteEqual   json.RawMessage // when non-nil, narrowedSchema must be byte-equal to this
+	}{
+		{
+			name:            "canonical present, params scoped to canon_only — canonical schema was narrowed",
+			canonicalSchema: canonicalSchema,
+			params:          map[string]any{"canon_only": true},
+			wantKeys:        []string{"canon_only"},
+		},
+		{
+			name:            "canonical nil, params scoped to raw_only — fallback to raw schema",
+			canonicalSchema: nil,
+			params:          map[string]any{"raw_only": true},
+			wantKeys:        []string{"raw_only"},
+		},
+		{
+			name:            "canonical present, empty params — narrowedSchema is byte-equal to canonical (canonical is the schema of record)",
+			canonicalSchema: canonicalSchema,
+			params:          nil,
+			wantByteEqual:   canonicalSchema,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := mcp.ResolvedTool{
+				GrantedTool: model.GrantedTool{
+					ServerName: "srv",
+					ToolName:   "tool",
+					Params:     tc.params,
+				},
+				InputSchema:     rawSchema,
+				CanonicalSchema: tc.canonicalSchema,
+			}
+
+			toolsByName, err := buildResolvedToolMap([]mcp.ResolvedTool{rt})
+			if err != nil {
+				t.Fatalf("buildResolvedToolMap: %v", err)
+			}
+			entry, ok := toolsByName["srv.tool"]
+			if !ok {
+				t.Fatal("toolsByName missing \"srv.tool\"")
+			}
+
+			if tc.wantByteEqual != nil {
+				if string(entry.narrowedSchema) != string(tc.wantByteEqual) {
+					t.Errorf("narrowedSchema = %s, want byte-equal to %s", entry.narrowedSchema, tc.wantByteEqual)
+				}
+			} else {
+				assertSchemaProperties(t, entry.narrowedSchema, tc.wantKeys)
+			}
+
+			// tool.InputSchema must never be mutated by narrowing.
+			if string(entry.tool.InputSchema) != string(rawSchema) {
+				t.Errorf("entry.tool.InputSchema = %s, want unmodified %s", entry.tool.InputSchema, rawSchema)
+			}
+		})
 	}
 }

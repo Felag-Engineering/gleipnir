@@ -23,6 +23,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
 	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
+	"github.com/felag-engineering/gleipnir/internal/llm"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/toolregistry"
@@ -34,6 +35,7 @@ type MCPHandler struct {
 	registry *mcp.Registry
 	arbiter  *toolregistry.Registry // cross-source namespace arbiter; nil when not configured
 	encKey   []byte                 // AES-256-GCM key; nil when GLEIPNIR_ENCRYPTION_KEY is unset
+	features SchemaFeatureLister    // nil disables simplified_for
 }
 
 // NewMCPHandler creates an MCPHandler backed by the given store, registry, and
@@ -57,6 +59,22 @@ type MCPHandlerOption func(*MCPHandler)
 func WithToolNamespaceArbiter(a *toolregistry.Registry) MCPHandlerOption {
 	return func(h *MCPHandler) {
 		h.arbiter = a
+	}
+}
+
+// SchemaFeatureLister reports the declared schema-feature set of every
+// configured LLM provider, keyed by provider name. *llm.ProviderRegistry
+// satisfies it.
+type SchemaFeatureLister interface {
+	SchemaFeaturesByProvider() map[string]llm.SchemaFeatureSet
+}
+
+// WithSchemaFeatures wires the LLM provider registry into the handler so
+// ListTools/SetToolEnabled can compute simplified_for. Omitting this option
+// leaves h.features nil, which disables the field (every tool reports []).
+func WithSchemaFeatures(l SchemaFeatureLister) MCPHandlerOption {
+	return func(h *MCPHandler) {
+		h.features = l
 	}
 }
 
@@ -876,20 +894,135 @@ type mcpToolResponse struct {
 	// Source identifies which registry owns this tool. Format: "mcp:<server-name>"
 	// for tools from MCP servers, or "plugin:<instance-name>" for plugin tools.
 	Source string `json:"source"`
+	// SimplifiedFor names configured LLM providers that will be shown a
+	// rewritten version of this tool's parameter schema (ADR-059 / spec §10
+	// step 2). Sorted; always non-nil ([] when nothing is simplified).
+	// Computed per request — it depends on which providers are currently
+	// configured, not on anything stored, so it is never cached or
+	// persisted. Policy-independent: the runtime actually translates the
+	// policy-narrowed schema (NarrowSchema can only remove properties), so
+	// this can over-report relative to what a specific policy's agent sees,
+	// but never under-report. Plugin-sourced tools go through the same
+	// lossy-translation path at runtime but are not listed on this page
+	// (ListTools returns only db.McpTool rows scoped to an MCP server), so
+	// they never carry this field.
+	SimplifiedFor []string `json:"simplified_for"`
 }
 
-func toolToResponse(t db.McpTool, serverName string) mcpToolResponse {
+func toolToResponse(t db.McpTool, serverName string, simplifiedFor []string) mcpToolResponse {
 	return mcpToolResponse{
 		ID:       t.ID,
 		ServerID: t.ServerID,
 		Name:     t.Name,
 		// InputSchema is stored as a JSON string in the DB; cast directly to
 		// json.RawMessage to avoid double-encoding it as a JSON string in the response.
-		Description: t.Description,
-		InputSchema: json.RawMessage(t.InputSchema),
-		Enabled:     t.Enabled != 0,
-		Source:      "mcp:" + serverName,
+		Description:   t.Description,
+		InputSchema:   json.RawMessage(t.InputSchema),
+		Enabled:       t.Enabled != 0,
+		Source:        "mcp:" + serverName,
+		SimplifiedFor: simplifiedFor,
 	}
+}
+
+// canonicalSchemaForSimplification returns t.CanonicalSchema, or an empty
+// json.RawMessage when it is unset (NULL, or a non-nil pointer to an
+// empty/whitespace-only string). There is deliberately NO fallback to the
+// raw input_schema here, unlike mcp.ResolvedTool.SchemaForHeaderParams:
+// that fallback is sound for reading x-mcp-header annotations, whose
+// presence is provably invariant under schemanorm's byte-level-only
+// normalization, but it is NOT sound for this DTO field, whose whole job is
+// to shadow what #744's exact-enforcement gate actually compiled.
+// internal/execution/agent/argvalidate.go's compileArgValidator returns nil
+// — degrading enforcement to ADR-017 key-presence validation only — for
+// exactly the same NULL/empty condition checked here, and
+// internal/mcp/canonical.go stores the raw schema with canonical_schema
+// left NULL whenever schemanorm.Normalize fails: a state a hostile MCP
+// server can select at will by emitting a schema encoding/json accepts but
+// schemanorm rejects (duplicate keys, lone surrogates). Falling back to raw
+// would render the chip on those rows and have the UI vouch for an exact-
+// enforcement control that is actually switched off for that tool. This
+// also matches the issue's literal instruction to compute the hint "on the
+// canonical schema".
+func canonicalSchemaForSimplification(t db.McpTool) json.RawMessage {
+	if t.CanonicalSchema == nil || strings.TrimSpace(*t.CanonicalSchema) == "" {
+		return json.RawMessage{}
+	}
+	return json.RawMessage(*t.CanonicalSchema)
+}
+
+// restrictedFeatureSets inverts a provider→features map into
+// features→provider-names, dropping every wire that declares full support.
+// SchemaFeatureSet is comparable (see its doc in
+// internal/llm/schema_features.go), so it can key a map. Today only the
+// Google wire is restricted, so N configured providers collapse to at most
+// one entry and the per-tool cost stays at one TranslateForFeatures call
+// regardless of how many providers are configured.
+func restrictedFeatureSets(byProvider map[string]llm.SchemaFeatureSet) map[llm.SchemaFeatureSet][]string {
+	out := make(map[llm.SchemaFeatureSet][]string)
+	for name, features := range byProvider {
+		if features.IsFull() {
+			continue
+		}
+		out[features] = append(out[features], name)
+	}
+	return out
+}
+
+// maxSimplificationHintBytes bounds the per-tool schema size
+// simplifiedForProviders will run through TranslateForFeatures. Real MCP
+// tool schemas run tens of KB; TranslateForFeatures' own 1 MiB / depth-64 /
+// 10k-node caps (schema_simplify.go) only fire AFTER json.Decode has
+// already built the parsed tree, and ListTools calls this once per row with
+// no aggregate cap on a route reachable by the lowest-privilege auditor
+// role — the Tools page fans out one request per server in parallel, and
+// this also runs on disabled tools. 64 KiB gives generous headroom over
+// real-world schemas while keeping one oversized or adversarial row's cost
+// close to zero.
+const maxSimplificationHintBytes = 64 * 1024
+
+// simplifiedForProviders returns the sorted names of providers whose wire
+// will be shown a rewritten version of schema. Always returns a non-nil
+// slice.
+//
+// A schema over maxSimplificationHintBytes skips translation entirely and
+// is DEBUG-logged: an oversized schema is a property of the server that
+// published it, not a bug in Gleipnir, so it does not warrant WARN.
+//
+// A translation failure omits the provider and WARN-logs rather than
+// failing the whole request: ErrUnsupportedSchemaFeature /
+// ErrSchemaLimitExceeded mean "this wire will REJECT the request outright" —
+// a stronger condition than "simplified", and listing such a provider here
+// would be an outright false statement. An "unsupported for <provider>" chip
+// is a deliberate non-goal of this DTO field. The raw schema bytes are never
+// logged, matching internal/mcp/canonical.go and
+// internal/execution/agent/argvalidate.go — though ErrUnsupportedSchemaFeature
+// embeds a JSON Pointer built from schema key names, so a key name (not a
+// value) can appear in the WARN below. That is the same parameter-name
+// vocabulary this DTO already returns in input_schema, and slog's JSON
+// handler escapes it like every other attribute.
+func simplifiedForProviders(serverID, toolName string, schema json.RawMessage, restricted map[llm.SchemaFeatureSet][]string) []string {
+	out := make([]string, 0)
+	if len(schema) == 0 || len(restricted) == 0 {
+		return out
+	}
+	if len(schema) > maxSimplificationHintBytes {
+		slog.Debug("tool schema exceeds simplification size threshold; omitted from simplified_for",
+			"server_id", serverID, "tool_name", toolName, "schema_bytes", len(schema))
+		return out
+	}
+	for features, names := range restricted {
+		_, lossy, err := llm.TranslateForFeatures(schema, features)
+		if err != nil {
+			slog.Warn("tool schema cannot be presented to provider; omitted from simplified_for",
+				"server_id", serverID, "tool_name", toolName, "providers", names, "err", err)
+			continue
+		}
+		if lossy {
+			out = append(out, names...)
+		}
+	}
+	sort.Strings(out) // map iteration is randomized; the DTO must be stable
+	return out
 }
 
 // ListTools handles GET /api/v1/mcp/servers/{id}/tools.
@@ -930,9 +1063,18 @@ func (h *MCPHandler) ListTools(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Build the restricted-feature-set map once per request, not once per
+	// tool: restrictedFeatureSets is O(providers), and every row shares the
+	// same set of configured providers.
+	var restricted map[llm.SchemaFeatureSet][]string
+	if h.features != nil {
+		restricted = restrictedFeatureSets(h.features.SchemaFeaturesByProvider())
+	}
+
 	items := make([]mcpToolResponse, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, toolToResponse(row, server.Name))
+		simplifiedFor := simplifiedForProviders(server.ID, row.Name, canonicalSchemaForSimplification(row), restricted)
+		items = append(items, toolToResponse(row, server.Name, simplifiedFor))
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, items)
@@ -1003,7 +1145,17 @@ func (h *MCPHandler) SetToolEnabled(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httputil.WriteJSON(w, http.StatusOK, toolToResponse(updated, srv.Name))
+	// Compute simplified_for for the single updated row so the mutation
+	// response shape matches the list response — the frontend replaces the
+	// cached row from this response, so omitting the field here would make
+	// the chip vanish on toggle.
+	var restricted map[llm.SchemaFeatureSet][]string
+	if h.features != nil {
+		restricted = restrictedFeatureSets(h.features.SchemaFeaturesByProvider())
+	}
+	simplifiedFor := simplifiedForProviders(srv.ID, updated.Name, canonicalSchemaForSimplification(updated), restricted)
+
+	httputil.WriteJSON(w, http.StatusOK, toolToResponse(updated, srv.Name, simplifiedFor))
 }
 
 // policyReferencesServer returns true if the raw policy YAML contains any tool

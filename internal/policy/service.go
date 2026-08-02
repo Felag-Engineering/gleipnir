@@ -5,8 +5,10 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -41,11 +43,14 @@ type SecretCipher interface {
 	DecryptWebhookSecret(ciphertext string) (plaintext string, err error)
 }
 
-// ToolLookup checks whether a tool reference exists in the MCP registry.
+// ToolLookup resolves a tool reference against the MCP registry.
 // Implementations query the mcp_tools + mcp_servers tables.
 type ToolLookup interface {
-	// ToolExists returns true if server_name.tool_name is registered.
-	ToolExists(ctx context.Context, serverName, toolName string) (bool, error)
+	// LookupTool reports whether server_name.tool_name is registered and, when
+	// it is, returns the tool's stored canonical schema. canonicalSchema is nil
+	// when the tool is absent OR when mcp_tools.canonical_schema is NULL/empty;
+	// callers must NOT fall back to the raw input_schema.
+	LookupTool(ctx context.Context, serverName, toolName string) (exists bool, canonicalSchema json.RawMessage, err error)
 }
 
 // ModelValidator validates that a model name is recognized by the named provider.
@@ -146,7 +151,11 @@ func (s *Service) Create(ctx context.Context, rawYAML string) (*SaveResult, erro
 		}
 	}
 
-	warnings = append(warnings, s.checkToolRefs(ctx, parsed)...)
+	toolWarnings, toolIssues := s.checkToolRefs(ctx, parsed)
+	if len(toolIssues) > 0 {
+		return nil, &ValidationError{Errors: toolIssues}
+	}
+	warnings = append(warnings, toolWarnings...)
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	row, err := s.store.CreatePolicy(ctx, db.CreatePolicyParams{
@@ -195,7 +204,11 @@ func (s *Service) Update(ctx context.Context, policyID string, rawYAML string) (
 		warnings = append(warnings, err.Error())
 	}
 
-	warnings = append(warnings, s.checkToolRefs(ctx, parsed)...)
+	toolWarnings, toolIssues := s.checkToolRefs(ctx, parsed)
+	if len(toolIssues) > 0 {
+		return nil, &ValidationError{Errors: toolIssues}
+	}
+	warnings = append(warnings, toolWarnings...)
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	row, err := s.store.UpdatePolicy(ctx, db.UpdatePolicyParams{
@@ -441,39 +454,93 @@ func (s *Service) runSubscribedValidator(ctx context.Context, p *model.ParsedPol
 }
 
 // checkToolRefs issues non-blocking warnings for tool references that don't
-// match the MCP registry. Returns nil if lookup is unavailable.
-func (s *Service) checkToolRefs(ctx context.Context, p *model.ParsedPolicy) []string {
+// match the MCP registry, and BLOCKING issues for params (ADR-017) that
+// cannot be enforced against the tool's stored canonical schema. Returns
+// (nil, nil) if lookup is unavailable.
+//
+// Known carve-out (security review, #745 cycle 2): "not found in mcp_tools"
+// is not the same fact as "is a plugin tool" — it also covers a misspelled
+// reference, a tool on an MCP server that has never been discovered or
+// refreshed, and a tool on a server that is not registered at all. All four
+// are indistinguishable at this layer, so all four skip params validation
+// below (a genuine plugin-tool carve-out is required — plugin tools are
+// never registered in mcp_tools — and blocking the other three would need a
+// classifier this method does not have). A candidate classifier,
+// toolregistry.Registry's in-memory cross-source arbiter, was evaluated and
+// rejected: it is not reliably populated at policy-save time (empty on every
+// process restart until each MCP server is manually refreshed, and released
+// the moment a plugin instance is deactivated), which is the exact reason
+// main.go's manifestClassifier deliberately does NOT use it as a
+// classification oracle (#399). This leaves a real save-ordering gap: saving
+// a params block against a not-yet-registered server today can become
+// exploitable later, without the policy being re-saved, once that server is
+// registered with a branching or otherwise-unnarrowable schema. Closing it
+// needs a static (DB + manifest, not arbiter) classifier threaded into
+// Service — tracked as a follow-up, not fixed here.
+func (s *Service) checkToolRefs(ctx context.Context, p *model.ParsedPolicy) (warnings []string, issues []Issue) {
 	if s.lookup == nil {
-		return nil
+		return nil, nil
 	}
 
-	var warnings []string
-
-	checkRef := func(ref string) {
+	for i, t := range p.Capabilities.Tools {
 		if ctx.Err() != nil {
-			return
+			// Fail closed: every tool from here on was never checked. A tool
+			// that carries a params block whose scoping cannot be verified
+			// must not be silently allowed to persist just because the
+			// context happened to be cancelled before its turn came up.
+			for j := i; j < len(p.Capabilities.Tools); j++ {
+				if unchecked := p.Capabilities.Tools[j]; len(unchecked.Params) > 0 {
+					issues = append(issues, Issue{
+						Field:   fmt.Sprintf("capabilities.tools[%d].params", j),
+						Message: fmt.Sprintf("could not verify parameter scoping for tool %q: %v", unchecked.Tool, ctx.Err()),
+					})
+				}
+			}
+			break
 		}
-		parts := strings.SplitN(ref, ".", 2)
+		parts := strings.SplitN(t.Tool, ".", 2)
 		if len(parts) != 2 {
-			return // validator already catches bad dot-notation
+			continue // validator already catches bad dot-notation
 		}
-		exists, err := s.lookup.ToolExists(ctx, parts[0], parts[1])
+
+		exists, canonical, err := s.lookup.LookupTool(ctx, parts[0], parts[1])
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("could not check tool %q: %v", ref, err))
-			return
+			warnings = append(warnings, fmt.Sprintf("could not check tool %q: %v", t.Tool, err))
+			if len(t.Params) > 0 {
+				// Fail closed: an unverifiable narrowing must not be persisted.
+				// The underlying error (e.g. a raw sqlite driver error) is
+				// operator-internal detail, not something to hand to the API
+				// client — log it server-side and return a fixed message.
+				slog.ErrorContext(ctx, "policy save: tool lookup failed for params-scoped tool", "tool", t.Tool, "err", err)
+				issues = append(issues, Issue{
+					Field:   fmt.Sprintf("capabilities.tools[%d].params", i),
+					Message: fmt.Sprintf("could not verify parameter scoping for tool %q; try again", t.Tool),
+				})
+			}
+			continue
 		}
 		if !exists {
-			warnings = append(warnings, fmt.Sprintf("tool %q not found in MCP registry", ref))
+			// See the carve-out note on this method's doc comment: "not found"
+			// covers plugin tools (the common case) as well as three others
+			// that this method cannot tell apart from a plugin tool. Do not
+			// run params checks here — that would block every shipped plugin
+			// policy that uses params. When params IS set, say so explicitly:
+			// its scoping was not verified, and registering/refreshing a
+			// same-named server later will not retroactively verify it.
+			msg := fmt.Sprintf("tool %q not found in MCP registry", t.Tool)
+			if len(t.Params) > 0 {
+				msg = fmt.Sprintf("tool %q not found in MCP registry; its params block was NOT verified against a canonical schema", t.Tool)
+			}
+			warnings = append(warnings, msg)
+			continue
 		}
-	}
 
-	for _, t := range p.Capabilities.Tools {
-		checkRef(t.Tool)
+		issues = append(issues, validateParamsScope(i, t.Tool, t.Params, canonical)...)
 	}
 
 	if ctx.Err() != nil {
 		warnings = append(warnings, fmt.Sprintf("tool reference check aborted: %v", ctx.Err()))
 	}
 
-	return warnings
+	return warnings, issues
 }

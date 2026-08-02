@@ -181,4 +181,27 @@ describe('ToolAccordionRow', () => {
     expect(screen.queryByRole('button', { name: /disable tool/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /enable tool/i })).not.toBeInTheDocument()
   })
+
+  it('does not render the simplified chip when simplified_for is undefined', () => {
+    render(<ToolAccordionRow tool={echoTool} expanded={false} onToggle={noop} />)
+    expect(screen.queryByText(/Simplified for/)).not.toBeInTheDocument()
+  })
+
+  it('does not render the simplified chip when simplified_for is empty', () => {
+    render(
+      <ToolAccordionRow tool={{ ...echoTool, simplified_for: [] }} expanded={false} onToggle={noop} />,
+    )
+    expect(screen.queryByText(/Simplified for/)).not.toBeInTheDocument()
+  })
+
+  it('renders the simplified chip in the collapsed row when simplified_for is non-empty', () => {
+    render(
+      <ToolAccordionRow
+        tool={{ ...echoTool, simplified_for: ['google'] }}
+        expanded={false}
+        onToggle={noop}
+      />,
+    )
+    expect(screen.getByText('Simplified for Google')).toBeInTheDocument()
+  })
 })

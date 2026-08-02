@@ -245,3 +245,71 @@ func TestRegistryProvidersEmpty(t *testing.T) {
 		t.Fatalf("expected 0 providers, got %d", len(names))
 	}
 }
+
+func TestSchemaFeaturesByProvider(t *testing.T) {
+	restricted := SchemaFeatureSet{OneOf: false, AnyOf: true, AllOf: true, Not: true, Defs: true, Const: false, Formats: true}
+
+	tests := []struct {
+		name  string
+		build func() *ProviderRegistry
+		want  map[string]SchemaFeatureSet
+	}{
+		{
+			name:  "empty registry returns empty map",
+			build: NewProviderRegistry,
+			want:  map[string]SchemaFeatureSet{},
+		},
+		{
+			name: "full-support and restricted wires both present with the right sets",
+			build: func() *ProviderRegistry {
+				r := NewProviderRegistry()
+				r.Register("anthropic", NewAdapter(&stubWire{features: FullSchemaSupport()}))
+				r.Register("google", NewAdapter(&stubWire{features: restricted}))
+				return r
+			},
+			want: map[string]SchemaFeatureSet{
+				"anthropic": FullSchemaSupport(),
+				"google":    restricted,
+			},
+		},
+		{
+			name: "client not implementing SchemaFeatureDeclarer is omitted",
+			build: func() *ProviderRegistry {
+				r := NewProviderRegistry()
+				r.Register("anthropic", NewAdapter(&stubWire{features: FullSchemaSupport()}))
+				r.Register("nodeclarer", &stubClient{name: "nodeclarer"})
+				return r
+			},
+			want: map[string]SchemaFeatureSet{
+				"anthropic": FullSchemaSupport(),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := tt.build()
+			got := r.SchemaFeaturesByProvider()
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d providers, want %d: got=%v want=%v", len(got), len(tt.want), got, tt.want)
+			}
+			for name, wantFeatures := range tt.want {
+				gotFeatures, ok := got[name]
+				if !ok {
+					t.Errorf("missing provider %q in result", name)
+					continue
+				}
+				if gotFeatures != wantFeatures {
+					t.Errorf("provider %q: got %+v, want %+v", name, gotFeatures, wantFeatures)
+				}
+			}
+		})
+	}
+}
+
+func TestSchemaFeaturesByProvider_NilReceiver(t *testing.T) {
+	var r *ProviderRegistry
+	if got := r.SchemaFeaturesByProvider(); got != nil {
+		t.Fatalf("expected nil map from nil receiver, got %v", got)
+	}
+}
