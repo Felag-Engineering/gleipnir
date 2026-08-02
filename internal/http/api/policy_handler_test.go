@@ -64,8 +64,19 @@ func newPolicyRouterWithLookup(store *db.Store, lookup policy.ToolLookup) http.H
 // Used to exercise the "unresolvable tool refs" warning path.
 type alwaysMissingLookup struct{}
 
-func (alwaysMissingLookup) ToolExists(_ context.Context, _, _ string) (bool, error) {
-	return false, nil
+func (alwaysMissingLookup) LookupTool(_ context.Context, _, _ string) (bool, json.RawMessage, error) {
+	return false, nil, nil
+}
+
+// schemaLookup is a ToolLookup stub that reports every tool as present with a
+// fixed canonical schema. Used to exercise the ADR-017 params-scope rejection
+// path end-to-end through the HTTP handler.
+type schemaLookup struct {
+	canonical json.RawMessage
+}
+
+func (s schemaLookup) LookupTool(_ context.Context, _, _ string) (bool, json.RawMessage, error) {
+	return true, s.canonical, nil
 }
 
 // insertTestPolicy inserts a webhook policy row. Delegates to testutil.InsertPolicy.
@@ -623,6 +634,67 @@ func TestPolicyCreateHandler(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("warnings %v do not mention github.list_repos", envelope.Data.Warnings)
+		}
+	})
+
+	t.Run("unknown params key against canonical schema returns 400 with a single issue", func(t *testing.T) {
+		store := newPolicyHandlerStore(t)
+		lookup := schemaLookup{canonical: json.RawMessage(`{"type":"object","properties":{"a":{}}}`)}
+		srv := httptest.NewServer(newPolicyRouterWithLookup(store, lookup))
+		t.Cleanup(srv.Close)
+
+		paramsYAML := `
+name: test-policy
+trigger:
+  type: webhook
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
+capabilities:
+  tools:
+    - tool: github.list_repos
+      params:
+        foo: 1
+agent:
+  task: Check all repos
+`
+		resp, err := http.Post(srv.URL+"/policies", "application/yaml", strings.NewReader(paramsYAML))
+		if err != nil {
+			t.Fatalf("POST /policies: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", resp.StatusCode)
+		}
+
+		var envelope struct {
+			Error  string `json:"error"`
+			Detail string `json:"detail"`
+			Issues []struct {
+				Field   string `json:"field"`
+				Message string `json:"message"`
+			} `json:"issues"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+
+		if envelope.Error != "policy validation failed" {
+			t.Errorf("error = %q, want %q", envelope.Error, "policy validation failed")
+		}
+		wantMsg := `"foo" is not a top-level property of tool "github.list_repos"`
+		if len(envelope.Issues) != 1 {
+			t.Fatalf("expected 1 issue, got %d: %v", len(envelope.Issues), envelope.Issues)
+		}
+		if envelope.Issues[0].Field != "capabilities.tools[0].params.foo" {
+			t.Errorf("issues[0].field = %q, want %q", envelope.Issues[0].Field, "capabilities.tools[0].params.foo")
+		}
+		if envelope.Issues[0].Message != wantMsg {
+			t.Errorf("issues[0].message = %q, want %q", envelope.Issues[0].Message, wantMsg)
+		}
+		if envelope.Detail != wantMsg {
+			t.Errorf("detail = %q, want %q", envelope.Detail, wantMsg)
 		}
 	})
 

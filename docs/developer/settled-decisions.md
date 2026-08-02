@@ -12,7 +12,7 @@ These are resolved constraints — do not re-litigate them.
 - **Policy-gated approval is a hard runtime guarantee (ADR-008):** tools marked `approval: required` are intercepted by the runtime before execution, regardless of agent reasoning.
 - **Feedback channel resolution (ADR-009):** policy-level channel definition falls back to system-level config if absent.
 - **SSE for real-time UI transport (ADR-016):** Server-Sent Events push run status changes, new steps, and approval events. Mutations remain REST. No WebSockets.
-- **Policy-level parameter scoping (ADR-017):** tool parameters can be restricted per-policy via `params` blocks. Schema is narrowed before agent sees it — structural enforcement, not prompt-based.
+- **Policy-level parameter scoping (ADR-017):** tool parameters can be restricted per-policy via `params` blocks. Schema is narrowed before agent sees it — structural enforcement, not prompt-based. `params` keys must be top-level properties of the stored canonical schema; branching or uncanonicalizable schemas are rejected at policy save (fail closed) — save-time only, not re-validated if the tool's schema changes on a later refresh.
 - **Capability snapshot as first run step (ADR-018):** every run records the exact tools registered at run start.
 - **Agent editor (ADR-019):** Form view is the only editing surface. YAML is the API payload and storage format; operators do not author it directly in the UI. YAML tab was removed in #751.
 - **Policy folders are YAML-only (ADR-020):** `folder` is an optional string in the policy YAML for UI grouping. No DB column — purely cosmetic.

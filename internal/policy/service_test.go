@@ -3,6 +3,7 @@ package policy
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -15,13 +16,23 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/testutil"
 )
 
-// stubLookup implements ToolLookup for testing.
+// stubLookup implements ToolLookup for testing. canonical maps "server.tool"
+// to the canonical schema LookupTool should return for that entry; a key
+// present in existing but absent from canonical returns a nil schema (the
+// documented "no canonical form stored" case). err, when set, is returned
+// from every LookupTool call (drives the lookup-error path).
 type stubLookup struct {
-	existing map[string]bool // key: "server.tool"
+	existing  map[string]bool // key: "server.tool"
+	canonical map[string]json.RawMessage
+	err       error
 }
 
-func (s *stubLookup) ToolExists(_ context.Context, serverName, toolName string) (bool, error) {
-	return s.existing[serverName+"."+toolName], nil
+func (s *stubLookup) LookupTool(_ context.Context, serverName, toolName string) (bool, json.RawMessage, error) {
+	if s.err != nil {
+		return false, nil, s.err
+	}
+	key := serverName + "." + toolName
+	return s.existing[key], s.canonical[key], nil
 }
 
 // stubModelValidator implements ModelValidator for testing.
@@ -120,6 +131,252 @@ func TestService_Create_NoWarningWhenToolExists(t *testing.T) {
 	}
 }
 
+// validYAMLWithParams grants github.list_repos with a params block scoping
+// the "a" key — used by the ADR-017 save-time params-scope tests below.
+const validYAMLWithParams = `
+name: test-policy
+trigger:
+  type: webhook
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
+capabilities:
+  tools:
+    - tool: github.list_repos
+      params:
+        a: 1
+agent:
+  task: Check all repos
+`
+
+func TestService_Create_RejectsUnknownParamKey(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	lookup := &stubLookup{
+		existing:  map[string]bool{"github.list_repos": true},
+		canonical: map[string]json.RawMessage{"github.list_repos": json.RawMessage(`{"type":"object","properties":{"b":{}}}`)},
+	}
+	svc := NewService(store, lookup, nil, nil, nil)
+
+	_, err := svc.Create(context.Background(), validYAMLWithParams)
+	if err == nil {
+		t.Fatal("expected error for unknown param key, got nil")
+	}
+	var ve *ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+	}
+	if len(ve.Errors) != 1 {
+		t.Fatalf("expected 1 issue, got %d: %v", len(ve.Errors), ve.Errors)
+	}
+	if ve.Errors[0].Field != "capabilities.tools[0].params.a" {
+		t.Errorf("Field = %q, want capabilities.tools[0].params.a", ve.Errors[0].Field)
+	}
+	wantMsg := `"a" is not a top-level property of tool "github.list_repos"`
+	if ve.Errors[0].Message != wantMsg {
+		t.Errorf("Message = %q, want %q", ve.Errors[0].Message, wantMsg)
+	}
+
+	policies, listErr := store.ListPolicies(context.Background())
+	if listErr != nil {
+		t.Fatalf("list: %v", listErr)
+	}
+	if len(policies) != 0 {
+		t.Errorf("expected 0 saved policies, got %d", len(policies))
+	}
+}
+
+func TestService_Create_RejectsOneOfGovernedParamKey(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	lookup := &stubLookup{
+		existing:  map[string]bool{"github.list_repos": true},
+		canonical: map[string]json.RawMessage{"github.list_repos": json.RawMessage(`{"oneOf":[{"properties":{"a":{}}},{"properties":{"b":{}}}]}`)},
+	}
+	svc := NewService(store, lookup, nil, nil, nil)
+
+	_, err := svc.Create(context.Background(), validYAMLWithParams)
+	if err == nil {
+		t.Fatal("expected error for oneOf-governed param key, got nil")
+	}
+	var ve *ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+	}
+	if len(ve.Errors) != 1 {
+		t.Fatalf("expected 1 issue, got %d: %v", len(ve.Errors), ve.Errors)
+	}
+	if ve.Errors[0].Field != "capabilities.tools[0].params.a" {
+		t.Errorf("Field = %q, want capabilities.tools[0].params.a", ve.Errors[0].Field)
+	}
+	wantMsg := `cannot scope "a" — tool "github.list_repos" declares a top-level "oneOf"; parameter scoping applies only to top-level properties and cannot be enforced for branching schemas`
+	if ve.Errors[0].Message != wantMsg {
+		t.Errorf("Message = %q, want %q", ve.Errors[0].Message, wantMsg)
+	}
+}
+
+func TestService_Create_RejectsParamsWhenCanonicalSchemaMissing(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	lookup := &stubLookup{existing: map[string]bool{"github.list_repos": true}}
+	svc := NewService(store, lookup, nil, nil, nil)
+
+	_, err := svc.Create(context.Background(), validYAMLWithParams)
+	if err == nil {
+		t.Fatal("expected error for missing canonical schema, got nil")
+	}
+	var ve *ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+	}
+	if len(ve.Errors) != 1 {
+		t.Fatalf("expected 1 issue, got %d: %v", len(ve.Errors), ve.Errors)
+	}
+	if ve.Errors[0].Field != "capabilities.tools[0].params" {
+		t.Errorf("Field = %q, want capabilities.tools[0].params", ve.Errors[0].Field)
+	}
+	wantMsg := `tool "github.list_repos" has no stored canonical schema — schema could not be canonicalized; parameter scoping unavailable for this tool (refresh the MCP server's tools, then save again)`
+	if ve.Errors[0].Message != wantMsg {
+		t.Errorf("Message = %q, want %q", ve.Errors[0].Message, wantMsg)
+	}
+}
+
+func TestService_Create_AllowsToolWithoutParamsWhenCanonicalSchemaMissing(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	lookup := &stubLookup{existing: map[string]bool{"github.list_repos": true}}
+	svc := NewService(store, lookup, nil, nil, nil)
+
+	result, err := svc.Create(context.Background(), validYAML)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Warnings) != 0 {
+		t.Errorf("expected no warnings, got: %v", result.Warnings)
+	}
+}
+
+func TestService_Create_AcceptsPlainTopLevelParamKeys(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	lookup := &stubLookup{
+		existing:  map[string]bool{"github.list_repos": true},
+		canonical: map[string]json.RawMessage{"github.list_repos": json.RawMessage(`{"type":"object","properties":{"a":{},"b":{}}}`)},
+	}
+	svc := NewService(store, lookup, nil, nil, nil)
+
+	result, err := svc.Create(context.Background(), validYAMLWithParams)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Warnings) != 0 {
+		t.Errorf("expected no warnings, got: %v", result.Warnings)
+	}
+}
+
+func TestService_Update_RejectsUnknownParamKey(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	lookup := &stubLookup{
+		existing:  map[string]bool{"github.list_repos": true},
+		canonical: map[string]json.RawMessage{"github.list_repos": json.RawMessage(`{"type":"object","properties":{"a":{},"b":{}}}`)},
+	}
+	svc := NewService(store, lookup, nil, nil, nil)
+
+	createResult, err := svc.Create(context.Background(), validYAMLWithParams)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Swap the stub's canonical schema so it no longer declares "a" — this
+	// mirrors a server refresh (or a schema change) narrowing the property
+	// set out from under an already-saved policy.
+	lookup.canonical["github.list_repos"] = json.RawMessage(`{"type":"object","properties":{"b":{}}}`)
+
+	_, err = svc.Update(context.Background(), createResult.Policy.ID, validYAMLWithParams)
+	if err == nil {
+		t.Fatal("expected error for unknown param key on update, got nil")
+	}
+	var ve *ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+	}
+	if len(ve.Errors) != 1 || ve.Errors[0].Field != "capabilities.tools[0].params.a" {
+		t.Fatalf("unexpected issues: %v", ve.Errors)
+	}
+
+	// The stored YAML must be unchanged by the rejected update.
+	stored, getErr := store.GetPolicy(context.Background(), createResult.Policy.ID)
+	if getErr != nil {
+		t.Fatalf("get policy: %v", getErr)
+	}
+	if stored.Yaml != validYAMLWithParams {
+		t.Error("expected stored YAML to be unchanged after rejected update")
+	}
+}
+
+func TestService_Create_ParamsSkippedWhenToolNotInRegistry(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	lookup := &stubLookup{existing: map[string]bool{}}
+	svc := NewService(store, lookup, nil, nil, nil)
+
+	result, err := svc.Create(context.Background(), validYAMLWithParams)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d: %v", len(result.Warnings), result.Warnings)
+	}
+	// With a params block present, the carve-out warning must say the block
+	// was NOT verified — not just that the tool wasn't found (security review
+	// finding 1, #745 cycle 2).
+	wantWarning := `tool "github.list_repos" not found in MCP registry; its params block was NOT verified against a canonical schema`
+	if result.Warnings[0] != wantWarning {
+		t.Errorf("warning = %q, want %q", result.Warnings[0], wantWarning)
+	}
+}
+
+func TestService_Create_LookupErrorWithParamsIsBlocking(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	lookupErr := errors.New("db unavailable")
+	lookup := &stubLookup{err: lookupErr}
+	svc := NewService(store, lookup, nil, nil, nil)
+
+	_, err := svc.Create(context.Background(), validYAMLWithParams)
+	if err == nil {
+		t.Fatal("expected error when lookup fails for a tool with params, got nil")
+	}
+	var ve *ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+	}
+	if len(ve.Errors) != 1 {
+		t.Fatalf("expected 1 issue, got %d: %v", len(ve.Errors), ve.Errors)
+	}
+	// The underlying DB error text must NOT reach the client (security review
+	// finding 3, #745 cycle 2) — the message is fixed, not %v-wrapped.
+	wantMsg := `could not verify parameter scoping for tool "github.list_repos"; try again`
+	if ve.Errors[0].Message != wantMsg {
+		t.Errorf("Message = %q, want %q", ve.Errors[0].Message, wantMsg)
+	}
+	if strings.Contains(ve.Errors[0].Message, lookupErr.Error()) {
+		t.Errorf("Message leaks the underlying lookup error: %q", ve.Errors[0].Message)
+	}
+}
+
+func TestService_Create_LookupErrorWithoutParamsIsNonBlocking(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	lookupErr := errors.New("db unavailable")
+	lookup := &stubLookup{err: lookupErr}
+	svc := NewService(store, lookup, nil, nil, nil)
+
+	result, err := svc.Create(context.Background(), validYAML)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d: %v", len(result.Warnings), result.Warnings)
+	}
+	wantWarning := `could not check tool "github.list_repos": db unavailable`
+	if result.Warnings[0] != wantWarning {
+		t.Errorf("warning = %q, want %q", result.Warnings[0], wantWarning)
+	}
+}
+
 func TestService_Update(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	svc := NewService(store, nil, nil, nil, nil)
@@ -198,6 +455,62 @@ func TestService_Create_ContextCancelled(t *testing.T) {
 	svc := NewService(store, lookup, nil, nil, nil)
 
 	// Parse + validate don't use context, so we test checkToolRefs directly.
+	// a.three carries a params block: since ctx is already cancelled, none of
+	// these three tools are ever looked up, and a.three's scoping is
+	// therefore unverifiable — the fail-closed fix (security review finding
+	// 4, #745 cycle 2) must report it as a blocking issue rather than
+	// silently letting the caller persist an unverified narrowing.
+	yamlWithManyTools := `
+name: ctx-test
+trigger:
+  type: webhook
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
+capabilities:
+  tools:
+    - tool: a.one
+    - tool: a.two
+    - tool: a.three
+      params:
+        x: 1
+agent:
+  task: test
+`
+	parsed, err := Parse(yamlWithManyTools, "anthropic", "claude-sonnet-4-6")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	warnings, issues := svc.checkToolRefs(ctx, parsed)
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 abort warning, got %d: %v", len(warnings), warnings)
+	}
+	if warnings[0] == "" {
+		t.Error("expected non-empty warning")
+	}
+	if len(issues) != 1 {
+		t.Fatalf("expected 1 issue (a.three's unverifiable params block), got %d: %v", len(issues), issues)
+	}
+	if issues[0].Field != "capabilities.tools[2].params" {
+		t.Errorf("Field = %q, want capabilities.tools[2].params", issues[0].Field)
+	}
+	wantPrefix := `could not verify parameter scoping for tool "a.three": `
+	if !strings.HasPrefix(issues[0].Message, wantPrefix) {
+		t.Errorf("Message = %q, want prefix %q", issues[0].Message, wantPrefix)
+	}
+}
+
+// TestService_Create_ContextCancelled_NoParamsNoIssues locks the companion
+// case: a cancelled context with no params anywhere still yields zero issues
+// (the fail-closed fix only fires for tools that actually carry params).
+func TestService_Create_ContextCancelled_NoParamsNoIssues(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	store := testutil.NewTestStore(t)
+	lookup := &stubLookup{existing: map[string]bool{}}
+	svc := NewService(store, lookup, nil, nil, nil)
+
 	yamlWithManyTools := `
 name: ctx-test
 trigger:
@@ -217,12 +530,12 @@ agent:
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	warnings := svc.checkToolRefs(ctx, parsed)
+	warnings, issues := svc.checkToolRefs(ctx, parsed)
 	if len(warnings) != 1 {
 		t.Fatalf("expected 1 abort warning, got %d: %v", len(warnings), warnings)
 	}
-	if warnings[0] == "" {
-		t.Error("expected non-empty warning")
+	if len(issues) != 0 {
+		t.Errorf("expected 0 issues, got %d: %v", len(issues), issues)
 	}
 }
 

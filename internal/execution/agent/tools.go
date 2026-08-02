@@ -19,8 +19,9 @@ type pluginToolSource struct {
 }
 
 // resolvedToolEntry holds a ResolvedTool paired with its narrowed JSON schema.
-// narrowedSchema is the policy-scoped view of the tool's input schema (ADR-017)
-// and is what the LLM sees; tool.InputSchema is the raw schema of record.
+// narrowedSchema is the policy-scoped view of the tool's canonical input
+// schema (raw when no canonical form is stored) and is what the LLM sees;
+// tool.InputSchema is the raw schema of record.
 // pluginSource is non-nil for plugin-backed tools; nil for MCP-source tools.
 // argValidator is the compiled exact-enforcement validator; nil when
 // unavailable (see argvalidate.go).
@@ -42,15 +43,17 @@ func sourceString(entry resolvedToolEntry) string {
 
 // buildResolvedToolMap constructs the name→entry map for MCP-source tools. It
 // applies policy-level parameter scoping (ADR-017) by narrowing each tool's
-// input schema. Plugin-source tools are added by New() in a separate loop
-// because they carry different fields (pluginSource pointer, schema from
-// map[string]any vs json.RawMessage, snapshot side-effects).
+// stored canonical schema, falling back to the raw schema only when no
+// canonical form is stored (see mcp.ResolvedTool.SchemaForNarrowing).
+// Plugin-source tools are added by New() in a separate loop because they
+// carry different fields (pluginSource pointer, schema from map[string]any
+// vs json.RawMessage, snapshot side-effects).
 func buildResolvedToolMap(tools []mcp.ResolvedTool) (map[string]resolvedToolEntry, error) {
 	toolsByName := make(map[string]resolvedToolEntry, len(tools))
 	for _, rt := range tools {
 		dotName := rt.ServerName + "." + rt.ToolName
 
-		narrowed, err := mcp.NarrowSchema(rt.InputSchema, rt.Params)
+		narrowed, err := mcp.NarrowSchema(rt.SchemaForNarrowing(), rt.Params)
 		if err != nil {
 			return nil, fmt.Errorf("narrowing schema for tool %s.%s: %w", rt.ServerName, rt.ToolName, err)
 		}
@@ -83,7 +86,12 @@ func buildPluginToolEntries(pts []PluginToolEntry) (map[string]resolvedToolEntry
 		}
 
 		// Apply policy-level parameter scoping (ADR-017) to plugin tools, exactly
-		// as buildResolvedToolMap does for MCP tools.
+		// as buildResolvedToolMap does for MCP tools. Unlike the MCP path, there
+		// is no SchemaForNarrowing fallback here: plugin tools have no canonical
+		// form at all (the ResolvedTool literal built below never populates
+		// CanonicalSchema, per that field's doc), so schemaJSON is the only
+		// schema available. Plugin-side scoping onto a canonical form is out of
+		// scope for this issue.
 		narrowed, err := mcp.NarrowSchema(schemaJSON, pt.Params)
 		if err != nil {
 			return nil, nil, fmt.Errorf("narrowing schema for plugin tool %s: %w", dotName, err)
