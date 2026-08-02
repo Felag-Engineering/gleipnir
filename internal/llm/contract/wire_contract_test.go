@@ -197,10 +197,16 @@ type fakeGenerator struct {
 	// lastContents records the contents of the most recent GenerateContent call,
 	// so the continuity round-trip test can inspect what buildContents re-emitted.
 	lastContents []*genai.Content
+
+	// lastConfig records the config of the most recent GenerateContent
+	// call, so the schema-translation contract can inspect the
+	// *genai.Schema buildTools produced for each tool.
+	lastConfig *genai.GenerateContentConfig
 }
 
-func (f *fakeGenerator) GenerateContent(_ context.Context, _ string, contents []*genai.Content, _ *genai.GenerateContentConfig) (*genai.GenerateContentResponse, error) {
+func (f *fakeGenerator) GenerateContent(_ context.Context, _ string, contents []*genai.Content, config *genai.GenerateContentConfig) (*genai.GenerateContentResponse, error) {
 	f.lastContents = contents
+	f.lastConfig = config
 	return f.response, f.err
 }
 
@@ -229,11 +235,16 @@ func minimalRequest() llm.MessageRequest {
 	}
 }
 
-func requestWithTool() llm.MessageRequest {
+// requestWithTool returns a request carrying a single tool named
+// "my_server.do_thing" with the given InputSchema. Pass nil for the tests
+// that only exercise the tool NAME round-trip and never look at the schema —
+// nil is exactly today's zero value, so those call sites are unchanged in
+// behaviour.
+func requestWithTool(schema json.RawMessage) llm.MessageRequest {
 	return llm.MessageRequest{
 		Model:   "test-model",
 		History: minimalHistory(),
-		Tools:   []llm.ToolDefinition{{Name: "my_server.do_thing", Description: "test"}},
+		Tools:   []llm.ToolDefinition{{Name: "my_server.do_thing", Description: "test", InputSchema: schema}},
 	}
 }
 
@@ -243,14 +254,9 @@ func requestWithTool() llm.MessageRequest {
 // TestContract_ToolSchemaPassthrough_FullSupport to prove the shared
 // TranslateForFeatures pass strips nothing when a wire declares full support.
 func requestWithFeatureRichTool() llm.MessageRequest {
-	schema := json.RawMessage(`{"type":"object","properties":{"target":{"oneOf":[` +
+	return requestWithTool(json.RawMessage(`{"type":"object","properties":{"target":{"oneOf":[` +
 		`{"type":"string","format":"date-time"},{"$ref":"#/$defs/Other"}]}},` +
-		`"$defs":{"Other":{"type":"string"}}}`)
-	return llm.MessageRequest{
-		Model:   "test-model",
-		History: minimalHistory(),
-		Tools:   []llm.ToolDefinition{{Name: "my_server.do_thing", Description: "test", InputSchema: schema}},
-	}
+		`"$defs":{"Other":{"type":"string"}}}`))
 }
 
 // --- Contract test: stop-reason normalization ---
@@ -277,7 +283,7 @@ func TestContract_StopReasonNormalization(t *testing.T) {
 		{
 			name:       "anthropic/tool_use",
 			makeClient: func() llm.LLMClient { return newAnthropicClientJSON(t, anthropicToolCallBody()) },
-			req:        requestWithTool(),
+			req:        requestWithTool(nil),
 			want:       llm.StopReasonToolUse,
 		},
 		{
@@ -296,7 +302,7 @@ func TestContract_StopReasonNormalization(t *testing.T) {
 		{
 			name:       "openai/tool_use",
 			makeClient: func() llm.LLMClient { return newOpenAIClientJSON(t, openaiToolCallBody()) },
-			req:        requestWithTool(),
+			req:        requestWithTool(nil),
 			want:       llm.StopReasonToolUse,
 		},
 		{
@@ -315,7 +321,7 @@ func TestContract_StopReasonNormalization(t *testing.T) {
 		{
 			name:       "openaicompat/tool_use",
 			makeClient: func() llm.LLMClient { return newCompatClientJSON(t, compatToolCallBody()) },
-			req:        requestWithTool(),
+			req:        requestWithTool(nil),
 			want:       llm.StopReasonToolUse,
 		},
 		{
@@ -356,7 +362,7 @@ func TestContract_StopReasonNormalization(t *testing.T) {
 					},
 				})
 			},
-			req:  requestWithTool(),
+			req:  requestWithTool(nil),
 			want: llm.StopReasonToolUse,
 		},
 		{
@@ -545,7 +551,7 @@ func TestContract_ToolNameRoundTrip(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			client := tc.makeClient()
-			resp, err := client.CreateMessage(context.Background(), requestWithTool())
+			resp, err := client.CreateMessage(context.Background(), requestWithTool(nil))
 			if err != nil {
 				t.Fatalf("CreateMessage: %v", err)
 			}
