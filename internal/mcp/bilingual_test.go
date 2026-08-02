@@ -115,6 +115,110 @@ func TestToolTraffic_ShapingByPinnedVersion(t *testing.T) {
 	}
 }
 
+// TestCallTool_ResultTypeAcrossEras is the response-side companion to
+// TestToolTraffic_ShapingByPinnedVersion (which owns request shaping): it
+// proves resultType decoding is correct in every era/fixture combination,
+// and that decoding is NOT gated on protocol era the way request shaping is.
+// The era-shape assertions in each cell are what make the legacy path
+// genuinely exercised rather than asserted in prose — 8 of the 12 cells fail
+// if any modern request shaping leaks in, and the legacy × "task" cell is
+// the explicit proof that a legacy-pinned client returns whatever the server
+// sent, verbatim, with a nil error.
+//
+// WithFakeMode(FakeModern) is inert in this test: FakeMode only governs
+// handleDiscover, and this test never calls DiscoverTools or
+// ProbeProtocolVersion, so the "modern" fake is not standing in for a modern
+// SERVER here — the era distinction below comes entirely from the client's
+// WithProtocolVersion pin plus WithFakeRejectLegacyHandshake. For coverage of
+// a genuinely legacy-SHAPED server (FakeLegacy, 404-on-discover) exercised
+// end to end, see TestBilingualRegistry_LegacyAndModernServersInOneInstance.
+func TestCallTool_ResultTypeAcrossEras(t *testing.T) {
+	eras := []struct {
+		name   string
+		pin    string
+		strict bool // whether the fake should reject the legacy handshake
+	}{
+		{name: "unpinned", pin: "", strict: false},
+		{name: "legacy pin", pin: ProtocolVersionLegacy, strict: false},
+		{name: "modern pin", pin: ProtocolVersion20260728, strict: true},
+	}
+	fixtures := []struct {
+		name  string
+		value string // "" configures WithFakeToolResultType("") — an omitted field
+		want  string
+	}{
+		{name: "absent", value: "", want: ResultTypeComplete},
+		{name: "complete", value: "complete", want: "complete"},
+		{name: "task", value: "task", want: "task"},
+		{name: "input_required", value: "input_required", want: "input_required"},
+	}
+
+	for _, era := range eras {
+		t.Run(era.name, func(t *testing.T) {
+			for _, fixture := range fixtures {
+				t.Run(fixture.name, func(t *testing.T) {
+					opts := []FakeServerOption{WithFakeMode(FakeModern), WithFakeToolResultType(fixture.value)}
+					if era.strict {
+						opts = append(opts, WithFakeRejectLegacyHandshake())
+					}
+					fake := NewFakeMCPServer(opts...)
+					srv := httptest.NewServer(fake)
+					t.Cleanup(srv.Close)
+
+					c := NewClient(srv.URL, WithProtocolVersion(era.pin))
+					res, err := c.CallTool(context.Background(), "tool-a", nil, CallOptions{})
+					if err != nil {
+						t.Fatalf("CallTool: %v (a non-complete resultType is data, never an error)", err)
+					}
+					if res.ResultType != fixture.want {
+						t.Errorf("ResultType = %q, want %q", res.ResultType, fixture.want)
+					}
+					if res.IsError {
+						t.Errorf("IsError = true, want false")
+					}
+					if !strings.Contains(string(res.Output), "called tool-a") {
+						t.Errorf("Output = %s, want it to contain %q", res.Output, "called tool-a")
+					}
+					if v := fake.Violations(); len(v) != 0 {
+						t.Errorf("Violations = %v, want none", v)
+					}
+
+					callReqs := fake.RequestsFor(methodToolsCall)
+					if len(callReqs) != 1 {
+						t.Fatalf("len(RequestsFor(tools/call)) = %d, want 1", len(callReqs))
+					}
+					req := callReqs[0]
+					if era.strict {
+						if req.ProtocolHeader != ProtocolVersion20260728 {
+							t.Errorf("ProtocolHeader = %q, want %q", req.ProtocolHeader, ProtocolVersion20260728)
+						}
+						if req.MethodHeader != methodToolsCall {
+							t.Errorf("MethodHeader = %q, want %q", req.MethodHeader, methodToolsCall)
+						}
+						if req.NameHeader != "tool-a" {
+							t.Errorf("NameHeader = %q, want %q", req.NameHeader, "tool-a")
+						}
+						if req.SessionHeader != "" {
+							t.Errorf("SessionHeader = %q, want empty", req.SessionHeader)
+						}
+						return
+					}
+					if req.SessionHeader != "fake-session" {
+						t.Errorf("SessionHeader = %q, want %q", req.SessionHeader, "fake-session")
+					}
+					if req.ProtocolHeader != "" || req.MethodHeader != "" || req.NameHeader != "" {
+						t.Errorf("legacy tools/call carries modern headers: protocol=%q method=%q name=%q",
+							req.ProtocolHeader, req.MethodHeader, req.NameHeader)
+					}
+					if meta := decodeMeta(req.Params); meta != nil {
+						t.Errorf("params carry a _meta key, want none on the legacy path: %s", req.Params)
+					}
+				})
+			}
+		})
+	}
+}
+
 // TestNoRequestEverDeclaresSampling is the "any fixture" DoD assertion: sampling
 // must never appear on the wire, on any transport, under any capability grant.
 // It drives three call paths against three fakes — (a) an unpinned client
@@ -266,6 +370,9 @@ func TestBilingualRegistry_LegacyAndModernServersInOneInstance(t *testing.T) {
 	if !strings.Contains(string(legacyResult.Output), "legacy-tool") {
 		t.Errorf("legacy CallTool Output = %s, want it to contain %q", legacyResult.Output, "legacy-tool")
 	}
+	if legacyResult.ResultType != ResultTypeComplete {
+		t.Errorf("legacy CallTool ResultType = %q, want %q", legacyResult.ResultType, ResultTypeComplete)
+	}
 
 	modernClient, modernToolName, err := reg.ResolveToolByName(ctx, "modern-server.modern-tool")
 	if err != nil {
@@ -280,6 +387,9 @@ func TestBilingualRegistry_LegacyAndModernServersInOneInstance(t *testing.T) {
 	}
 	if !strings.Contains(string(modernResult.Output), "modern-tool") {
 		t.Errorf("modern CallTool Output = %s, want it to contain %q", modernResult.Output, "modern-tool")
+	}
+	if modernResult.ResultType != ResultTypeComplete {
+		t.Errorf("modern CallTool ResultType = %q, want %q", modernResult.ResultType, ResultTypeComplete)
 	}
 
 	// The legacy fake's protocol probe (which falls back to the legacy

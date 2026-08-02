@@ -69,7 +69,15 @@ func ClassifyMCPErrorType(err error) string {
 	}
 	var rpcErr *JSONRPCError
 	if errors.As(err, &rpcErr) {
-		// HTTP round-trip succeeded; server rejected the call at the application level.
+		// HTTP round-trip succeeded; server rejected the call at the
+		// application level. Classification is deliberately code-INDEPENDENT:
+		// the MCP-reserved -32020/-32021/-32022, the JSON-RPC base codes, and
+		// the -32002/-32602 resource-not-found pair (see errorcodes.go) all
+		// map to this same label today. This function is the ONLY place a
+		// code-specific label may ever be introduced, and it must reuse the
+		// fixed metrics.ErrorType* enum rather than invent a new label value.
+		// Classification cannot be version-gated: CallTool's deferred metric
+		// closure has no client or protocol version in scope.
 		return metrics.ErrorTypeProtocol
 	}
 	return metrics.ErrorTypeConnection

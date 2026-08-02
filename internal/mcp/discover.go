@@ -13,14 +13,6 @@ import (
 // protocol-discovery probe.
 const methodServerDiscover = "server/discover"
 
-// MCP reserves JSON-RPC codes -32020..-32099 for spec-defined errors; a code
-// in this range is proof the peer speaks a modern revision.
-const (
-	errCodeMCPReservedMax             = -32020
-	errCodeMCPReservedMin             = -32099
-	errCodeUnsupportedProtocolVersion = -32022
-)
-
 // supportedProtocolVersions lists the modern revisions Gleipnir speaks, most
 // preferred first. Legacy versions are absent by design — they are never
 // negotiated through server/discover.

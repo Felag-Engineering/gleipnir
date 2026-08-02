@@ -206,6 +206,57 @@ func TestCallTool_IsErrorTrue(t *testing.T) {
 	}
 }
 
+// TestCallTool_ResultType_NonStringIsTreatedAsAbsent proves a non-compliant
+// server sending a non-string resultType does not fail the call. Pre-#762,
+// "resultType" was simply an unknown key that json.Unmarshal ignored, and the
+// call succeeded; decoding straight into a string-typed struct field would
+// have turned this into an UnmarshalTypeError that fails CallTool entirely —
+// exactly the regression this test guards against.
+func TestCallTool_ResultType_NonStringIsTreatedAsAbsent(t *testing.T) {
+	tests := []struct {
+		name       string
+		resultType any
+	}{
+		{name: "number", resultType: 1},
+		{name: "object", resultType: map[string]any{"x": 1}},
+		{name: "array", resultType: []any{"complete"}},
+		{name: "bool", resultType: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := makeServer(t, func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(w, map[string]any{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result": map[string]any{
+						"content": []map[string]any{
+							{"type": "text", "text": "hello from tool"},
+						},
+						"isError":    false,
+						"resultType": tc.resultType,
+					},
+				})
+			})
+
+			c := NewClient(srv.URL)
+			result, err := c.CallTool(context.Background(), "my-tool", nil, CallOptions{})
+			if err != nil {
+				t.Fatalf("CallTool: unexpected error for non-string resultType %v: %v", tc.resultType, err)
+			}
+			if result.ResultType != ResultTypeComplete {
+				t.Errorf("ResultType = %q, want %q", result.ResultType, ResultTypeComplete)
+			}
+			if result.IsError {
+				t.Errorf("IsError = true, want false")
+			}
+			if !strings.Contains(string(result.Output), "hello from tool") {
+				t.Errorf("Output = %s, want it to contain %q", result.Output, "hello from tool")
+			}
+		})
+	}
+}
+
 func TestCallTool_JSONRPCError(t *testing.T) {
 	srv := makeServer(t, func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{
@@ -264,6 +315,47 @@ func TestCallTool_ContextCancellation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected non-nil error for cancelled context, got nil")
 	}
+}
+
+// TestNormalizeResultType covers the "absent ⇒ complete" rule and every
+// other value's pass-through — case-sensitive, no folding, unrecognized
+// values are not an error.
+func TestNormalizeResultType(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "absent", in: "", want: ResultTypeComplete},
+		{name: "complete", in: "complete", want: "complete"},
+		{name: "task", in: "task", want: "task"},
+		{name: "input_required", in: "input_required", want: "input_required"},
+		{name: "wrong case is not folded", in: "Complete", want: "Complete"},
+		{name: "unrecognized value passes through", in: "wat", want: "wat"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeResultType(tc.in); got != tc.want {
+				t.Errorf("normalizeResultType(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+
+	// A length bound, not semantic validation: an over-long value is
+	// truncated but not rejected, matching maxServerInfoFieldLen /
+	// legacyVersionMaxLen elsewhere in this package.
+	t.Run("over-long value is bounded", func(t *testing.T) {
+		huge := strings.Repeat("x", maxResultTypeLen*4)
+		got := normalizeResultType(huge)
+		maxLen := maxResultTypeLen + len("…")
+		if len(got) > maxLen {
+			t.Errorf("len(normalizeResultType(huge)) = %d, want <= %d", len(got), maxLen)
+		}
+		if got == huge {
+			t.Errorf("normalizeResultType(huge) = input unchanged, want it bounded to maxResultTypeLen")
+		}
+	})
 }
 
 func TestNewClient_DefaultTimeout(t *testing.T) {
