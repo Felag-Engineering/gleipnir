@@ -637,7 +637,7 @@ func TestPolicyCreateHandler(t *testing.T) {
 		}
 	})
 
-	t.Run("unknown params key against canonical schema returns 400 with a single issue", func(t *testing.T) {
+	t.Run("unknown params key against canonical schema returns 201 with a warning", func(t *testing.T) {
 		store := newPolicyHandlerStore(t)
 		lookup := schemaLookup{canonical: json.RawMessage(`{"type":"object","properties":{"a":{}}}`)}
 		srv := httptest.NewServer(newPolicyRouterWithLookup(store, lookup))
@@ -664,37 +664,30 @@ agent:
 		}
 		defer resp.Body.Close()
 
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Fatalf("status = %d, want 400", resp.StatusCode)
+		// #769 option 3: an unenforceable params block warns, it does not
+		// block the save. This is the end-to-end proof that the relaxation
+		// reaches the API surface, not just the policy package.
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("status = %d, want 201", resp.StatusCode)
 		}
 
 		var envelope struct {
-			Error  string `json:"error"`
-			Detail string `json:"detail"`
-			Issues []struct {
-				Field   string `json:"field"`
-				Message string `json:"message"`
-			} `json:"issues"`
+			Data struct {
+				Warnings []string `json:"warnings"`
+			} `json:"data"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
 			t.Fatalf("decode response: %v", err)
 		}
 
-		if envelope.Error != "policy validation failed" {
-			t.Errorf("error = %q, want %q", envelope.Error, "policy validation failed")
+		var found bool
+		for _, w := range envelope.Data.Warnings {
+			if strings.HasPrefix(w, "capabilities.tools[0].params.foo:") && strings.Contains(w, "narrows nothing") {
+				found = true
+			}
 		}
-		wantMsg := `"foo" is not a top-level property of tool "github.list_repos"`
-		if len(envelope.Issues) != 1 {
-			t.Fatalf("expected 1 issue, got %d: %v", len(envelope.Issues), envelope.Issues)
-		}
-		if envelope.Issues[0].Field != "capabilities.tools[0].params.foo" {
-			t.Errorf("issues[0].field = %q, want %q", envelope.Issues[0].Field, "capabilities.tools[0].params.foo")
-		}
-		if envelope.Issues[0].Message != wantMsg {
-			t.Errorf("issues[0].message = %q, want %q", envelope.Issues[0].Message, wantMsg)
-		}
-		if envelope.Detail != wantMsg {
-			t.Errorf("detail = %q, want %q", envelope.Detail, wantMsg)
+		if !found {
+			t.Errorf("warnings %v do not report the unenforceable params key", envelope.Data.Warnings)
 		}
 	})
 

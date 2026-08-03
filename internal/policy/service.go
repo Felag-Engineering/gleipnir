@@ -151,11 +151,7 @@ func (s *Service) Create(ctx context.Context, rawYAML string) (*SaveResult, erro
 		}
 	}
 
-	toolWarnings, toolIssues := s.checkToolRefs(ctx, parsed)
-	if len(toolIssues) > 0 {
-		return nil, &ValidationError{Errors: toolIssues}
-	}
-	warnings = append(warnings, toolWarnings...)
+	warnings = append(warnings, s.checkToolRefs(ctx, parsed)...)
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	row, err := s.store.CreatePolicy(ctx, db.CreatePolicyParams{
@@ -204,11 +200,7 @@ func (s *Service) Update(ctx context.Context, policyID string, rawYAML string) (
 		warnings = append(warnings, err.Error())
 	}
 
-	toolWarnings, toolIssues := s.checkToolRefs(ctx, parsed)
-	if len(toolIssues) > 0 {
-		return nil, &ValidationError{Errors: toolIssues}
-	}
-	warnings = append(warnings, toolWarnings...)
+	warnings = append(warnings, s.checkToolRefs(ctx, parsed)...)
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	row, err := s.store.UpdatePolicy(ctx, db.UpdatePolicyParams{
@@ -454,9 +446,17 @@ func (s *Service) runSubscribedValidator(ctx context.Context, p *model.ParsedPol
 }
 
 // checkToolRefs issues non-blocking warnings for tool references that don't
-// match the MCP registry, and BLOCKING issues for params (ADR-017) that
-// cannot be enforced against the tool's stored canonical schema. Returns
-// (nil, nil) if lookup is unavailable.
+// match the MCP registry, and for params (ADR-017) whose scoping cannot be
+// verified or will not fully apply. Returns (nil, nil) if lookup is
+// unavailable.
+//
+// Nothing here blocks a save. #788 originally rejected unverifiable params
+// blocks outright (#769 option 2); that was reverted deliberately in favour of
+// #769 option 3 — accept the gap, warn about it, revisit real narrowing later.
+// The trade is recorded on validateParamsScope: for two of its cases ADR-017's
+// structural guarantee genuinely does not hold at runtime, and a warning is the
+// only signal the operator gets. Note the frontend does not currently render
+// SaveResult.Warnings, so today that signal reaches API/CLI clients only.
 //
 // Known carve-out (security review, #745 cycle 2): "not found in mcp_tools"
 // is not the same fact as "is a plugin tool" — it also covers a misspelled
@@ -477,23 +477,23 @@ func (s *Service) runSubscribedValidator(ctx context.Context, p *model.ParsedPol
 // registered with a branching or otherwise-unnarrowable schema. Closing it
 // needs a static (DB + manifest, not arbiter) classifier threaded into
 // Service — tracked as a follow-up, not fixed here.
-func (s *Service) checkToolRefs(ctx context.Context, p *model.ParsedPolicy) (warnings []string, issues []Issue) {
+func (s *Service) checkToolRefs(ctx context.Context, p *model.ParsedPolicy) (warnings []string) {
 	if s.lookup == nil {
-		return nil, nil
+		return nil
 	}
 
 	for i, t := range p.Capabilities.Tools {
 		if ctx.Err() != nil {
-			// Fail closed: every tool from here on was never checked. A tool
-			// that carries a params block whose scoping cannot be verified
-			// must not be silently allowed to persist just because the
-			// context happened to be cancelled before its turn came up.
+			// Every tool from here on was never checked. Under the #769
+			// option-3 posture this warns rather than blocking: a cancelled
+			// request is a transient condition, and failing the save gives the
+			// operator an error they cannot act on. The scoping itself is
+			// unaffected — mcp.NarrowSchema still applies it at runtime.
 			for j := i; j < len(p.Capabilities.Tools); j++ {
 				if unchecked := p.Capabilities.Tools[j]; len(unchecked.Params) > 0 {
-					issues = append(issues, Issue{
-						Field:   fmt.Sprintf("capabilities.tools[%d].params", j),
-						Message: fmt.Sprintf("could not verify parameter scoping for tool %q: %v", unchecked.Tool, ctx.Err()),
-					})
+					warnings = append(warnings, fmt.Sprintf(
+						"capabilities.tools[%d].params: could not verify parameter scoping for tool %q: %v",
+						j, unchecked.Tool, ctx.Err()))
 				}
 			}
 			break
@@ -507,15 +507,15 @@ func (s *Service) checkToolRefs(ctx context.Context, p *model.ParsedPolicy) (war
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("could not check tool %q: %v", t.Tool, err))
 			if len(t.Params) > 0 {
-				// Fail closed: an unverifiable narrowing must not be persisted.
-				// The underlying error (e.g. a raw sqlite driver error) is
-				// operator-internal detail, not something to hand to the API
-				// client — log it server-side and return a fixed message.
+				// Warn rather than block (#769 option 3). The underlying error
+				// (e.g. a raw sqlite driver error) is operator-internal detail
+				// and must not reach the API client — log it server-side and
+				// emit a fixed message. #788's security review flagged that
+				// leak; keep the split even though this no longer blocks.
 				slog.ErrorContext(ctx, "policy save: tool lookup failed for params-scoped tool", "tool", t.Tool, "err", err)
-				issues = append(issues, Issue{
-					Field:   fmt.Sprintf("capabilities.tools[%d].params", i),
-					Message: fmt.Sprintf("could not verify parameter scoping for tool %q; try again", t.Tool),
-				})
+				warnings = append(warnings, fmt.Sprintf(
+					"capabilities.tools[%d].params: could not verify parameter scoping for tool %q; it is applied at runtime but was not checked here",
+					i, t.Tool))
 			}
 			continue
 		}
@@ -535,12 +535,12 @@ func (s *Service) checkToolRefs(ctx context.Context, p *model.ParsedPolicy) (war
 			continue
 		}
 
-		issues = append(issues, validateParamsScope(i, t.Tool, t.Params, canonical)...)
+		warnings = append(warnings, validateParamsScope(i, t.Tool, t.Params, canonical)...)
 	}
 
 	if ctx.Err() != nil {
 		warnings = append(warnings, fmt.Sprintf("tool reference check aborted: %v", ctx.Err()))
 	}
 
-	return warnings, issues
+	return warnings
 }

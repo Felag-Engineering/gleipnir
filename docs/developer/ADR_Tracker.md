@@ -1572,16 +1572,37 @@ it is a structural constraint on the tool description the agent reasons from.
 
 **Amendment (2026-08, #745/#769):** The "Validator warns at save time if a param name
 doesn't appear in the tool's discovered input schema" bullet above is superseded, subject
-to the two qualifiers below. Under ADR-059's canonical-schema regime, an unresolvable
-`params` key is now a BLOCKING rejection at policy save — but ONLY for a tool reference
-that resolves against `mcp_tools` (i.e. a row exists for `server_name.tool_name`) —
-validated against that row's stored canonical schema (`mcp_tools.canonical_schema`)
-rather than the raw discovered schema. A `params` block on such a tool whose canonical
-schema branches at the top level (`oneOf`/`anyOf`/`allOf`/`$ref`/`not`/`if`) is rejected
-outright — such schemas cannot be narrowed structurally, and narrowing had been a silent
-no-op for them (#769). A `params` block on such a tool with no stored canonical schema is
-likewise rejected (fail closed); granting the tool without `params` remains saveable in
-both cases.
+to the two qualifiers below. Under ADR-059's canonical-schema regime, `params` keys are
+checked against the tool's stored canonical schema (`mcp_tools.canonical_schema`) rather
+than the raw discovered schema — but ONLY for a tool reference that resolves against
+`mcp_tools` (i.e. a row exists for `server_name.tool_name`).
+
+**Superseding amendment (2026-08, #769 — option 3 chosen):** #788 originally made these
+checks BLOCKING rejections at policy save (#769's "option 2 — fail loudly"). That was
+reverted deliberately: it blocked legitimate saves, most importantly for any MCP server
+not rediscovered since the `canonical_schema` column landed — a fleet-wide condition an
+operator cannot fix from the policy editor. **A `params` block now never blocks a save.**
+Each case emits a non-blocking warning on `SaveResult.Warnings` instead:
+
+- an unresolvable `params` key warns that it narrows nothing (and that, if it is the only
+  key, the tool ends up accepting no arguments at all);
+- a canonical schema branching at the top level (`oneOf`/`anyOf`/`allOf`/`$ref`/`not`/`if`)
+  warns. Narrowing reaches only top-level properties: where the schema also declares them
+  they are still narrowed and enforced and only branch-nested properties escape; where it
+  declares none, scoping does nothing at all;
+- no stored canonical schema warns that scoping was not verified at save, while noting
+  narrowing still runs at runtime against the raw schema
+  (`mcp.ResolvedTool.SchemaForNarrowing` falls back);
+- granting the tool without `params` stays silent in every case.
+
+**This is a conscious security trade, and it must not be described as structural
+enforcement without qualification.** For a tool whose schema has no top-level
+`properties` — including a root-level `oneOf`/`anyOf` — `mcp.NarrowSchema` returns the
+schema unchanged and `mcp.ValidateCall` permits every key, so an agent may pass any
+argument the tool accepts. The warning is the operator's only signal, and the frontend
+does not currently render warnings, so today it reaches API/CLI clients only. Real
+narrowing into branch keywords (#769 option 1) is deferred pending a fuller
+investigation; #769 stays open to track it.
 
 *Qualifier 1 — save-path carve-out.* A tool reference that does NOT resolve against
 `mcp_tools` at all is NOT covered by the rejection above; its `params` block is saved

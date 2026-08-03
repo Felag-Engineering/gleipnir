@@ -250,20 +250,33 @@ capabilities:
       #   what values they may take. For value-level control, use approval gating.
       #   When omitted or empty, the full tool schema is exposed unchanged.
       #
-      #   Enforced at policy save, but ONLY for a tool that is currently
-      #   registered in the MCP tool registry (a row exists for
-      #   server_name.tool_name):
-      #     - every key must be a top-level property of that tool's stored
-      #       canonical schema; an unknown key is REJECTED.
+      #   A params block NEVER blocks a policy save (#769 option 3). Where
+      #   scoping cannot be verified, or will not fully apply, the save
+      #   succeeds and a non-blocking warning is returned in the response's
+      #   data.warnings. Checked only for a tool currently registered in the
+      #   MCP tool registry (a row exists for server_name.tool_name):
+      #     - a key that is not a top-level property of the tool's stored
+      #       canonical schema WARNS: it narrows nothing. If it is the only
+      #       key, the tool ends up accepting no arguments at all.
       #     - a tool whose canonical schema declares a top-level oneOf/anyOf/
-      #       allOf/$ref/not/if is REJECTED outright — narrowing cannot be
-      #       enforced structurally against a branching schema, so scoping such
-      #       a tool is refused rather than silently doing nothing.
+      #       allOf/$ref/not/if WARNS. Narrowing reaches only top-level
+      #       properties: if the schema also declares them they are still
+      #       narrowed and enforced, and only branch-nested properties escape;
+      #       if it declares none, scoping does NOTHING and every argument key
+      #       is permitted.
       #     - a tool with a registered row but no stored canonical schema
-      #       (discovery-time canonicalization failed) is REJECTED; refresh the
-      #       MCP server's tools and save again.
-      #     - granting the tool WITHOUT a params block is always allowed,
-      #       regardless of registry state.
+      #       WARNS: scoping was not verified here, but is still applied at
+      #       runtime against the tool's raw schema. Refresh the MCP server's
+      #       tools to have it verified.
+      #     - granting the tool WITHOUT a params block is always silent.
+      #
+      #   IMPORTANT: because these warn rather than reject, the "structural
+      #   enforcement" promise above does NOT hold for a tool whose schema has
+      #   no top-level properties — the agent sees the full schema and may pass
+      #   any argument the tool accepts. Use approval gating where that matters.
+      #   Narrowing into branch keywords is deferred (#769). Note also that the
+      #   frontend does not currently render warnings, so this signal reaches
+      #   API/CLI clients only.
       #
       #   A tool reference that is NOT currently found in the MCP registry is
       #   saved with its params block UNVALIDATED (only a warning is
