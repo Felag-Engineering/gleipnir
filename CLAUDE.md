@@ -219,7 +219,7 @@ These are resolved constraints — do not re-litigate them. Each is compressed t
 - **Policy-gated approval is a hard runtime guarantee (ADR-008):** `approval: required` tools are intercepted before execution, regardless of agent reasoning.
 - **Feedback channel resolution (ADR-009):** policy-level channel definition falls back to system-level config.
 - **SSE for real-time UI transport (ADR-016):** mutations remain REST; no WebSockets.
-- **Policy-level parameter scoping (ADR-017):** per-policy `params` blocks narrow the tool schema before the agent sees it — structural enforcement, not prompt-based; `params` keys must be top-level canonical-schema properties — branching or uncanonicalizable schemas are rejected at save.
+- **Policy-level parameter scoping (ADR-017):** per-policy `params` blocks narrow the tool schema before the agent sees it. Scoping applies to top-level properties of the canonical schema; a params block **never blocks a save** — unenforceable cases warn instead (#769 option 3, deliberate). The structural guarantee therefore does **not** hold for a tool whose schema has no top-level `properties` (including a root-level `oneOf`/`anyOf`): narrowing no-ops and every argument key is permitted. Real branch-keyword narrowing is deferred; do not describe scoping as unconditionally structural.
 - **Capability snapshot as first run step (ADR-018):** every run records the exact tools registered at run start.
 - **Agent editor (ADR-019):** Form view is the only editing surface; YAML is the API payload and storage format (YAML tab removed in #751).
 - **Policy folders are YAML-only (ADR-020):** optional `folder` string, purely cosmetic; no DB column.

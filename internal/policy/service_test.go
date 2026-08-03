@@ -149,7 +149,13 @@ agent:
   task: Check all repos
 `
 
-func TestService_Create_RejectsUnknownParamKey(t *testing.T) {
+// The three tests below invert what #788 asserted. Under #769 option 3 a
+// params block never blocks a save: each of these shapes now saves and returns
+// a warning. The policy MUST be persisted — that is the behaviour change — and
+// the warning MUST still name the tool, because it is the operator's only
+// signal that scoping is weaker than the YAML implies.
+
+func TestService_Create_UnknownParamKeyWarnsAndSaves(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	lookup := &stubLookup{
 		existing:  map[string]bool{"github.list_repos": true},
@@ -157,35 +163,22 @@ func TestService_Create_RejectsUnknownParamKey(t *testing.T) {
 	}
 	svc := NewService(store, lookup, nil, nil, nil)
 
-	_, err := svc.Create(context.Background(), validYAMLWithParams)
-	if err == nil {
-		t.Fatal("expected error for unknown param key, got nil")
+	result, err := svc.Create(context.Background(), validYAMLWithParams)
+	if err != nil {
+		t.Fatalf("save must not be blocked, got: %v", err)
 	}
-	var ve *ValidationError
-	if !errors.As(err, &ve) {
-		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
-	}
-	if len(ve.Errors) != 1 {
-		t.Fatalf("expected 1 issue, got %d: %v", len(ve.Errors), ve.Errors)
-	}
-	if ve.Errors[0].Field != "capabilities.tools[0].params.a" {
-		t.Errorf("Field = %q, want capabilities.tools[0].params.a", ve.Errors[0].Field)
-	}
-	wantMsg := `"a" is not a top-level property of tool "github.list_repos"`
-	if ve.Errors[0].Message != wantMsg {
-		t.Errorf("Message = %q, want %q", ve.Errors[0].Message, wantMsg)
-	}
+	assertWarns(t, result.Warnings, "capabilities.tools[0].params.a", "narrows nothing")
 
 	policies, listErr := store.ListPolicies(context.Background())
 	if listErr != nil {
 		t.Fatalf("list: %v", listErr)
 	}
-	if len(policies) != 0 {
-		t.Errorf("expected 0 saved policies, got %d", len(policies))
+	if len(policies) != 1 {
+		t.Errorf("expected the policy to be persisted, got %d", len(policies))
 	}
 }
 
-func TestService_Create_RejectsOneOfGovernedParamKey(t *testing.T) {
+func TestService_Create_OneOfGovernedParamKeyWarnsAndSaves(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	lookup := &stubLookup{
 		existing:  map[string]bool{"github.list_repos": true},
@@ -193,48 +186,33 @@ func TestService_Create_RejectsOneOfGovernedParamKey(t *testing.T) {
 	}
 	svc := NewService(store, lookup, nil, nil, nil)
 
-	_, err := svc.Create(context.Background(), validYAMLWithParams)
-	if err == nil {
-		t.Fatal("expected error for oneOf-governed param key, got nil")
+	result, err := svc.Create(context.Background(), validYAMLWithParams)
+	if err != nil {
+		t.Fatalf("save must not be blocked, got: %v", err)
 	}
-	var ve *ValidationError
-	if !errors.As(err, &ve) {
-		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
-	}
-	if len(ve.Errors) != 1 {
-		t.Fatalf("expected 1 issue, got %d: %v", len(ve.Errors), ve.Errors)
-	}
-	if ve.Errors[0].Field != "capabilities.tools[0].params.a" {
-		t.Errorf("Field = %q, want capabilities.tools[0].params.a", ve.Errors[0].Field)
-	}
-	wantMsg := `cannot scope "a" — tool "github.list_repos" declares a top-level "oneOf"; parameter scoping applies only to top-level properties and cannot be enforced for branching schemas`
-	if ve.Errors[0].Message != wantMsg {
-		t.Errorf("Message = %q, want %q", ve.Errors[0].Message, wantMsg)
-	}
+	// Root oneOf with no top-level properties: scoping does nothing at all, so
+	// the warning has to say so outright rather than hedge.
+	assertWarns(t, result.Warnings, "capabilities.tools[0].params", "every argument key is permitted")
 }
 
-func TestService_Create_RejectsParamsWhenCanonicalSchemaMissing(t *testing.T) {
+func TestService_Create_MissingCanonicalSchemaWarnsAndSaves(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	lookup := &stubLookup{existing: map[string]bool{"github.list_repos": true}}
 	svc := NewService(store, lookup, nil, nil, nil)
 
-	_, err := svc.Create(context.Background(), validYAMLWithParams)
-	if err == nil {
-		t.Fatal("expected error for missing canonical schema, got nil")
+	result, err := svc.Create(context.Background(), validYAMLWithParams)
+	if err != nil {
+		t.Fatalf("save must not be blocked, got: %v", err)
 	}
-	var ve *ValidationError
-	if !errors.As(err, &ve) {
-		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
-	}
-	if len(ve.Errors) != 1 {
-		t.Fatalf("expected 1 issue, got %d: %v", len(ve.Errors), ve.Errors)
-	}
-	if ve.Errors[0].Field != "capabilities.tools[0].params" {
-		t.Errorf("Field = %q, want capabilities.tools[0].params", ve.Errors[0].Field)
-	}
-	wantMsg := `tool "github.list_repos" has no stored canonical schema — schema could not be canonicalized; parameter scoping unavailable for this tool (refresh the MCP server's tools, then save again)`
-	if ve.Errors[0].Message != wantMsg {
-		t.Errorf("Message = %q, want %q", ve.Errors[0].Message, wantMsg)
+	// This is the case that most often blocked legitimate saves under #788:
+	// any server not rediscovered since the canonical_schema column landed.
+	// Narrowing still runs against the raw schema, so the warning must not
+	// claim the tool is unrestricted.
+	assertWarns(t, result.Warnings, "capabilities.tools[0].params", "applied at runtime")
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "every argument key is permitted") {
+			t.Errorf("missing canonical schema must not claim non-enforcement, got:\n  %s", w)
+		}
 	}
 }
 
@@ -269,7 +247,7 @@ func TestService_Create_AcceptsPlainTopLevelParamKeys(t *testing.T) {
 	}
 }
 
-func TestService_Update_RejectsUnknownParamKey(t *testing.T) {
+func TestService_Update_UnknownParamKeyWarnsAndPersists(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	lookup := &stubLookup{
 		existing:  map[string]bool{"github.list_repos": true},
@@ -283,29 +261,23 @@ func TestService_Update_RejectsUnknownParamKey(t *testing.T) {
 	}
 
 	// Swap the stub's canonical schema so it no longer declares "a" — this
-	// mirrors a server refresh (or a schema change) narrowing the property
-	// set out from under an already-saved policy.
+	// mirrors a server refresh narrowing the property set out from under an
+	// already-saved policy. Under #769 option 3 the update still goes through;
+	// the operator is warned rather than locked out of editing their policy.
 	lookup.canonical["github.list_repos"] = json.RawMessage(`{"type":"object","properties":{"b":{}}}`)
 
-	_, err = svc.Update(context.Background(), createResult.Policy.ID, validYAMLWithParams)
-	if err == nil {
-		t.Fatal("expected error for unknown param key on update, got nil")
+	result, err := svc.Update(context.Background(), createResult.Policy.ID, validYAMLWithParams)
+	if err != nil {
+		t.Fatalf("update must not be blocked, got: %v", err)
 	}
-	var ve *ValidationError
-	if !errors.As(err, &ve) {
-		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
-	}
-	if len(ve.Errors) != 1 || ve.Errors[0].Field != "capabilities.tools[0].params.a" {
-		t.Fatalf("unexpected issues: %v", ve.Errors)
-	}
+	assertWarns(t, result.Warnings, "capabilities.tools[0].params.a", "narrows nothing")
 
-	// The stored YAML must be unchanged by the rejected update.
 	stored, getErr := store.GetPolicy(context.Background(), createResult.Policy.ID)
 	if getErr != nil {
 		t.Fatalf("get policy: %v", getErr)
 	}
 	if stored.Yaml != validYAMLWithParams {
-		t.Error("expected stored YAML to be unchanged after rejected update")
+		t.Error("expected the update to be persisted")
 	}
 }
 
@@ -330,31 +302,25 @@ func TestService_Create_ParamsSkippedWhenToolNotInRegistry(t *testing.T) {
 	}
 }
 
-func TestService_Create_LookupErrorWithParamsIsBlocking(t *testing.T) {
+func TestService_Create_LookupErrorWithParamsWarnsAndSaves(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	lookupErr := errors.New("db unavailable")
 	lookup := &stubLookup{err: lookupErr}
 	svc := NewService(store, lookup, nil, nil, nil)
 
-	_, err := svc.Create(context.Background(), validYAMLWithParams)
-	if err == nil {
-		t.Fatal("expected error when lookup fails for a tool with params, got nil")
+	result, err := svc.Create(context.Background(), validYAMLWithParams)
+	if err != nil {
+		t.Fatalf("save must not be blocked, got: %v", err)
 	}
-	var ve *ValidationError
-	if !errors.As(err, &ve) {
-		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
-	}
-	if len(ve.Errors) != 1 {
-		t.Fatalf("expected 1 issue, got %d: %v", len(ve.Errors), ve.Errors)
-	}
-	// The underlying DB error text must NOT reach the client (security review
-	// finding 3, #745 cycle 2) — the message is fixed, not %v-wrapped.
-	wantMsg := `could not verify parameter scoping for tool "github.list_repos"; try again`
-	if ve.Errors[0].Message != wantMsg {
-		t.Errorf("Message = %q, want %q", ve.Errors[0].Message, wantMsg)
-	}
-	if strings.Contains(ve.Errors[0].Message, lookupErr.Error()) {
-		t.Errorf("Message leaks the underlying lookup error: %q", ve.Errors[0].Message)
+	assertWarns(t, result.Warnings, "capabilities.tools[0].params", "could not verify parameter scoping")
+
+	// The underlying DB error text must still NOT reach the client (#788
+	// security review finding 3). That split survives the switch to warnings:
+	// the raw error goes to the log, a fixed message goes to the operator.
+	for _, w := range result.Warnings {
+		if strings.HasPrefix(w, "capabilities.tools[") && strings.Contains(w, lookupErr.Error()) {
+			t.Errorf("params warning leaks the underlying lookup error: %q", w)
+		}
 	}
 }
 
@@ -456,10 +422,10 @@ func TestService_Create_ContextCancelled(t *testing.T) {
 
 	// Parse + validate don't use context, so we test checkToolRefs directly.
 	// a.three carries a params block: since ctx is already cancelled, none of
-	// these three tools are ever looked up, and a.three's scoping is
-	// therefore unverifiable — the fail-closed fix (security review finding
-	// 4, #745 cycle 2) must report it as a blocking issue rather than
-	// silently letting the caller persist an unverified narrowing.
+	// these three tools are ever looked up, so a.three's scoping is
+	// unverifiable. Under the #769 option-3 posture that is a WARNING, not a
+	// blocking issue — a cancelled request is transient, and the scoping is
+	// still applied at runtime by mcp.NarrowSchema regardless.
 	yamlWithManyTools := `
 name: ctx-test
 trigger:
@@ -481,28 +447,25 @@ agent:
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	warnings, issues := svc.checkToolRefs(ctx, parsed)
-	if len(warnings) != 1 {
-		t.Fatalf("expected 1 abort warning, got %d: %v", len(warnings), warnings)
+	warnings := svc.checkToolRefs(ctx, parsed)
+
+	// Two warnings: a.three's unverifiable params block, then the trailing
+	// "check aborted" notice. Nothing blocks.
+	if len(warnings) != 2 {
+		t.Fatalf("expected 2 warnings, got %d: %v", len(warnings), warnings)
 	}
-	if warnings[0] == "" {
-		t.Error("expected non-empty warning")
+	wantPrefix := `capabilities.tools[2].params: could not verify parameter scoping for tool "a.three": `
+	if !strings.HasPrefix(warnings[0], wantPrefix) {
+		t.Errorf("warnings[0] = %q, want prefix %q", warnings[0], wantPrefix)
 	}
-	if len(issues) != 1 {
-		t.Fatalf("expected 1 issue (a.three's unverifiable params block), got %d: %v", len(issues), issues)
-	}
-	if issues[0].Field != "capabilities.tools[2].params" {
-		t.Errorf("Field = %q, want capabilities.tools[2].params", issues[0].Field)
-	}
-	wantPrefix := `could not verify parameter scoping for tool "a.three": `
-	if !strings.HasPrefix(issues[0].Message, wantPrefix) {
-		t.Errorf("Message = %q, want prefix %q", issues[0].Message, wantPrefix)
+	if !strings.HasPrefix(warnings[1], "tool reference check aborted:") {
+		t.Errorf("warnings[1] = %q, want the abort notice", warnings[1])
 	}
 }
 
 // TestService_Create_ContextCancelled_NoParamsNoIssues locks the companion
-// case: a cancelled context with no params anywhere still yields zero issues
-// (the fail-closed fix only fires for tools that actually carry params).
+// case: a cancelled context with no params anywhere yields only the trailing
+// abort notice (the per-tool warning fires solely for tools carrying params).
 func TestService_Create_ContextCancelled_NoParamsNoIssues(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
@@ -530,12 +493,12 @@ agent:
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	warnings, issues := svc.checkToolRefs(ctx, parsed)
+	warnings := svc.checkToolRefs(ctx, parsed)
 	if len(warnings) != 1 {
 		t.Fatalf("expected 1 abort warning, got %d: %v", len(warnings), warnings)
 	}
-	if len(issues) != 0 {
-		t.Errorf("expected 0 issues, got %d: %v", len(issues), issues)
+	if !strings.HasPrefix(warnings[0], "tool reference check aborted:") {
+		t.Errorf("warnings[0] = %q, want the abort notice", warnings[0])
 	}
 }
 
@@ -1199,5 +1162,24 @@ agent:
 	}
 	if !strings.Contains(err.Error(), "rotate") {
 		t.Errorf("error %q does not mention rotate endpoint", err.Error())
+	}
+}
+
+// assertWarns fails unless exactly one warning starts with the given field
+// path and contains the given claim. Warnings carry no structured Field, so
+// the path is asserted as a prefix — see params_scope.go for why.
+func assertWarns(t *testing.T, warnings []string, wantPath, wantClaim string) {
+	t.Helper()
+	var matched []string
+	for _, w := range warnings {
+		if strings.HasPrefix(w, wantPath+":") {
+			matched = append(matched, w)
+		}
+	}
+	if len(matched) != 1 {
+		t.Fatalf("want exactly 1 warning for %q, got %d\nall warnings: %#v", wantPath, len(matched), warnings)
+	}
+	if !strings.Contains(matched[0], wantClaim) {
+		t.Errorf("warning for %q should assert %q, got:\n  %s", wantPath, wantClaim, matched[0])
 	}
 }
