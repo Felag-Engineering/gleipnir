@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	dockercontainer "github.com/docker/docker/api/types/container"
+	dockercontainer "github.com/moby/moby/api/types/container"
 )
 
 // TestToDockerCreateArgs exercises the pure CreateOptions -> SDK-args
@@ -76,7 +76,7 @@ func TestFromSummary(t *testing.T) {
 		Names:   []string{"/plugin-abc123"},
 		Image:   "img@sha256:deadbeef",
 		Labels:  map[string]string{"k": "v"},
-		State:   string(ContainerStateRunning),
+		State:   dockercontainer.ContainerState(ContainerStateRunning),
 		Created: created.Unix(),
 	}
 
@@ -106,14 +106,12 @@ func TestFromInspectResponse_NilBaseDoesNotPanic(t *testing.T) {
 func TestFromInspectResponse_FullyPopulated(t *testing.T) {
 	created := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
 	resp := dockercontainer.InspectResponse{
-		ContainerJSONBase: &dockercontainer.ContainerJSONBase{
-			ID:      "abc123",
-			Name:    "/plugin-abc123",
-			Created: created.Format(time.RFC3339Nano),
-			State: &dockercontainer.State{
-				Status: dockercontainer.ContainerState(ContainerStateRunning),
-				Health: &dockercontainer.Health{Status: dockercontainer.Healthy},
-			},
+		ID:      "abc123",
+		Name:    "/plugin-abc123",
+		Created: created.Format(time.RFC3339Nano),
+		State: &dockercontainer.State{
+			Status: dockercontainer.ContainerState(ContainerStateRunning),
+			Health: &dockercontainer.Health{Status: dockercontainer.Healthy},
 		},
 		Config: &dockercontainer.Config{
 			Image:  "img@sha256:deadbeef",

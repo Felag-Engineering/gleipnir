@@ -5,32 +5,40 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/netip"
 	"time"
 
-	dockercontainer "github.com/docker/docker/api/types/container"
-	dockerfilters "github.com/docker/docker/api/types/filters"
-	dockermount "github.com/docker/docker/api/types/mount"
-	dockernetwork "github.com/docker/docker/api/types/network"
-	dockerclient "github.com/docker/docker/client"
+	dockercontainer "github.com/moby/moby/api/types/container"
+	dockermount "github.com/moby/moby/api/types/mount"
+	dockernetwork "github.com/moby/moby/api/types/network"
+	dockerclient "github.com/moby/moby/client"
 )
 
-// DockerRuntime is the production Runtime backed by the official Docker SDK.
-// It talks to whatever socket DetectPosture resolved — Podman's
+// DockerRuntime is the production Runtime backed by Moby's standalone client
+// module. It talks to whatever socket DetectPosture resolved — Podman's
 // Docker-compatible socket needs no special-casing anywhere in this file, by
-// design; the wire protocol is what the SDK understands regardless of which
-// daemon speaks it.
+// design; the wire protocol is what the client understands regardless of
+// which daemon speaks it.
+//
+// This deliberately depends on github.com/moby/moby/client rather than
+// github.com/docker/docker: the latter bundles daemon (dockerd) code into
+// the same +incompatible module as the client, so daemon-side CVEs (which a
+// client-only consumer like Gleipnir can never be affected by) fail
+// govulncheck with no fixed version to upgrade to. Moby split the client out
+// into its own module precisely so API consumers aren't dragged into that.
 type DockerRuntime struct {
 	cli *dockerclient.Client
 }
 
 // NewDockerRuntime dials the container-runtime socket at socketPath. Dialing
 // a Unix socket does not itself require the daemon to be reachable yet — the
-// SDK's client construction only prepares the HTTP transport; the first real
-// call surfaces a connection error if the socket is unresponsive.
+// client's construction only prepares the HTTP transport; the first real
+// call surfaces a connection error if the socket is unresponsive. API-version
+// negotiation is on by default in this client (unlike the old Docker SDK,
+// which needed WithAPIVersionNegotiation() to opt in).
 func NewDockerRuntime(socketPath string) (*DockerRuntime, error) {
-	cli, err := dockerclient.NewClientWithOpts(
-		dockerclient.WithHost("unix://"+socketPath),
-		dockerclient.WithAPIVersionNegotiation(),
+	cli, err := dockerclient.New(
+		dockerclient.WithHost("unix://" + socketPath),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("container: dial runtime socket %s: %w", socketPath, err)
@@ -44,7 +52,12 @@ func (r *DockerRuntime) Create(ctx context.Context, opts CreateOptions) (Contain
 	}
 
 	cfg, hostCfg, netCfg := toDockerCreateArgs(opts)
-	resp, err := r.cli.ContainerCreate(ctx, cfg, hostCfg, netCfg, nil, opts.Name)
+	resp, err := r.cli.ContainerCreate(ctx, dockerclient.ContainerCreateOptions{
+		Config:           cfg,
+		HostConfig:       hostCfg,
+		NetworkingConfig: netCfg,
+		Name:             opts.Name,
+	})
 	if err != nil {
 		return "", fmt.Errorf("container: create %s: %w", opts.Name, err)
 	}
@@ -52,7 +65,7 @@ func (r *DockerRuntime) Create(ctx context.Context, opts CreateOptions) (Contain
 }
 
 func (r *DockerRuntime) Start(ctx context.Context, id ContainerID) error {
-	if err := r.cli.ContainerStart(ctx, string(id), dockercontainer.StartOptions{}); err != nil {
+	if _, err := r.cli.ContainerStart(ctx, string(id), dockerclient.ContainerStartOptions{}); err != nil {
 		return fmt.Errorf("container: start %s: %w", id, err)
 	}
 	return nil
@@ -60,14 +73,14 @@ func (r *DockerRuntime) Start(ctx context.Context, id ContainerID) error {
 
 func (r *DockerRuntime) Stop(ctx context.Context, id ContainerID, timeout time.Duration) error {
 	seconds := int(timeout.Seconds())
-	if err := r.cli.ContainerStop(ctx, string(id), dockercontainer.StopOptions{Timeout: &seconds}); err != nil {
+	if _, err := r.cli.ContainerStop(ctx, string(id), dockerclient.ContainerStopOptions{Timeout: &seconds}); err != nil {
 		return fmt.Errorf("container: stop %s: %w", id, err)
 	}
 	return nil
 }
 
 func (r *DockerRuntime) Remove(ctx context.Context, id ContainerID, force bool) error {
-	err := r.cli.ContainerRemove(ctx, string(id), dockercontainer.RemoveOptions{Force: force, RemoveVolumes: false})
+	_, err := r.cli.ContainerRemove(ctx, string(id), dockerclient.ContainerRemoveOptions{Force: force, RemoveVolumes: false})
 	if err != nil {
 		return fmt.Errorf("container: remove %s: %w", id, err)
 	}
@@ -75,21 +88,23 @@ func (r *DockerRuntime) Remove(ctx context.Context, id ContainerID, force bool) 
 }
 
 func (r *DockerRuntime) Inspect(ctx context.Context, id ContainerID) (ContainerInfo, error) {
-	resp, err := r.cli.ContainerInspect(ctx, string(id))
+	resp, err := r.cli.ContainerInspect(ctx, string(id), dockerclient.ContainerInspectOptions{})
 	if err != nil {
 		return ContainerInfo{}, fmt.Errorf("container: inspect %s: %w", id, err)
 	}
-	return fromInspectResponse(resp), nil
+	return fromInspectResponse(resp.Container), nil
 }
 
 func (r *DockerRuntime) Stats(ctx context.Context, id ContainerID) (ContainerStats, error) {
-	reader, err := r.cli.ContainerStatsOneShot(ctx, string(id))
+	// Zero-value ContainerStatsOptions (Stream=false, IncludePreviousSample=false)
+	// is the one-shot query the old SDK's ContainerStatsOneShot sent.
+	result, err := r.cli.ContainerStats(ctx, string(id), dockerclient.ContainerStatsOptions{})
 	if err != nil {
 		return ContainerStats{}, fmt.Errorf("container: stats %s: %w", id, err)
 	}
-	defer reader.Body.Close()
+	defer result.Body.Close()
 
-	stats, err := decodeStats(reader.Body)
+	stats, err := decodeStats(result.Body)
 	if err != nil {
 		return ContainerStats{}, fmt.Errorf("container: decode stats for %s: %w", id, err)
 	}
@@ -97,7 +112,7 @@ func (r *DockerRuntime) Stats(ctx context.Context, id ContainerID) (ContainerSta
 }
 
 func (r *DockerRuntime) Logs(ctx context.Context, id ContainerID, opts LogOptions) (io.ReadCloser, error) {
-	logOpts := dockercontainer.LogsOptions{
+	logOpts := dockerclient.ContainerLogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
 		Timestamps: opts.Timestamps,
@@ -116,16 +131,16 @@ func (r *DockerRuntime) Logs(ctx context.Context, id ContainerID, opts LogOption
 }
 
 func (r *DockerRuntime) ListByLabel(ctx context.Context, key, value string) ([]ContainerInfo, error) {
-	f := dockerfilters.NewArgs()
+	f := make(dockerclient.Filters)
 	f.Add("label", key+"="+value)
 
-	list, err := r.cli.ContainerList(ctx, dockercontainer.ListOptions{All: true, Filters: f})
+	result, err := r.cli.ContainerList(ctx, dockerclient.ContainerListOptions{All: true, Filters: f})
 	if err != nil {
 		return nil, fmt.Errorf("container: list by label %s=%s: %w", key, value, err)
 	}
 
-	out := make([]ContainerInfo, 0, len(list))
-	for _, c := range list {
+	out := make([]ContainerInfo, 0, len(result.Items))
+	for _, c := range result.Items {
 		out = append(out, fromSummary(c))
 	}
 	return out, nil
@@ -136,13 +151,17 @@ func (r *DockerRuntime) CreateNetwork(ctx context.Context, opts NetworkOptions) 
 		return "", err
 	}
 
-	createOpts := dockernetwork.CreateOptions{
+	createOpts := dockerclient.NetworkCreateOptions{
 		Internal: opts.Internal,
 		Labels:   opts.Labels,
 	}
 	if opts.Subnet != "" {
+		subnet, err := netip.ParsePrefix(opts.Subnet)
+		if err != nil {
+			return "", fmt.Errorf("container: create network %s: parse subnet %q: %w", opts.Name, opts.Subnet, err)
+		}
 		createOpts.IPAM = &dockernetwork.IPAM{
-			Config: []dockernetwork.IPAMConfig{{Subnet: opts.Subnet}},
+			Config: []dockernetwork.IPAMConfig{{Subnet: subnet}},
 		}
 	}
 
@@ -154,23 +173,23 @@ func (r *DockerRuntime) CreateNetwork(ctx context.Context, opts NetworkOptions) 
 }
 
 func (r *DockerRuntime) RemoveNetwork(ctx context.Context, id NetworkID) error {
-	if err := r.cli.NetworkRemove(ctx, string(id)); err != nil {
+	if _, err := r.cli.NetworkRemove(ctx, string(id), dockerclient.NetworkRemoveOptions{}); err != nil {
 		return fmt.Errorf("container: remove network %s: %w", id, err)
 	}
 	return nil
 }
 
 func (r *DockerRuntime) ListNetworksByLabel(ctx context.Context, key, value string) ([]NetworkInfo, error) {
-	f := dockerfilters.NewArgs()
+	f := make(dockerclient.Filters)
 	f.Add("label", key+"="+value)
 
-	list, err := r.cli.NetworkList(ctx, dockernetwork.ListOptions{Filters: f})
+	result, err := r.cli.NetworkList(ctx, dockerclient.NetworkListOptions{Filters: f})
 	if err != nil {
 		return nil, fmt.Errorf("container: list networks by label %s=%s: %w", key, value, err)
 	}
 
-	out := make([]NetworkInfo, 0, len(list))
-	for _, n := range list {
+	out := make([]NetworkInfo, 0, len(result.Items))
+	for _, n := range result.Items {
 		out = append(out, NetworkInfo{
 			ID:       NetworkID(n.ID),
 			Name:     n.Name,
@@ -188,9 +207,9 @@ func (r *DockerRuntime) Close() error {
 	return nil
 }
 
-// toDockerCreateArgs translates our typed CreateOptions into the three
-// argument structs the Docker SDK's ContainerCreate expects. It is a pure
-// function so tests can assert on the translation without a socket.
+// toDockerCreateArgs translates our typed CreateOptions into the argument
+// structs the client's ContainerCreate expects. It is a pure function so
+// tests can assert on the translation without a socket.
 //
 // opts must have already passed ValidateCreate — this function does not
 // re-check self-constraint, it only maps the (by-then-validated) fields that
@@ -229,27 +248,25 @@ func toDockerCreateArgs(opts CreateOptions) (*dockercontainer.Config, *dockercon
 	return cfg, hostCfg, netCfg
 }
 
-// fromInspectResponse maps a Docker SDK InspectResponse onto our typed
-// ContainerInfo.
+// fromInspectResponse maps a container-inspect response onto our typed
+// ContainerInfo. Unlike the old Docker SDK, moby/moby/client's
+// InspectResponse carries ID/Name/State/Created directly (no nested
+// ContainerJSONBase wrapper to nil-check) — a zero-value response still
+// yields a zero-value ContainerInfo without any special-casing.
 func fromInspectResponse(resp dockercontainer.InspectResponse) ContainerInfo {
 	var info ContainerInfo
 
-	// ContainerJSONBase is an embedded pointer; a response missing it (should
-	// not happen against a real daemon, but this package must not panic on a
-	// malformed response) leaves info at its zero value.
-	if base := resp.ContainerJSONBase; base != nil {
-		info.ID = ContainerID(base.ID)
-		info.Name = trimLeadingSlash(base.Name)
-		if base.State != nil {
-			info.State = ContainerState(base.State.Status)
-			if base.State.Health != nil {
-				info.Health = string(base.State.Health.Status)
-			}
+	info.ID = ContainerID(resp.ID)
+	info.Name = trimLeadingSlash(resp.Name)
+	if resp.State != nil {
+		info.State = ContainerState(resp.State.Status)
+		if resp.State.Health != nil {
+			info.Health = string(resp.State.Health.Status)
 		}
-		if base.Created != "" {
-			if t, err := time.Parse(time.RFC3339Nano, base.Created); err == nil {
-				info.CreatedAt = t
-			}
+	}
+	if resp.Created != "" {
+		if t, err := time.Parse(time.RFC3339Nano, resp.Created); err == nil {
+			info.CreatedAt = t
 		}
 	}
 	if resp.Config != nil {
@@ -259,8 +276,8 @@ func fromInspectResponse(resp dockercontainer.InspectResponse) ContainerInfo {
 	return info
 }
 
-// fromSummary maps one entry of a Docker SDK container-list response onto
-// our typed ContainerInfo.
+// fromSummary maps one entry of a container-list response onto our typed
+// ContainerInfo.
 func fromSummary(c dockercontainer.Summary) ContainerInfo {
 	name := ""
 	if len(c.Names) > 0 {
