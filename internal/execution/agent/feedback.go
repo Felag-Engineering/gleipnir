@@ -316,6 +316,33 @@ func (h *FeedbackHandler) Wait(ctx context.Context, runID, toolName, inputJSON, 
 	}
 }
 
+// resolveOperatorTimeout resolves how long a run may sit waiting on a human.
+// The policy's feedback timeout is that clock for every wait that ends at an
+// operator, whether the agent asked (gleipnir.ask_operator) or a tool did
+// (ADR-055) — hence one resolver rather than one per caller. def is the
+// system-wide fallback; pass zero to let the calling handler apply its own.
+//
+// A parse error here indicates data corruption or a manual DB edit, because the
+// policy validator already rejects invalid durations at save time. Log loudly
+// rather than silently discarding the misconfigured value.
+func resolveOperatorTimeout(ctx context.Context, feedbackCfg model.FeedbackConfig, def time.Duration) time.Duration {
+	var timeout time.Duration
+	if feedbackCfg.Timeout != "" {
+		var parseErr error
+		timeout, parseErr = time.ParseDuration(feedbackCfg.Timeout)
+		if parseErr != nil {
+			logctx.Logger(ctx).WarnContext(ctx, "invalid feedback timeout in policy, falling back to default",
+				"timeout_value", feedbackCfg.Timeout,
+				"err", parseErr)
+			timeout = 0
+		}
+	}
+	if timeout == 0 {
+		return def
+	}
+	return timeout
+}
+
 // HandleAskOperator dispatches a gleipnir.ask_operator tool call. It validates
 // the input, resolves the feedback timeout from feedbackCfg, and delegates to
 // Wait. Returns (responseText, isError, err).
@@ -389,28 +416,7 @@ func (h *FeedbackHandler) HandleAskOperator(ctx context.Context, runID, toolName
 		message += "\n\n" + detail
 	}
 
-	// Resolve the feedback timeout. The policy may specify a per-policy value;
-	// if absent or zero, fall back to the system default.
-	//
-	// A parse error here indicates data corruption or a manual DB edit because
-	// the policy validator already rejects invalid durations at save time. Log
-	// loudly rather than silently discarding the misconfigured value.
-	var feedbackTimeout time.Duration
-	if feedbackCfg.Timeout != "" {
-		var parseErr error
-		feedbackTimeout, parseErr = time.ParseDuration(feedbackCfg.Timeout)
-		if parseErr != nil {
-			logctx.Logger(ctx).WarnContext(ctx, "invalid feedback timeout in policy, falling back to default",
-				"timeout_value", feedbackCfg.Timeout,
-				"err", parseErr)
-			feedbackTimeout = 0
-		}
-	}
-	if feedbackTimeout == 0 {
-		feedbackTimeout = h.defaultTimeout
-	}
-
-	responseText, err := h.Wait(ctx, runID, AskOperatorToolName, "", message, feedbackTimeout)
+	responseText, err := h.Wait(ctx, runID, AskOperatorToolName, "", message, resolveOperatorTimeout(ctx, feedbackCfg, h.defaultTimeout))
 	if err != nil {
 		return "", false, err
 	}

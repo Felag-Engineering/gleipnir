@@ -109,9 +109,30 @@ type FeedbackPayload struct {
 	ExpiresAt     string // RFC3339Nano; empty string means no timeout
 }
 
+// ToolInputPayload carries the data needed to create a tool_input_requests DB
+// record when entering waiting_for_feedback for a tool-initiated MRTR
+// input_required pause (ADR-055, spec §6 source 3).
+//
+// It is deliberately NOT a FeedbackPayload: the two waits enter the same run
+// status but persist to different tables, because a tool-initiated wait has to
+// record what a feedback request has no notion of — the originating server, the
+// original call arguments, and the opaque requestState that must be replayed
+// byte-identically on the retry.
+type ToolInputPayload struct {
+	RequestID       string
+	ServerID        string // mcp_servers row ID owning the original tools/call
+	ToolName        string // dot-name as the agent called it
+	CallArgs        string // JSON-encoded original tools/call arguments
+	RequestState    string // opaque MRTR requestState, replayed verbatim on retry
+	RequestPayload  string // JSON-encoded elicitation payload (messages + schemas)
+	ElicitationKind string // "permission" | "information" (spec §6.1)
+	ExpiresAt       string // RFC3339Nano; never empty (the column is NOT NULL)
+}
+
 type transitionOpts struct {
-	approval *ApprovalPayload
-	feedback *FeedbackPayload
+	approval  *ApprovalPayload
+	feedback  *FeedbackPayload
+	toolInput *ToolInputPayload
 }
 
 // TransitionOption configures optional behavior for a Transition call.
@@ -125,6 +146,13 @@ func WithApprovalPayload(p ApprovalPayload) TransitionOption {
 // WithFeedbackPayload attaches feedback context to a waiting_for_feedback transition.
 func WithFeedbackPayload(p FeedbackPayload) TransitionOption {
 	return func(o *transitionOpts) { o.feedback = &p }
+}
+
+// WithToolInputPayload attaches tool-initiated input context to a
+// waiting_for_feedback transition. Mutually exclusive with WithFeedbackPayload
+// in practice — one wait is one row in one table.
+func WithToolInputPayload(p ToolInputPayload) TransitionOption {
+	return func(o *transitionOpts) { o.toolInput = &p }
 }
 
 // Transition validates and atomically persists a run status transition.
@@ -244,6 +272,28 @@ func (sm *RunStateMachine) Transition(ctx context.Context, next model.RunStatus,
 		}
 	}
 
+	// Create the tool_input_requests DB record when entering
+	// waiting_for_feedback for a tool-initiated MRTR pause. Same transactional
+	// guarantee as the two blocks above: the run is never observably paused
+	// without the durable record an operator answer will be applied against.
+	if next == model.RunStatusWaitingForFeedback && topts.toolInput != nil {
+		p := topts.toolInput
+		if _, err := qtx.CreateToolInputRequest(ctx, db.CreateToolInputRequestParams{
+			ID:              p.RequestID,
+			RunID:           sm.runID,
+			ServerID:        p.ServerID,
+			ToolName:        p.ToolName,
+			CallArgs:        p.CallArgs,
+			RequestState:    p.RequestState,
+			RequestPayload:  p.RequestPayload,
+			ElicitationKind: p.ElicitationKind,
+			ExpiresAt:       p.ExpiresAt,
+			CreatedAt:       time.Now().UTC().Format(time.RFC3339Nano),
+		}); err != nil {
+			return fmt.Errorf("creating tool input request record: %w", err)
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit transition tx: %w", err)
 	}
@@ -298,6 +348,18 @@ func (sm *RunStateMachine) Transition(ctx context.Context, next model.RunStatus,
 			return fmt.Errorf("marshal feedback.created payload: %w", err)
 		}
 		sm.publisher.Publish("feedback.created", eventData)
+	}
+
+	// A tool-initiated pause gets its own event rather than riding
+	// feedback.created: the two enter the same run status but are different
+	// records in different tables, and a consumer that fetches "the feedback
+	// request" for this ID would find nothing.
+	if sm.publisher != nil && topts.toolInput != nil {
+		eventData, err := json.Marshal(map[string]string{"request_id": topts.toolInput.RequestID, "run_id": sm.runID})
+		if err != nil {
+			return fmt.Errorf("marshal tool_input.created payload: %w", err)
+		}
+		sm.publisher.Publish("tool_input.created", eventData)
 	}
 
 	return nil
