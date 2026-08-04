@@ -57,6 +57,7 @@ type BoundAgent struct {
 	sm                 *RunStateMachine
 	approvals          *ApprovalHandler
 	feedback           *FeedbackHandler
+	inputRequired      *InputRequiredHandler
 }
 
 // Config holds the dependencies needed to construct a BoundAgent.
@@ -142,6 +143,7 @@ func New(cfg Config) (*BoundAgent, error) {
 		sm:                 cfg.StateMachine,
 		approvals:          NewApprovalHandler(cfg.Audit, cfg.StateMachine, cfg.ApprovalCh, approvalOpts...),
 		feedback:           NewFeedbackHandler(cfg.Audit, cfg.StateMachine, cfg.DefaultFeedbackTimeout, feedbackOpts...),
+		inputRequired:      NewInputRequiredHandler(cfg.Audit, cfg.StateMachine, cfg.DefaultFeedbackTimeout),
 	}, nil
 }
 
@@ -190,6 +192,15 @@ func (a *BoundAgent) waitForFeedback(ctx context.Context, runID, toolName, input
 // deliver operator responses directly through the inAppChannel waiter map.
 func (a *BoundAgent) FeedbackResolver() *FeedbackHandler {
 	return a.feedback
+}
+
+// InputRequiredResolver returns the InputRequiredHandler for this agent, the
+// seam an operator answer to a tool-initiated pause is delivered through
+// (ADR-055). It is the tool-initiated sibling of FeedbackResolver: both hand
+// out the object that owns the in-process waiter, so a resolution path can
+// reach the paused goroutine without going through the run manager.
+func (a *BoundAgent) InputRequiredResolver() *InputRequiredHandler {
+	return a.inputRequired
 }
 
 // assignTokenCost computes per-step token cost allocation for a single LLM turn.
@@ -699,20 +710,33 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 		return "", false, fmt.Errorf("writing tool_call step: %w", err)
 	}
 
-	// Dispatch to MCP server. entry.tool.Capabilities is data flowing inward
-	// from the ResolvedTool the agent was constructed with — the agent never
-	// decides a capability declaration itself. entry.tool.SchemaForHeaderParams()
-	// is the source of SEP-2243 x-mcp-header annotations, canonical when
-	// available.
-	result, err := entry.tool.Client.CallTool(ctx, entry.tool.ToolName, input, mcp.CallOptions{
-		Capabilities:      entry.tool.Capabilities,
-		HeaderParamSchema: entry.tool.SchemaForHeaderParams(),
-	})
+	// Dispatch to MCP server. A server that answers with MRTR input_required
+	// instead of a result pauses the run inside this call and retries once the
+	// operator has answered (ADR-055) — the agent sees only the final result.
+	result, err := a.callToolWithInputRounds(ctx, runID, entry, toolName, input)
 	if err != nil {
 		// Context cancellation is fatal — operator intent, don't mask it.
 		if ctx.Err() != nil {
 			a.logAuditError(ctx, runID, "run cancelled", model.ErrorCodeCancelled)
 			return "", false, fmt.Errorf("calling tool %s: %w", toolName, err)
+		}
+
+		// A tool-initiated pause that nobody answered (timeout) fails the run,
+		// like every other unanswered operator wait. It is deliberately NOT
+		// rendered as a correctable tool_result: there is nothing for the agent
+		// to reason its way around, and the run belongs in the operator
+		// attention queue.
+		var routeErr *InputRoutingError
+		if errors.As(err, &routeErr) {
+			return "", false, fmt.Errorf("calling tool %s: %w", toolName, err)
+		}
+
+		// A server that keeps asking for input on one call is a structural
+		// problem with that call, not with the run — hand the agent a
+		// correctable tool_result, same as a schema violation.
+		var roundErr *InputRoundLimitError
+		if errors.As(err, &roundErr) {
+			return a.toolResultError(ctx, runID, toolName, roundErr.Error())
 		}
 
 		// An unusable x-mcp-header declaration is a structural error the

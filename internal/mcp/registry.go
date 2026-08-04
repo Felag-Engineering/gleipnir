@@ -28,7 +28,16 @@ var ErrToolNamespaceConflict = errors.New("tool namespace conflict")
 // targeting its server. Used by the agent runner to call tools.
 type ResolvedTool struct {
 	model.GrantedTool
-	Client      *Client
+	Client *Client
+
+	// ServerID is the mcp_servers row ID backing this tool. GrantedTool
+	// carries only ServerName, which is what the agent's audit steps render;
+	// this is the foreign key a durable per-call record needs (the ADR-055
+	// tool-initiated HITL pause persists tool_input_requests.server_id).
+	// Empty for plugin-source ResolvedTool literals, which have no MCP
+	// server row — they never reach a path that persists it.
+	ServerID string
+
 	Description string          // tool description from the MCP registry
 	InputSchema json.RawMessage // raw JSON schema from the MCP tool record
 
@@ -400,6 +409,7 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 				Params:     t.Params,
 			},
 			Client:          cl,
+			ServerID:        tool.ServerID,
 			Description:     tool.Description,
 			InputSchema:     json.RawMessage(tool.InputSchema),
 			CanonicalSchema: canonical,
