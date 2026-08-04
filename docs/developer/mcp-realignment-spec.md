@@ -1,12 +1,47 @@
 # MCP 2026 Realignment — Target Architecture Specification
 
 **Target release tag:** `v0.2.0-alpha`
-**Status:** Accepted 2026-07-30 (design consensus; implementation not started)
+**Status:** Accepted 2026-07-30 (design consensus). The §10–§11 MCP-client half shipped in
+milestone #13; the plugin/container/HITL half is not started.
+**Amendment 1:** Accepted 2026-08-04 — see §0. Channel delivery, config-option lookup, and
+identity-code delivery move onto extension surfaces; events adopt CloudEvents envelopes;
+the host API is re-specified as a host-side MCP endpoint (gRPC and protobuf are removed
+from the system); manifest base fields align with the MCP registry `server.json`.
 **ADRs:** ADR-053 through ADR-060 (indexed in [ADR_Tracker.md](ADR_Tracker.md); this document is their shared body)
 **Supersedes in part:** ADR-041 (plugin substrate), ADR-042 (service versioning axes), ADR-044 (Request dispatch mechanics), ADR-047 (process log pipe), ADR-050 (plugin-sdk service seams — deleted with the gRPC substrate), ADR-051 (tool-call pool absorbed into the unified MCP client; the trigger/channel separation principle survives in new form)
 **Leaves intact:** ADR-001, ADR-008, ADR-017 (semantics extended, see §10), ADR-026, ADR-031, ADR-045 (trust model unchanged, packaging updated), ADR-046, ADR-048, ADR-049, ADR-052
 
 ---
+
+## 0. Amendment log
+
+**Amendment 1 — 2026-08-04.** Organizing principle adopted: **if the host initiates it,
+it is not a tool.** `tools/*` is exclusively the model-plane, grantable surface; every
+host-initiated interaction rides an `io.gleipnir/*` extension, and every plugin-initiated
+request to a host service rides the host endpoint. Once everything in-band moved onto MCP,
+keeping gRPC for the one remaining direction bought nothing — so it goes. Changes:
+
+1. **Human-channel contract is a first-class extension** (`io.gleipnir/channel`), not a
+   tool convention — §4, §6.4. Symmetric with `io.gleipnir/events`; grantability becomes
+   structural (extension methods have no path into an agent, by construction).
+2. **Events carry CloudEvents 1.0 envelopes** instead of bespoke field vocabulary — §5.
+3. **The host API becomes the *host endpoint*: a host-side MCP server** plugins call as
+   MCP clients; gRPC, protobuf, `hostwire`, and the `buf` CI lane are deleted — §8. A new
+   normative host-plane invariant keeps host tools out of the model plane.
+4. **Dynamic config-option lookup and the `dm_code` delivery leg become extension
+   methods** (`io.gleipnir/config-options`, `io.gleipnir/identity`) — §4, §9.1; `oidc`
+   added as an optional Tier-1 link method — §9.1.
+5. **Manifest base fields align with the MCP registry `server.json`** vocabulary;
+   Gleipnir's trust/consent fields remain proprietary extensions of it — §7.
+
+Rationale (recorded from the design discussion): a channel plugin had to implement the
+Request-as-task contract *exactly* anyway, so it was already an extension-strength
+obligation wearing a tool costume; requiring protobuf stubs for host callbacks undermined
+"plugins in any language, just an MCP server"; and CloudEvents plus a registry-aligned
+manifest strengthen the §14 WG proposal by replacing invented vocabulary with adopted
+standards. The trade accepted: Go plugin authors lose compile-time protobuf stubs in
+favor of runtime JSON Schema validation + typed `plugin-sdk` wrappers + the milestone-20
+conformance suite (which covers all languages, not just Go).
 
 ## 1. Background
 
@@ -68,9 +103,9 @@ Gleipnir-proprietary.
                         ┌────────────────────────────────────────────┐
                         │                 Gleipnir host              │
                         │  agent runtime · audiences · binding/dedup │
-                        │  audit · policies · reconciler · host API  │
+                        │  audit · policies · reconciler · host ep.  │
                         └───────┬───────────────────────────┬────────┘
-              one MCP client    │                           │  host API (gRPC,
+              one MCP client    │                           │  host endpoint (MCP,
               stack (2026-07-28,│                           │  internal net + instance token,
               version-straddling)                           │  managed plugins only)
                         ┌───────┴────────┐          ┌───────┴────────┐
@@ -85,12 +120,13 @@ Gleipnir-proprietary.
 **Two trust tiers, one protocol.**
 
 - **External MCP servers** (the existing registry, ADR-039/040): standard MCP —
-  tools, tasks, elicitation routed through audiences. No host API, no extensions
-  (initially; see §5 extensibility).
+  tools, tasks, elicitation routed through audiences. No host endpoint, no
+  extensions (initially; see §5 extensibility).
 - **Managed plugins**: MCP servers whose lifecycle Gleipnir owns. They additionally
-  get: container management with egress containment (§7), the host API (§8), the
-  `io.gleipnir/events` extension (§5), identity/user-scoping participation (§9),
-  and credential injection from the existing OAuth/credential manager.
+  get: container management with egress containment (§7), the host endpoint (§8), the
+  `io.gleipnir/events` and `io.gleipnir/channel` extensions (§5, §6.4),
+  identity/user-scoping participation (§9), and credential injection from the existing
+  OAuth/credential manager.
 
 The bespoke dispatch path (`internal/plugin/dispatch` pool) collapses into the
 shared MCP client with per-server concurrency/queue settings. `GLEIPNIR_MCP_TIMEOUT`
@@ -108,17 +144,28 @@ ground; it validates the contracts but does not define them).
 |---|---|---|
 | **Tool provider** | Baseline MCP. | None — any existing ecosystem MCP server qualifies with zero code changes. Wrapping + manifest + signature yields containment, lifecycle, audit. |
 | **Event source** | Implements `io.gleipnir/events` (§5). | `events/discover` + `events/listen`. **No reserved field names with fixed semantics** — `mention_only` becomes an ordinary boolean field the Slack plugin declares, not spec vocabulary. |
-| **Human channel** | Notify tool convention + Request-as-task contract (§6.4). | Request task input `{message, options[], schema?}` → result `{option_id \| content, actor_external_id}`. Declares an **actor-assurance level** (§4.1). |
+| **Human channel** | Implements `io.gleipnir/channel` (§6.4): `channel/notify` + `channel/request`. | `channel/request` carries an elicitation-shaped payload (`message`, `requestedSchema?`, `options[]`) and returns a Tasks-extension task; task result `{option_id \| content, actor_external_id}`. Declares an **actor-assurance level** in the extension capability declaration (§4.1). |
 | **Identity provider** | Link methods + actor authorization participation (§9.1). | At least one link method, or none (profile omitted entirely). `external_user_id` is an opaque string namespaced by instance. |
 
-Dynamic option lookup (today's `ConfigOptionsService`) becomes a tool convention
-declared in the manifest rather than a dedicated gRPC service.
+Dynamic option lookup (today's `ConfigOptionsService`) becomes a host-invoked
+extension method — `io.gleipnir/config-options`, single method `configOptions/list`
+(Amendment 1) — rather than a dedicated gRPC service or a manifest-declared tool.
+
+**Normative invariant (Amendment 1): if the host initiates it, it is not a tool.**
+`tools/*` is exclusively the model-plane surface — everything listed there is
+agent-facing and grantable, and nothing else is. Host-initiated interactions
+(channel delivery, config-option lookup, identity-code delivery) are extension
+methods, which have no path into an agent by construction. This makes the
+never-grantable property structural rather than a manifest-annotation convention,
+and keeps `tools/list` free of host machinery for every surface that renders or
+counts tools (Tools page, grants editor, capability snapshots, drift detection).
 
 ### 4.1 Channel assurance levels
 
 Channels differ in actor-authentication strength: a Slack button click arrives
 authenticated by Slack; an email reply's `From:` is forgeable. The human-channel
-profile therefore declares an assurance level (`authenticated`, `weak`), and the
+profile therefore declares an assurance level (`authenticated`, `weak`) in its
+`io.gleipnir/channel` capability declaration, and the
 **host** — never the plugin — decides which request kinds a channel may resolve.
 Default policy: low-assurance channels may answer *information* requests but a
 *permission* request routed there falls through to the next audience entry. Audit
@@ -157,11 +204,16 @@ is a spec steward with the same obligations we expect of MCP itself.
   health fault).
 - `events/listen` — client-initiated long-lived stream (the shape the core spec
   blessed with `subscriptions/listen`). The client passes a subscription scope and a
-  resume cursor; the server pushes events, each carrying source, kind, dedup key,
-  sequence number, and payload. The server buffers durably; the client acks via
-  cursor on (re)connect. Delivery is **at-least-once**; the existing
-  `internal/plugin/dedup` store is the downstream that makes it effectively-once.
-  Redelivery is application-level by design (core removed transport resumability).
+  resume cursor; the server pushes events as **CloudEvents 1.0 envelopes**
+  (Amendment 1): `source`, `type` (the event kind), `id` (the dedup key), `time`,
+  `data` (the payload), plus a Gleipnir extension attribute for the sequence
+  number the cursor acks against. Adopting CloudEvents instead of coining envelope
+  vocabulary keeps the extension standards-aligned and reframes the §14 WG
+  proposal as "an MCP transport binding for CloudEvents" rather than a novel
+  envelope. The server buffers durably; the client acks via cursor on (re)connect.
+  Delivery is **at-least-once**; the existing `internal/plugin/dedup` store is the
+  downstream that makes it effectively-once. Redelivery is application-level by
+  design (core removed transport resumability).
 
 **Core principle (exact wording matters).** *The event as control signal is
 host-captured and never enters model context. Event payloads MAY reach model
@@ -243,16 +295,29 @@ server's task TTL, and any TTL inside MRTR `requestState`. Precedence:
 
 `ChannelService.Request` and its machinery — `plugin_pending_requests`, the
 in-memory waiter, the stranded-row reclaim scanner, `RequestTerminated` (#625) —
-are replaced by the Tasks extension: the host calls the channel plugin's request
-tool, receives a durable task handle (persisted in DB), polls per the server's
-interval, and resumes polling after restart. `tasks/cancel` covers termination.
-The **in-app** channel (`gleipnir.in-app`) is modeled on the same internal task
-lifecycle so every Request has one shape regardless of route.
+are replaced by the Tasks extension: the host calls `channel/request` on the
+plugin's `io.gleipnir/channel` extension (Amendment 1), receives a durable task
+handle (persisted in DB), polls per the server's interval, and resumes polling
+after restart. `tasks/cancel` covers termination. The extension defines almost no
+new vocabulary by design: the `channel/request` payload is elicitation-shaped
+(`message`, `requestedSchema?`, `options[]`, delivery target) and the wait is a
+literal Tasks-extension task — if the channel extension ever grows its own
+request/response vocabulary, that is the signal it has drifted off the standard.
+`channel/notify` is the fire-and-forget sibling. The **in-app** channel
+(`gleipnir.in-app`) is modeled on the same internal task lifecycle so every
+Request has one shape regardless of route.
 
 Actor authorization (#624) inverts from write-then-refuse to **pre-check**: the
-plugin's click handler calls the `AuthorizeActor` host RPC first; unauthorized ⇒
-ephemeral reply, task stays running; authorized ⇒ plugin completes the task with
-`{option_id, actor_external_id}`.
+plugin's click handler calls the `AuthorizeActor` host-endpoint method first;
+unauthorized ⇒ ephemeral reply, task stays running; authorized ⇒ plugin completes
+the task with `{option_id, actor_external_id}`.
+
+**Poll-on-signal (Amendment 1).** The click-time `AuthorizeActor` callback doubles
+as a poll hint: on receiving it, the host immediately polls the associated task
+instead of waiting for the next interval tick. This closes the resolution-latency
+gap to the old in-memory gRPC waiter with zero new protocol surface and without
+violating the §8 boundary rule (the callback is already a legitimate
+request/response addressed to a host service).
 
 ### 6.5 Server TTL expiry: auto-retry with answer replay
 
@@ -317,6 +382,15 @@ image archive** loaded via the socket API. Digest-pinned images inside a signed
 tarball; fully offline-capable; no cosign dependency. SBOM field maps to image
 SBOMs.
 
+**Manifest vocabulary (Amendment 1).** Manifest base fields — name, version,
+description, transport, package/image reference — align with the MCP registry
+`server.json` vocabulary rather than coining parallel names. Gleipnir's
+trust/consent fields (signature material, capability profiles, egress grants,
+event-kind attestation, config/user-config schemas, resource limits) remain
+proprietary extensions layered on that base. This keeps "install from an MCP
+registry entry + our signature" open as a future distribution path without a
+manifest migration.
+
 **Reconciler.** Gleipnir accepts the mini-orchestrator role, bounded by one rule:
 **level-triggered reconciliation only.** Desired state is rows in SQLite; the
 reconciler lists managed containers by label, diffs, and converges one step —
@@ -328,36 +402,69 @@ allocation. Resource limits become enforced cgroup caps (memory/CPU per manifest
 + admin override); the RSS sampler's role is served by container stats.
 
 **Health.** Liveness = container healthcheck + `server/discover` probe.
-Self-reported health stays via the host API. Health becomes **per-capability**
+Self-reported health stays via the host endpoint. Health becomes **per-capability**
 (per profile, and per tool where the plugin reports it) rather than
 instance-wide — the known "one missing OAuth scope marks the whole instance
 unhealthy" defect is fixed here, not ported.
 
 **Logs.** Container stdout/stderr is captured with instance labels (fallback and
-pre-handshake panics); correlated structured logging stays on the host API `Log`
-RPC (ADR-047 rationale unchanged — gRPC carries `call_id`/`run_id`/`policy_id`).
+pre-handshake panics); correlated structured logging stays on the host endpoint's
+`Log` method (ADR-047 rationale unchanged — the structured host call carries
+`call_id`/`run_id`/`policy_id`; stdout has neither ordering nor attribution).
 
-## 8. Host API (ADR-057)
+## 8. Host endpoint (ADR-057, amended 2026-08-04)
 
-The host API **stays**, for managed plugins only — it is what "managed" means.
-Transport: **gRPC over the per-instance internal network, authenticated per-RPC by
-the instance token** (the existing #202 interceptor machinery). Not UDS-via-volume:
-the network option generalizes, avoids rootless-userns socket-permission
-fragility, and the marginal attacker it admits (already inside the per-instance
-network *and* holding a stolen token) defeats both designs equally.
+Server→host callbacks **stay**, for managed plugins only — they are what "managed"
+means. **Amendment 1 re-specifies the transport: the host exposes an MCP server
+(the *host endpoint*) on each per-instance internal network, and plugins call it
+as ordinary MCP clients.** gRPC and protobuf leave the system entirely — with
+them go `hostwire`, the generated stubs, the `buf` toolchain, and the
+`Proto gen drift` CI lane. A plugin author in any language now needs exactly one
+protocol dependency (the MCP SDK they already have) for both directions: the
+plugin **serves** MCP (tools, events, channel) and **consumes** MCP (host
+callbacks).
 
-**RPC inventory.** Kept: `GetInstanceConfig`, `GetCredentials` (standing
-credentials for substrate connections — header injection can't cover streams),
-`GetRunContext`, `EmitMetric`, `Log`, `SetHealthState` (now per-capability),
-tier-2 `RunHistoryRead`/`UserDirectoryRead`. Removed: `WriteAuditStep` (the
+Auth is unchanged in substance: every request carries the per-generation instance
+token as a bearer header; the existing #202 interceptor logic ports to HTTP
+middleware. Not UDS-via-volume, for the original reasons (rootless-userns
+socket-permission fragility), and the original marginal-attacker analysis — an
+attacker already inside the per-instance network *and* holding a stolen token
+defeats any transport equally — transfers verbatim: trust was never a transport
+property; it lives in the envelope (§7) and the token.
+
+**Method inventory** (host-side tools on the host endpoint). Kept:
+`GetInstanceConfig`, `GetCredentials` (standing credentials for substrate
+connections — header injection can't cover streams), `GetRunContext`,
+`EmitMetric`, `Log` (the `call_id`/`run_id`/`policy_id` correlation ids are
+request fields, carried unchanged — ADR-047's structured-host-RPC-not-stdout
+rationale is preserved), `SetHealthState` (now per-capability), tier-2
+`RunHistoryRead`/`UserDirectoryRead`. Removed: `WriteAuditStep` (the
 `feedback_response` path is subsumed by task completion), `EmitEvent` (subsumed by
 `events/listen`). New: `AuthorizeActor` (§6.4), `SubmitIdentityProof` (§9.1),
-`GetUserConfig` (§9.2).
+`GetUserConfig` (§9.2). Every kept method is unary; nothing on the host endpoint
+streams — the only long-lived stream in the system is `events/listen`, served by
+the *plugin's* endpoint with the host as client.
 
-**Boundary rule (normative).** *Request/response addressed to a host service →
-host API. Fire-and-forget facts for the trigger pipeline → events extension.* An
-identity proof must never be able to launch a policy; an event never needs a
+**Host-plane invariant (normative, Amendment 1).** The host endpoint is host-plane
+only: its tools are never registered in `internal/toolregistry`, never appear in
+any discovery a policy can reach, and are never grantable; the listener binds
+exclusively to the per-instance internal networks, as a separate listener from the
+operator API. Under gRPC this separation was automatic because the protocols
+differed; with both directions speaking MCP it is a deliberate
+topology-and-registration rule, enforced by a startup assertion and pinned by a
+test in the profile conformance suite.
+
+**Boundary rule (normative, unchanged in substance).** *Request/response addressed
+to a host service → host endpoint. Fire-and-forget facts for the trigger pipeline
+→ events extension.* The rule is about direction and addressing, not wire format.
+An identity proof must never be able to launch a policy; an event never needs a
 response.
+
+**Versioning.** The host endpoint declares its version via its own
+`server/discover`; ADR-042's per-service SemVer discipline maps onto the two
+endpoints (plugin endpoint, host endpoint) in place of proto package versions.
+Contract enforcement moves from `buf lint` structural checks to the milestone-20
+conformance suite, which covers every plugin language rather than Go alone.
 
 ## 9. User scoping (ADR-058)
 
@@ -368,14 +475,20 @@ link_method, verified_at)`. The **host** owns the pending-link state machine, co
 generation, and expiry; the plugin provides only the medium-specific proof leg.
 Link methods (manifest-declared, all optional):
 
-- `dm_code` — the host calls a manifest-named ordinary tool ("deliver this code to
-  this external user privately"); the user enters the code in Gleipnir. Proves the
-  claimant can read the claimed identity's private messages.
+- `dm_code` — the host invokes the plugin's `identity/deliverCode` method on the
+  `io.gleipnir/identity` extension ("deliver this code to this external user
+  privately" — host-initiated ⇒ not a tool, Amendment 1); the user enters the
+  code in Gleipnir. Proves the claimant can read the claimed identity's private
+  messages.
 - `inbound_code` — the user sends a code through the medium (e.g. a slash
   command); the plugin calls `SubmitIdentityProof(external_user_id, code)` and
   relays accept/reject. Stronger proof: the claimant demonstrably acts as that
   identity, authenticated by the medium.
 - `admin_set` — the existing admin-managed mapping, as one more method.
+- `oidc` (Amendment 1, optional) — where the medium offers a browser OAuth/OIDC
+  flow ("Sign in with …"), a standard authorization-code link proves control of
+  the external identity. Strongest and fully standard, but medium-dependent —
+  the code flows remain the medium-agnostic floor (email has no OIDC).
 
 Only **verified or admin-set** identities feed actor authorization. Unverified
 self-assertion is disqualifying: it cannot escalate roles (roles come from the
@@ -544,9 +657,11 @@ be aggressive while that is true). Therefore:
 - Kept: DB migrations; run history from the old era stays renderable; a release
   note states plainly that plugin API v1 is removed.
 - `plugin-sdk` repositions as: manifest types, signing CLI
-  (`gleipnir-plugin keygen|sign|package`, now packaging OCI archives), and
-  events-extension server helpers. The runtime scaffolding
-  (`serve`, `hostwire`, raw gRPC seams) is deleted.
+  (`gleipnir-plugin keygen|sign|package`, now packaging OCI archives),
+  extension server helpers (events, channel, config-options, identity), and
+  typed host-endpoint client wrappers. The runtime scaffolding (`serve`,
+  `hostwire`, and every protobuf/gRPC seam) is deleted — after Amendment 1 no
+  protobuf remains anywhere in the plugin contract.
 - The Slack plugin is **rewritten, not migrated** — as the proving ground for
   every profile contract (§4.2 keeps it from re-becoming the template).
 
@@ -582,6 +697,8 @@ WG with the conformance checklist attached. **Contribution boundary (decided):**
 | Google schema subset drifts | Translation layer is per-wire and declarative; contract tests per provider (`internal/llm/contract`). |
 | Socket-in-CI test cost | Profile conformance checklists anchor a bounded DooD job; in-process stubs remain for unit-level coverage. |
 | Version-tag collision: historical phase labels v0.x pre-date tags v1.0.0/v1.1.0 | `v0.2.0-alpha` is the deliberate re-baseline chosen for this effort; release notes must state the ordering explicitly. |
+| Both directions speak MCP (Amendment 1): a mis-bound host endpoint would expose host tools to the model plane | Host-plane invariant (§8): separate listener, internal networks only, never in `toolregistry`; startup assertion + conformance-suite test. |
+| Runtime schema validation replaces compile-time protobuf stubs for host callbacks | Typed `plugin-sdk` wrappers for Go/TS; conformance suite checks the contract from outside, covering every language. |
 
 ## 16. Deliverables map
 
@@ -590,10 +707,10 @@ ADRs (indexed in the tracker; this document is the body):
 | ADR | Title |
 |---|---|
 | ADR-053 | Plugins are signed, containerized MCP servers; capability-profile model |
-| ADR-054 | `io.gleipnir/events` extension — host-captured events, stream-first, WG proposal path |
-| ADR-055 | Tool-initiated HITL via MRTR + Tasks — permission/info split, hard caps, TTL answer-replay |
-| ADR-056 | Container substrate — socket postures, network-per-instance, egress grants, level-triggered reconciler, OCI-in-Minisign bundles |
-| ADR-057 | Host API over per-instance network + instance token; events-vs-host-API boundary rule |
+| ADR-054 | `io.gleipnir/events` extension — host-captured events, stream-first, CloudEvents 1.0 envelopes (Amendment 1), WG proposal path |
+| ADR-055 | Tool-initiated HITL via MRTR + Tasks — permission/info split, hard caps, TTL answer-replay; channel delivery via `io.gleipnir/channel` (Amendment 1) |
+| ADR-056 | Container substrate — socket postures, network-per-instance, egress grants, level-triggered reconciler, OCI-in-Minisign bundles, registry-aligned manifest base (Amendment 1) |
+| ADR-057 | Host endpoint: server→host callbacks as a host-side MCP server over per-instance network + instance token — gRPC/protobuf removed (Amendment 1); events-vs-host boundary rule; host-plane invariant |
 | ADR-058 | User scoping — verified identity linking (Tier 1) + user config schema (Tier 2); Tier 3 deferred |
 | ADR-059 | LLM schema policy — lossy presentation, exact enforcement; ADR-017 canonical-schema scoping rule |
 | ADR-060 | Hard cutover to `v0.2.0-alpha`; plugin-sdk repositioning; Slack rewrite |
@@ -605,7 +722,7 @@ sequencing discussion next):
 2. Tool-initiated HITL routing — §6 (#14)
 3. Container substrate + reconciler — §7 (#15)
 4. `io.gleipnir/events` extension + WG proposal — §5, §14 (#16)
-5. Host API re-plumb — §8 (#17)
+5. Host endpoint re-plumb — §8 (#17)
 6. User scoping Tiers 1–2 — §9 (#18)
 7. Slack plugin rewrite (proving ground) — §12 (#19)
 8. Profile conformance suite + CI — §4.2 (#20)
