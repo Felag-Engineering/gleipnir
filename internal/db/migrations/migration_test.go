@@ -692,3 +692,153 @@ func TestAddMCPToolCanonicalSchemaSkipsOnFreshSchema(t *testing.T) {
 		t.Fatal("ShouldSkip returned false on a fresh initial schema — did 0001_initial.sql forget the canonical_schema column?")
 	}
 }
+
+// seedPreToolInputRequestsBaseline hand-creates the end-of-0043 schema shape:
+// schema_migrations plus the minimal set of parent tables (policies, runs,
+// mcp_servers) that tool_input_requests and mcp_tasks reference by foreign
+// key, WITHOUT tool_input_requests or mcp_tasks themselves. This is the only
+// way to make 0044's Up() body actually execute, because 0001_initial.sql
+// already ships both tables and would cause ShouldSkip to return true (see
+// the equivalent note on seedPreProtocolVersionMCPServers).
+func seedPreToolInputRequestsBaseline(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	stmts := []string{
+		`CREATE TABLE schema_migrations (
+			version     INTEGER PRIMARY KEY,
+			applied_at  TEXT    NOT NULL
+		)`,
+		`INSERT INTO schema_migrations(version, applied_at) VALUES (1, '2024-01-01T00:00:00Z')`,
+
+		`CREATE TABLE policies (
+			id           TEXT NOT NULL PRIMARY KEY,
+			name         TEXT NOT NULL UNIQUE,
+			trigger_type TEXT NOT NULL,
+			yaml         TEXT NOT NULL,
+			created_at   TEXT NOT NULL,
+			updated_at   TEXT NOT NULL
+		)`,
+
+		`CREATE TABLE runs (
+			id              TEXT NOT NULL PRIMARY KEY,
+			policy_id       TEXT NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
+			status          TEXT NOT NULL,
+			trigger_type    TEXT NOT NULL,
+			trigger_payload TEXT NOT NULL,
+			started_at      TEXT NOT NULL,
+			created_at      TEXT NOT NULL
+		)`,
+
+		`CREATE TABLE mcp_servers (
+			id         TEXT NOT NULL PRIMARY KEY,
+			name       TEXT NOT NULL UNIQUE,
+			url        TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		)`,
+	}
+
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seedPreToolInputRequestsBaseline: %v\nstatement: %s", err, stmt)
+		}
+	}
+}
+
+// TestAddToolInputRequestsAndMCPTasks verifies that migration 0044 creates
+// both tool_input_requests and mcp_tasks on the existing-database upgrade
+// path, that rows referencing the pre-seeded runs/mcp_servers parents
+// round-trip, and that the migration is idempotent.
+func TestAddToolInputRequestsAndMCPTasks(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+
+	// Build the pre-0044 schema by hand — do NOT call applyInitialSchema.
+	seedPreToolInputRequestsBaseline(t, db)
+
+	m := &migrations.AddToolInputRequestsAndMCPTasks{}
+
+	// Confirm ShouldSkip is false so the test fails loudly if a future schema
+	// change makes the migration skip again (which would make the rest of
+	// this test a vacuous pass).
+	skip, err := m.ShouldSkip(ctx, db)
+	if err != nil {
+		t.Fatalf("ShouldSkip: %v", err)
+	}
+	if skip {
+		t.Fatal("ShouldSkip returned true against the pre-target baseline — the hand-crafted DDL must omit tool_input_requests and mcp_tasks")
+	}
+
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO policies(id, name, trigger_type, yaml, created_at, updated_at) VALUES ('p1', 'policy-1', 'manual', '{}', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("seed policy: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO runs(id, policy_id, status, trigger_type, trigger_payload, started_at, created_at) VALUES ('r1', 'p1', 'running', 'manual', '{}', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO mcp_servers(id, name, url, created_at) VALUES ('s1', 'srv', 'http://localhost:8080', '2024-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("seed mcp_servers row: %v", err)
+	}
+
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	var tableCount int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('tool_input_requests', 'mcp_tasks')`,
+	).Scan(&tableCount); err != nil {
+		t.Fatalf("query sqlite_master: %v", err)
+	}
+	if tableCount != 2 {
+		t.Fatalf("table count = %d, want 2 (tool_input_requests, mcp_tasks)", tableCount)
+	}
+
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO tool_input_requests
+			(id, run_id, server_id, tool_name, call_args, request_state, request_payload, elicitation_kind, status, expires_at, created_at)
+		 VALUES
+			('tir1', 'r1', 's1', 'send_invoice', '{}', 'state', '{}', 'permission', 'pending', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("insert tool_input_requests row: %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO mcp_tasks
+			(id, run_id, server_id, task_id, kind, status, created_at, updated_at)
+		 VALUES
+			('task1', 'r1', 's1', 'remote-task-1', 'tool_call', 'working', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("insert mcp_tasks row: %v", err)
+	}
+
+	// Second Apply must be a no-op — proves ShouldSkip flips to true after
+	// Up, not just on a fresh schema.
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("second Apply (idempotency): %v", err)
+	}
+}
+
+// TestAddToolInputRequestsAndMCPTasksSkipsOnFreshSchema is a regression gate
+// for forgetting to hand-sync 0001_initial.sql: on a fresh database built
+// from the initial schema, tool_input_requests and mcp_tasks must already
+// exist, so ShouldSkip must return true. If someone adds the Go migration
+// without editing 0001_initial.sql, this test fails (and sqlc would silently
+// not see the tables, since sqlc.yaml only reads 0001_initial.sql).
+func TestAddToolInputRequestsAndMCPTasksSkipsOnFreshSchema(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	applyInitialSchema(t, db)
+
+	skip, err := (&migrations.AddToolInputRequestsAndMCPTasks{}).ShouldSkip(ctx, db)
+	if err != nil {
+		t.Fatalf("ShouldSkip: %v", err)
+	}
+	if !skip {
+		t.Fatal("ShouldSkip returned false on a fresh initial schema — did 0001_initial.sql forget the tool_input_requests/mcp_tasks tables?")
+	}
+}

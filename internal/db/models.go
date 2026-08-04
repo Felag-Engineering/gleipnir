@@ -51,6 +51,20 @@ type McpServer struct {
 	ProtocolVersion      *string `json:"protocol_version"`
 }
 
+type McpTask struct {
+	ID             string  `json:"id"`
+	RunID          string  `json:"run_id"`
+	ServerID       string  `json:"server_id"`
+	TaskID         string  `json:"task_id"`
+	Kind           string  `json:"kind"`
+	PollIntervalMs *int64  `json:"poll_interval_ms"`
+	ServerTtl      *string `json:"server_ttl"`
+	Status         string  `json:"status"`
+	Result         *string `json:"result"`
+	CreatedAt      string  `json:"created_at"`
+	UpdatedAt      string  `json:"updated_at"`
+}
+
 type McpTool struct {
 	ID              string  `json:"id"`
 	ServerID        string  `json:"server_id"`
@@ -233,6 +247,22 @@ type SystemSetting struct {
 	Key       string `json:"key"`
 	Value     string `json:"value"`
 	UpdatedAt string `json:"updated_at"`
+}
+
+type ToolInputRequest struct {
+	ID              string  `json:"id"`
+	RunID           string  `json:"run_id"`
+	ServerID        string  `json:"server_id"`
+	ToolName        string  `json:"tool_name"`
+	CallArgs        string  `json:"call_args"`
+	RequestState    string  `json:"request_state"`
+	RequestPayload  string  `json:"request_payload"`
+	ElicitationKind string  `json:"elicitation_kind"`
+	Status          string  `json:"status"`
+	Response        *string `json:"response"`
+	ResolvedAt      *string `json:"resolved_at"`
+	ExpiresAt       string  `json:"expires_at"`
+	CreatedAt       string  `json:"created_at"`
 }
 
 type TriggerQueue struct {

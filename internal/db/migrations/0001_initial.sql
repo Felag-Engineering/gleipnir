@@ -533,6 +533,60 @@ CREATE TABLE plugin_event_dedup (
 CREATE INDEX idx_plugin_event_dedup_created_at_ms ON plugin_event_dedup(created_at_ms);
 
 -- ---------------------------------------------------------------------------
+-- Tool-initiated HITL and MCP task handles (ADR-055, mcp-realignment-spec.md §6)
+--
+-- tool_input_requests persists a tool-initiated human-in-the-loop wait: an MCP
+-- server paused a tools/call with an MRTR input_required result. The row
+-- records the original call (server, tool, args) so it can be retried, the
+-- opaque requestState the server returned (size-capped at write, defense in
+-- depth), the elicitation-shaped request payload (messages + schemas), and
+-- the operator's eventual response. This is what lets a human answer be
+-- applied after a host restart (§13 durability claim).
+--
+-- mcp_tasks persists MCP Tasks-extension handles (SEP-2663) so polling
+-- resumes after a restart. kind covers both tool_call (a task backing a
+-- tool_input_requests row) and channel_request -- the same table is designed
+-- for reuse by the eventual §6.4 Channel-Request-as-task path, not just
+-- tool-initiated waits.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE tool_input_requests (
+    id                TEXT    PRIMARY KEY,                                              -- ULID
+    run_id            TEXT    NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    server_id         TEXT    NOT NULL REFERENCES mcp_servers(id) ON DELETE CASCADE,     -- server that owns the original tools/call
+    tool_name         TEXT    NOT NULL,                                                 -- original tools/call name
+    call_args         TEXT    NOT NULL,                                                 -- JSON blob, original tools/call arguments
+    request_state     TEXT    NOT NULL,                                                 -- opaque MRTR requestState from the server's InputRequiredResult; size-capped at write (defense in depth, application layer, spec §6.2)
+    request_payload   TEXT    NOT NULL,                                                 -- JSON blob: elicitation-shaped payload (messages + inputRequests/requestedSchema)
+    elicitation_kind  TEXT    NOT NULL CHECK(elicitation_kind IN ('permission', 'information')),  -- spec §6.1
+    status            TEXT    NOT NULL CHECK(status IN ('pending', 'resolved', 'timed_out')),
+    response          TEXT,                                                             -- nullable, JSON blob of inputResponses / operator answer
+    resolved_at       TEXT,                                                             -- nullable, ISO 8601 UTC
+    expires_at        TEXT    NOT NULL,                                                 -- effective deadline: min of Gleipnir policy timeout / server TTL / requestState TTL (spec §6.3)
+    created_at        TEXT    NOT NULL                                                  -- ISO 8601 UTC
+);
+CREATE INDEX idx_tool_input_requests_run_id         ON tool_input_requests(run_id);
+CREATE INDEX idx_tool_input_requests_run_pending    ON tool_input_requests(run_id, status);
+CREATE INDEX idx_tool_input_requests_status_expires ON tool_input_requests(status, expires_at);
+
+CREATE TABLE mcp_tasks (
+    id                TEXT    PRIMARY KEY,                                              -- ULID
+    run_id            TEXT    NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    server_id         TEXT    NOT NULL REFERENCES mcp_servers(id) ON DELETE CASCADE,     -- server hosting the durable task
+    task_id           TEXT    NOT NULL,                                                 -- server-assigned Tasks-extension task id (SEP-2663)
+    kind              TEXT    NOT NULL CHECK(kind IN ('tool_call', 'channel_request')),  -- reused by both the tool-initiated wait path and the eventual channel-Request-as-task path (spec §6.4)
+    poll_interval_ms  INTEGER,                                                          -- nullable; server-suggested poll cadence
+    server_ttl        TEXT,                                                             -- nullable, ISO 8601 UTC; server-side task expiry -- "weather", not authoritative (spec §6.3)
+    status            TEXT    NOT NULL CHECK(status IN ('working', 'input_required', 'complete', 'failed', 'cancelled', 'expired')),
+    result            TEXT,                                                             -- nullable, JSON blob; terminal task result
+    created_at        TEXT    NOT NULL,                                                 -- ISO 8601 UTC
+    updated_at        TEXT    NOT NULL,                                                 -- ISO 8601 UTC
+    UNIQUE(server_id, task_id)
+);
+CREATE INDEX idx_mcp_tasks_run_id ON mcp_tasks(run_id);
+CREATE INDEX idx_mcp_tasks_status ON mcp_tasks(status);
+
+-- ---------------------------------------------------------------------------
 -- Seed migration version
 -- ---------------------------------------------------------------------------
 
