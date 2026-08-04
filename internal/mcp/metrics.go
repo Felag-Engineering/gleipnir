@@ -59,6 +59,12 @@ func ClassifyMCPErrorType(err error) string {
 		// annotation: a protocol-level defect, not a connection failure.
 		return metrics.ErrorTypeProtocol
 	}
+	var irErr *InputRequiredError
+	if errors.As(err, &irErr) {
+		// The server claimed input_required but sent an unparseable or
+		// oversize payload: a protocol-level defect, same class as HeaderParamError.
+		return metrics.ErrorTypeProtocol
+	}
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
 		return metrics.ErrorTypeConnection

@@ -56,6 +56,8 @@ type FakeMCPServer struct {
 	serverInfoName          string
 	serverInfoVersion       string
 	toolResultType          string
+	toolInputRequests       any
+	toolRequestState        any
 	toolsListTTLMs          any
 	toolsListCacheScope     any
 	toolsListHintSet        bool
@@ -172,6 +174,21 @@ func WithFakeServerInfo(name, version string) FakeServerOption {
 // documented no-cross-check note), so a test can drive an unrecognized value.
 func WithFakeToolResultType(rt string) FakeServerOption {
 	return func(f *FakeMCPServer) { f.toolResultType = rt }
+}
+
+// WithFakeInputRequired sets the inputRequests/requestState fixture the fake
+// reports on tools/call, alongside whatever WithFakeToolResultType set — the
+// two are independent so a test can drive resultType:"input_required" with
+// no inputRequests/requestState at all, to fixture the "malformed"/"absent"
+// decode cases. inputRequests and requestState are marshaled verbatim
+// (same "keep the fake dumb" discipline as WithFakeToolResultType: no shape
+// validation), so a test can drive an oversize or malformed fixture too.
+// Both nil (the default) omits both keys entirely.
+func WithFakeInputRequired(inputRequests, requestState any) FakeServerOption {
+	return func(f *FakeMCPServer) {
+		f.toolInputRequests = inputRequests
+		f.toolRequestState = requestState
+	}
 }
 
 // WithFakeToolsListCacheHint sets the ttlMs/cacheScope pair the fake reports
@@ -599,6 +616,8 @@ func (f *FakeMCPServer) handleToolsCall(w http.ResponseWriter, req FakeRequest) 
 
 	f.mu.Lock()
 	resultType := f.toolResultType
+	inputRequests := f.toolInputRequests
+	requestState := f.toolRequestState
 	f.mu.Unlock()
 
 	result := map[string]any{
@@ -609,6 +628,12 @@ func (f *FakeMCPServer) handleToolsCall(w http.ResponseWriter, req FakeRequest) 
 	}
 	if resultType != "" {
 		result["resultType"] = resultType
+	}
+	if inputRequests != nil {
+		result["inputRequests"] = inputRequests
+	}
+	if requestState != nil {
+		result["requestState"] = requestState
 	}
 
 	w.Header().Set("Content-Type", "application/json")

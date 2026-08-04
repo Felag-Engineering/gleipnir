@@ -153,6 +153,17 @@ func TestCallTool_ResultTypeAcrossEras(t *testing.T) {
 		{name: "input_required", value: "input_required", want: "input_required"},
 	}
 
+	// fixtureInputRequests/fixtureRequestState fixture a well-formed
+	// input_required payload for the "input_required" row above: since #792,
+	// CallTool decodes that resultType (inputrequired.go) instead of treating
+	// it as opaque data, so this row now needs a payload that actually
+	// decodes -- decode-failure coverage (absent requestState, malformed
+	// inputRequests, the size caps) lives in inputrequired_test.go.
+	fixtureInputRequests := []map[string]any{
+		{"message": "delete the production database?", "requestedSchema": map[string]any{"type": "object"}},
+	}
+	const fixtureRequestState = "opaque-state-token"
+
 	for _, era := range eras {
 		t.Run(era.name, func(t *testing.T) {
 			for _, fixture := range fixtures {
@@ -161,6 +172,9 @@ func TestCallTool_ResultTypeAcrossEras(t *testing.T) {
 					if era.strict {
 						opts = append(opts, WithFakeRejectLegacyHandshake())
 					}
+					if fixture.value == ResultTypeInputRequired {
+						opts = append(opts, WithFakeInputRequired(fixtureInputRequests, fixtureRequestState))
+					}
 					fake := NewFakeMCPServer(opts...)
 					srv := httptest.NewServer(fake)
 					t.Cleanup(srv.Close)
@@ -168,7 +182,7 @@ func TestCallTool_ResultTypeAcrossEras(t *testing.T) {
 					c := NewClient(srv.URL, WithProtocolVersion(era.pin))
 					res, err := c.CallTool(context.Background(), "tool-a", nil, CallOptions{})
 					if err != nil {
-						t.Fatalf("CallTool: %v (a non-complete resultType is data, never an error)", err)
+						t.Fatalf("CallTool: %v (a non-complete resultType is data, never an error, and this fixture's input_required payload is well-formed)", err)
 					}
 					if res.ResultType != fixture.want {
 						t.Errorf("ResultType = %q, want %q", res.ResultType, fixture.want)
@@ -178,6 +192,22 @@ func TestCallTool_ResultTypeAcrossEras(t *testing.T) {
 					}
 					if !strings.Contains(string(res.Output), "called tool-a") {
 						t.Errorf("Output = %s, want it to contain %q", res.Output, "called tool-a")
+					}
+					if fixture.value == ResultTypeInputRequired {
+						if res.InputRequired == nil {
+							t.Fatal("InputRequired = nil, want a decoded InputRequiredResult")
+						}
+						if len(res.InputRequired.InputRequests) != 1 {
+							t.Fatalf("len(InputRequired.InputRequests) = %d, want 1", len(res.InputRequired.InputRequests))
+						}
+						if got := res.InputRequired.InputRequests[0].Message; got != fixtureInputRequests[0]["message"] {
+							t.Errorf("InputRequests[0].Message = %q, want %q", got, fixtureInputRequests[0]["message"])
+						}
+						if got := string(res.InputRequired.RequestState); got != `"`+fixtureRequestState+`"` {
+							t.Errorf("RequestState = %s, want %q", got, fixtureRequestState)
+						}
+					} else if res.InputRequired != nil {
+						t.Errorf("InputRequired = %+v, want nil for resultType %q", res.InputRequired, fixture.want)
 					}
 					if v := fake.Violations(); len(v) != 0 {
 						t.Errorf("Violations = %v, want none", v)

@@ -53,6 +53,12 @@ type ToolResult struct {
 	// it is deliberately not written into the run's LLM-visible audit trail.
 	// Interpreting it belongs to the milestone that consumes it.
 	ResultType string
+
+	// InputRequired is non-nil exactly when ResultType == ResultTypeInputRequired
+	// (inputrequired.go): the decoded MRTR elicitation batch plus the opaque
+	// requestState the retry call must echo back. nil for every other
+	// ResultType.
+	InputRequired *InputRequiredResult
 }
 
 // ResultTypeComplete is the tools/call resultType every pre-2026-07-28
@@ -60,10 +66,11 @@ type ToolResult struct {
 // an absent or empty resultType to (spec §11: "absent ⇒ complete for older
 // servers").
 //
-// The other 2026-07-28 values — "task" and "input_required" — are
-// deliberately NOT declared here: this package must not branch on
-// resultType, and naming a value nothing compares against would imply it
-// does. The milestone that consumes them declares them where it does.
+// The other 2026-07-28 value, "task", is deliberately NOT declared here:
+// this package must not branch on it, and naming a value nothing compares
+// against would imply it does. "input_required" WAS in that category before
+// #792 — it is now ResultTypeInputRequired (inputrequired.go), the milestone
+// that declares and interprets it.
 const ResultTypeComplete = "complete"
 
 // maxResultTypeLen bounds a server-controlled resultType string before it is
@@ -179,10 +186,16 @@ type toolsListParams struct {
 // declared first and _meta last with omitempty, so a legacy request marshals to
 // exactly `{"name":...,"arguments":...}` — byte-for-byte what the previous
 // anonymous struct produced.
+//
+// InputResponses and RequestState are the MRTR retry fields (inputrequired.go,
+// spec §6.4): both omitempty, both nil on every call that is not answering a
+// prior input_required result, so an ordinary tools/call is unaffected.
 type toolsCallParams struct {
-	Name      string         `json:"name"`
-	Arguments map[string]any `json:"arguments"`
-	Meta      map[string]any `json:"_meta,omitempty"`
+	Name           string              `json:"name"`
+	Arguments      map[string]any      `json:"arguments"`
+	Meta           map[string]any      `json:"_meta,omitempty"`
+	InputResponses []inputResponseWire `json:"inputResponses,omitempty"`
+	RequestState   json.RawMessage     `json:"requestState,omitempty"`
 }
 
 type toolsListResult struct {
@@ -224,10 +237,20 @@ type toolWire struct {
 // fields are only ["content","resultType"]. There is nothing to parse for a
 // cache hint on a tool call result; do not add one here to "complete the
 // symmetry" with toolsListResult.
+//
+// InputRequests and RequestState carry the MRTR input_required payload
+// (inputrequired.go, spec §6): both json.RawMessage so a malformed or
+// oversize payload can be classified precisely by
+// decodeInputRequiredResult rather than failing this json.Unmarshal outright
+// — CallTool only reaches that decode when ResultType normalises to
+// ResultTypeInputRequired, so both fields are ignored (and may be absent)
+// on every other result.
 type toolsCallResult struct {
-	Content    []contentItem   `json:"content"`
-	IsError    bool            `json:"isError"`
-	ResultType json.RawMessage `json:"resultType"`
+	Content       []contentItem   `json:"content"`
+	IsError       bool            `json:"isError"`
+	ResultType    json.RawMessage `json:"resultType"`
+	InputRequests json.RawMessage `json:"inputRequests,omitempty"`
+	RequestState  json.RawMessage `json:"requestState,omitempty"`
 }
 
 type contentItem struct {
@@ -601,6 +624,17 @@ type CallOptions struct {
 	// (that is the agent's pre-dispatch ArgValidator, #744). Empty means "no
 	// annotations to honor".
 	HeaderParamSchema json.RawMessage
+
+	// InputResponses and RequestState make this call an MRTR retry (spec
+	// §6.4): the caller answers each InputRequest from a prior
+	// InputRequiredResult and attaches RequestState verbatim so the server
+	// can resume the round trip. Both are the zero value on an ordinary
+	// call; honored only on the 2026-07-28 transport, matching every other
+	// _meta/header extension in this file — a legacy-pinned or never-probed
+	// server never returns input_required in the first place, so there is
+	// nothing to retry there.
+	InputResponses []InputResponse
+	RequestState   json.RawMessage
 }
 
 // CallTool invokes a named tool on the MCP server with the given input.
@@ -640,12 +674,22 @@ func (c *Client) CallTool(ctx context.Context, name string, input map[string]any
 		}
 	}
 
+	params := toolsCallParams{Name: name, Arguments: input, Meta: c.requestMeta(opts.Capabilities)}
+	if c.isModernProtocol() && len(opts.InputResponses) > 0 {
+		wireResponses := make([]inputResponseWire, len(opts.InputResponses))
+		for i, r := range opts.InputResponses {
+			wireResponses[i] = inputResponseWire(r)
+		}
+		params.InputResponses = wireResponses
+		params.RequestState = opts.RequestState
+	}
+
 	var body []byte
 	body, err = json.Marshal(jsonrpcRequest{
 		JSONRPC: "2.0",
 		ID:      2,
 		Method:  methodToolsCall,
-		Params:  toolsCallParams{Name: name, Arguments: input, Meta: c.requestMeta(opts.Capabilities)},
+		Params:  params,
 	})
 	if err != nil {
 		err = fmt.Errorf("marshal tools/call request: %w", err)
@@ -687,6 +731,17 @@ func (c *Client) CallTool(ctx context.Context, name string, input map[string]any
 		Output:     output,
 		IsError:    result.IsError,
 		ResultType: normalizeResultType(decodeResultType(result.ResultType)),
+	}
+
+	if res.ResultType == ResultTypeInputRequired {
+		var inputRequired InputRequiredResult
+		inputRequired, err = decodeInputRequiredResult(result)
+		if err != nil {
+			res = ToolResult{}
+			err = fmt.Errorf("tool %q returned input_required: %w", name, err)
+			return
+		}
+		res.InputRequired = &inputRequired
 	}
 	return
 }
