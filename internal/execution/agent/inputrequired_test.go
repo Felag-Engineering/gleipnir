@@ -127,7 +127,7 @@ func TestInputRequiredHandler_Route_ResumesOnAnswer(t *testing.T) {
 	if row.CallArgs != `{"env":"prod"}` {
 		t.Errorf("call_args = %q, want the original call arguments", row.CallArgs)
 	}
-	if row.ElicitationKind != elicitationKindPermission {
+	if row.ElicitationKind != string(elicitationKindPermission) {
 		t.Errorf("elicitation_kind = %q, want permission", row.ElicitationKind)
 	}
 	if row.ExpiresAt == "" {
@@ -376,7 +376,7 @@ func TestClassifyElicitationKind(t *testing.T) {
 	tests := []struct {
 		name     string
 		requests []mcp.InputRequest
-		want     string
+		want     model.ElicitationKind
 	}{
 		{
 			name:     "no_fields_is_consent_only",
@@ -397,7 +397,28 @@ func TestClassifyElicitationKind(t *testing.T) {
 			name: "explicit_meta_kind_wins_over_the_convention",
 			requests: []mcp.InputRequest{{
 				RequestedSchema: json.RawMessage(`{"type":"object","properties":{}}`),
-				ElicitationKind: elicitationKindInformation,
+				ElicitationKind: string(elicitationKindInformation),
+			}},
+			want: elicitationKindInformation,
+		},
+		{
+			// A permission hint on a schema that asks for fields is honored:
+			// the server knows what it is doing with its own request.
+			name: "explicit_meta_kind_wins_in_the_other_direction",
+			requests: []mcp.InputRequest{{
+				RequestedSchema: json.RawMessage(`{"type":"object","properties":{"ticket":{"type":"string"}}}`),
+				ElicitationKind: string(elicitationKindPermission),
+			}},
+			want: elicitationKindPermission,
+		},
+		{
+			// A hint outside the vocabulary is a server that got an optional
+			// field wrong; the schema shape is still readable, so fall through
+			// to the convention rather than honoring or rejecting it.
+			name: "malformed_meta_kind_falls_back_to_the_convention",
+			requests: []mcp.InputRequest{{
+				RequestedSchema: json.RawMessage(`{"type":"object","properties":{"ticket":{"type":"string"}}}`),
+				ElicitationKind: "urgent",
 			}},
 			want: elicitationKindInformation,
 		},
@@ -434,6 +455,9 @@ type mrtrServer struct {
 	// alwaysAsk keeps answering input_required, modelling a server that never
 	// stops asking.
 	alwaysAsk bool
+	// secretSchema makes the elicitation ask for a secret value, which the
+	// host refuses to render as a form.
+	secretSchema bool
 }
 
 func (m *mrtrServer) handler() http.HandlerFunc {
@@ -459,7 +483,7 @@ func (m *mrtrServer) handler() http.HandlerFunc {
 					"resultType": mcp.ResultTypeInputRequired,
 					"inputRequests": []map[string]any{{
 						"message":         "deploy to prod?",
-						"requestedSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+						"requestedSchema": m.requestedSchema(),
 					}},
 					"requestState": map[string]any{"cursor": "abc"},
 				},
@@ -475,6 +499,20 @@ func (m *mrtrServer) handler() http.HandlerFunc {
 			},
 		})
 	}
+}
+
+// requestedSchema returns the schema the fake asks with: consent-only by
+// default, or a secret-collecting form when secretSchema is set.
+func (m *mrtrServer) requestedSchema() map[string]any {
+	if m.secretSchema {
+		return map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"api_token": map[string]any{"type": "string", "format": "password"},
+			},
+		}
+	}
+	return map[string]any{"type": "object", "properties": map[string]any{}}
 }
 
 // params returns the params object of the recorded request at index i.
@@ -844,3 +882,101 @@ func TestResolveOperatorTimeout(t *testing.T) {
 // pause never reaches the model. NewMockLLMClient is only wired above so a
 // future edit that does reach it fails loudly rather than nil-panicking.
 var _ llm.LLMClient = testutil.NewMockLLMClient()
+
+// Spec §6.1: form mode never carries secrets. URL mode exists for that and
+// does not exist yet, so a server that asks for one gets a refusal — not a
+// redacted form, which would leave the operator answering a question they
+// cannot see.
+func TestCheckNoSecretFields(t *testing.T) {
+	tests := []struct {
+		name      string
+		schema    string
+		wantError bool
+	}{
+		{name: "ordinary_field", schema: `{"type":"object","properties":{"ticket":{"type":"string"}}}`},
+		{name: "no_schema", schema: ``},
+		{
+			name:      "gleipnir_secret_marker",
+			schema:    `{"type":"object","properties":{"token":{"type":"string","x-gleipnir-secret":true}}}`,
+			wantError: true,
+		},
+		{
+			name:      "password_format",
+			schema:    `{"type":"object","properties":{"pw":{"type":"string","format":"password"}}}`,
+			wantError: true,
+		},
+		{
+			name:      "write_only",
+			schema:    `{"type":"object","properties":{"pw":{"type":"string","writeOnly":true}}}`,
+			wantError: true,
+		},
+		{
+			// Whitespace between the key and its value must not smuggle a
+			// marker past the check.
+			name:      "password_format_with_whitespace",
+			schema:    "{\"type\":\"object\",\"properties\":{\"pw\":{\n  \"format\" : \"password\"\n}}}",
+			wantError: true,
+		},
+		{
+			// Nesting depth is not a hiding place either.
+			name:      "marker_nested_deep",
+			schema:    `{"type":"object","properties":{"outer":{"type":"object","properties":{"inner":{"format":"password"}}}}}`,
+			wantError: true,
+		},
+		{
+			// A description that merely talks about passwords is not a secret
+			// field: whitespace inside strings is preserved, so the marker
+			// pattern cannot form by accident.
+			name:   "description_mentioning_password",
+			schema: `{"type":"object","properties":{"note":{"type":"string","description":"do not paste your format: password here"}}}`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			requests := []mcp.InputRequest{{RequestedSchema: json.RawMessage(tc.schema)}}
+			err := checkNoSecretFields(requests)
+			if tc.wantError {
+				if !errors.Is(err, ErrSecretElicitation) {
+					t.Fatalf("checkNoSecretFields = %v, want ErrSecretElicitation", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("checkNoSecretFields = %v, want nil", err)
+			}
+		})
+	}
+}
+
+// The refusal happens before the pause: no row is persisted, the run is never
+// suspended, and the agent gets a correctable tool_result instead.
+func TestBoundAgent_ToolCall_SecretElicitationIsRefusedBeforePausing(t *testing.T) {
+	fake := &mrtrServer{alwaysAsk: true, secretSchema: true}
+	s, pub, ba := newMRTRAgent(t, fake, model.ApprovalModeNone, nil)
+
+	output, isError, err := ba.handleToolCall(context.Background(), "r1", "myserver.deploy", map[string]any{"env": "prod"})
+	if err != nil {
+		t.Fatalf("handleToolCall: unexpected error: %v", err)
+	}
+	if !isError {
+		t.Error("isError = false, want true — the call was abandoned")
+	}
+	if !strings.Contains(output, "secret") {
+		t.Errorf("output = %q, want the refusal explanation", output)
+	}
+	if fake.count() != 1 {
+		t.Errorf("server saw %d calls, want 1 — the refusal must not retry", fake.count())
+	}
+	if n := pub.countByType("tool_input.created"); n != 0 {
+		t.Errorf("%d pauses were published, want 0 — a refused elicitation never reaches an operator", n)
+	}
+
+	rows, err := s.ListResumableToolInputRequests(context.Background())
+	if err != nil {
+		t.Fatalf("ListResumableToolInputRequests: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("%d rows persisted, want 0", len(rows))
+	}
+}

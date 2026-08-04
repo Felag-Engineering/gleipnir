@@ -403,9 +403,11 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 	// Enrich the run context with correlation IDs so all downstream log calls
 	// automatically include run_id and policy_id in structured output.
 	runCtx = logctx.WithRunCorrelation(runCtx, run.ID, params.PolicyID)
-	// RegisterWithFeedbackResolver performs a single atomic lock acquisition so
-	// there is zero window between run registration and resolver attachment.
-	l.manager.RegisterWithFeedbackResolver(run.ID, cancel, approvalCh, ba.FeedbackResolver())
+	// RegisterWithResolvers performs a single atomic lock acquisition so there
+	// is zero window between run registration and resolver attachment — for
+	// both operator-wait paths, since either can be entered on the run's very
+	// first tool call.
+	l.manager.RegisterWithResolvers(run.ID, cancel, approvalCh, ba.FeedbackResolver(), ba.InputRequiredResolver())
 
 	payload := params.TriggerPayload
 	go func() {

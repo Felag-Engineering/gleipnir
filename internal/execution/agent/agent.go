@@ -731,12 +731,13 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 			return "", false, fmt.Errorf("calling tool %s: %w", toolName, err)
 		}
 
-		// A server that keeps asking for input on one call is a structural
-		// problem with that call, not with the run — hand the agent a
-		// correctable tool_result, same as a schema violation.
-		var roundErr *InputRoundLimitError
-		if errors.As(err, &roundErr) {
-			return a.toolResultError(ctx, runID, toolName, roundErr.Error())
+		// A call the host abandoned — too many input rounds, or an
+		// elicitation it refuses to render — is a structural problem with that
+		// call, not with the run. Hand the agent a correctable tool_result,
+		// same as a schema violation.
+		var abandonedErr *InputCallAbandonedError
+		if errors.As(err, &abandonedErr) {
+			return a.toolResultError(ctx, runID, toolName, abandonedErr.Error())
 		}
 
 		// An unusable x-mcp-header declaration is a structural error the

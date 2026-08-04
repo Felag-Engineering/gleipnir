@@ -28,3 +28,12 @@ WHERE id = :id AND status = 'pending';
 -- requestState survives restarts even though full run resurrection does not).
 -- name: ListResumableToolInputRequests :many
 SELECT * FROM tool_input_requests WHERE status = 'pending';
+
+-- GetPendingToolInputRequestsByRun returns the pending tool input requests for
+-- one run, oldest first. The resolution endpoint uses it to find what an
+-- operator is answering; a run pauses on one request at a time, so in practice
+-- this returns zero or one row, and zero means there is no active gate.
+-- name: GetPendingToolInputRequestsByRun :many
+SELECT * FROM tool_input_requests
+WHERE run_id = :run_id AND status = 'pending'
+ORDER BY created_at;
