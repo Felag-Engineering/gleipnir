@@ -449,6 +449,20 @@ func (r *Registry) ResolveToolByName(ctx context.Context, dotName string) (*Clie
 	return r.clientForServer(srv), toolName, nil
 }
 
+// ClientForServerID resolves serverID directly to a ready, cached *Client.
+// Unlike ResolveToolByName, the caller here already has a server ID in hand
+// (mcp_tasks.server_id) rather than a dot-notation tool name — a
+// Tasks-extension task is addressed by server + taskId, not by any tool name
+// — so there is no tool lookup to do first. Satisfies PollScheduler's
+// ClientResolver interface (tasks_scheduler.go).
+func (r *Registry) ClientForServerID(ctx context.Context, serverID string) (*Client, error) {
+	srv, err := r.queries.GetMCPServer(ctx, serverID)
+	if err != nil {
+		return nil, fmt.Errorf("get mcp server %q: %w", serverID, err)
+	}
+	return r.clientForServer(srv), nil
+}
+
 // LookupTool reports whether server_name.tool_name is registered and, when it
 // is, returns the tool's stored canonical schema. Satisfies policy.ToolLookup
 // structurally, so internal/policy never imports internal/mcp.
