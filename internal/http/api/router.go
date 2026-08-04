@@ -224,6 +224,16 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 			Post("/api/v1/runs/{runID}/approval", runsHandler.SubmitApproval)
 		r.With(httputil.BodySizeLimit(httputil.MaxRequestBodySize), auth.RequireRole(model.RoleApprover, model.RoleOperator)).
 			Post("/api/v1/runs/{runID}/feedback", runsHandler.SubmitFeedback)
+		// Tool-initiated HITL (ADR-055). Reading what a run is blocked on
+		// carries the same access as the rest of the run detail surface;
+		// answering does not. The middleware here only excludes auditors — the
+		// role that may actually answer depends on whether the request is a
+		// consent-only ask or a request for values, which is a property of the
+		// persisted row, so SubmitToolInput makes that call itself (spec §6.1).
+		r.With(auth.RequireRole(model.RoleOperator, model.RoleApprover, model.RoleAuditor)).
+			Get("/api/v1/runs/{runID}/tool-input", runsHandler.GetToolInput)
+		r.With(httputil.BodySizeLimit(httputil.MaxRequestBodySize), auth.RequireRole(model.RoleApprover, model.RoleOperator)).
+			Post("/api/v1/runs/{runID}/tool-input", runsHandler.SubmitToolInput)
 
 		// Public config — accessible to all authenticated users.
 		// Operators and auditors need public_url to construct full webhook URLs.

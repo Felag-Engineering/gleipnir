@@ -82,6 +82,53 @@ func (q *Queries) ExpireToolInputRequest(ctx context.Context, arg ExpireToolInpu
 	return result.RowsAffected()
 }
 
+const getPendingToolInputRequestsByRun = `-- name: GetPendingToolInputRequestsByRun :many
+SELECT id, run_id, server_id, tool_name, call_args, request_state, request_payload, elicitation_kind, status, response, resolved_at, expires_at, created_at FROM tool_input_requests
+WHERE run_id = ?1 AND status = 'pending'
+ORDER BY created_at
+`
+
+// GetPendingToolInputRequestsByRun returns the pending tool input requests for
+// one run, oldest first. The resolution endpoint uses it to find what an
+// operator is answering; a run pauses on one request at a time, so in practice
+// this returns zero or one row, and zero means there is no active gate.
+func (q *Queries) GetPendingToolInputRequestsByRun(ctx context.Context, runID string) ([]ToolInputRequest, error) {
+	rows, err := q.db.QueryContext(ctx, getPendingToolInputRequestsByRun, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ToolInputRequest
+	for rows.Next() {
+		var i ToolInputRequest
+		if err := rows.Scan(
+			&i.ID,
+			&i.RunID,
+			&i.ServerID,
+			&i.ToolName,
+			&i.CallArgs,
+			&i.RequestState,
+			&i.RequestPayload,
+			&i.ElicitationKind,
+			&i.Status,
+			&i.Response,
+			&i.ResolvedAt,
+			&i.ExpiresAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getToolInputRequest = `-- name: GetToolInputRequest :one
 SELECT id, run_id, server_id, tool_name, call_args, request_state, request_payload, elicitation_kind, status, response, resolved_at, expires_at, created_at FROM tool_input_requests WHERE id = ?1
 `

@@ -24,6 +24,16 @@ type FeedbackResolver interface {
 	Resolve(requestID, body string) error
 }
 
+// ToolInputResolver is the per-run target that ResolveToolInput delegates to.
+// *agent.InputRequiredHandler satisfies it. It is a separate interface from
+// FeedbackResolver despite the identical method set: the two deliver different
+// payloads (freeform operator text vs a validated, position-correlated answer
+// to a specific elicitation) to different waiter maps, and collapsing them
+// would make it possible to hand one wait's answer to the other.
+type ToolInputResolver interface {
+	Resolve(requestID, body string) error
+}
+
 // trackedRun holds the per-run state that RunManager needs to cancel and
 // communicate with an in-flight run goroutine.
 type trackedRun struct {
@@ -37,6 +47,10 @@ type trackedRun struct {
 	// atomically with Register by RegisterWithFeedbackResolver. Nilled by
 	// CancelAll so ResolveFeedback returns ErrRunNotFound rather than racing.
 	feedbackResolver FeedbackResolver
+	// toolInputResolver is the tool-initiated HITL resolver for this run
+	// (ADR-055). Same lifecycle as feedbackResolver: set atomically with
+	// Register, nilled by CancelAll.
+	toolInputResolver ToolInputResolver
 	// waiters are closed by Deregister to unblock callers of WaitForDeregistration.
 	waiters []chan struct{}
 }
@@ -98,13 +112,29 @@ func (m *RunManager) RegisterWithFeedbackResolver(
 	approvalCh chan bool,
 	resolver FeedbackResolver,
 ) {
+	m.RegisterWithResolvers(runID, cancel, approvalCh, resolver, nil)
+}
+
+// RegisterWithResolvers is RegisterWithFeedbackResolver plus the tool-initiated
+// HITL resolver, attached in the same single mu.Lock so no caller can observe a
+// run that is tracked but not yet answerable. Production (launcher.go) uses
+// this one; the feedback-only variant above remains for callers that have no
+// tool-input path to register.
+func (m *RunManager) RegisterWithResolvers(
+	runID string,
+	cancel context.CancelFunc,
+	approvalCh chan bool,
+	feedback FeedbackResolver,
+	toolInput ToolInputResolver,
+) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.wg.Add(1)
 	m.runs[runID] = &trackedRun{
-		cancel:           cancel,
-		approval:         approvalCh,
-		feedbackResolver: resolver,
+		cancel:            cancel,
+		approval:          approvalCh,
+		feedbackResolver:  feedback,
+		toolInputResolver: toolInput,
 	}
 }
 
@@ -133,6 +163,33 @@ func (m *RunManager) ResolveFeedback(runID, requestID, body string) error {
 	resolver := tr.feedbackResolver // copy under lock
 	m.mu.Unlock()                   // release BEFORE calling Resolve
 	return resolver.Resolve(requestID, body)
+}
+
+// ResolveToolInput delivers an operator's answer to a paused tool-initiated
+// input request (ADR-055). Returns ErrRunNotFound when the run is not tracked
+// or has been cancelled; agent.ErrUnknownInputRequestID when the run is live
+// but that particular wait is already over.
+func (m *RunManager) ResolveToolInput(runID, requestID, body string) error {
+	m.mu.Lock()
+	tr, ok := m.runs[runID]
+	if !ok || tr.toolInputResolver == nil {
+		m.mu.Unlock()
+		return ErrRunNotFound
+	}
+	resolver := tr.toolInputResolver // copy under lock
+	m.mu.Unlock()                    // release BEFORE calling Resolve
+	return resolver.Resolve(requestID, body)
+}
+
+// RegisterToolInputResolver attaches a ToolInputResolver to an already-registered
+// run. Kept for tests and future late-attach scenarios; production uses
+// RegisterWithResolvers. No-op if the run is not currently registered.
+func (m *RunManager) RegisterToolInputResolver(runID string, r ToolInputResolver) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if tr, ok := m.runs[runID]; ok {
+		tr.toolInputResolver = r
+	}
 }
 
 // Cancel calls the cancel func for the given run ID. Returns ErrRunNotFound if
@@ -268,7 +325,8 @@ func (m *RunManager) CancelAll() {
 		// that Deregister can still call wg.Done when each goroutine exits.
 		tr.cancel = nil
 		tr.approval = nil
-		tr.feedbackResolver = nil // niled so ResolveFeedback returns ErrRunNotFound
+		tr.feedbackResolver = nil  // niled so ResolveFeedback returns ErrRunNotFound
+		tr.toolInputResolver = nil // niled so ResolveToolInput returns ErrRunNotFound
 	}
 	m.mu.Unlock()
 

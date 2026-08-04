@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,10 +43,11 @@ const (
 )
 
 // Elicitation kinds persisted in tool_input_requests.elicitation_kind (spec
-// §6.1). The column has a CHECK constraint on exactly these two values.
+// §6.1). The vocabulary lives in internal/model because the API layer's role
+// gate reads the same values back out of the row.
 const (
-	elicitationKindPermission  = "permission"
-	elicitationKindInformation = "information"
+	elicitationKindPermission  = model.ElicitationKindPermission
+	elicitationKindInformation = model.ElicitationKindInformation
 )
 
 // maxInputRequiredRounds bounds how many times ONE tools/call may pause for
@@ -86,19 +88,25 @@ func (e *InputRoutingError) Error() string {
 
 func (e *InputRoutingError) Unwrap() error { return e.Err }
 
-// InputRoundLimitError reports that one tools/call exceeded
-// maxInputRequiredRounds pauses. Unlike InputRoutingError this is not fatal to
-// the run: the caller renders it as a tool_result error so the agent can try
-// something else.
-type InputRoundLimitError struct {
+// InputCallAbandonedError reports that the host gave up on one tools/call's
+// input_required exchange without ever routing it to a human — the server
+// asked too many times, or asked for something the host will not put in front
+// of an operator at all.
+//
+// Unlike InputRoutingError this is not fatal to the run: nobody was waiting,
+// so there is no unanswered operator wait to account for. The caller renders
+// it as a tool_result error and the agent tries something else.
+type InputCallAbandonedError struct {
 	ToolName string
-	Rounds   int
+	Reason   string
+	Err      error // the underlying refusal, when there is one
 }
 
-func (e *InputRoundLimitError) Error() string {
-	return fmt.Sprintf("tool %s asked for operator input %d times on a single call; the call was abandoned",
-		e.ToolName, e.Rounds)
+func (e *InputCallAbandonedError) Error() string {
+	return fmt.Sprintf("tool %s: %s; the call was abandoned", e.ToolName, e.Reason)
 }
+
+func (e *InputCallAbandonedError) Unwrap() error { return e.Err }
 
 // ElicitationBudget is the per-run elicitation budget check (spec §6.2 cap 1).
 // The handler calls Check before routing each pause so the enforcement point
@@ -126,6 +134,44 @@ type InputRoutingRequest struct {
 	// precedence against server-side TTLs (spec §6.3) is a later milestone;
 	// today the policy clock is the only clock consulted.
 	Timeout time.Duration
+}
+
+// PersistedInputRequest is the wire shape of one entry in
+// tool_input_requests.request_payload. It exists so the column has a stable,
+// snake_case contract the API layer can decode, rather than whatever field
+// names the mcp package's internal struct happens to marshal to today.
+//
+// Message is server-controlled text (spec §6.1). Everything that renders it —
+// API response, UI, channel delivery — must treat it as untrusted content, not
+// as markup and not as instructions.
+type PersistedInputRequest struct {
+	Message         string          `json:"message"`
+	RequestedSchema json.RawMessage `json:"requested_schema,omitempty"`
+	ElicitationKind string          `json:"elicitation_kind,omitempty"`
+}
+
+// DecodeInputRequestPayload parses a tool_input_requests.request_payload blob.
+// The API layer uses it to render what is being asked.
+func DecodeInputRequestPayload(payload string) ([]PersistedInputRequest, error) {
+	var requests []PersistedInputRequest
+	if err := json.Unmarshal([]byte(payload), &requests); err != nil {
+		return nil, fmt.Errorf("decoding tool input request payload: %w", err)
+	}
+	return requests, nil
+}
+
+// toPersistedRequests converts the decoded MRTR requests into the persisted
+// shape.
+func toPersistedRequests(requests []mcp.InputRequest) []PersistedInputRequest {
+	out := make([]PersistedInputRequest, len(requests))
+	for i, r := range requests {
+		out[i] = PersistedInputRequest{
+			Message:         r.Message,
+			RequestedSchema: r.RequestedSchema,
+			ElicitationKind: r.ElicitationKind,
+		}
+	}
+	return out
 }
 
 // inputWaiter is one registered wait. expected is the number of InputRequests
@@ -289,7 +335,7 @@ func (h *InputRequiredHandler) Route(ctx context.Context, req InputRoutingReques
 	if err != nil {
 		return nil, fmt.Errorf("marshaling call args for %s: %w", req.ToolName, err)
 	}
-	requestPayload, err := json.Marshal(req.Result.InputRequests)
+	requestPayload, err := json.Marshal(toPersistedRequests(req.Result.InputRequests))
 	if err != nil {
 		return nil, fmt.Errorf("marshaling input requests for %s: %w", req.ToolName, err)
 	}
@@ -305,7 +351,7 @@ func (h *InputRequiredHandler) Route(ctx context.Context, req InputRoutingReques
 		CallArgs:        string(callArgs),
 		RequestState:    string(req.Result.RequestState),
 		RequestPayload:  string(requestPayload),
-		ElicitationKind: classifyElicitationKind(req.Result.InputRequests),
+		ElicitationKind: string(classifyElicitationKind(req.Result.InputRequests)),
 		ExpiresAt:       expiresAt,
 	})); err != nil {
 		return nil, fmt.Errorf("transitioning run to waiting_for_feedback for tool input: %w", err)
@@ -383,7 +429,21 @@ func (a *BoundAgent) callToolWithInputRounds(ctx context.Context, runID string, 
 			return result, nil
 		}
 		if round >= maxInputRequiredRounds {
-			return mcp.ToolResult{}, &InputRoundLimitError{ToolName: toolName, Rounds: round}
+			return mcp.ToolResult{}, &InputCallAbandonedError{
+				ToolName: toolName,
+				Reason:   fmt.Sprintf("asked for operator input %d times on a single call", round),
+			}
+		}
+
+		// Refuse before persisting or pausing, not after: a secret-collecting
+		// form must never reach an operator's screen, and a request nobody
+		// will ever be shown should not leave a pending row behind.
+		if err := checkNoSecretFields(result.InputRequired.InputRequests); err != nil {
+			return mcp.ToolResult{}, &InputCallAbandonedError{
+				ToolName: toolName,
+				Reason:   "requested a secret value in an elicitation form, which is never rendered",
+				Err:      err,
+			}
 		}
 
 		answers, err := a.inputRequired.Route(ctx, InputRoutingRequest{
@@ -495,15 +555,20 @@ func decodeInputResponses(body string, expected int) ([]mcp.InputResponse, error
 // bundles several requests, "information" wins: a single field anywhere means
 // the operator must be shown a form rather than an approve/reject pair.
 //
-// This is the persistence-side classification only. Which roles may resolve
-// which kind, and manifest-declared per-tool kinds, are a separate concern.
-func classifyElicitationKind(requests []mcp.InputRequest) string {
+// A malformed _meta hint — a kind outside the vocabulary — falls through to
+// the convention rather than being honored or rejected: it is an optional hint
+// from a server that got it wrong, and the schema shape is still readable.
+//
+// Manifest-declared per-tool kinds are a third source the manifest v2 work
+// adds; the two here are what a server can express today.
+func classifyElicitationKind(requests []mcp.InputRequest) model.ElicitationKind {
 	kind := elicitationKindPermission
 	for _, r := range requests {
-		switch r.ElicitationKind {
-		case elicitationKindInformation:
-			return elicitationKindInformation
-		case elicitationKindPermission:
+		declared := model.ElicitationKind(r.ElicitationKind)
+		if declared.Valid() {
+			if declared == elicitationKindInformation {
+				return elicitationKindInformation
+			}
 			continue
 		}
 		if requestsFields(r.RequestedSchema) {
@@ -511,6 +576,67 @@ func classifyElicitationKind(requests []mcp.InputRequest) string {
 		}
 	}
 	return kind
+}
+
+// secretSchemaKeys are the schema markers that say a field carries a secret.
+// "x-gleipnir-secret" is this codebase's own marker (the same one plugin
+// config schemas use); "password" and writeOnly are the JSON Schema / OpenAPI
+// idioms a third-party server is most likely to reach for.
+var secretSchemaKeys = []string{`"x-gleipnir-secret"`, `"format":"password"`, `"writeOnly":true`}
+
+// ErrSecretElicitation reports that a server asked the operator to type a
+// secret into a form. Spec §6.1 is explicit that form mode never carries
+// secrets — URL mode exists for that, and does not exist yet — so the only
+// honest handling is to refuse the elicitation rather than render the form.
+//
+// This is deliberately a refusal and not a redaction: a form that silently
+// dropped the secret field would leave the operator answering a question they
+// cannot see, and the server waiting on a value it will never get.
+var ErrSecretElicitation = errors.New("elicitation requests a secret in form mode, which is not supported")
+
+// checkNoSecretFields enforces the §6.1 no-secrets-in-form rule. The check is
+// textual against the normalized schema rather than a structural walk: the
+// markers may appear at any depth, under any nesting a server invents, and
+// missing one because it sat inside an unexpected keyword would defeat the
+// point. A false positive here costs a refused elicitation, which is the side
+// to err on.
+func checkNoSecretFields(requests []mcp.InputRequest) error {
+	for _, r := range requests {
+		if len(r.RequestedSchema) == 0 {
+			continue
+		}
+		compact := removeJSONWhitespace(string(r.RequestedSchema))
+		for _, marker := range secretSchemaKeys {
+			if strings.Contains(compact, marker) {
+				return fmt.Errorf("%w (marker %s)", ErrSecretElicitation, marker)
+			}
+		}
+	}
+	return nil
+}
+
+// removeJSONWhitespace strips whitespace that sits OUTSIDE string literals, so
+// `"format" : "password"` matches the same marker as `"format":"password"`.
+// Whitespace inside a string is preserved — collapsing it could make an
+// innocent description read as a marker.
+func removeJSONWhitespace(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	inString, escaped := false, false
+	for _, r := range s {
+		switch {
+		case escaped:
+			escaped = false
+		case r == '\\' && inString:
+			escaped = true
+		case r == '"':
+			inString = !inString
+		case !inString && (r == ' ' || r == '\t' || r == '\n' || r == '\r'):
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // requestsFields reports whether a requestedSchema asks the operator for any
