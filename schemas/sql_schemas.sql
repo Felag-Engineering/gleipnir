@@ -653,3 +653,81 @@ CREATE TABLE mcp_tasks (
 );
 CREATE INDEX idx_mcp_tasks_run_id ON mcp_tasks(run_id);
 CREATE INDEX idx_mcp_tasks_status ON mcp_tasks(status);
+
+-- ---------------------------------------------------------------------------
+-- Container substrate desired state (ADR-056, mcp-realignment-spec.md §7)
+--
+-- The reconciler is level-triggered: these tables ARE the desired state, and
+-- every pass lists the real containers by label, diffs them against these
+-- rows, and converges one step. Nothing here records progress through an
+-- imperative sequence, because there is no sequence to resume — a crash
+-- mid-rotation is just another observed state the next pass converges from.
+--
+-- plugin_containers holds one desired-state row per plugin instance.
+-- plugin_container_generations holds the rotation history, one row per
+-- generation, each with its own instance token (start-new → health-gate →
+-- switch → drain → stop). plugin_container_subnets records the per-instance
+-- /24 carved out of the configurable base pool — east-west isolation is one
+-- dedicated internal network per instance, so subnets are a finite resource
+-- that must never be double-allocated. plugin_container_images accounts for
+-- loaded OCI images so GC can tell which digests no generation still needs.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE plugin_containers (
+    id                    TEXT    PRIMARY KEY,                                                    -- ULID
+    plugin_instance_id    TEXT    NOT NULL UNIQUE REFERENCES plugin_instances(id) ON DELETE CASCADE,  -- one desired container per instance
+    image_ref             TEXT    NOT NULL,                                                       -- repo:tag as loaded from the bundle
+    image_digest          TEXT    NOT NULL,                                                       -- sha256:...; the pin that actually runs
+    config_hash           TEXT    NOT NULL,                                                       -- hash of the effective config; a change is what makes a rotation necessary
+    network_name          TEXT    NOT NULL,                                                       -- the instance's dedicated internal network
+    memory_limit_bytes    INTEGER,                                                                -- nullable; NULL means no cgroup memory cap
+    cpu_limit_millicores  INTEGER,                                                                -- nullable; NULL means no cgroup CPU cap
+    desired_state         TEXT    NOT NULL CHECK(desired_state IN ('running', 'stopped')),        -- what the reconciler converges toward
+    version               INTEGER NOT NULL DEFAULT 0,                                             -- ADR-038 CAS counter
+    created_at            TEXT    NOT NULL,                                                       -- ISO 8601 UTC
+    updated_at            TEXT    NOT NULL                                                        -- ISO 8601 UTC
+);
+
+CREATE TABLE plugin_container_generations (
+    id                  TEXT    PRIMARY KEY,                                                      -- ULID
+    plugin_instance_id  TEXT    NOT NULL REFERENCES plugin_instances(id) ON DELETE CASCADE,
+    generation          INTEGER NOT NULL,                                                         -- monotonic per instance
+    container_id        TEXT,                                                                     -- nullable: runtime-assigned, unknown until the container is created
+    image_digest        TEXT    NOT NULL,                                                         -- what this generation actually runs, which may lag plugin_containers mid-rotation
+    config_hash         TEXT    NOT NULL,
+    token_hash          TEXT    NOT NULL UNIQUE,                                                  -- hex SHA-256 of the per-generation instance token; the raw token is never stored
+    token_revoked_at    TEXT,                                                                     -- nullable, ISO 8601 UTC; set when the generation stops serving
+    status              TEXT    NOT NULL CHECK(status IN (
+                                    'pending',      -- row exists, container not yet created
+                                    'starting',     -- container created, not yet health-gated
+                                    'healthy',      -- passed the health gate, not yet switched to
+                                    'active',       -- serving traffic
+                                    'draining',     -- superseded, finishing in-flight work
+                                    'stopped',      -- terminal, container gone
+                                    'failed'        -- terminal, never reached healthy
+                                )),
+    status_detail       TEXT,                                                                     -- nullable; operator-facing explanation for failed/stopped
+    created_at          TEXT    NOT NULL,                                                         -- ISO 8601 UTC
+    updated_at          TEXT    NOT NULL,                                                         -- ISO 8601 UTC
+    UNIQUE(plugin_instance_id, generation)
+);
+CREATE INDEX idx_plugin_container_generations_status ON plugin_container_generations(status);
+CREATE INDEX idx_plugin_container_generations_image  ON plugin_container_generations(image_digest);
+
+CREATE TABLE plugin_container_subnets (
+    subnet              TEXT    PRIMARY KEY,                                                      -- rendered CIDR, e.g. 10.83.7.0/24
+    plugin_instance_id  TEXT    NOT NULL UNIQUE REFERENCES plugin_instances(id) ON DELETE CASCADE,
+    pool_base           TEXT    NOT NULL,                                                         -- the configured base pool this slot was carved from
+    slot                INTEGER NOT NULL,                                                         -- index within pool_base; the allocator's unit of arithmetic
+    allocated_at        TEXT    NOT NULL,                                                         -- ISO 8601 UTC
+    UNIQUE(pool_base, slot)                                                                       -- the arbiter: two racing allocations of one slot cannot both commit
+);
+
+CREATE TABLE plugin_container_images (
+    digest        TEXT    PRIMARY KEY,                                                            -- sha256:...
+    reference     TEXT    NOT NULL,                                                               -- repo:tag the archive was loaded under
+    plugin_id     TEXT    REFERENCES plugins(id) ON DELETE SET NULL,                              -- nullable so image accounting outlives an uninstall
+    size_bytes    INTEGER,                                                                        -- nullable; reported by the runtime at load
+    loaded_at     TEXT    NOT NULL,                                                               -- ISO 8601 UTC
+    last_used_at  TEXT                                                                            -- nullable, ISO 8601 UTC; GC recency input
+);

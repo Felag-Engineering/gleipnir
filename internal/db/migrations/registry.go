@@ -38,5 +38,6 @@ func All() []Migration {
 		&AddMCPServerProtocolVersion{},
 		&AddMCPToolCanonicalSchema{},
 		&AddToolInputRequestsAndMCPTasks{},
+		&AddContainerDesiredState{},
 	}
 }
