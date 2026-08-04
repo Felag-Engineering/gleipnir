@@ -80,6 +80,11 @@ func TestClassifyMCPErrorType(t *testing.T) {
 			want: "protocol",
 		},
 		{
+			name: "InputRequiredError → protocol",
+			err:  &mcp.InputRequiredError{Reason: "missing requestState"},
+			want: "protocol",
+		},
+		{
 			name: "unknown error → connection",
 			err:  fmt.Errorf("something completely unknown"),
 			want: "connection",
