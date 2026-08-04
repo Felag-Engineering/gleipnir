@@ -125,6 +125,53 @@ type PluginAuditEvent struct {
 	CreatedAt        string  `json:"created_at"`
 }
 
+type PluginContainer struct {
+	ID                 string `json:"id"`
+	PluginInstanceID   string `json:"plugin_instance_id"`
+	ImageRef           string `json:"image_ref"`
+	ImageDigest        string `json:"image_digest"`
+	ConfigHash         string `json:"config_hash"`
+	NetworkName        string `json:"network_name"`
+	MemoryLimitBytes   *int64 `json:"memory_limit_bytes"`
+	CpuLimitMillicores *int64 `json:"cpu_limit_millicores"`
+	DesiredState       string `json:"desired_state"`
+	Version            int64  `json:"version"`
+	CreatedAt          string `json:"created_at"`
+	UpdatedAt          string `json:"updated_at"`
+}
+
+type PluginContainerGeneration struct {
+	ID               string  `json:"id"`
+	PluginInstanceID string  `json:"plugin_instance_id"`
+	Generation       int64   `json:"generation"`
+	ContainerID      *string `json:"container_id"`
+	ImageDigest      string  `json:"image_digest"`
+	ConfigHash       string  `json:"config_hash"`
+	TokenHash        string  `json:"token_hash"`
+	TokenRevokedAt   *string `json:"token_revoked_at"`
+	Status           string  `json:"status"`
+	StatusDetail     *string `json:"status_detail"`
+	CreatedAt        string  `json:"created_at"`
+	UpdatedAt        string  `json:"updated_at"`
+}
+
+type PluginContainerImage struct {
+	Digest     string  `json:"digest"`
+	Reference  string  `json:"reference"`
+	PluginID   *string `json:"plugin_id"`
+	SizeBytes  *int64  `json:"size_bytes"`
+	LoadedAt   string  `json:"loaded_at"`
+	LastUsedAt *string `json:"last_used_at"`
+}
+
+type PluginContainerSubnet struct {
+	Subnet           string `json:"subnet"`
+	PluginInstanceID string `json:"plugin_instance_id"`
+	PoolBase         string `json:"pool_base"`
+	Slot             int64  `json:"slot"`
+	AllocatedAt      string `json:"allocated_at"`
+}
+
 type PluginEventDedup struct {
 	PluginInstanceID string `json:"plugin_instance_id"`
 	EventKind        string `json:"event_kind"`

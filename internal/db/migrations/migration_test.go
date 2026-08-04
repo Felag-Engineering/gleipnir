@@ -842,3 +842,176 @@ func TestAddToolInputRequestsAndMCPTasksSkipsOnFreshSchema(t *testing.T) {
 		t.Fatal("ShouldSkip returned false on a fresh initial schema — did 0001_initial.sql forget the tool_input_requests/mcp_tasks tables?")
 	}
 }
+
+// seedPreContainerSubstrateBaseline hand-creates the end-of-0044 schema shape
+// as far as 0045 cares about it: schema_migrations plus the two parent tables
+// (plugins, plugin_instances) the container tables reference by foreign key,
+// WITHOUT any of the four container tables. Hand-crafting is the only way to
+// make 0045's Up() body actually execute, because 0001_initial.sql already
+// ships those tables and would make ShouldSkip return true (same note as
+// seedPreToolInputRequestsBaseline).
+func seedPreContainerSubstrateBaseline(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	stmts := []string{
+		`CREATE TABLE schema_migrations (
+			version     INTEGER PRIMARY KEY,
+			applied_at  TEXT    NOT NULL
+		)`,
+		`INSERT INTO schema_migrations(version, applied_at) VALUES (1, '2024-01-01T00:00:00Z')`,
+
+		`CREATE TABLE plugins (
+			id                TEXT NOT NULL PRIMARY KEY,
+			name              TEXT NOT NULL UNIQUE,
+			plugin_version    TEXT NOT NULL,
+			manifest_snapshot TEXT NOT NULL,
+			trusted_pubkey    TEXT NOT NULL,
+			status            TEXT NOT NULL,
+			version           INTEGER NOT NULL DEFAULT 0,
+			created_at        TEXT NOT NULL,
+			updated_at        TEXT NOT NULL
+		)`,
+
+		`CREATE TABLE plugin_instances (
+			id            TEXT NOT NULL PRIMARY KEY,
+			plugin_id     TEXT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
+			instance_name TEXT NOT NULL,
+			config_json   TEXT NOT NULL DEFAULT '{}',
+			health_state  TEXT NOT NULL,
+			version       INTEGER NOT NULL DEFAULT 0,
+			created_at    TEXT NOT NULL,
+			updated_at    TEXT NOT NULL,
+			UNIQUE (plugin_id, instance_name)
+		)`,
+	}
+
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seedPreContainerSubstrateBaseline: %v\nstatement: %s", err, stmt)
+		}
+	}
+}
+
+// TestAddContainerDesiredState verifies that migration 0045 creates all four
+// container-substrate tables on the existing-database upgrade path, that rows
+// referencing the pre-seeded plugin/instance parents round-trip, that the
+// constraints the reconciler depends on are actually enforced, and that the
+// migration is idempotent.
+func TestAddContainerDesiredState(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+
+	// Build the pre-0045 schema by hand — do NOT call applyInitialSchema.
+	seedPreContainerSubstrateBaseline(t, db)
+
+	m := &migrations.AddContainerDesiredState{}
+
+	skip, err := m.ShouldSkip(ctx, db)
+	if err != nil {
+		t.Fatalf("ShouldSkip: %v", err)
+	}
+	if skip {
+		t.Fatal("ShouldSkip returned true against the pre-target baseline — the hand-crafted DDL must omit the container tables")
+	}
+
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO plugins(id, name, plugin_version, manifest_snapshot, trusted_pubkey, status, created_at, updated_at)
+		 VALUES ('pl1', 'slack', '1.0.0', '{}', 'pubkey', 'active', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("seed plugin: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO plugin_instances(id, plugin_id, instance_name, health_state, created_at, updated_at)
+		 VALUES ('inst1', 'pl1', 'prod', 'healthy', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("seed plugin instance: %v", err)
+	}
+
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	var tableCount int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN
+			('plugin_containers', 'plugin_container_generations', 'plugin_container_subnets', 'plugin_container_images')`,
+	).Scan(&tableCount); err != nil {
+		t.Fatalf("query sqlite_master: %v", err)
+	}
+	if tableCount != 4 {
+		t.Fatalf("table count = %d, want 4", tableCount)
+	}
+
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO plugin_containers
+			(id, plugin_instance_id, image_ref, image_digest, config_hash, network_name, desired_state, created_at, updated_at)
+		 VALUES
+			('c1', 'inst1', 'gleipnir/slack:1.0.0', 'sha256:aaaa', 'cfg', 'net-inst1', 'running', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("insert plugin_containers row: %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO plugin_container_generations
+			(id, plugin_instance_id, generation, image_digest, config_hash, token_hash, status, created_at, updated_at)
+		 VALUES
+			('g1', 'inst1', 1, 'sha256:aaaa', 'cfg', 'tokenhash', 'active', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("insert plugin_container_generations row: %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO plugin_container_subnets (subnet, plugin_instance_id, pool_base, slot, allocated_at)
+		 VALUES ('10.83.0.0/24', 'inst1', '10.83.0.0/16', 0, '2024-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("insert plugin_container_subnets row: %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO plugin_container_images (digest, reference, plugin_id, loaded_at)
+		 VALUES ('sha256:aaaa', 'gleipnir/slack:1.0.0', 'pl1', '2024-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("insert plugin_container_images row: %v", err)
+	}
+
+	// The constraints the reconciler relies on must survive the upgrade path,
+	// not just the fresh-install one: a second allocation of one slot is what
+	// would silently put two instances on the same network.
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO plugin_container_subnets (subnet, plugin_instance_id, pool_base, slot, allocated_at)
+		 VALUES ('10.83.99.0/24', 'inst1', '10.83.0.0/16', 0, '2024-01-01T00:00:00Z')`,
+	); err == nil {
+		t.Error("a duplicate (pool_base, slot) allocation was accepted after migration, want a UNIQUE violation")
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO plugin_container_generations
+			(id, plugin_instance_id, generation, image_digest, config_hash, token_hash, status, created_at, updated_at)
+		 VALUES
+			('g2', 'inst1', 2, 'sha256:aaaa', 'cfg', 'tokenhash', 'pending', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+	); err == nil {
+		t.Error("a duplicate token hash was accepted after migration, want a UNIQUE violation")
+	}
+
+	// Second Apply must be a no-op — proves ShouldSkip flips to true after Up.
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("second Apply (idempotency): %v", err)
+	}
+}
+
+// TestAddContainerDesiredStateSkipsOnFreshSchema is the regression gate for
+// forgetting to hand-sync 0001_initial.sql: sqlc.yaml reads only that file, so
+// a Go migration added without editing it would leave sqlc unable to see the
+// tables at all.
+func TestAddContainerDesiredStateSkipsOnFreshSchema(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	applyInitialSchema(t, db)
+
+	skip, err := (&migrations.AddContainerDesiredState{}).ShouldSkip(ctx, db)
+	if err != nil {
+		t.Fatalf("ShouldSkip: %v", err)
+	}
+	if !skip {
+		t.Fatal("ShouldSkip returned false on a fresh initial schema — did 0001_initial.sql forget the container substrate tables?")
+	}
+}
