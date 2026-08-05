@@ -114,4 +114,6 @@ docker compose logs api | jq 'select(.msg == "mcp protocol version pin changed")
 
 ## What is decided but not shipped
 
-The protocol probing, pinning, badge, `x-mcp-header`, and discovery-caching behavior described on this page has shipped. The rest of the MCP 2026 realignment — plugins repackaged as signed containerized MCP servers, the `io.gleipnir/events` extension, and tool-initiated human-in-the-loop over MRTR/Tasks — is **decided but not implemented**. The v1.1 plugin system described in [Plugins](plugins.md) remains the live plugin architecture. See [the realignment spec](../developer/mcp-realignment-spec.md) for the full design.
+The protocol probing, pinning, badge, `x-mcp-header`, and discovery-caching behavior described on this page has shipped, and so has **tool-initiated human-in-the-loop** — a 2026-07-28 server can now answer a tool call with `input_required` and Gleipnir will pause the run and ask a person. That is documented in [Human-in-the-loop](human-in-the-loop.md); MCP server authors want [Writing a tool that asks a human](../developer/tool-initiated-hitl.md).
+
+The rest of the MCP 2026 realignment — plugins repackaged as signed containerized MCP servers and the `io.gleipnir/events` extension — is **decided but not implemented**. The v1.1 plugin system described in [Plugins](plugins.md) remains the live plugin architecture. See [the realignment spec](../developer/mcp-realignment-spec.md) for the full design.

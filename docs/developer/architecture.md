@@ -30,6 +30,8 @@ Each diagram lives in its own file. Start with the system overview and runtime o
 - **Audit writes are serialized.** `AuditWriter` funnels all `run_steps` inserts through a single goroutine to avoid SQLite write contention.
 - **Disallowed tools never exist from the agent's perspective.** They are not registered with the LLM at all (ADR-001).
 - **Plugin tools share the MCP tool namespace.** `internal/toolregistry` enforces cross-source `<source>.<tool>` uniqueness at registration time. Collisions are audit-logged and drive the instance to `unhealthy`.
+- **Tool-initiated HITL decisions never enter the trace.** `tool_permission_request` / `tool_input_request` are *not* `model.StepType` values; they are `plugin_audit_events.event_type` values written by `internal/plugin/decision`. Making them step types would make them eligible for context replay by construction (ADR-046, ADR-055 §6.6).
+- **A tool-initiated request is asked of exactly one channel.** `internal/plugin/hitl` walks the audience in order and the first entry allowed to settle *that kind* of request gets it. Weak-assurance channels are skipped for `permission` asks rather than failing them (ADR-044, ADR-055 §4.1).
 - **`WriteAuditStep` is restricted to `feedback_response` only.** Plugins cannot inject arbitrary content into `run_steps` (the LLM's context window). All other plugin events flow into `plugin_audit_events` (ADR-046).
 
 ## Plugin subsystem
@@ -44,6 +46,35 @@ Gleipnir runs a second extension system parallel to MCP: HashiCorp `go-plugin`-b
 - **Credentials:** Six strategies (none, static_api_key, header_set, basic_auth, oauth2_authcode, oauth2_clientcred). OAuth is host-orchestrated.
 
 The full design specification lives in `docs/developer/plugin-system-spec.md`. ADRs 041-049 record the individual architectural decisions.
+
+## Human-in-the-loop
+
+Three sources can pause a run, unified on the run state machine and — from
+ADR-055 — on audiences:
+
+| Source | Owner of the decision to ask | Gate semantics |
+|---|---|---|
+| Agent-initiated (`gleipnir.ask_operator`, ADR-031) | the agent | voluntary |
+| Policy-gated approval (ADR-008) | the policy | pre-execution, mandatory, host-owned |
+| Tool-initiated (ADR-055) | the MCP server, mid-call | cooperative — the answer goes back to the server |
+
+Tool-initiated is the newest and has the most moving parts:
+
+- `internal/execution/agent/inputrequired.go` owns the pause lifecycle: MRTR
+  `input_required` → durable `tool_input_requests` row + `waiting_for_feedback`
+  in one transaction → wait → re-issue the **same** `tools/call` with the answer.
+- `internal/execution/agent/replay.go` implements §6.5 answer replay: a server
+  whose state expired and then re-asked the *identical* question gets the stored
+  answer spent against its fresh `requestState`, once, without a human seeing it.
+- `internal/plugin/hitl` picks which audience entry is asked and enforces the
+  §4.1 assurance gate host-side.
+- `internal/plugin/inapptask` runs the built-in channel's Request on the same
+  `mcp_tasks` lifecycle a plugin-routed Request uses, with a NULL `server_id`.
+- `internal/plugin/decision` writes the §6.6 decision record to
+  `plugin_audit_events` (which carries a nullable `run_id` for exactly this).
+
+Operator-facing: [Human-in-the-loop](../user/human-in-the-loop.md). Server
+authors: [Writing a tool that asks a human](tool-initiated-hitl.md).
 
 ## Stack summary
 
