@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"time"
 
+	cerrdefs "github.com/containerd/errdefs"
 	dockercontainer "github.com/moby/moby/api/types/container"
 	dockermount "github.com/moby/moby/api/types/mount"
 	dockernetwork "github.com/moby/moby/api/types/network"
@@ -339,4 +340,37 @@ func cpuPercent(resp dockercontainer.StatsResponse) float64 {
 	}
 
 	return (cpuDelta / systemDelta) * onlineCPUs * 100.0
+}
+
+func (r *DockerRuntime) ImageLoad(ctx context.Context, archive io.Reader) error {
+	resp, err := r.cli.ImageLoad(ctx, archive)
+	if err != nil {
+		return fmt.Errorf("container: load image archive: %w", err)
+	}
+	defer resp.Close()
+
+	// The daemon performs the load WHILE streaming progress. Returning before
+	// the stream is exhausted would report success on a load still in flight,
+	// and the caller's very next act is to inspect for the image it expects.
+	// The content is discarded on purpose — see ImageRuntime.ImageLoad.
+	if _, err := io.Copy(io.Discard, resp); err != nil {
+		return fmt.Errorf("container: drain image load stream: %w", err)
+	}
+	return nil
+}
+
+func (r *DockerRuntime) ImageInspect(ctx context.Context, ref string) (ImageInfo, error) {
+	res, err := r.cli.ImageInspect(ctx, ref)
+	if err != nil {
+		if cerrdefs.IsNotFound(err) {
+			return ImageInfo{}, fmt.Errorf("%w: %s", ErrImageNotFound, ref)
+		}
+		return ImageInfo{}, fmt.Errorf("container: inspect image %s: %w", ref, err)
+	}
+	return ImageInfo{
+		ID:          res.ID,
+		RepoTags:    res.RepoTags,
+		RepoDigests: res.RepoDigests,
+		SizeBytes:   res.Size,
+	}, nil
 }

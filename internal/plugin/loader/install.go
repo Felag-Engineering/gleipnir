@@ -173,27 +173,11 @@ func (in *Installer) OnInstalled(fn func(ctx context.Context, pluginID string)) 
 // pending_review|active|removed. A "signature_invalid" status is not stored
 // on the plugin row — #191 owns the per-instance health state machine.
 func (in *Installer) Install(ctx context.Context, tarPath string) (string, error) {
-	// Create the extraction temp dir inside pluginsDir so the rename to the
-	// staging path stays on the same filesystem (avoids EXDEV on Docker where
-	// /tmp and /plugins are separate devices). Fall back to os.TempDir() when
-	// pluginsDir is empty (test-only path).
-	extractParent := os.TempDir()
-	if in.pluginsDir != "" {
-		if err := os.MkdirAll(in.pluginsDir, 0o755); err != nil {
-			return "", fmt.Errorf("ensure plugins dir: %w", err)
-		}
-		extractParent = in.pluginsDir
-	}
-
-	tmpDir, err := os.MkdirTemp(extractParent, "incoming-*")
+	tmpDir, err := in.extractIncoming(tarPath)
 	if err != nil {
-		return "", fmt.Errorf("create temp dir: %w", err)
+		return "", err
 	}
 	defer os.RemoveAll(tmpDir)
-
-	if err := ExtractTarball(tarPath, tmpDir, maxTarballBytes, maxTarballFiles); err != nil {
-		return "", fmt.Errorf("extract tarball %q: %w", tarPath, err)
-	}
 
 	// Resolve the bundle root: some packagers (e.g. gleipnir-plugin package) wrap
 	// everything under a single top-level directory (e.g. slack-0.1.1/). Walk
@@ -1025,4 +1009,37 @@ func (in *Installer) updateBinaryPath(ctx context.Context, pluginID string, vers
 // nowStr returns the current time as an RFC3339Nano string via the injectable clock.
 func (in *Installer) nowStr() string {
 	return in.clock().UTC().Format(time.RFC3339Nano)
+}
+
+// extractIncoming makes a temp directory and extracts tarPath into it under the
+// standard hardening limits (#346 file-count cap, gzip-bomb byte cap, path
+// traversal guards). The caller owns the returned directory and must remove it.
+//
+// The temp dir lives inside pluginsDir so the later rename to the publish path
+// stays on one filesystem (Docker puts /tmp and /plugins on separate devices,
+// where a cross-device rename fails with EXDEV). It falls back to os.TempDir()
+// when pluginsDir is empty, a test-only path.
+//
+// Shared with the v2 OCI bundle path (ociinstall.go): the hardening applies
+// unchanged to the larger payload, which is the point — a bundle carrying a
+// whole container image is more, not less, worth bounding.
+func (in *Installer) extractIncoming(tarPath string) (string, error) {
+	extractParent := os.TempDir()
+	if in.pluginsDir != "" {
+		if err := os.MkdirAll(in.pluginsDir, 0o755); err != nil {
+			return "", fmt.Errorf("ensure plugins dir: %w", err)
+		}
+		extractParent = in.pluginsDir
+	}
+
+	tmpDir, err := os.MkdirTemp(extractParent, "incoming-*")
+	if err != nil {
+		return "", fmt.Errorf("create temp dir: %w", err)
+	}
+
+	if err := ExtractTarball(tarPath, tmpDir, maxTarballBytes, maxTarballFiles); err != nil {
+		os.RemoveAll(tmpDir)
+		return "", fmt.Errorf("extract tarball %q: %w", tarPath, err)
+	}
+	return tmpDir, nil
 }

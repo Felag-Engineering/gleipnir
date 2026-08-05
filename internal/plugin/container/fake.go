@@ -28,6 +28,23 @@ type Fake struct {
 	// CreateErr, when non-nil, is returned by Create instead of succeeding —
 	// lets tests simulate a socket-level failure after validation passes.
 	CreateErr error
+
+	// images is what ImageInspect answers from, keyed by every reference an
+	// image answers to (ID, tags, repo digests).
+	images map[string]ImageInfo
+
+	// PendingImages is what a successful ImageLoad makes present. Setting it
+	// to an image whose ID is NOT the one a manifest pins is how a test
+	// expresses "the archive contained something else".
+	PendingImages []ImageInfo
+
+	// LoadErr, when non-nil, fails ImageLoad after the archive has been read.
+	LoadErr error
+
+	// Loads and LoadedBytes record what ImageLoad saw, so a test can assert
+	// that manual mode did not touch the socket at all.
+	Loads       int
+	LoadedBytes int64
 }
 
 type fakeContainer struct {
@@ -212,3 +229,63 @@ func (f *Fake) SetLogs(id ContainerID, logs string) {
 
 var _ Runtime = (*Fake)(nil)
 var _ Runtime = (*ReadOnlyRuntime)(nil)
+
+// AddImage makes the Fake report an image as locally present, keyed by every
+// reference it answers to. Tests use it to describe what an archive contained
+// — including the hostile case where it contained something other than the
+// digest a manifest pinned.
+func (f *Fake) AddImage(info ImageInfo) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.images == nil {
+		f.images = make(map[string]ImageInfo)
+	}
+	f.images[info.ID] = info
+	for _, ref := range info.RepoTags {
+		f.images[ref] = info
+	}
+	for _, ref := range info.RepoDigests {
+		f.images[ref] = info
+	}
+}
+
+// ImageLoad records the load and makes PendingImages present. It reads the
+// archive to completion so a test's reader is exercised the same way the real
+// daemon exercises it — a caller that forgets to rewind a file sees it here.
+func (f *Fake) ImageLoad(_ context.Context, archive io.Reader) error {
+	n, err := io.Copy(io.Discard, archive)
+	if err != nil {
+		return fmt.Errorf("container: fake image load: %w", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.LoadErr != nil {
+		return f.LoadErr
+	}
+	f.LoadedBytes += n
+	f.Loads++
+	for _, info := range f.PendingImages {
+		if f.images == nil {
+			f.images = make(map[string]ImageInfo)
+		}
+		f.images[info.ID] = info
+		for _, ref := range info.RepoTags {
+			f.images[ref] = info
+		}
+		for _, ref := range info.RepoDigests {
+			f.images[ref] = info
+		}
+	}
+	return nil
+}
+
+func (f *Fake) ImageInspect(_ context.Context, ref string) (ImageInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	info, ok := f.images[ref]
+	if !ok {
+		return ImageInfo{}, fmt.Errorf("%w: %s", ErrImageNotFound, ref)
+	}
+	return info, nil
+}
