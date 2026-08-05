@@ -48,6 +48,13 @@ type Config struct {
 	LLMRetryMaxAttempts    int           // GLEIPNIR_LLM_RETRY_MAX_ATTEMPTS, default 4 (1 disables retry)
 	LLMRetryInitialBackoff time.Duration // GLEIPNIR_LLM_RETRY_INITIAL_BACKOFF, default 1s
 	LLMRetryMaxBackoff     time.Duration // GLEIPNIR_LLM_RETRY_MAX_BACKOFF, default 30s
+
+	// PluginSubnetPool is the base CIDR per-instance plugin networks are
+	// carved from, one /24 each (ADR-056, spec §7). The default /16 holds 256
+	// instances; stock container-runtime default pools exhaust at roughly 30
+	// networks, which is why Gleipnir allocates explicitly instead of letting
+	// the daemon choose.
+	PluginSubnetPool string // GLEIPNIR_PLUGIN_SUBNET_POOL, default 10.83.0.0/16
 }
 
 // Load reads configuration from environment variables, applies defaults for
@@ -85,6 +92,7 @@ func Load() (Config, error) {
 		LLMRetryMaxAttempts:       envInt("GLEIPNIR_LLM_RETRY_MAX_ATTEMPTS", 4),
 		LLMRetryInitialBackoff:    envDuration("GLEIPNIR_LLM_RETRY_INITIAL_BACKOFF", 1*time.Second),
 		LLMRetryMaxBackoff:        envDuration("GLEIPNIR_LLM_RETRY_MAX_BACKOFF", 30*time.Second),
+		PluginSubnetPool:          envOrDefault("GLEIPNIR_PLUGIN_SUBNET_POOL", "10.83.0.0/16"),
 	}, nil
 }
 

@@ -2,8 +2,10 @@ package reconciler
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
@@ -19,11 +21,13 @@ import (
 type countingRuntime struct {
 	container.Runtime
 
-	mu      sync.Mutex
-	creates int
-	starts  int
-	stops   int
-	removes int
+	mu         sync.Mutex
+	creates    int
+	starts     int
+	stops      int
+	removes    int
+	netCreates int
+	netRemoves int
 }
 
 func (c *countingRuntime) Create(ctx context.Context, opts container.CreateOptions) (container.ContainerID, error) {
@@ -54,10 +58,24 @@ func (c *countingRuntime) Remove(ctx context.Context, id container.ContainerID, 
 	return c.Runtime.Remove(ctx, id, force)
 }
 
+func (c *countingRuntime) CreateNetwork(ctx context.Context, opts container.NetworkOptions) (container.NetworkID, error) {
+	c.mu.Lock()
+	c.netCreates++
+	c.mu.Unlock()
+	return c.Runtime.CreateNetwork(ctx, opts)
+}
+
+func (c *countingRuntime) RemoveNetwork(ctx context.Context, id container.NetworkID) error {
+	c.mu.Lock()
+	c.netRemoves++
+	c.mu.Unlock()
+	return c.Runtime.RemoveNetwork(ctx, id)
+}
+
 func (c *countingRuntime) writes() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.creates + c.starts + c.stops + c.removes
+	return c.creates + c.starts + c.stops + c.removes + c.netCreates + c.netRemoves
 }
 
 // fakeStore is the desired-state side of the diff.
@@ -82,6 +100,73 @@ func (s *fakeStore) set(rows ...db.PluginContainer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rows = rows
+}
+
+// memSubnetStore is an in-memory SubnetStore. The loop tests use it so they
+// stay about convergence rather than about SQLite; the allocator's own tests
+// (subnet_test.go) run against the real store and the real queries.
+type memSubnetStore struct {
+	mu        sync.Mutex
+	byInst    map[string]db.PluginContainerSubnet
+	takenSlot map[int64]bool
+}
+
+func newMemSubnetStore() *memSubnetStore {
+	return &memSubnetStore{byInst: map[string]db.PluginContainerSubnet{}, takenSlot: map[int64]bool{}}
+}
+
+func (m *memSubnetStore) GetContainerSubnetByInstance(_ context.Context, id string) (db.PluginContainerSubnet, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	row, ok := m.byInst[id]
+	if !ok {
+		return db.PluginContainerSubnet{}, sql.ErrNoRows
+	}
+	return row, nil
+}
+
+func (m *memSubnetStore) ListContainerSubnetSlots(_ context.Context, _ string) ([]int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	slots := make([]int64, 0, len(m.takenSlot))
+	for s := range m.takenSlot {
+		slots = append(slots, s)
+	}
+	return slots, nil
+}
+
+func (m *memSubnetStore) AllocateContainerSubnet(_ context.Context, arg db.AllocateContainerSubnetParams) (db.PluginContainerSubnet, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.takenSlot[arg.Slot] {
+		return db.PluginContainerSubnet{}, errors.New("UNIQUE constraint failed: plugin_container_subnets.slot")
+	}
+	row := db.PluginContainerSubnet(arg)
+	m.takenSlot[arg.Slot] = true
+	m.byInst[arg.PluginInstanceID] = row
+	return row, nil
+}
+
+func (m *memSubnetStore) ReleaseContainerSubnet(_ context.Context, id string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	row, ok := m.byInst[id]
+	if !ok {
+		return 0, nil
+	}
+	delete(m.byInst, id)
+	delete(m.takenSlot, row.Slot)
+	return 1, nil
+}
+
+// testAllocator returns an allocator over an in-memory store.
+func testAllocator(t *testing.T) *SubnetAllocator {
+	t.Helper()
+	a, err := NewSubnetAllocator(newMemSubnetStore(), netip.MustParsePrefix("10.83.0.0/16"), func() string { return "2024-01-01T00:00:00Z" })
+	if err != nil {
+		t.Fatalf("NewSubnetAllocator: %v", err)
+	}
+	return a
 }
 
 // capturePublisher records published events so a test can synchronize on a
@@ -128,6 +213,7 @@ func newTestReconciler(t *testing.T, store *fakeStore) (*Reconciler, *countingRu
 	r, err := New(Config{
 		Runtime:   rt,
 		Store:     store,
+		Subnets:   testAllocator(t),
 		Posture:   container.PostureRootlessPodman,
 		Interval:  time.Hour, // kicks drive the tests; the ticker must not race them
 		Publisher: pub,
@@ -147,32 +233,45 @@ func TestReconcile_MultiStepConvergesOverPasses(t *testing.T) {
 	store.set(*desiredRow("i1", DesiredRunning))
 	r, rt, _ := newTestReconciler(t, store)
 
-	first, err := r.ReconcileOnce(ctx)
-	if err != nil {
-		t.Fatalf("pass 1: %v", err)
+	// Network, then container, then start — one step each, in that order.
+	want := []ActionKind{ActionCreateNetwork, ActionCreate, ActionStart}
+	for i, wantKind := range want {
+		result, err := r.ReconcileOnce(ctx)
+		if err != nil {
+			t.Fatalf("pass %d: %v", i+1, err)
+		}
+		if len(result.Actions) != 1 || result.Actions[0].Kind != wantKind {
+			t.Fatalf("pass %d actions = %+v, want a single %s", i+1, result.Actions, wantKind)
+		}
 	}
-	if len(first.Actions) != 1 || first.Actions[0].Kind != ActionCreate {
-		t.Fatalf("pass 1 actions = %+v, want a single create", first.Actions)
-	}
-	if rt.starts != 0 {
-		t.Error("pass 1 started the container; create and start must be separate steps")
-	}
-
-	second, err := r.ReconcileOnce(ctx)
-	if err != nil {
-		t.Fatalf("pass 2: %v", err)
-	}
-	if len(second.Actions) != 1 || second.Actions[0].Kind != ActionStart {
-		t.Fatalf("pass 2 actions = %+v, want a single start", second.Actions)
+	if rt.starts != 1 || rt.creates != 1 || rt.netCreates != 1 {
+		t.Errorf("writes = %d creates / %d starts / %d networks, want one of each", rt.creates, rt.starts, rt.netCreates)
 	}
 
-	third, err := r.ReconcileOnce(ctx)
+	final, err := r.ReconcileOnce(ctx)
 	if err != nil {
-		t.Fatalf("pass 3: %v", err)
+		t.Fatalf("final pass: %v", err)
 	}
-	if !third.Converged {
-		t.Fatalf("pass 3 actions = %+v, want convergence", third.Actions)
+	if !final.Converged {
+		t.Fatalf("final pass actions = %+v, want convergence", final.Actions)
 	}
+}
+
+// convergeFully runs passes until the reconciler reports convergence, failing
+// the test if it never settles. Convergence is multi-step by design, so tests
+// that need a settled world say so rather than hard-coding a pass count.
+func convergeFully(t *testing.T, r *Reconciler) {
+	t.Helper()
+	for i := 0; i < 10; i++ {
+		result, err := r.ReconcileOnce(context.Background())
+		if err != nil {
+			t.Fatalf("converging pass %d: %v", i, err)
+		}
+		if result.Converged {
+			return
+		}
+	}
+	t.Fatal("the reconciler never converged in 10 passes")
 }
 
 // Idempotency: once converged, a pass writes nothing at all.
@@ -182,11 +281,7 @@ func TestReconcile_ConvergedPassPerformsNoSocketWrites(t *testing.T) {
 	store.set(*desiredRow("i1", DesiredRunning))
 	r, rt, _ := newTestReconciler(t, store)
 
-	for i := 0; i < 3; i++ {
-		if _, err := r.ReconcileOnce(ctx); err != nil {
-			t.Fatalf("converging pass %d: %v", i, err)
-		}
-	}
+	convergeFully(t, r)
 	writesAfterConvergence := rt.writes()
 
 	for i := 0; i < 5; i++ {
@@ -212,17 +307,22 @@ func TestReconcile_ResumesAfterRestart(t *testing.T) {
 	store.set(*desiredRow("i1", DesiredRunning))
 
 	fake := container.NewFake()
-	first, err := New(Config{Runtime: fake, Store: store, Posture: container.PostureDocker, Interval: time.Hour})
+	allocator := testAllocator(t)
+	first, err := New(Config{Runtime: fake, Store: store, Subnets: allocator, Posture: container.PostureDocker, Interval: time.Hour})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := first.ReconcileOnce(ctx); err != nil { // creates, does not start
-		t.Fatalf("pass before the crash: %v", err)
+	// Network, then container — the crash lands before the start.
+	for i := 0; i < 2; i++ {
+		if _, err := first.ReconcileOnce(ctx); err != nil {
+			t.Fatalf("pass %d before the crash: %v", i+1, err)
+		}
 	}
 
 	// The process dies here: a new Reconciler over the same runtime, sharing
-	// nothing with the old one.
-	second, err := New(Config{Runtime: fake, Store: store, Posture: container.PostureDocker, Interval: time.Hour})
+	// nothing with the old one. The subnet allocation survives because it is
+	// in the store, not in the dead process.
+	second, err := New(Config{Runtime: fake, Store: store, Subnets: allocator, Posture: container.PostureDocker, Interval: time.Hour})
 	if err != nil {
 		t.Fatalf("New after restart: %v", err)
 	}
@@ -251,11 +351,7 @@ func TestReconcile_OrphanIsStoppedThenRemoved(t *testing.T) {
 	store.set(*desiredRow("i1", DesiredRunning))
 	r, rt, _ := newTestReconciler(t, store)
 
-	for i := 0; i < 3; i++ {
-		if _, err := r.ReconcileOnce(ctx); err != nil {
-			t.Fatalf("converging pass %d: %v", i, err)
-		}
-	}
+	convergeFully(t, r)
 
 	// The desired row goes away — an uninstall — leaving a running container
 	// nothing claims.
@@ -277,6 +373,15 @@ func TestReconcile_OrphanIsStoppedThenRemoved(t *testing.T) {
 		t.Fatalf("orphan pass 2 actions = %+v, want a single remove", removePass.Actions)
 	}
 
+	// The network is torn down only after the container is actually gone.
+	netPass, err := r.ReconcileOnce(ctx)
+	if err != nil {
+		t.Fatalf("orphan network pass: %v", err)
+	}
+	if len(netPass.Actions) != 1 || netPass.Actions[0].Kind != ActionRemoveNetwork {
+		t.Fatalf("orphan pass 3 actions = %+v, want a single remove_network", netPass.Actions)
+	}
+
 	final, err := r.ReconcileOnce(ctx)
 	if err != nil {
 		t.Fatalf("post-cleanup pass: %v", err)
@@ -284,8 +389,8 @@ func TestReconcile_OrphanIsStoppedThenRemoved(t *testing.T) {
 	if !final.Converged {
 		t.Fatalf("post-cleanup pass actions = %+v, want convergence", final.Actions)
 	}
-	if rt.removes != 1 {
-		t.Errorf("removes = %d, want exactly 1", rt.removes)
+	if rt.removes != 1 || rt.netRemoves != 1 {
+		t.Errorf("removes = %d containers / %d networks, want exactly 1 of each", rt.removes, rt.netRemoves)
 	}
 }
 
@@ -338,8 +443,8 @@ func TestStart_ConvergesBeforeReturning(t *testing.T) {
 	}
 	t.Cleanup(r.Stop)
 
-	if rt.creates != 1 {
-		t.Errorf("creates after Start = %d, want 1 — the boot pass must complete before Start returns", rt.creates)
+	if rt.netCreates != 1 {
+		t.Errorf("network creates after Start = %d, want 1 — the boot pass must complete before Start returns", rt.netCreates)
 	}
 	if pub.count(EventPassCompleted) < 1 {
 		t.Error("Start returned without publishing a pass")
@@ -362,8 +467,8 @@ func TestKick_RunsAPass(t *testing.T) {
 	r.Kick()
 	pub.waitForPasses(t, 2)
 
-	if rt.creates != 1 {
-		t.Errorf("creates = %d, want 1 — the kick should have converged the new row", rt.creates)
+	if rt.netCreates != 1 {
+		t.Errorf("network creates = %d, want 1 — the kick should have taken the new row's first step", rt.netCreates)
 	}
 }
 
@@ -411,11 +516,16 @@ func TestReconcileOnce_ActionFailureIsCountedNotFatal(t *testing.T) {
 	store.set(*desiredRow("i1", DesiredRunning), *desiredRow("i2", DesiredRunning))
 
 	fake := container.NewFake()
-	fake.CreateErr = errors.New("socket write failed")
-	r, err := New(Config{Runtime: fake, Store: store, Posture: container.PostureDocker, Interval: time.Hour})
+	r, err := New(Config{Runtime: fake, Store: store, Subnets: testAllocator(t), Posture: container.PostureDocker, Interval: time.Hour})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+
+	// Get both networks in place, then break the container creates.
+	if _, err := r.ReconcileOnce(ctx); err != nil {
+		t.Fatalf("network pass: %v", err)
+	}
+	fake.CreateErr = errors.New("socket write failed")
 
 	result, err := r.ReconcileOnce(ctx)
 	if err != nil {
@@ -526,4 +636,96 @@ func TestStopDrainsTheLoop(t *testing.T) {
 	// Stop is safe to call twice, which matters when both an explicit
 	// shutdown path and a deferred cleanup run.
 	r.Stop()
+}
+
+// The network is created before the container, carries the labels that make
+// `docker network ls` readable, is internal-only (the default-deny egress
+// grants build on), and gets the subnet the allocator handed out.
+func TestReconcile_CreatesTheInstanceNetworkFirst(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{}
+	store.set(*desiredRow("i1", DesiredRunning))
+
+	fake := container.NewFake()
+	r, err := New(Config{Runtime: fake, Store: store, Subnets: testAllocator(t), Posture: container.PostureDocker, Interval: time.Hour})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if _, err := r.ReconcileOnce(ctx); err != nil {
+		t.Fatalf("network pass: %v", err)
+	}
+
+	networks, err := fake.ListNetworksByLabel(ctx, LabelManaged, ManagedValue)
+	if err != nil {
+		t.Fatalf("ListNetworksByLabel: %v", err)
+	}
+	if len(networks) != 1 {
+		t.Fatalf("%d networks created, want 1", len(networks))
+	}
+	net := networks[0]
+	if !net.Internal {
+		t.Error("network is not internal-only; egress default-deny is established here")
+	}
+	if net.Name != "net-i1" {
+		t.Errorf("network name = %q, want the desired row's network_name", net.Name)
+	}
+	if net.Labels[LabelInstance] != "i1" {
+		t.Errorf("labels = %v, want the instance label", net.Labels)
+	}
+
+	containers, err := fake.ListByLabel(ctx, LabelManaged, ManagedValue)
+	if err != nil {
+		t.Fatalf("ListByLabel: %v", err)
+	}
+	if len(containers) != 0 {
+		t.Errorf("%d containers created on the network pass, want 0 — one step per pass", len(containers))
+	}
+}
+
+// Without an allocator the loop cannot create a network, and says so rather
+// than creating a container with nowhere to attach.
+func TestReconcile_NetworkWithoutAnAllocatorFails(t *testing.T) {
+	store := &fakeStore{}
+	store.set(*desiredRow("i1", DesiredRunning))
+
+	r, err := New(Config{Runtime: container.NewFake(), Store: store, Posture: container.PostureDocker, Interval: time.Hour})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	result, err := r.ReconcileOnce(context.Background())
+	if err != nil {
+		t.Fatalf("ReconcileOnce: an action failure must not fail the pass: %v", err)
+	}
+	if result.Errors != 1 {
+		t.Errorf("Errors = %d, want 1", result.Errors)
+	}
+}
+
+// An exhausted pool surfaces through the pass as a failed action with the
+// allocator's operator-facing message, not as a silent no-op.
+func TestReconcile_PoolExhaustionSurfaces(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{}
+	store.set(*desiredRow("i1", DesiredRunning), *desiredRow("i2", DesiredRunning))
+
+	// A /24 pool holds exactly one instance.
+	allocator, err := NewSubnetAllocator(newMemSubnetStore(), netip.MustParsePrefix("192.168.9.0/24"), func() string { return "2024-01-01T00:00:00Z" })
+	if err != nil {
+		t.Fatalf("NewSubnetAllocator: %v", err)
+	}
+
+	r, err := New(Config{Runtime: container.NewFake(), Store: store, Subnets: allocator, Posture: container.PostureDocker, Interval: time.Hour})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	result, err := r.ReconcileOnce(ctx)
+	if err != nil {
+		t.Fatalf("ReconcileOnce: %v", err)
+	}
+	if result.Errors != 1 {
+		t.Errorf("Errors = %d, want 1 — the second instance has nowhere to go", result.Errors)
+	}
 }

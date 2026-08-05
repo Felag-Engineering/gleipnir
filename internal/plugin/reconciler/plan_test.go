@@ -19,6 +19,20 @@ func desiredRow(instanceID, state string) *db.PluginContainer {
 	}
 }
 
+// observedNetwork is the instance's dedicated internal network as the runtime
+// reports it.
+func observedNetwork(instanceID string) container.NetworkInfo {
+	return container.NetworkInfo{
+		ID:       container.NetworkID("net-" + instanceID),
+		Name:     "gleipnir-plugin-" + instanceID,
+		Internal: true,
+		Labels: map[string]string{
+			LabelManaged:  ManagedValue,
+			LabelInstance: instanceID,
+		},
+	}
+}
+
 func observedContainer(instanceID string, state container.ContainerState) *container.ContainerInfo {
 	return &container.ContainerInfo{
 		ID:    container.ContainerID("ctr-" + instanceID),
@@ -37,10 +51,11 @@ func observedContainer(instanceID string, state container.ContainerState) *conta
 // than one — a divergence needing several steps converges over several passes.
 func TestPlanFor(t *testing.T) {
 	tests := []struct {
-		name     string
-		desired  *db.PluginContainer
-		observed *container.ContainerInfo
-		want     ActionKind
+		name      string
+		desired   *db.PluginContainer
+		observed  *container.ContainerInfo
+		noNetwork bool // the instance's network does not exist yet
+		want      ActionKind
 	}{
 		{
 			name:    "desired running, nothing there, is created not started",
@@ -117,14 +132,35 @@ func TestPlanFor(t *testing.T) {
 			want:     ActionRemove,
 		},
 		{
-			name: "neither side has anything",
-			want: ActionNone,
+			name:      "neither side has anything",
+			noNetwork: true,
+			want:      ActionNone,
+		},
+		{
+			// The network is the first step: a container cannot attach to one
+			// that does not exist.
+			name:      "desired running with no network yet creates the network first",
+			desired:   desiredRow("i1", DesiredRunning),
+			noNetwork: true,
+			want:      ActionCreateNetwork,
+		},
+		{
+			// Nothing to attach to a network for, so none is created.
+			name:      "desired stopped with no network is left alone",
+			desired:   desiredRow("i1", DesiredStopped),
+			noNetwork: true,
+			want:      ActionNone,
+		},
+		{
+			// The second half of a teardown: the container is already gone.
+			name: "a network with no desired row and no container is removed",
+			want: ActionRemoveNetwork,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := planFor(tc.desired, tc.observed)
+			got := planFor(tc.desired, tc.observed, !tc.noNetwork)
 			if got.Kind != tc.want {
 				t.Fatalf("planFor = %q (%s), want %q", got.Kind, got.Reason, tc.want)
 			}
@@ -161,7 +197,7 @@ func TestPlanFor_Drift(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			observed := observedContainer("i1", container.ContainerStateRunning)
 			tc.mutate(observed)
-			if got := planFor(desiredRow("i1", DesiredRunning), observed); got.Kind != tc.want {
+			if got := planFor(desiredRow("i1", DesiredRunning), observed, true); got.Kind != tc.want {
 				t.Fatalf("planFor = %q (%s), want %q", got.Kind, got.Reason, tc.want)
 			}
 		})
@@ -174,7 +210,7 @@ func TestPlanFor_DriftBeatsLifecycle(t *testing.T) {
 	observed := observedContainer("i1", container.ContainerStateExited)
 	observed.Labels[LabelImageDigest] = "sha256:bbbb"
 
-	if got := planFor(desiredRow("i1", DesiredRunning), observed); got.Kind != ActionDriftDetected {
+	if got := planFor(desiredRow("i1", DesiredRunning), observed, true); got.Kind != ActionDriftDetected {
 		t.Fatalf("planFor = %q, want drift_detected — a stopped container running the wrong image must not just be started", got.Kind)
 	}
 }
@@ -189,7 +225,7 @@ func TestPlanPass_UnlabelledManagedContainerIsAnOrphan(t *testing.T) {
 		Labels: map[string]string{LabelManaged: ManagedValue},
 	}}
 
-	actions := planPass(nil, observed)
+	actions := planPass(nil, observed, nil)
 	if len(actions) != 1 || actions[0].Kind != ActionRemove {
 		t.Fatalf("actions = %+v, want a single remove", actions)
 	}
@@ -210,8 +246,12 @@ func TestPlanPass_OneActionPerInstance(t *testing.T) {
 		*observedContainer("i5", container.ContainerStateRunning), // orphan → stop
 	}
 
+	networks := []container.NetworkInfo{
+		observedNetwork("i1"), observedNetwork("i2"), observedNetwork("i3"), observedNetwork("i4"),
+	}
+
 	byInstance := map[string]ActionKind{}
-	for _, a := range planPass(desired, observed) {
+	for _, a := range planPass(desired, observed, networks) {
 		if prev, dup := byInstance[a.InstanceID]; dup {
 			t.Fatalf("instance %s planned twice: %q then %q", a.InstanceID, prev, a.Kind)
 		}
