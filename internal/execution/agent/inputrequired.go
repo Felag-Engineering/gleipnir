@@ -109,14 +109,84 @@ func (e *InputCallAbandonedError) Error() string {
 func (e *InputCallAbandonedError) Unwrap() error { return e.Err }
 
 // ElicitationBudget is the per-run elicitation budget check (spec §6.2 cap 1).
-// The handler calls Check before routing each pause so the enforcement point
-// already exists at its final call site; the budget itself — policy-configurable,
-// fail-closed, a sibling of max_steps — lands with the abuse-controls work.
-// A nil budget means no accounting, which is today's behavior.
+// The handler calls Check before routing each pause, which is the choke point
+// no pause can reach an operator without passing. A nil budget means no
+// accounting.
 type ElicitationBudget interface {
 	// Check reports whether runID may raise requests more elicitations. A
-	// non-nil error abandons the pause and fails the call.
+	// non-nil error abandons the pause; wrapping ErrElicitationBudgetExhausted
+	// marks it as a budget refusal rather than an infrastructure failure.
 	Check(ctx context.Context, runID string, requests int) error
+}
+
+// ErrElicitationBudgetExhausted marks a budget refusal. The distinction from
+// any other Check error matters at the call site: an exhausted budget fails the
+// CALL structurally and lets the run continue (spec §6.2), while an
+// infrastructure failure in the budget itself is not something to paper over.
+var ErrElicitationBudgetExhausted = errors.New("per-run elicitation budget exhausted")
+
+// runElicitationBudget is the per-run counter behind the policy's
+// max_elicitations_per_run. One instance belongs to one run, so it needs no
+// run keying — the runID argument is checked as a defensive assertion, not
+// used as a map key.
+//
+// Fail-closed means the refusal is unconditional once the budget is spent:
+// there is no grace, no decay, and no way for a server to earn more by waiting.
+// The rate limit (spec §6.2 cap 3) is what spaces requests out over time; this
+// cap is what bounds them absolutely.
+type runElicitationBudget struct {
+	limit int // zero means unlimited
+
+	mu    sync.Mutex
+	spent int
+}
+
+// newRunElicitationBudget returns nil when limit <= 0, so an unlimited policy
+// carries no counter and no lock at all.
+func newRunElicitationBudget(limit int) *runElicitationBudget {
+	if limit <= 0 {
+		return nil
+	}
+	return &runElicitationBudget{limit: limit}
+}
+
+// Check consumes requests from the budget, or refuses. A pause that would
+// overrun the budget consumes nothing: a partial spend would leave the run in a
+// state where a smaller later pause could still succeed, which reads as the
+// budget being negotiable.
+func (b *runElicitationBudget) Check(_ context.Context, _ string, requests int) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.spent+requests > b.limit {
+		elicitationBudgetExhausted.Inc()
+		return fmt.Errorf("%w: %d of %d already used, this request needs %d",
+			ErrElicitationBudgetExhausted, b.spent, b.limit, requests)
+	}
+	b.spent += requests
+	return nil
+}
+
+// spentCount reports how much of the budget is consumed. Test-only accessor.
+func (b *runElicitationBudget) spentCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.spent
+}
+
+// inputRequiredOptions builds the handler options implied by a policy. It is a
+// function rather than inline construction so New() reads the same whether or
+// not the policy sets a budget — a zero or absent limit yields no options at
+// all, and the handler stays budget-free.
+func inputRequiredOptions(policy *model.ParsedPolicy) []InputRequiredHandlerOption {
+	if policy == nil {
+		return nil
+	}
+	budget := newRunElicitationBudget(policy.Agent.Limits.MaxElicitationsPerRun)
+	if budget == nil {
+		return nil
+	}
+	return []InputRequiredHandlerOption{WithElicitationBudget(budget)}
 }
 
 // InputRoutingRequest is one MRTR pause: everything needed to persist the
@@ -316,9 +386,13 @@ func (h *InputRequiredHandler) deliver(requestID string, responses []mcp.InputRe
 func (h *InputRequiredHandler) Route(ctx context.Context, req InputRoutingRequest) ([]mcp.InputResponse, error) {
 	requestID := model.NewULID()
 
+	// The budget refusal is returned unwrapped, NOT inside an
+	// InputRoutingError: nothing was routed, so it is not a routing failure.
+	// The distinction is what lets the caller fail the call and keep the run
+	// alive instead of treating it like an unanswered operator wait.
 	if h.budget != nil {
 		if err := h.budget.Check(ctx, req.RunID, len(req.Result.InputRequests)); err != nil {
-			return nil, &InputRoutingError{RequestID: requestID, Err: fmt.Errorf("elicitation budget: %w", err)}
+			return nil, err
 		}
 	}
 
@@ -330,6 +404,10 @@ func (h *InputRequiredHandler) Route(ctx context.Context, req InputRoutingReques
 		timeout = fallbackInputTimeout
 	}
 	expiresAt := time.Now().UTC().Add(timeout).Format(time.RFC3339Nano)
+
+	if err := checkPersistedSize(req.Result, requestID); err != nil {
+		return nil, err
+	}
 
 	callArgs, err := json.Marshal(req.Input)
 	if err != nil {
@@ -455,6 +533,17 @@ func (a *BoundAgent) callToolWithInputRounds(ctx context.Context, runID string, 
 			Timeout:  resolveOperatorTimeout(ctx, a.policy.Capabilities.Feedback, 0),
 		})
 		if err != nil {
+			// An exhausted budget fails the CALL and lets the run continue
+			// (spec §6.2), unlike an unanswered pause, which fails the run.
+			// Nobody was interrupted here — the host declined to interrupt
+			// them — so there is no abandoned operator wait to account for.
+			if errors.Is(err, ErrElicitationBudgetExhausted) {
+				return mcp.ToolResult{}, &InputCallAbandonedError{
+					ToolName: toolName,
+					Reason:   "the run's elicitation budget is exhausted",
+					Err:      err,
+				}
+			}
 			return mcp.ToolResult{}, err
 		}
 
@@ -479,6 +568,44 @@ func (a *BoundAgent) toolResultError(ctx context.Context, runID, toolName, msg s
 		return "", false, fmt.Errorf("writing tool_result error step: %w", err)
 	}
 	return msg, true, nil
+}
+
+// maxPersistedRequestStateBytes and maxPersistedPayloadBytes bound what one
+// pause may write to tool_input_requests. internal/mcp already enforces the
+// spec §6.2 caps at decode time, so a result arriving through the MCP client
+// is bounded before it gets here — these are the persistence-layer backstop
+// the same section asks for, covering any future producer of an
+// InputRequiredResult that does not come through that decode path.
+//
+// They are deliberately looser than the decode-time caps: this layer is
+// guarding the database against an unbounded write, not re-litigating what a
+// reasonable elicitation looks like.
+const (
+	maxPersistedRequestStateBytes = 64 << 10  // 64 KiB
+	maxPersistedPayloadBytes      = 256 << 10 // 256 KiB
+)
+
+// checkPersistedSize rejects a pause whose durable record would be
+// unreasonably large, before any row is written.
+func checkPersistedSize(result *mcp.InputRequiredResult, requestID string) error {
+	if n := len(result.RequestState); n > maxPersistedRequestStateBytes {
+		return &InputRoutingError{
+			RequestID: requestID,
+			Err:       fmt.Errorf("requestState is %d bytes, exceeds the %d-byte persistence limit", n, maxPersistedRequestStateBytes),
+		}
+	}
+
+	total := 0
+	for _, r := range result.InputRequests {
+		total += len(r.Message) + len(r.RequestedSchema) + len(r.ElicitationKind)
+	}
+	if total > maxPersistedPayloadBytes {
+		return &InputRoutingError{
+			RequestID: requestID,
+			Err:       fmt.Errorf("elicitation payload is %d bytes, exceeds the %d-byte persistence limit", total, maxPersistedPayloadBytes),
+		}
+	}
+	return nil
 }
 
 // resolveRecord marks the tool_input_requests row resolved. Best-effort: the

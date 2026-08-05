@@ -823,3 +823,16 @@ func TestValidate_IssueFields(t *testing.T) {
 		}
 	})
 }
+
+func TestValidate_MaxElicitationsPerRunMustNotBeNegative(t *testing.T) {
+	p := validPolicy()
+	p.Agent.Limits.MaxElicitationsPerRun = -1
+
+	err := Validate(p)
+	if err == nil {
+		t.Fatal("a negative elicitation budget was accepted")
+	}
+	if !strings.Contains(err.Error(), "agent.limits.max_elicitations_per_run") {
+		t.Errorf("error = %v, want it to name the offending field", err)
+	}
+}

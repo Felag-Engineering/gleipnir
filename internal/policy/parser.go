@@ -16,6 +16,10 @@ import (
 const (
 	defaultMaxTokensPerRun    = 20000
 	defaultMaxToolCallsPerRun = 50
+	// defaultMaxElicitationsPerRun is small on purpose: every elicitation is a
+	// human interruption, and a run that needs more than a handful is either
+	// misdesigned or being driven by a server abusing the channel.
+	defaultMaxElicitationsPerRun = 10
 
 	// MaxPolicyYAMLBytes is the maximum allowed size of a raw policy YAML blob.
 	// Enforced before unmarshalling to prevent billion-laughs style DoS attacks.
@@ -303,6 +307,12 @@ func convertAgent(r rawAgent, mc model.ModelConfig) model.AgentConfig {
 		ac.Limits.MaxToolCallsPerRun = defaultMaxToolCallsPerRun
 	}
 
+	if r.Limits.MaxElicitationsPerRun != nil {
+		ac.Limits.MaxElicitationsPerRun = *r.Limits.MaxElicitationsPerRun
+	} else {
+		ac.Limits.MaxElicitationsPerRun = defaultMaxElicitationsPerRun
+	}
+
 	ac.Concurrency = model.ConcurrencyPolicy(r.Concurrency)
 	if ac.Concurrency == "" {
 		ac.Concurrency = model.ConcurrencySkip
@@ -395,6 +405,7 @@ type rawAgent struct {
 // Pointer fields let us distinguish "field omitted" (nil → apply default)
 // from "field explicitly 0" (non-nil → preserve as-is, meaning unlimited).
 type rawLimits struct {
-	MaxTokensPerRun    *int `yaml:"max_tokens_per_run"`
-	MaxToolCallsPerRun *int `yaml:"max_tool_calls_per_run"`
+	MaxTokensPerRun       *int `yaml:"max_tokens_per_run"`
+	MaxToolCallsPerRun    *int `yaml:"max_tool_calls_per_run"`
+	MaxElicitationsPerRun *int `yaml:"max_elicitations_per_run"`
 }

@@ -49,6 +49,17 @@ type Config struct {
 	LLMRetryInitialBackoff time.Duration // GLEIPNIR_LLM_RETRY_INITIAL_BACKOFF, default 1s
 	LLMRetryMaxBackoff     time.Duration // GLEIPNIR_LLM_RETRY_MAX_BACKOFF, default 30s
 
+	// Tool-initiated HITL abuse controls (ADR-055, spec sec 6.2). These bound
+	// what one MCP server can push at an operator: how big a single
+	// input_required result may be, and how often one may arrive. They are
+	// host self-protection, deliberately NOT per-policy — a policy author
+	// cannot raise the ceiling a hostile or buggy server is measured against.
+	ElicitationMaxRequestStateBytes int     // GLEIPNIR_ELICITATION_MAX_REQUEST_STATE_BYTES, default 16384
+	ElicitationMaxRequests          int     // GLEIPNIR_ELICITATION_MAX_REQUESTS, default 8
+	ElicitationMaxRequestsBytes     int     // GLEIPNIR_ELICITATION_MAX_REQUESTS_BYTES, default 65536
+	ElicitationRatePerSec           float64 // GLEIPNIR_ELICITATION_RATE_PER_SEC, default 1
+	ElicitationBurst                int     // GLEIPNIR_ELICITATION_BURST, default 5
+
 	// PluginSubnetPool is the base CIDR per-instance plugin networks are
 	// carved from, one /24 each (ADR-056, spec §7). The default /16 holds 256
 	// instances; stock container-runtime default pools exhaust at roughly 30
@@ -93,6 +104,12 @@ func Load() (Config, error) {
 		LLMRetryInitialBackoff:    envDuration("GLEIPNIR_LLM_RETRY_INITIAL_BACKOFF", 1*time.Second),
 		LLMRetryMaxBackoff:        envDuration("GLEIPNIR_LLM_RETRY_MAX_BACKOFF", 30*time.Second),
 		PluginSubnetPool:          envOrDefault("GLEIPNIR_PLUGIN_SUBNET_POOL", "10.83.0.0/16"),
+
+		ElicitationMaxRequestStateBytes: envInt("GLEIPNIR_ELICITATION_MAX_REQUEST_STATE_BYTES", 16<<10),
+		ElicitationMaxRequests:          envInt("GLEIPNIR_ELICITATION_MAX_REQUESTS", 8),
+		ElicitationMaxRequestsBytes:     envInt("GLEIPNIR_ELICITATION_MAX_REQUESTS_BYTES", 64<<10),
+		ElicitationRatePerSec:           envFloat("GLEIPNIR_ELICITATION_RATE_PER_SEC", 1),
+		ElicitationBurst:                envInt("GLEIPNIR_ELICITATION_BURST", 5),
 	}, nil
 }
 
@@ -183,4 +200,20 @@ func envBool(key string, def bool) bool {
 		return def
 	}
 	return b
+}
+
+// envFloat reads a float64 from the environment, falling back to def when the
+// variable is unset or unparseable. Same fail-soft posture as envInt: a typo in
+// a tuning knob must not stop the server from booting.
+func envFloat(key string, def float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		slog.Warn("invalid float in environment variable, using default", "key", key, "value", v, "default", def)
+		return def
+	}
+	return f
 }

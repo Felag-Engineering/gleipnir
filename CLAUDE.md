@@ -59,6 +59,11 @@ measurements and the `CI_LOCAL_JOBS` / `CI_LOCAL_NO_LOCK` / `CI_LOCAL_FULL` esca
 | `GLEIPNIR_LLM_RETRY_MAX_ATTEMPTS` | `4` | Total attempts (including the first) for transient LLM API failures (connection errors, 408/429, transient 5xx). `1` disables retry. Drives the Anthropic/OpenAI SDKs' own retry count and the manual loop for Google + openaicompat. |
 | `GLEIPNIR_LLM_RETRY_INITIAL_BACKOFF` | `1s` | Base wait for the manual retry loop (exponential, full-jitter). A provider `Retry-After` hint is honored verbatim instead. |
 | `GLEIPNIR_LLM_RETRY_MAX_BACKOFF` | `30s` | Ceiling for any single retry wait (including a provider `Retry-After`); the run context bounds total wait. |
+| `GLEIPNIR_ELICITATION_MAX_REQUEST_STATE_BYTES` | `16384` | Largest opaque MRTR `requestState` blob accepted from one `input_required` result (ADR-055, spec §6.2 cap 2). Oversize is a structural error: the call fails and nothing is persisted. |
+| `GLEIPNIR_ELICITATION_MAX_REQUESTS` | `8` | Most elicitations one `input_required` result may bundle. |
+| `GLEIPNIR_ELICITATION_MAX_REQUESTS_BYTES` | `65536` | Largest serialized `inputRequests` array accepted from one result. |
+| `GLEIPNIR_ELICITATION_RATE_PER_SEC` | `1` | Sustained per-MCP-server token-bucket rate for `input_required` results (spec §6.2 cap 3). A token bucket, not a debounce — the spec rejects heuristics here. Over-limit results are refused before decoding. |
+| `GLEIPNIR_ELICITATION_BURST` | `5` | Burst ceiling for the same bucket. |
 | `GLEIPNIR_PLUGIN_SUBNET_POOL` | `10.83.0.0/16` | Base CIDR the reconciler carves per-instance plugin networks from, one `/24` each (ADR-056, spec §7). The default holds 256 instances. Must be IPv4 and no longer than a `/24`. Operators running other workloads on the same daemon should also widen the daemon's own `default-address-pools` so the two allocators do not collide — see `docs/developer/container-networking.md`. |
 | `GLEIPNIR_ENCRYPTION_KEY` | *(required)* | 64-char hex key (32-byte AES-256) for encrypting provider API keys and webhook secrets; generate with `openssl rand -hex 32` |
 
