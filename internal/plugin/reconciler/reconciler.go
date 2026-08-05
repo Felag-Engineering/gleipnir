@@ -57,6 +57,15 @@ type Config struct {
 	// on networks something else created, but cannot create one itself.
 	Subnets *SubnetAllocator
 
+	// Rotations is the generation-record store. Required only for
+	// ReconcileRotations; the core convergence loop does not touch it.
+	Rotations RotationStore
+
+	// HealthGateTimeout and DrainTimeout bound the two rotation waits. Zero
+	// uses the package defaults.
+	HealthGateTimeout time.Duration
+	DrainTimeout      time.Duration
+
 	// NetworkNameFor overrides how an instance's network name is derived.
 	// Optional — the default is derived from the desired row, and per-instance
 	// network creation is a separate concern that owns the real naming.
@@ -93,6 +102,19 @@ type Reconciler struct {
 	publisher event.Publisher
 	subnets   *SubnetAllocator
 	networkFn func(db.PluginContainer) string
+
+	rotations         RotationStore
+	healthGateTimeout time.Duration
+	drainTimeout      time.Duration
+
+	// tokens holds raw per-generation instance tokens between minting them and
+	// handing them to the container they belong to. In memory only and never
+	// persisted: a stored token is a token a database leak hands to an
+	// attacker. A restart loses them, and the create step treats a lost token
+	// as a failed generation rather than starting a container it cannot
+	// authenticate.
+	tokenMu sync.Mutex
+	tokens  map[string]string
 
 	// kick carries a nudge from a desired-state write. Buffered at 1 and sent
 	// non-blocking: a burst of writes coalesces into one extra pass, which is
@@ -131,6 +153,11 @@ func New(cfg Config) (*Reconciler, error) {
 		subnets:   cfg.Subnets,
 		networkFn: networkFn,
 		kick:      make(chan struct{}, 1),
+
+		rotations:         cfg.Rotations,
+		healthGateTimeout: cfg.HealthGateTimeout,
+		drainTimeout:      cfg.DrainTimeout,
+		tokens:            make(map[string]string),
 	}, nil
 }
 
