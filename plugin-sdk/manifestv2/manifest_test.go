@@ -370,8 +370,10 @@ func TestParse_UnknownFieldsAreRejected(t *testing.T) {
 			mutate: func(s string) string { return s + "  unknown_future_field: true\n" },
 		},
 		{
-			name:   "unknown package key",
-			mutate: func(s string) string { return strings.Replace(s, "  registry_type: oci", "  registry_type: oci\n  runtime_hint: docker", 1) },
+			name: "unknown package key",
+			mutate: func(s string) string {
+				return strings.Replace(s, "  registry_type: oci", "  registry_type: oci\n  runtime_hint: docker", 1)
+			},
 		},
 	}
 
