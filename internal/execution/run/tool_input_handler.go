@@ -39,6 +39,13 @@ type ToolInputRequestResponse struct {
 	CreatedAt       string              `json:"created_at"`
 	Requests        []ToolInputQuestion `json:"requests"`
 
+	// PriorAttempt is present only when the server re-asked a DIFFERENT
+	// question after the operator had already answered one (spec §6.5). It
+	// carries the previous question and answer so the second prompt does not
+	// read as a duplicate of the first — the case where a reflexive approval
+	// is most costly. Its contents are as untrusted as Requests.
+	PriorAttempt *agent.ReplayContext `json:"prior_attempt,omitempty"`
+
 	// UntrustedContent is always true and is part of the contract, not a
 	// runtime condition (spec §6.1: elicitation messages are server-controlled
 	// text). It is stated explicitly so a client cannot render these strings as
@@ -107,6 +114,16 @@ func (h *RunsHandler) GetToolInput(w http.ResponseWriter, r *http.Request) {
 		out[i] = ToolInputQuestion{Message: q.Message, RequestedSchema: q.RequestedSchema}
 	}
 
+	// A replay context that will not decode is logged and dropped rather than
+	// failing the read: it is supplementary framing, and withholding the live
+	// question over a bad sidecar would block an answerable request.
+	prior, err := agent.DecodeReplayContext(replayContextOf(row))
+	if err != nil {
+		slog.Warn("tool input replay context does not decode",
+			"request_id", row.ID, "run_id", runID, "err", err)
+		prior = nil
+	}
+
 	kind := model.ElicitationKind(row.ElicitationKind)
 	httputil.WriteJSON(w, http.StatusOK, ToolInputRequestResponse{
 		ID:               row.ID,
@@ -117,8 +134,17 @@ func (h *RunsHandler) GetToolInput(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:        row.ExpiresAt,
 		CreatedAt:        row.CreatedAt,
 		Requests:         out,
+		PriorAttempt:     prior,
 		UntrustedContent: true,
 	})
+}
+
+// replayContextOf reads the nullable replay_context column as a string.
+func replayContextOf(row db.ToolInputRequest) string {
+	if row.ReplayContext == nil {
+		return ""
+	}
+	return *row.ReplayContext
 }
 
 // SubmitToolInput delivers an operator's answer to a paused tool-initiated

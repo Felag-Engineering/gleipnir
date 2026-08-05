@@ -128,6 +128,13 @@ type ToolInputPayload struct {
 	ElicitationKind string // "permission" | "information" (spec §6.1)
 	ExpiresAt       string // RFC3339Nano; never empty (the column is NOT NULL)
 	DeadlineSource  string // which clock produced ExpiresAt (spec §6.3)
+
+	// ReplayContext is the JSON-encoded question and answer that preceded this
+	// one, set only when a server re-asked DIFFERENTLY after its MRTR state
+	// expired (spec §6.5). Empty on a first ask, which is the normal case and
+	// is stored as SQL NULL rather than an empty string — "nothing preceded
+	// this" is not the same claim as "an empty thing preceded this".
+	ReplayContext string
 }
 
 type transitionOpts struct {
@@ -279,6 +286,10 @@ func (sm *RunStateMachine) Transition(ctx context.Context, next model.RunStatus,
 	// without the durable record an operator answer will be applied against.
 	if next == model.RunStatusWaitingForFeedback && topts.toolInput != nil {
 		p := topts.toolInput
+		var replayContext *string
+		if p.ReplayContext != "" {
+			replayContext = &p.ReplayContext
+		}
 		if _, err := qtx.CreateToolInputRequest(ctx, db.CreateToolInputRequestParams{
 			ID:              p.RequestID,
 			RunID:           sm.runID,
@@ -290,6 +301,7 @@ func (sm *RunStateMachine) Transition(ctx context.Context, next model.RunStatus,
 			ElicitationKind: p.ElicitationKind,
 			ExpiresAt:       p.ExpiresAt,
 			DeadlineSource:  &p.DeadlineSource,
+			ReplayContext:   replayContext,
 			CreatedAt:       time.Now().UTC().Format(time.RFC3339Nano),
 		}); err != nil {
 			return fmt.Errorf("creating tool input request record: %w", err)

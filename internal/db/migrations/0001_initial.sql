@@ -564,6 +564,7 @@ CREATE TABLE tool_input_requests (
     resolved_at       TEXT,                                                             -- nullable, ISO 8601 UTC
     expires_at        TEXT    NOT NULL,                                                 -- effective deadline: min of Gleipnir policy timeout / server TTL / requestState TTL (spec §6.3)
     deadline_source   TEXT    CHECK(deadline_source IS NULL OR deadline_source IN ('policy', 'server_ttl', 'request_state')),  -- which clock produced expires_at; NULL means written before the column existed
+    replay_context    TEXT,                                                             -- nullable, JSON blob: the question + answer that preceded this one when a server re-asked differently after its MRTR state expired (spec §6.5); NULL means this is a first ask
     created_at        TEXT    NOT NULL                                                  -- ISO 8601 UTC
 );
 CREATE INDEX idx_tool_input_requests_run_id         ON tool_input_requests(run_id);

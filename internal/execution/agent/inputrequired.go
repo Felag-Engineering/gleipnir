@@ -209,6 +209,11 @@ type InputRoutingRequest struct {
 	// durable task or a server declares a requestState TTL out-of-band.
 	ServerTaskTTL   time.Time
 	RequestStateTTL time.Time
+
+	// Replay is what the operator was asked and answered immediately before
+	// this request, set only when the server re-asked a DIFFERENT question
+	// after its MRTR state expired (spec §6.5). Nil on a first ask.
+	Replay *ReplayContext
 }
 
 // PersistedInputRequest is the wire shape of one entry in
@@ -440,6 +445,14 @@ func (h *InputRequiredHandler) Route(ctx context.Context, req InputRoutingReques
 	if err != nil {
 		return nil, fmt.Errorf("marshaling input requests for %s: %w", req.ToolName, err)
 	}
+	var replayContext string
+	if req.Replay != nil {
+		encoded, err := json.Marshal(req.Replay)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling replay context for %s: %w", req.ToolName, err)
+		}
+		replayContext = string(encoded)
+	}
 
 	// Register before the transition; release on every exit path.
 	responses := h.registerWaiter(requestID, len(req.Result.InputRequests))
@@ -455,6 +468,7 @@ func (h *InputRequiredHandler) Route(ctx context.Context, req InputRoutingReques
 		ElicitationKind: string(classifyElicitationKind(req.Result.InputRequests)),
 		ExpiresAt:       expiresAt,
 		DeadlineSource:  string(source),
+		ReplayContext:   replayContext,
 	})); err != nil {
 		return nil, fmt.Errorf("transitioning run to waiting_for_feedback for tool input: %w", err)
 	}
@@ -506,6 +520,15 @@ func (h *InputRequiredHandler) Route(ctx context.Context, req InputRoutingReques
 // once, before dispatch, and the tool_result step is written once, after this
 // returns. Everything between them is invisible to the agent.
 //
+// Answer replay (spec §6.5) lives in this loop. When a server discards its MRTR
+// state while a human is thinking — a TTL expiring mid-wait — the answer that
+// eventually arrives is spent on a retry the server no longer recognizes, and
+// the server starts over by asking again. If it asks the IDENTICAL question,
+// the stored answer is replayed against the new requestState without the
+// operator ever seeing it. MRTR is stateless by design, so starting over is
+// always available; making a human re-answer a question they already answered
+// gains nothing and trains them to click through prompts.
+//
 // Only the MRTR shape is wired here. Spec §6 names a second shape — a durable
 // task that enters input_required, answered with tasks/update — which is
 // unreachable today because no agent path yet turns a tools/call into a task
@@ -520,6 +543,12 @@ func (a *BoundAgent) callToolWithInputRounds(ctx context.Context, runID string, 
 		Capabilities:      entry.tool.Capabilities,
 		HeaderParamSchema: entry.tool.SchemaForHeaderParams(),
 	}
+
+	// The most recent answer, held for the replay path. Only the latest is
+	// kept: replay recovers a hiccup on the question just answered, not an
+	// arbitrary earlier one, and a growing history would be a growing supply
+	// of answers a server could try to steer back onto a different question.
+	var prior *answeredQuestion
 
 	for round := 1; ; round++ {
 		result, err := entry.tool.Client.CallTool(ctx, entry.tool.ToolName, input, opts)
@@ -547,6 +576,36 @@ func (a *BoundAgent) callToolWithInputRounds(ctx context.Context, runID string, 
 			}
 		}
 
+		fingerprint := questionFingerprint(result.InputRequired.InputRequests)
+
+		// §6.5 replay: the same question again, so the answer already in hand
+		// still answers it. Spend it silently against the fresh requestState.
+		//
+		// Once per question. A server that answers the replay with the same
+		// question a THIRD time is not recovering from an expired state, it is
+		// looping, and continuing to feed it an answer it demonstrably will not
+		// accept just burns rounds — so the second identical re-ask falls
+		// through to the human, who can see something is wrong.
+		if prior.matches(fingerprint) && !prior.replayed {
+			logctx.Logger(ctx).InfoContext(ctx, "replaying operator answer after server re-asked the identical question",
+				"tool", toolName, "run_id", runID, "round", round)
+			prior.replayed = true
+			inputAnswerReplays.Inc()
+			opts.InputResponses = prior.answers
+			opts.RequestState = result.InputRequired.RequestState
+			continue
+		}
+
+		// Either a first ask, or the server changed the question. In the second
+		// case the operator gets the previous question and answer alongside the
+		// new one — a second prompt that looks like a duplicate but is not is
+		// exactly where a reflexive approval does the most damage.
+		var replay *ReplayContext
+		if prior != nil && !prior.matches(fingerprint) {
+			inputAnswerReplayMismatches.Inc()
+			replay = newReplayContext(prior)
+		}
+
 		answers, err := a.inputRequired.Route(ctx, InputRoutingRequest{
 			RunID:    runID,
 			ServerID: entry.tool.ServerID,
@@ -554,6 +613,7 @@ func (a *BoundAgent) callToolWithInputRounds(ctx context.Context, runID string, 
 			Input:    input,
 			Result:   result.InputRequired,
 			Timeout:  resolveOperatorTimeout(ctx, a.policy.Capabilities.Feedback, 0),
+			Replay:   replay,
 		})
 		if err != nil {
 			// An exhausted budget fails the CALL and lets the run continue
@@ -570,6 +630,11 @@ func (a *BoundAgent) callToolWithInputRounds(ctx context.Context, runID string, 
 			return mcp.ToolResult{}, err
 		}
 
+		prior = &answeredQuestion{
+			fingerprint: fingerprint,
+			requests:    result.InputRequired.InputRequests,
+			answers:     answers,
+		}
 		opts.InputResponses = answers
 		opts.RequestState = result.InputRequired.RequestState
 	}

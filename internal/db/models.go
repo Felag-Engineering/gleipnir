@@ -310,6 +310,7 @@ type ToolInputRequest struct {
 	ResolvedAt      *string `json:"resolved_at"`
 	ExpiresAt       string  `json:"expires_at"`
 	DeadlineSource  *string `json:"deadline_source"`
+	ReplayContext   *string `json:"replay_context"`
 	CreatedAt       string  `json:"created_at"`
 }
 
