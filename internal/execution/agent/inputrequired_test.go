@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -458,6 +459,20 @@ type mrtrServer struct {
 	// secretSchema makes the elicitation ask for a secret value, which the
 	// host refuses to render as a form.
 	secretSchema bool
+
+	// reAsksAfterAnswer models a server whose MRTR state expired while a human
+	// was thinking (spec §6.5): it answers that many post-answer retries with a
+	// FRESH input_required instead of completing the call. Each re-ask carries
+	// a new requestState, because a server that still had the old one would
+	// have had no reason to re-ask.
+	reAsksAfterAnswer int
+	// reAskMessage overrides the message on those re-asks. Empty means the
+	// server re-asks the identical question, which is the replay path; a
+	// different message is the re-prompt path.
+	reAskMessage string
+
+	// asks counts the input_required responses emitted so far.
+	asks int
 }
 
 func (m *mrtrServer) handler() http.HandlerFunc {
@@ -471,10 +486,28 @@ func (m *mrtrServer) handler() http.HandlerFunc {
 		m.mu.Lock()
 		m.requests = append(m.requests, req)
 		round := len(m.requests)
+		ask := m.alwaysAsk || round == 1 || m.asks <= m.reAsksAfterAnswer
+		message := "deploy to prod?"
+		if ask {
+			switch {
+			case round == 1:
+				// The opening question.
+			case m.reAskMessage != "":
+				message = m.reAskMessage
+			case m.alwaysAsk:
+				// A server that never stops asking asks something NEW each
+				// time. An endless repeat of one question is the §6.5 replay
+				// case, which is a different scenario with its own tests —
+				// keeping them apart is what lets each assert a clean count.
+				message = fmt.Sprintf("deploy to prod? (round %d)", m.asks+1)
+			}
+			m.asks++
+		}
+		asks := m.asks
 		m.mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
-		if m.alwaysAsk || round == 1 {
+		if ask {
 			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -482,10 +515,12 @@ func (m *mrtrServer) handler() http.HandlerFunc {
 					"content":    json.RawMessage(`[{"type":"text","text":"pending"}]`),
 					"resultType": mcp.ResultTypeInputRequired,
 					"inputRequests": []map[string]any{{
-						"message":         "deploy to prod?",
+						"message":         message,
 						"requestedSchema": m.requestedSchema(),
 					}},
-					"requestState": map[string]any{"cursor": "abc"},
+					// A distinct cursor per ask, so a test can tell which
+					// requestState the retry carried back.
+					"requestState": map[string]any{"cursor": fmt.Sprintf("abc-%d", asks)},
 				},
 			})
 			return
@@ -666,7 +701,7 @@ func TestBoundAgent_ToolCall_PausesAndRetriesWithAnswer(t *testing.T) {
 		t.Errorf("retry action = %v, want accept", responses[0])
 	}
 	state, ok := retry["requestState"].(map[string]any)
-	if !ok || state["cursor"] != "abc" {
+	if !ok || state["cursor"] != "abc-1" {
 		t.Errorf("retry requestState = %v, want the server's blob replayed", retry["requestState"])
 	}
 
@@ -1273,5 +1308,168 @@ func TestInputRequiredHandler_Route_ExpiredServerTTLEndsTheWaitAtOnce(t *testing
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Route waited on the policy clock despite an expired server TTL")
+	}
+}
+
+// §6.5, the case the whole mechanism exists for: the operator answers, the
+// server has meanwhile discarded its MRTR state and re-asks the SAME question,
+// and the answer is replayed against the fresh requestState without the human
+// ever being asked twice. Exactly one pause reaches an operator.
+func TestBoundAgent_ToolCall_ReplaysAnswerWhenServerReAsksIdentically(t *testing.T) {
+	fake := &mrtrServer{reAsksAfterAnswer: 1}
+	s, pub, ba := newMRTRAgent(t, fake, model.ApprovalModeNone, nil)
+
+	type callResult struct {
+		output  string
+		isError bool
+		err     error
+	}
+	done := make(chan callResult, 1)
+	go func() {
+		output, isError, err := ba.handleToolCall(context.Background(), "r1", "myserver.deploy", map[string]any{"env": "prod"})
+		done <- callResult{output: output, isError: isError, err: err}
+	}()
+
+	requestID := awaitPendingToolInputID(t, pub, s)
+	if err := ba.InputRequiredResolver().Resolve(requestID, `[{"action":"accept","content":{"confirm":true}}]`); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("handleToolCall: unexpected error: %v", res.err)
+		}
+		if res.isError {
+			t.Errorf("isError = true, want false")
+		}
+		if !strings.Contains(res.output, "deployed") {
+			t.Errorf("output = %q, want the completed result", res.output)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("handleToolCall did not return within deadline")
+	}
+
+	// original + retry(answer) + retry(replayed answer) = 3.
+	if fake.count() != 3 {
+		t.Fatalf("server saw %d calls, want 3 (original + answered retry + replayed retry)", fake.count())
+	}
+
+	// The replay carries the SAME answer against the server's NEW requestState.
+	// Sending back the stale blob would be replaying into the same expiry the
+	// server just told us about.
+	replay := fake.params(t, 2)
+	responses, ok := replay["inputResponses"].([]any)
+	if !ok || len(responses) != 1 {
+		t.Fatalf("replay inputResponses = %v, want one entry", replay["inputResponses"])
+	}
+	if action, _ := responses[0].(map[string]any)["action"].(string); action != inputActionAccept {
+		t.Errorf("replay action = %v, want the stored answer replayed", responses[0])
+	}
+	state, _ := replay["requestState"].(map[string]any)
+	if state["cursor"] != "abc-2" {
+		t.Errorf("replay requestState = %v, want the server's SECOND blob", replay["requestState"])
+	}
+
+	// Exactly one row, because exactly one human was asked.
+	rows, err := s.Queries().ListResumableToolInputRequests(context.Background())
+	if err != nil {
+		t.Fatalf("ListResumableToolInputRequests: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("%d requests still pending, want 0", len(rows))
+	}
+	all, err := s.Queries().GetToolInputRequest(context.Background(), requestID)
+	if err != nil {
+		t.Fatalf("GetToolInputRequest: %v", err)
+	}
+	if all.Status != "resolved" {
+		t.Errorf("request status = %q, want resolved", all.Status)
+	}
+
+	// And the agent still sees one call and one result — a replay is no more
+	// visible to the model than the pause it recovers from (ADR-046).
+	types := stepTypes(t, s, ba.audit, "r1")
+	want := []string{string(model.StepTypeToolCall), string(model.StepTypeToolResult)}
+	if len(types) != len(want) {
+		t.Fatalf("run steps = %v, want %v", types, want)
+	}
+	for i := range want {
+		if types[i] != want[i] {
+			t.Fatalf("run steps = %v, want %v", types, want)
+		}
+	}
+}
+
+// The other half of §6.5: the server re-asks something DIFFERENT, so the
+// operator is prompted again — and the second prompt carries the previous
+// question and answer, so it does not read as a duplicate of the first.
+func TestBoundAgent_ToolCall_ReAskingDifferentlyRePromptsWithContext(t *testing.T) {
+	fake := &mrtrServer{reAsksAfterAnswer: 1, reAskMessage: "deploy to prod AND restart workers?"}
+	s, pub, ba := newMRTRAgent(t, fake, model.ApprovalModeNone, nil)
+
+	type callResult struct {
+		output  string
+		isError bool
+		err     error
+	}
+	done := make(chan callResult, 1)
+	go func() {
+		output, isError, err := ba.handleToolCall(context.Background(), "r1", "myserver.deploy", map[string]any{"env": "prod"})
+		done <- callResult{output: output, isError: isError, err: err}
+	}()
+
+	first := awaitPendingToolInputID(t, pub, s)
+	if err := ba.InputRequiredResolver().Resolve(first, `[{"action":"accept","content":{"confirm":true}}]`); err != nil {
+		t.Fatalf("Resolve first: %v", err)
+	}
+
+	second := awaitNthPendingToolInputID(t, pub, s, 2)
+	if second == first {
+		t.Fatal("the second prompt reused the first request ID")
+	}
+
+	// The replay context is what tells the operator the question changed.
+	row, err := s.Queries().GetToolInputRequest(context.Background(), second)
+	if err != nil {
+		t.Fatalf("GetToolInputRequest: %v", err)
+	}
+	if row.ReplayContext == nil {
+		t.Fatal("second request has no replay_context; the operator cannot tell the question changed")
+	}
+	rc, err := DecodeReplayContext(*row.ReplayContext)
+	if err != nil {
+		t.Fatalf("DecodeReplayContext: %v", err)
+	}
+	if len(rc.PriorQuestions) != 1 || rc.PriorQuestions[0].Message != "deploy to prod?" {
+		t.Errorf("prior questions = %+v, want the original ask", rc.PriorQuestions)
+	}
+	if len(rc.PriorAnswers) != 1 || rc.PriorAnswers[0].Action != inputActionAccept {
+		t.Errorf("prior answers = %+v, want the operator's first answer preserved", rc.PriorAnswers)
+	}
+	if rc.Reason != reasonQuestionChanged {
+		t.Errorf("Reason = %q, want %q", rc.Reason, reasonQuestionChanged)
+	}
+
+	// The first ask, by contrast, has nothing before it.
+	firstRow, err := s.Queries().GetToolInputRequest(context.Background(), first)
+	if err != nil {
+		t.Fatalf("GetToolInputRequest(first): %v", err)
+	}
+	if firstRow.ReplayContext != nil {
+		t.Errorf("first request carries a replay context %q, want NULL", *firstRow.ReplayContext)
+	}
+
+	if err := ba.InputRequiredResolver().Resolve(second, `[{"action":"decline"}]`); err != nil {
+		t.Fatalf("Resolve second: %v", err)
+	}
+
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("handleToolCall: unexpected error: %v", res.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("handleToolCall did not return within deadline")
 	}
 }

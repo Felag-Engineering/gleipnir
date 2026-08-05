@@ -324,3 +324,133 @@ func TestSubmitToolInput_UnauthenticatedIsRejected(t *testing.T) {
 // errBadAnswer stands in for the validation error the waiting side returns for
 // a malformed answer.
 var errBadAnswer = errors.New("tool input response 0: unknown action \"maybe\"")
+
+// A re-prompt after a server changed its question must arrive with the previous
+// question and answer attached (spec §6.5). Without it the operator sees what
+// looks like a duplicate of a prompt they already handled, which is exactly
+// when a reflexive approval is most costly.
+func TestGetToolInput_CarriesThePriorAttempt(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	manager := run.NewRunManager()
+	t.Cleanup(func() { manager.Deregister("r-replay") })
+
+	testutil.InsertPolicy(t, store, "p-replay", "policy-p-replay", "webhook", testutil.MinimalWebhookPolicy)
+	testutil.InsertRun(t, store, "r-replay", "p-replay", model.RunStatusWaitingForFeedback)
+	testutil.InsertMcpServer(t, store, "srv-tool-input", "myserver", "http://example.invalid")
+
+	replay := `{"prior_questions":[{"message":"Deploy to prod?"}],` +
+		`"prior_answers":[{"Action":"accept","Content":{"confirm":true}}],` +
+		`"reason":"the tool re-asked a different question after your answer"}`
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := store.CreateToolInputRequest(context.Background(), db.CreateToolInputRequestParams{
+		ID:              "tir-replay",
+		RunID:           "r-replay",
+		ServerID:        "srv-tool-input",
+		ToolName:        "myserver.deploy",
+		CallArgs:        `{"env":"prod"}`,
+		RequestState:    `{"cursor":"def"}`,
+		RequestPayload:  permissionPayload,
+		ElicitationKind: string(model.ElicitationKindPermission),
+		ExpiresAt:       time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano),
+		ReplayContext:   &replay,
+		CreatedAt:       now,
+	}); err != nil {
+		t.Fatalf("CreateToolInputRequest: %v", err)
+	}
+
+	req := authed(http.MethodGet, "/api/v1/runs/r-replay/tool-input", "", model.RoleApprover)
+	w := httptest.NewRecorder()
+	newToolInputRouter(run.NewRunsHandler(store, manager, nil)).ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Data run.ToolInputRequestResponse `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Data.PriorAttempt == nil {
+		t.Fatal("prior_attempt is absent; the operator cannot see that the question changed")
+	}
+	if len(body.Data.PriorAttempt.PriorQuestions) != 1 ||
+		body.Data.PriorAttempt.PriorQuestions[0].Message != "Deploy to prod?" {
+		t.Errorf("prior questions = %+v, want the original ask", body.Data.PriorAttempt.PriorQuestions)
+	}
+	if len(body.Data.PriorAttempt.PriorAnswers) != 1 {
+		t.Errorf("prior answers = %+v, want the operator's first answer", body.Data.PriorAttempt.PriorAnswers)
+	}
+	if body.Data.PriorAttempt.Reason == "" {
+		t.Error("prior_attempt.reason is empty; the second prompt has no explanation")
+	}
+}
+
+// A first ask has nothing before it, and must not claim otherwise.
+func TestGetToolInput_FirstAskHasNoPriorAttempt(t *testing.T) {
+	store, manager := toolInputFixture(t, "r-first", model.ElicitationKindPermission, permissionPayload)
+
+	req := authed(http.MethodGet, "/api/v1/runs/r-first/tool-input", "", model.RoleApprover)
+	w := httptest.NewRecorder()
+	newToolInputRouter(run.NewRunsHandler(store, manager, nil)).ServeHTTP(w, req)
+
+	var body struct {
+		Data run.ToolInputRequestResponse `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Data.PriorAttempt != nil {
+		t.Errorf("prior_attempt = %+v on a first ask, want absent", body.Data.PriorAttempt)
+	}
+}
+
+// A corrupt replay context must not block an answerable request: it is framing,
+// not the question itself.
+func TestGetToolInput_UndecodableReplayContextIsDropped(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	manager := run.NewRunManager()
+	t.Cleanup(func() { manager.Deregister("r-corrupt") })
+
+	testutil.InsertPolicy(t, store, "p-corrupt", "policy-p-corrupt", "webhook", testutil.MinimalWebhookPolicy)
+	testutil.InsertRun(t, store, "r-corrupt", "p-corrupt", model.RunStatusWaitingForFeedback)
+	testutil.InsertMcpServer(t, store, "srv-tool-input", "myserver", "http://example.invalid")
+
+	corrupt := `{not json`
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := store.CreateToolInputRequest(context.Background(), db.CreateToolInputRequestParams{
+		ID:              "tir-corrupt",
+		RunID:           "r-corrupt",
+		ServerID:        "srv-tool-input",
+		ToolName:        "myserver.deploy",
+		CallArgs:        `{"env":"prod"}`,
+		RequestState:    `{"cursor":"def"}`,
+		RequestPayload:  permissionPayload,
+		ElicitationKind: string(model.ElicitationKindPermission),
+		ExpiresAt:       time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano),
+		ReplayContext:   &corrupt,
+		CreatedAt:       now,
+	}); err != nil {
+		t.Fatalf("CreateToolInputRequest: %v", err)
+	}
+
+	req := authed(http.MethodGet, "/api/v1/runs/r-corrupt/tool-input", "", model.RoleApprover)
+	w := httptest.NewRecorder()
+	newToolInputRouter(run.NewRunsHandler(store, manager, nil)).ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — a bad sidecar must not block the live question; body: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Data run.ToolInputRequestResponse `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Data.PriorAttempt != nil {
+		t.Errorf("prior_attempt = %+v, want absent when it does not decode", body.Data.PriorAttempt)
+	}
+	if len(body.Data.Requests) != 1 {
+		t.Errorf("requests = %+v, want the live question still rendered", body.Data.Requests)
+	}
+}

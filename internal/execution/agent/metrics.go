@@ -64,3 +64,26 @@ var elicitationBudgetExhausted = promauto.With(metrics.Registry()).NewCounter(
 		Help: "Tool calls abandoned because the run's elicitation budget was exhausted.",
 	},
 )
+
+// inputAnswerReplays counts operator answers replayed automatically because a
+// server re-asked the identical question after discarding its MRTR state
+// (ADR-055, spec §6.5). Each increment is one human prompt that did NOT
+// happen, which is the point of the mechanism; a rising rate also points at a
+// server whose requestState TTL is too short for its own audience.
+var inputAnswerReplays = promauto.With(metrics.Registry()).NewCounter(
+	prometheus.CounterOpts{
+		Name: "gleipnir_tool_input_answer_replays_total",
+		Help: "Operator answers replayed automatically after a server re-asked the identical question.",
+	},
+)
+
+// inputAnswerReplayMismatches counts the other branch: the server re-asked
+// after an answer, but asked something different, so the operator was prompted
+// again with the previous question attached. High relative to replays means
+// servers are churning their questions mid-call rather than losing state.
+var inputAnswerReplayMismatches = promauto.With(metrics.Registry()).NewCounter(
+	prometheus.CounterOpts{
+		Name: "gleipnir_tool_input_answer_replay_mismatches_total",
+		Help: "Re-prompts issued because a server re-asked a different question after an answer.",
+	},
+)

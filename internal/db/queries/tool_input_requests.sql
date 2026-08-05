@@ -1,6 +1,6 @@
 -- name: CreateToolInputRequest :one
-INSERT INTO tool_input_requests (id, run_id, server_id, tool_name, call_args, request_state, request_payload, elicitation_kind, status, expires_at, deadline_source, created_at)
-VALUES (:id, :run_id, :server_id, :tool_name, :call_args, :request_state, :request_payload, :elicitation_kind, 'pending', :expires_at, :deadline_source, :created_at)
+INSERT INTO tool_input_requests (id, run_id, server_id, tool_name, call_args, request_state, request_payload, elicitation_kind, status, expires_at, deadline_source, replay_context, created_at)
+VALUES (:id, :run_id, :server_id, :tool_name, :call_args, :request_state, :request_payload, :elicitation_kind, 'pending', :expires_at, :deadline_source, :replay_context, :created_at)
 RETURNING *;
 
 -- name: GetToolInputRequest :one
