@@ -219,6 +219,13 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 		r.With(auth.RequireRole(model.RoleOperator, model.RoleApprover, model.RoleAuditor)).Get("/api/v1/runs", runsHandler.List)
 		r.With(auth.RequireRole(model.RoleOperator, model.RoleApprover, model.RoleAuditor)).Get("/api/v1/runs/{runID}", runsHandler.Get)
 		r.With(auth.RequireRole(model.RoleOperator, model.RoleApprover, model.RoleAuditor)).Get("/api/v1/runs/{runID}/steps", runsHandler.ListSteps)
+		// Tool-initiated HITL decision records (ADR-055 §6.6). A separate
+		// endpoint from /steps rather than extra entries in it: /steps is the
+		// trace the model is replayed, and oversight evidence is not part of
+		// it (ADR-046). Read-only, and readable by auditors — an audit trail
+		// an auditor cannot read is not one.
+		r.With(auth.RequireRole(model.RoleOperator, model.RoleApprover, model.RoleAuditor)).
+			Get("/api/v1/runs/{runID}/decisions", runsHandler.ListDecisions)
 		r.With(auth.RequireRole(model.RoleOperator)).Post("/api/v1/runs/{runID}/cancel", runsHandler.Cancel)
 		r.With(httputil.BodySizeLimit(httputil.MaxRequestBodySize), auth.RequireRole(model.RoleApprover)).
 			Post("/api/v1/runs/{runID}/approval", runsHandler.SubmitApproval)
