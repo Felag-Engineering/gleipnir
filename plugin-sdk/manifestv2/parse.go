@@ -315,3 +315,28 @@ func isHostname(s string) bool {
 	}
 	return true
 }
+
+// IsV2 reports whether data looks like a v2 manifest, by reading only its
+// schema_version field.
+//
+// It exists because the host has to ROUTE a bundle before it can trust it: a
+// v1 tarball and a v2 tarball arrive through the same directory, and picking
+// the wrong pipeline produces a confusing parse error rather than "this is an
+// old-format bundle". Parse is strict by design and would reject a v1 manifest
+// with a list of unknown-field complaints that say nothing useful about what
+// actually happened.
+//
+// This is a sniff, not a validation. A true answer means "route this to the v2
+// pipeline", which then parses strictly and rejects anything wrong. Malformed
+// YAML answers false — an unreadable document makes no version claim.
+func IsV2(data []byte) bool {
+	var probe struct {
+		SchemaVersion string `yaml:"schema_version"`
+	}
+	// Non-strict on purpose: every other field is somebody else's business at
+	// this point, including fields from a schema version that does not exist yet.
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return false
+	}
+	return probe.SchemaVersion == SchemaVersion
+}

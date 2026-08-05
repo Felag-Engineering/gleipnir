@@ -209,6 +209,11 @@ type LogOptions struct {
 // discipline: both DockerRuntime and Fake call the same ValidateCreate /
 // ValidateCreateNetwork functions.
 type Runtime interface {
+	// ImageRuntime is embedded so one DockerRuntime satisfies both, while a
+	// caller that only needs to load an image (the installer) can depend on
+	// the narrow interface and be structurally unable to start a container.
+	ImageRuntime
+
 	Create(ctx context.Context, opts CreateOptions) (ContainerID, error)
 	Start(ctx context.Context, id ContainerID) error
 	Stop(ctx context.Context, id ContainerID, timeout time.Duration) error

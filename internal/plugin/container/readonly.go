@@ -40,6 +40,15 @@ func (r *ReadOnlyRuntime) Create(context.Context, CreateOptions) (ContainerID, e
 	return "", ErrManualModeWrite
 }
 
+// ImageLoad is a write: it puts bytes into the daemon's image store. Manual
+// posture means the operator loads the image themselves (spec §7), so the
+// installer's job here is to accept the bundle, skip the load, and record that
+// it did — which it can only do if this fails closed rather than quietly
+// succeeding.
+func (r *ReadOnlyRuntime) ImageLoad(context.Context, io.Reader) error {
+	return ErrManualModeWrite
+}
+
 func (r *ReadOnlyRuntime) Start(context.Context, ContainerID) error {
 	return ErrManualModeWrite
 }
@@ -65,6 +74,16 @@ func (r *ReadOnlyRuntime) Inspect(ctx context.Context, id ContainerID) (Containe
 		return ContainerInfo{}, errNoManualDiscovery
 	}
 	return r.inner.Inspect(ctx, id)
+}
+
+// ImageInspect is a read, so it delegates: manual mode still needs to see what
+// the operator loaded, otherwise nothing can verify their image against the
+// manifest's pin.
+func (r *ReadOnlyRuntime) ImageInspect(ctx context.Context, ref string) (ImageInfo, error) {
+	if r.inner == nil {
+		return ImageInfo{}, errNoManualDiscovery
+	}
+	return r.inner.ImageInspect(ctx, ref)
 }
 
 func (r *ReadOnlyRuntime) Stats(ctx context.Context, id ContainerID) (ContainerStats, error) {

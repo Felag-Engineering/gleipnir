@@ -29,6 +29,7 @@ package manifestv2
 
 import (
 	"fmt"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -409,4 +410,30 @@ func nodeOrNil(n yaml.Node) *yaml.Node {
 		return nil
 	}
 	return &n
+}
+
+// digestSeparator splits a digest-pinned image reference into its repository
+// and digest halves.
+const digestSeparator = "@"
+
+// Repository returns the repository half of a digest-pinned Identifier
+// ("ghcr.io/acme/plugin" from "ghcr.io/acme/plugin@sha256:..."), or the whole
+// Identifier when it carries no digest. Callers that need a validated
+// manifest should Validate first — this accessor parses, it does not judge.
+func (p Package) Repository() string {
+	if i := strings.Index(p.Identifier, digestSeparator); i >= 0 {
+		return p.Identifier[:i]
+	}
+	return p.Identifier
+}
+
+// Digest returns the "sha256:..." half of a digest-pinned Identifier, or "" if
+// it carries none. This is the pin the host verifies a loaded image against:
+// the whole point of forbidding tags is that this value, not a mutable
+// pointer, decides what runs.
+func (p Package) Digest() string {
+	if i := strings.Index(p.Identifier, digestSeparator); i >= 0 {
+		return p.Identifier[i+len(digestSeparator):]
+	}
+	return ""
 }
