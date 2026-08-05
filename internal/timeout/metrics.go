@@ -28,3 +28,14 @@ var feedbackTimeoutsTotal = promauto.With(metrics.Registry()).NewCounter(
 		Help: "Count of feedback requests that expired before a response was received.",
 	},
 )
+
+// toolInputTimeoutsTotal counts tool-initiated input requests resolved as
+// timed-out by the scanner (ADR-055, spec §6.3). Separate from the feedback
+// counter because the two measure different things: an agent asking a human,
+// versus a tool asking one mid-call.
+var toolInputTimeoutsTotal = promauto.With(metrics.Registry()).NewCounter(
+	prometheus.CounterOpts{
+		Name: "gleipnir_tool_input_timeouts_total",
+		Help: "Tool-initiated input requests resolved as timed out.",
+	},
+)

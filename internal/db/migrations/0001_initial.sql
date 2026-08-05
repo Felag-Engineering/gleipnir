@@ -563,6 +563,7 @@ CREATE TABLE tool_input_requests (
     response          TEXT,                                                             -- nullable, JSON blob of inputResponses / operator answer
     resolved_at       TEXT,                                                             -- nullable, ISO 8601 UTC
     expires_at        TEXT    NOT NULL,                                                 -- effective deadline: min of Gleipnir policy timeout / server TTL / requestState TTL (spec §6.3)
+    deadline_source   TEXT    CHECK(deadline_source IS NULL OR deadline_source IN ('policy', 'server_ttl', 'request_state')),  -- which clock produced expires_at; NULL means written before the column existed
     created_at        TEXT    NOT NULL                                                  -- ISO 8601 UTC
 );
 CREATE INDEX idx_tool_input_requests_run_id         ON tool_input_requests(run_id);
