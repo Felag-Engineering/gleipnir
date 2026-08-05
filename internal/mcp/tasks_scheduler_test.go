@@ -36,7 +36,7 @@ func newSchedulerTestTask(t *testing.T, s *db.Store, kind, serverTaskID, serverT
 	params := db.CreateMCPTaskParams{
 		ID:        "task1",
 		RunID:     "r1",
-		ServerID:  "srv1",
+		ServerID:  strPtrTest("srv1"),
 		TaskID:    serverTaskID,
 		Kind:      kind,
 		CreatedAt: now,
@@ -348,3 +348,7 @@ func waitForTaskEvent(t *testing.T, pub *testutil.RecordingPublisher, timeout ti
 	}
 	t.Fatalf("timed out after %s waiting for mcp_task.resolved", timeout)
 }
+
+// strPtrTest is the pointer helper the nullable server_id column needs
+// (migration 0048, #801).
+func strPtrTest(s string) *string { return &s }

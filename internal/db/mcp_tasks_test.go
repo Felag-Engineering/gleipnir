@@ -14,7 +14,7 @@ func createTestMCPTask(t *testing.T, s *Store, id, runID, serverID, kind, status
 	task, err := s.Queries().CreateMCPTask(context.Background(), CreateMCPTaskParams{
 		ID:             id,
 		RunID:          runID,
-		ServerID:       serverID,
+		ServerID:       &serverID,
 		TaskID:         "server-task-" + id,
 		Kind:           kind,
 		PollIntervalMs: &pollInterval,
@@ -70,7 +70,7 @@ func TestCreateAndGetMCPTask(t *testing.T) {
 	created, err := s.Queries().CreateMCPTask(ctx, CreateMCPTaskParams{
 		ID:             "task1",
 		RunID:          "r1",
-		ServerID:       "srv1",
+		ServerID:       strPtrTest("srv1"),
 		TaskID:         "remote-task-1",
 		Kind:           "tool_call",
 		PollIntervalMs: &pollInterval,
@@ -113,7 +113,7 @@ func TestCreateMCPTaskChannelRequestKind(t *testing.T) {
 	created, err := s.Queries().CreateMCPTask(ctx, CreateMCPTaskParams{
 		ID:        "task-channel",
 		RunID:     "r1",
-		ServerID:  "srv1",
+		ServerID:  strPtrTest("srv1"),
 		TaskID:    "remote-task-channel",
 		Kind:      "channel_request",
 		CreatedAt: now,
@@ -310,7 +310,7 @@ func TestMCPTaskUniqueServerAndTaskID(t *testing.T) {
 	if _, err := s.Queries().CreateMCPTask(ctx, CreateMCPTaskParams{
 		ID:        "task1",
 		RunID:     "r1",
-		ServerID:  "srv1",
+		ServerID:  strPtrTest("srv1"),
 		TaskID:    "same-remote-id",
 		Kind:      "tool_call",
 		CreatedAt: now,
@@ -322,7 +322,7 @@ func TestMCPTaskUniqueServerAndTaskID(t *testing.T) {
 	_, err := s.Queries().CreateMCPTask(ctx, CreateMCPTaskParams{
 		ID:        "task2",
 		RunID:     "r1",
-		ServerID:  "srv1",
+		ServerID:  strPtrTest("srv1"),
 		TaskID:    "same-remote-id",
 		Kind:      "tool_call",
 		CreatedAt: now,
@@ -350,3 +350,8 @@ func TestMCPTaskCascadesOnRunDelete(t *testing.T) {
 		t.Fatal("expected error fetching an mcp_tasks row whose run was deleted (ON DELETE CASCADE)")
 	}
 }
+
+// strPtrTest is the pointer helper the nullable server_id column needs.
+// mcp_tasks.server_id became nullable so an in-app task can exist with no MCP
+// server behind it (migration 0048, #801); a server-backed task still names one.
+func strPtrTest(s string) *string { return &s }

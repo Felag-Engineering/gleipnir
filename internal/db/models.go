@@ -54,7 +54,7 @@ type McpServer struct {
 type McpTask struct {
 	ID             string  `json:"id"`
 	RunID          string  `json:"run_id"`
-	ServerID       string  `json:"server_id"`
+	ServerID       *string `json:"server_id"`
 	TaskID         string  `json:"task_id"`
 	Kind           string  `json:"kind"`
 	PollIntervalMs *int64  `json:"poll_interval_ms"`
