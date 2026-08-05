@@ -269,6 +269,16 @@ type Client struct {
 
 	protocolVersion   string // pinned per-server version; "" = unpinned/legacy
 	negotiatedVersion string // legacy initialize result; guarded by mu
+
+	// elicitationLimits and elicitationRate bound what one server can push at
+	// an operator through MRTR input_required (spec §6.2). Both are host
+	// self-protection with safe defaults, so a Client built without them
+	// behaves exactly as it did before the caps existed. elicitationRate is
+	// nil until first use and built lazily under mu.
+	elicitationLimits ElicitationLimits
+	elicitationRate   *elicitationLimiter
+	elicitationRateHz float64
+	elicitationBurst  int
 }
 
 // ClientOption configures a Client. Options are applied sequentially after
@@ -313,6 +323,34 @@ func WithProtocolVersion(v string) ClientOption {
 	return func(cl *Client) {
 		cl.protocolVersion = v
 	}
+}
+
+// WithElicitationLimits sets the per-result size caps applied when decoding an
+// MRTR input_required result (spec §6.2 cap 2). Unset fields fall back to the
+// package defaults.
+func WithElicitationLimits(l ElicitationLimits) ClientOption {
+	return func(cl *Client) { cl.elicitationLimits = l }
+}
+
+// WithElicitationRateLimit sets this server's input_required token bucket
+// (spec §6.2 cap 3). Non-positive values fall back to the package defaults.
+func WithElicitationRateLimit(ratePerSec float64, burst int) ClientOption {
+	return func(cl *Client) {
+		cl.elicitationRateHz = ratePerSec
+		cl.elicitationBurst = burst
+	}
+}
+
+// allowElicitation reports whether one more input_required result from this
+// server is within its rate limit, building the bucket on first use.
+func (c *Client) allowElicitation() bool {
+	c.mu.Lock()
+	if c.elicitationRate == nil {
+		c.elicitationRate = newElicitationLimiter(c.elicitationRateHz, c.elicitationBurst)
+	}
+	limiter := c.elicitationRate
+	c.mu.Unlock()
+	return limiter.allow()
 }
 
 // NewClient returns a Client targeting serverURL. Optional ClientOptions are
@@ -734,8 +772,16 @@ func (c *Client) CallTool(ctx context.Context, name string, input map[string]any
 	}
 
 	if res.ResultType == ResultTypeInputRequired {
+		// Rate-limit before decoding, not after: the cheapest possible
+		// rejection for a server flooding the operator, and it keeps an
+		// over-limit result from ever becoming a routable request.
+		if !c.allowElicitation() {
+			res = ToolResult{}
+			err = &ElicitationRateLimitError{ServerName: c.serverName}
+			return
+		}
 		var inputRequired InputRequiredResult
-		inputRequired, err = decodeInputRequiredResult(result)
+		inputRequired, err = decodeInputRequiredResult(result, c.elicitationLimits)
 		if err != nil {
 			res = ToolResult{}
 			err = fmt.Errorf("tool %q returned input_required: %w", name, err)

@@ -399,6 +399,14 @@ type AgentConfig struct {
 type RunLimits struct {
 	MaxTokensPerRun    int
 	MaxToolCallsPerRun int
+
+	// MaxElicitationsPerRun caps how many times a run may interrupt a human
+	// through tool-initiated HITL (ADR-055, spec §6.2 cap 1). It is a sibling
+	// of the other two limits and shares their vocabulary: zero means
+	// unlimited. The thing being rationed is operator attention -- repetition
+	// fatigue-trains approvers into clicking through -- so the default is
+	// deliberately far smaller than the tool-call limit.
+	MaxElicitationsPerRun int
 }
 
 // GrantedTool is a resolved tool entry used by the agent runner.

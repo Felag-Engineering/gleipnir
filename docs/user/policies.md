@@ -185,11 +185,16 @@ The `task` field is the core instruction for the agent — what to do, what succ
 ```yaml
 agent:
   limits:
-    max_tokens_per_run: 20000    # default: 20000
-    max_tool_calls_per_run: 50   # default: 50
+    max_tokens_per_run: 20000        # default: 20000
+    max_tool_calls_per_run: 50       # default: 50
+    max_elicitations_per_run: 10     # default: 10
 ```
 
-Both limits are hard caps. When either is exceeded the run fails immediately with an error step in the trace. Set either to `0` to disable that cap (no per-run limit).
+`max_tokens_per_run` and `max_tool_calls_per_run` are hard caps on the run: when either is exceeded the run fails immediately with an error step in the trace.
+
+`max_elicitations_per_run` caps something different — how many times the run may interrupt a *human*. Some MCP servers pause a tool call to ask for permission or for a missing value; each of those asks costs one elicitation. Exhausting the budget does **not** fail the run. The tool call that asked is abandoned, the agent is told why, and it continues without that tool. The limit is deliberately small because what it rations is operator attention: being asked the same thing over and over trains people to click through without reading.
+
+Set any of the three to `0` to disable that cap (no per-run limit).
 
 ### Concurrency
 

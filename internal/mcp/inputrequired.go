@@ -20,7 +20,37 @@ const metaKeyElicitationKind = "io.gleipnir/elicitation-kind"
 // any run state — that is the caller's job, deferred to a later milestone.
 const ResultTypeInputRequired = "input_required"
 
-// maxRequestStateBytes bounds the opaque requestState blob a server may
+// ElicitationLimits bounds what one input_required result may carry (spec
+// §6.2 cap 2). The zero value means "use the defaults below", so a Client
+// constructed without limits behaves exactly as it did before the caps became
+// configurable.
+//
+// These are host self-protection, not policy: they are configured once at
+// startup and applied to every server, because the thing being bounded is what
+// a possibly-hostile server can push at the host and its operators.
+type ElicitationLimits struct {
+	MaxRequestStateBytes int
+	MaxRequests          int
+	MaxRequestsBytes     int
+}
+
+// resolve fills any unset (zero or negative) field with its default. A
+// misconfigured value can disable a cap only by being explicitly larger, never
+// by being absent.
+func (l ElicitationLimits) resolve() ElicitationLimits {
+	if l.MaxRequestStateBytes <= 0 {
+		l.MaxRequestStateBytes = defaultMaxRequestStateBytes
+	}
+	if l.MaxRequests <= 0 {
+		l.MaxRequests = defaultMaxInputRequests
+	}
+	if l.MaxRequestsBytes <= 0 {
+		l.MaxRequestsBytes = defaultMaxInputRequestsBytes
+	}
+	return l
+}
+
+// defaultMaxRequestStateBytes bounds the opaque requestState blob a server may
 // return alongside an input_required result (spec §6.2: "size caps on
 // persisted requestState (bytes) and inputRequests (count + bytes); oversize
 // is rejected as a structural error"). requestState is never interpreted by
@@ -28,21 +58,21 @@ const ResultTypeInputRequired = "input_required"
 // (CallOptions.RequestState) -- so this is purely a memory/persistence
 // backstop against a hostile or buggy server, not a realistic content-size
 // limit.
-const maxRequestStateBytes = 16 << 10 // 16 KiB
+const defaultMaxRequestStateBytes = 16 << 10 // 16 KiB
 
-// maxInputRequests bounds how many elicitations one input_required result
+// defaultMaxInputRequests bounds how many elicitations one input_required result
 // may bundle (spec §6.2 "inputRequests (count ...)"). A legitimate MRTR round
 // trip asks for a small, human-answerable batch; a larger number is not a
 // realistic ask, it is an attempt to flood the operator or the audience
 // routing this feeds (spec §6.2's rationale: "repetition fatigue-trains
 // approvers").
-const maxInputRequests = 8
+const defaultMaxInputRequests = 8
 
-// maxInputRequestsBytes bounds the serialized size of the inputRequests
+// defaultMaxInputRequestsBytes bounds the serialized size of the inputRequests
 // array (spec §6.2 "inputRequests (... bytes)"), independent of
 // maxInputRequests -- a small number of entries can still be individually
 // enormous (e.g. a pathological requestedSchema).
-const maxInputRequestsBytes = 64 << 10 // 64 KiB
+const defaultMaxInputRequestsBytes = 64 << 10 // 64 KiB
 
 // maxInputRequiredReasonLen bounds InputRequiredError.Reason. Reason is
 // built from this package's own fixed strings plus small integers (counts,
@@ -173,17 +203,19 @@ func parseElicitationKind(rawMeta json.RawMessage) string {
 // #792 existed), a server that claims input_required but sends an
 // unparseable or oversize payload is making a new, deliberately-interpreted
 // claim it must back up.
-func decodeInputRequiredResult(result toolsCallResult) (InputRequiredResult, error) {
+func decodeInputRequiredResult(result toolsCallResult, limits ElicitationLimits) (InputRequiredResult, error) {
+	limits = limits.resolve()
+
 	if len(result.RequestState) == 0 {
 		return InputRequiredResult{}, newInputRequiredError("missing requestState")
 	}
-	if len(result.RequestState) > maxRequestStateBytes {
+	if len(result.RequestState) > limits.MaxRequestStateBytes {
 		return InputRequiredResult{}, newInputRequiredError(fmt.Sprintf(
-			"requestState is %d bytes, exceeds the %d-byte limit", len(result.RequestState), maxRequestStateBytes))
+			"requestState is %d bytes, exceeds the %d-byte limit", len(result.RequestState), limits.MaxRequestStateBytes))
 	}
-	if len(result.InputRequests) > maxInputRequestsBytes {
+	if len(result.InputRequests) > limits.MaxRequestsBytes {
 		return InputRequiredResult{}, newInputRequiredError(fmt.Sprintf(
-			"inputRequests is %d bytes, exceeds the %d-byte limit", len(result.InputRequests), maxInputRequestsBytes))
+			"inputRequests is %d bytes, exceeds the %d-byte limit", len(result.InputRequests), limits.MaxRequestsBytes))
 	}
 
 	var wireRequests []inputRequestWire
@@ -193,9 +225,9 @@ func decodeInputRequiredResult(result toolsCallResult) (InputRequiredResult, err
 	if len(wireRequests) == 0 {
 		return InputRequiredResult{}, newInputRequiredError("inputRequests is empty")
 	}
-	if len(wireRequests) > maxInputRequests {
+	if len(wireRequests) > limits.MaxRequests {
 		return InputRequiredResult{}, newInputRequiredError(fmt.Sprintf(
-			"inputRequests has %d entries, exceeds the limit of %d", len(wireRequests), maxInputRequests))
+			"inputRequests has %d entries, exceeds the limit of %d", len(wireRequests), limits.MaxRequests))
 	}
 
 	requests := make([]InputRequest, len(wireRequests))

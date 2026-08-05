@@ -45,7 +45,7 @@ func TestDecodeInputRequiredResult(t *testing.T) {
 			name: "requestState exceeds byte cap",
 			result: toolsCallResult{
 				InputRequests: validRequests,
-				RequestState:  json.RawMessage(`"` + strings.Repeat("a", maxRequestStateBytes) + `"`),
+				RequestState:  json.RawMessage(`"` + strings.Repeat("a", defaultMaxRequestStateBytes) + `"`),
 			},
 			wantErr:    true,
 			wantReason: "requestState is",
@@ -53,7 +53,7 @@ func TestDecodeInputRequiredResult(t *testing.T) {
 		{
 			name: "inputRequests exceeds byte cap",
 			result: toolsCallResult{
-				InputRequests: json.RawMessage(`[{"message":"` + strings.Repeat("a", maxInputRequestsBytes) + `","requestedSchema":{}}]`),
+				InputRequests: json.RawMessage(`[{"message":"` + strings.Repeat("a", defaultMaxInputRequestsBytes) + `","requestedSchema":{}}]`),
 				RequestState:  validState,
 			},
 			wantErr:    true,
@@ -62,7 +62,7 @@ func TestDecodeInputRequiredResult(t *testing.T) {
 		{
 			name: "inputRequests exceeds count cap",
 			result: toolsCallResult{
-				InputRequests: manyInputRequests(t, maxInputRequests+1),
+				InputRequests: manyInputRequests(t, defaultMaxInputRequests+1),
 				RequestState:  validState,
 			},
 			wantErr:    true,
@@ -116,7 +116,7 @@ func TestDecodeInputRequiredResult(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := decodeInputRequiredResult(tc.result)
+			got, err := decodeInputRequiredResult(tc.result, ElicitationLimits{})
 
 			if !tc.wantErr {
 				if err != nil {
@@ -155,7 +155,7 @@ func TestDecodeInputRequiredResult(t *testing.T) {
 }
 
 // manyInputRequests builds a valid inputRequests JSON array of n entries, for
-// exercising the maxInputRequests count cap independent of the byte cap.
+// exercising the defaultMaxInputRequests count cap independent of the byte cap.
 func manyInputRequests(t *testing.T, n int) json.RawMessage {
 	t.Helper()
 	entries := make([]map[string]any, n)
@@ -235,7 +235,7 @@ func TestCallTool_InputRequired_OversizeFailsTheCall(t *testing.T) {
 	fake := NewFakeMCPServer(
 		WithFakeMode(FakeModern),
 		WithFakeToolResultType(ResultTypeInputRequired),
-		WithFakeInputRequired(manyInputRequests(t, maxInputRequests+1), `"opaque-state-token"`),
+		WithFakeInputRequired(manyInputRequests(t, defaultMaxInputRequests+1), `"opaque-state-token"`),
 	)
 	srv := httptest.NewServer(fake)
 	t.Cleanup(srv.Close)

@@ -53,3 +53,14 @@ var auditQueueDepth = promauto.With(metrics.Registry()).NewGauge(
 		Help: "Depth of the AuditWriter enqueue queue (SQLite write backpressure).",
 	},
 )
+
+// elicitationBudgetExhausted counts tool calls abandoned because the run's
+// per-run elicitation budget was spent (ADR-055, spec §6.2 cap 1). This is the
+// operational record of an exhaustion: the run trace shows the agent-facing
+// tool_result, and this counter shows an operator how often the cap is biting.
+var elicitationBudgetExhausted = promauto.With(metrics.Registry()).NewCounter(
+	prometheus.CounterOpts{
+		Name: "gleipnir_elicitation_budget_exhausted_total",
+		Help: "Tool calls abandoned because the run's elicitation budget was exhausted.",
+	},
+)

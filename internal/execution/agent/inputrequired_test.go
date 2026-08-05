@@ -545,7 +545,14 @@ func mrtrTool(serverURL, serverID string, approval model.ApprovalMode) mcp.Resol
 			ToolName:   "deploy",
 			Approval:   approval,
 		},
-		Client:      mcp.NewClient(serverURL, mcp.WithProtocolVersion(mcp.ProtocolVersion20260728)),
+		// A permissive elicitation rate limit: these tests exercise the pause
+		// and retry machinery, and the default bucket (spec §6.2 cap 3) would
+		// otherwise refuse the flood a round-limit test deliberately creates.
+		// TestBoundAgent_ToolCall_ElicitationRateLimit covers the cap itself.
+		Client: mcp.NewClient(serverURL,
+			mcp.WithProtocolVersion(mcp.ProtocolVersion20260728),
+			mcp.WithElicitationRateLimit(1000, 1000),
+		),
 		ServerID:    serverID,
 		Description: "a test tool",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"env":{"type":"string"}}}`),
@@ -978,5 +985,201 @@ func TestBoundAgent_ToolCall_SecretElicitationIsRefusedBeforePausing(t *testing.
 	}
 	if len(rows) != 0 {
 		t.Errorf("%d rows persisted, want 0", len(rows))
+	}
+}
+
+// The budget is fail-closed: once spent it refuses unconditionally, and a
+// request that would overrun it consumes nothing rather than partially
+// spending — a partial spend would let a smaller later ask still succeed,
+// which reads as the cap being negotiable.
+func TestRunElicitationBudget(t *testing.T) {
+	tests := []struct {
+		name    string
+		limit   int
+		asks    []int
+		wantErr []bool
+		want    int
+	}{
+		{
+			name:    "single asks up to the limit",
+			limit:   3,
+			asks:    []int{1, 1, 1, 1},
+			wantErr: []bool{false, false, false, true},
+			want:    3,
+		},
+		{
+			name:    "a batch consumes its whole size",
+			limit:   5,
+			asks:    []int{3, 2, 1},
+			wantErr: []bool{false, false, true},
+			want:    5,
+		},
+		{
+			name:    "an overrunning ask spends nothing",
+			limit:   3,
+			asks:    []int{2, 3, 1},
+			wantErr: []bool{false, true, false},
+			want:    3,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newRunElicitationBudget(tc.limit)
+			for i, ask := range tc.asks {
+				err := b.Check(context.Background(), "run1", ask)
+				if gotErr := err != nil; gotErr != tc.wantErr[i] {
+					t.Fatalf("ask %d (%d requests): err = %v, want error = %v", i, ask, err, tc.wantErr[i])
+				}
+				if err != nil && !errors.Is(err, ErrElicitationBudgetExhausted) {
+					t.Errorf("ask %d: error %v does not wrap ErrElicitationBudgetExhausted", i, err)
+				}
+			}
+			if got := b.spentCount(); got != tc.want {
+				t.Errorf("spent = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// A zero or negative limit means unlimited, and carries no counter at all.
+func TestNewRunElicitationBudget_UnlimitedIsNil(t *testing.T) {
+	for _, limit := range []int{0, -1} {
+		if b := newRunElicitationBudget(limit); b != nil {
+			t.Errorf("newRunElicitationBudget(%d) = %v, want nil (unlimited)", limit, b)
+		}
+	}
+}
+
+// A policy's max_elicitations_per_run reaches the handler without any wiring
+// at the call site.
+func TestInputRequiredOptions_FromPolicy(t *testing.T) {
+	if got := inputRequiredOptions(nil); got != nil {
+		t.Error("a nil policy produced options")
+	}
+
+	unlimited := minimalPolicy()
+	if got := inputRequiredOptions(unlimited); got != nil {
+		t.Error("a policy with no elicitation limit produced a budget")
+	}
+
+	limited := minimalPolicy()
+	limited.Agent.Limits.MaxElicitationsPerRun = 2
+	if got := inputRequiredOptions(limited); len(got) != 1 {
+		t.Fatalf("options = %d, want 1 for a policy with a limit", len(got))
+	}
+}
+
+// The N+1th elicitation fails the CALL structurally and lets the run continue
+// (spec §6.2) — nobody was interrupted, so there is no abandoned operator wait.
+func TestBoundAgent_ToolCall_BudgetExhaustionAbandonsTheCall(t *testing.T) {
+	fake := &mrtrServer{alwaysAsk: true}
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+	testutil.InsertMcpServer(t, s, "srv1", "myserver", "http://example.invalid")
+
+	srv := httptest.NewServer(fake.handler())
+	t.Cleanup(srv.Close)
+
+	pub := &capturePublisher{}
+	w := NewAuditWriter(s.Queries())
+	t.Cleanup(func() { _ = w.Close() })
+
+	policy := minimalPolicy()
+	policy.Agent.Limits.MaxElicitationsPerRun = 2
+
+	ba, err := New(Config{
+		LLMClient:    testutil.NewMockLLMClient(),
+		Tools:        []mcp.ResolvedTool{mrtrTool(srv.URL, "srv1", model.ApprovalModeNone)},
+		Policy:       policy,
+		Audit:        w,
+		StateMachine: NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub)),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	done := make(chan struct{})
+	var output string
+	var isError bool
+	var callErr error
+	go func() {
+		defer close(done)
+		output, isError, callErr = ba.handleToolCall(context.Background(), "r1", "myserver.deploy", map[string]any{"env": "prod"})
+	}()
+
+	// Answer the two pauses the budget allows; the third is refused before it
+	// ever reaches an operator.
+	for n := 1; n <= 2; n++ {
+		requestID := awaitNthPendingToolInputID(t, pub, s, n)
+		if err := ba.InputRequiredResolver().Resolve(requestID, `[{"action":"accept","content":{"confirm":true}}]`); err != nil {
+			t.Fatalf("Resolve #%d: %v", n, err)
+		}
+	}
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("handleToolCall did not return within deadline")
+	}
+
+	if callErr != nil {
+		t.Fatalf("handleToolCall: the run must continue: %v", callErr)
+	}
+	if !isError {
+		t.Error("isError = false, want true — the call was abandoned")
+	}
+	if !strings.Contains(output, "budget") {
+		t.Errorf("output = %q, want the budget explanation", output)
+	}
+	if n := pub.countByType("tool_input.created"); n != 2 {
+		t.Errorf("%d pauses reached an operator, want 2 — the third must be refused before routing", n)
+	}
+}
+
+// A pause whose durable record would be unreasonably large is refused before
+// any row is written. internal/mcp caps this at decode time; this is the
+// persistence-layer backstop for any producer that does not come through it.
+func TestInputRequiredHandler_Route_OversizePayloadIsRefusedBeforePersisting(t *testing.T) {
+	tests := []struct {
+		name   string
+		result *mcp.InputRequiredResult
+	}{
+		{
+			name: "oversize requestState",
+			result: &mcp.InputRequiredResult{
+				InputRequests: []mcp.InputRequest{{Message: "ok"}},
+				RequestState:  json.RawMessage(strings.Repeat("x", maxPersistedRequestStateBytes+1)),
+			},
+		},
+		{
+			name: "oversize elicitation payload",
+			result: &mcp.InputRequiredResult{
+				InputRequests: []mcp.InputRequest{{Message: strings.Repeat("x", maxPersistedPayloadBytes+1)}},
+				RequestState:  json.RawMessage(`{"cursor":"abc"}`),
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, sm, h := newRoutingFixture(t, time.Minute)
+
+			_, err := h.Route(context.Background(), routeRequest(tc.result, time.Minute))
+			if err == nil {
+				t.Fatal("Route: want a size refusal, got nil")
+			}
+			if sm.Current() != model.RunStatusRunning {
+				t.Errorf("run status = %s, want running — a refused pause never suspends the run", sm.Current())
+			}
+			rows, listErr := s.ListResumableToolInputRequests(context.Background())
+			if listErr != nil {
+				t.Fatalf("ListResumableToolInputRequests: %v", listErr)
+			}
+			if len(rows) != 0 {
+				t.Errorf("%d rows persisted, want 0", len(rows))
+			}
+		})
 	}
 }

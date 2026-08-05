@@ -163,7 +163,13 @@ type Registry struct {
 	mcpTimeout time.Duration
 	encKey     []byte                 // AES-256-GCM key for decrypting auth_headers_encrypted; nil if unset
 	arbiter    *toolregistry.Registry // cross-source tool namespace arbiter; nil means no uniqueness enforcement
-	cache      *registryCache         // per-server client + tool-catalog cache (cache.go)
+
+	// Tool-initiated HITL abuse controls, applied to every Client this
+	// Registry builds (spec §6.2). Zero values mean "package defaults".
+	elicitationLimits ElicitationLimits
+	elicitationRateHz float64
+	elicitationBurst  int
+	cache             *registryCache // per-server client + tool-catalog cache (cache.go)
 }
 
 // RegistryOption configures a Registry.
@@ -233,6 +239,22 @@ func WithEncryptionKey(key []byte) RegistryOption {
 	}
 }
 
+// WithElicitationControls sets the tool-initiated HITL abuse controls applied
+// to every Client the Registry creates (spec §6.2): the per-result size caps
+// and the per-server input_required rate limit.
+//
+// These are Registry-wide rather than per-server on purpose. What they bound is
+// how much operator attention any one server can consume, and letting that
+// ceiling be raised per server would put the decision in the hands of whoever
+// registered the server.
+func WithElicitationControls(limits ElicitationLimits, ratePerSec float64, burst int) RegistryOption {
+	return func(r *Registry) {
+		r.elicitationLimits = limits
+		r.elicitationRateHz = ratePerSec
+		r.elicitationBurst = burst
+	}
+}
+
 // WithToolNamespaceArbiter wires the shared cross-source uniqueness arbiter
 // into the Registry. When set, RefreshTools will reserve dot-names for tools
 // it adds and release them for tools it removes. A nil arbiter (the default)
@@ -258,10 +280,14 @@ func NewRegistry(queries *db.Queries, opts ...RegistryOption) *Registry {
 // auth headers and a warning is logged — matching the fail-open pattern used
 // by the webhook secret loader.
 func (r *Registry) newClientForServer(srv db.McpServer) *Client {
-	opts := make([]ClientOption, 0, 3)
+	opts := make([]ClientOption, 0, 5)
 	if r.mcpTimeout > 0 {
 		opts = append(opts, WithTimeout(r.mcpTimeout))
 	}
+	opts = append(opts,
+		WithElicitationLimits(r.elicitationLimits),
+		WithElicitationRateLimit(r.elicitationRateHz, r.elicitationBurst),
+	)
 
 	if srv.AuthHeadersEncrypted != nil {
 		if r.encKey == nil {

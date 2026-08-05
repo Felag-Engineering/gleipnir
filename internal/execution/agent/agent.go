@@ -143,7 +143,7 @@ func New(cfg Config) (*BoundAgent, error) {
 		sm:                 cfg.StateMachine,
 		approvals:          NewApprovalHandler(cfg.Audit, cfg.StateMachine, cfg.ApprovalCh, approvalOpts...),
 		feedback:           NewFeedbackHandler(cfg.Audit, cfg.StateMachine, cfg.DefaultFeedbackTimeout, feedbackOpts...),
-		inputRequired:      NewInputRequiredHandler(cfg.Audit, cfg.StateMachine, cfg.DefaultFeedbackTimeout),
+		inputRequired:      NewInputRequiredHandler(cfg.Audit, cfg.StateMachine, cfg.DefaultFeedbackTimeout, inputRequiredOptions(cfg.Policy)...),
 	}, nil
 }
 
@@ -721,6 +721,20 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 			return "", false, fmt.Errorf("calling tool %s: %w", toolName, err)
 		}
 
+		// A call the host abandoned — too many input rounds, an elicitation it
+		// refuses to render, or an exhausted budget — is a structural problem
+		// with that CALL, not with the run: nobody was interrupted, so there is
+		// no unanswered operator wait to account for. Hand the agent a
+		// correctable tool_result, same as a schema violation.
+		//
+		// Checked before the routing branch below because an abandonment can
+		// carry a routing error inside it, and the outer classification is the
+		// one that decides the run's fate.
+		var abandonedErr *InputCallAbandonedError
+		if errors.As(err, &abandonedErr) {
+			return a.toolResultError(ctx, runID, toolName, abandonedErr.Error())
+		}
+
 		// A tool-initiated pause that nobody answered (timeout) fails the run,
 		// like every other unanswered operator wait. It is deliberately NOT
 		// rendered as a correctable tool_result: there is nothing for the agent
@@ -729,15 +743,6 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 		var routeErr *InputRoutingError
 		if errors.As(err, &routeErr) {
 			return "", false, fmt.Errorf("calling tool %s: %w", toolName, err)
-		}
-
-		// A call the host abandoned — too many input rounds, or an
-		// elicitation it refuses to render — is a structural problem with that
-		// call, not with the run. Hand the agent a correctable tool_result,
-		// same as a schema violation.
-		var abandonedErr *InputCallAbandonedError
-		if errors.As(err, &abandonedErr) {
-			return a.toolResultError(ctx, runID, toolName, abandonedErr.Error())
 		}
 
 		// An unusable x-mcp-header declaration is a structural error the
@@ -817,6 +822,13 @@ func classifyPluginError(instanceName string, err error) string {
 // resolver addresses, etc.) is kept out of the audit trail and only logged via
 // slog for operator debugging.
 func classifyMCPError(serverName string, err error) string {
+	// A server over its input_required rate limit is a host decision, not a
+	// transport failure — say so plainly rather than reporting the server as
+	// unavailable, which would send the agent looking for a network problem.
+	var rateErr *mcp.ElicitationRateLimitError
+	if errors.As(err, &rateErr) {
+		return fmt.Sprintf("MCP server %s asked for operator input too frequently; the call was refused", serverName)
+	}
 	var httpErr *mcp.HTTPStatusError
 	if errors.As(err, &httpErr) {
 		return fmt.Sprintf("MCP server %s returned HTTP %d", serverName, httpErr.StatusCode)

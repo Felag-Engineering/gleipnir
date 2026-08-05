@@ -271,6 +271,9 @@ func validateAgent(a model.AgentConfig, c model.CapabilitiesConfig) []Issue {
 	if a.Limits.MaxToolCallsPerRun < 0 {
 		add("agent.limits.max_tool_calls_per_run", "agent.limits.max_tool_calls_per_run must be zero (unlimited) or positive")
 	}
+	if a.Limits.MaxElicitationsPerRun < 0 {
+		add("agent.limits.max_elicitations_per_run", "agent.limits.max_elicitations_per_run must be zero (unlimited) or positive")
+	}
 
 	if !a.Concurrency.Valid() {
 		add("agent.concurrency", "agent.concurrency %q is invalid; must be skip, queue, parallel, or replace", a.Concurrency)
