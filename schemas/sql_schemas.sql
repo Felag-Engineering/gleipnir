@@ -484,11 +484,13 @@ CREATE TABLE plugin_audit_events (
     severity            TEXT    NOT NULL CHECK(severity IN ('info','warning','high','critical')),
     actor_user_id       TEXT    REFERENCES users(id) ON DELETE SET NULL,                 -- nullable: system-driven events have no human actor
     payload_json        TEXT    NOT NULL,                                                  -- structured event detail
-    created_at          TEXT    NOT NULL                                                   -- ISO 8601 UTC
+    created_at          TEXT    NOT NULL,                                                  -- ISO 8601 UTC
+    run_id              TEXT    REFERENCES runs(id) ON DELETE SET NULL                   -- nullable: set only on run-scoped rows, chiefly the tool-initiated HITL decision records (spec 6.6); SET NULL so deleting a run never deletes the evidence a human approved something during it
 );
 
 CREATE INDEX idx_pae_instance_created ON plugin_audit_events(plugin_instance_id, created_at);
 CREATE INDEX idx_pae_event_created    ON plugin_audit_events(event_type, created_at);
+CREATE INDEX idx_pae_run_created      ON plugin_audit_events(run_id, created_at);
 
 -- ---------------------------------------------------------------------------
 -- Plugin pending manifests

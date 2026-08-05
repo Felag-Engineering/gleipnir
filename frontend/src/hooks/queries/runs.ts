@@ -1,7 +1,7 @@
 import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { useState, useEffect } from 'react'
 import { apiFetch } from '@/api/fetch'
-import type { ApiRun, ApiRunsResponse, ApiRunStep } from '@/api/types'
+import type { ApiRun, ApiRunDecision, ApiRunsResponse, ApiRunStep } from '@/api/types'
 import { queryKeys } from '../queryKeys'
 
 // PAGE_SIZE_STEPS is the number of steps fetched per request, used by both the
@@ -14,6 +14,27 @@ export function useRun(id?: string) {
     queryFn: () => apiFetch<ApiRun>(`/runs/${encodeURIComponent(id!)}`),
     enabled: Boolean(id),
   })
+}
+
+// useRunDecisions loads a run's tool-initiated HITL decision records
+// (ADR-055 §6.6).
+//
+// Separate from useRunSteps on purpose, and not merely for convenience: the
+// two endpoints answer different questions. `/steps` is the trace the model was
+// replayed; `/decisions` is oversight evidence the model never saw (ADR-046).
+// A combined timeline interleaves them by timestamp, which is a presentation
+// decision and stays on the presentation side.
+//
+// Unpaginated: a run's decisions are bounded by its elicitation budget, so
+// there is no page to turn.
+export function useRunDecisions(id?: string) {
+  const query = useQuery({
+    queryKey: queryKeys.runs.decisions(id ?? ''),
+    queryFn: () => apiFetch<ApiRunDecision[]>(`/runs/${encodeURIComponent(id!)}/decisions`),
+    enabled: Boolean(id),
+  })
+
+  return { ...query, decisions: query.data ?? [] }
 }
 
 export interface RunsFilterParams {

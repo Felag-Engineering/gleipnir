@@ -13,12 +13,12 @@ const insertPluginAuditEvent = `-- name: InsertPluginAuditEvent :one
 
 INSERT INTO plugin_audit_events (
     plugin_instance_id, event_type, severity,
-    actor_user_id, payload_json, created_at
+    actor_user_id, payload_json, created_at, run_id
 ) VALUES (
     ?1, ?2, ?3,
-    ?4, ?5, ?6
+    ?4, ?5, ?6, ?7
 )
-RETURNING id, plugin_instance_id, event_type, severity, actor_user_id, payload_json, created_at
+RETURNING id, plugin_instance_id, event_type, severity, actor_user_id, payload_json, created_at, run_id
 `
 
 type InsertPluginAuditEventParams struct {
@@ -28,6 +28,7 @@ type InsertPluginAuditEventParams struct {
 	ActorUserID      *string `json:"actor_user_id"`
 	PayloadJson      string  `json:"payload_json"`
 	CreatedAt        string  `json:"created_at"`
+	RunID            *string `json:"run_id"`
 }
 
 // Plugin audit events (ADR-046).
@@ -42,6 +43,7 @@ func (q *Queries) InsertPluginAuditEvent(ctx context.Context, arg InsertPluginAu
 		arg.ActorUserID,
 		arg.PayloadJson,
 		arg.CreatedAt,
+		arg.RunID,
 	)
 	var i PluginAuditEvent
 	err := row.Scan(
@@ -52,12 +54,13 @@ func (q *Queries) InsertPluginAuditEvent(ctx context.Context, arg InsertPluginAu
 		&i.ActorUserID,
 		&i.PayloadJson,
 		&i.CreatedAt,
+		&i.RunID,
 	)
 	return i, err
 }
 
 const listPluginAuditEventsByInstance = `-- name: ListPluginAuditEventsByInstance :many
-SELECT id, plugin_instance_id, event_type, severity, actor_user_id, payload_json, created_at FROM plugin_audit_events
+SELECT id, plugin_instance_id, event_type, severity, actor_user_id, payload_json, created_at, run_id FROM plugin_audit_events
 WHERE plugin_instance_id = ?1
 ORDER BY created_at DESC, id DESC
 LIMIT ?3 OFFSET ?2
@@ -86,6 +89,49 @@ func (q *Queries) ListPluginAuditEventsByInstance(ctx context.Context, arg ListP
 			&i.ActorUserID,
 			&i.PayloadJson,
 			&i.CreatedAt,
+			&i.RunID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPluginAuditEventsByRun = `-- name: ListPluginAuditEventsByRun :many
+SELECT id, plugin_instance_id, event_type, severity, actor_user_id, payload_json, created_at, run_id FROM plugin_audit_events
+WHERE run_id = ?1
+ORDER BY created_at ASC, id ASC
+`
+
+// ListPluginAuditEventsByRun returns the run-scoped rows -- in practice the
+// tool-initiated HITL decision records (spec sec 6.6). Ascending, because this
+// feed is read as a sequence alongside the run's trace rather than as a
+// newest-first log.
+func (q *Queries) ListPluginAuditEventsByRun(ctx context.Context, runID *string) ([]PluginAuditEvent, error) {
+	rows, err := q.db.QueryContext(ctx, listPluginAuditEventsByRun, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PluginAuditEvent
+	for rows.Next() {
+		var i PluginAuditEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.PluginInstanceID,
+			&i.EventType,
+			&i.Severity,
+			&i.ActorUserID,
+			&i.PayloadJson,
+			&i.CreatedAt,
+			&i.RunID,
 		); err != nil {
 			return nil, err
 		}
@@ -101,7 +147,7 @@ func (q *Queries) ListPluginAuditEventsByInstance(ctx context.Context, arg ListP
 }
 
 const listPluginAuditEventsByType = `-- name: ListPluginAuditEventsByType :many
-SELECT id, plugin_instance_id, event_type, severity, actor_user_id, payload_json, created_at FROM plugin_audit_events
+SELECT id, plugin_instance_id, event_type, severity, actor_user_id, payload_json, created_at, run_id FROM plugin_audit_events
 WHERE event_type = ?1
 ORDER BY created_at DESC, id DESC
 LIMIT ?3 OFFSET ?2
@@ -130,6 +176,7 @@ func (q *Queries) ListPluginAuditEventsByType(ctx context.Context, arg ListPlugi
 			&i.ActorUserID,
 			&i.PayloadJson,
 			&i.CreatedAt,
+			&i.RunID,
 		); err != nil {
 			return nil, err
 		}
@@ -145,7 +192,7 @@ func (q *Queries) ListPluginAuditEventsByType(ctx context.Context, arg ListPlugi
 }
 
 const listRecentPluginAuditEvents = `-- name: ListRecentPluginAuditEvents :many
-SELECT id, plugin_instance_id, event_type, severity, actor_user_id, payload_json, created_at FROM plugin_audit_events
+SELECT id, plugin_instance_id, event_type, severity, actor_user_id, payload_json, created_at, run_id FROM plugin_audit_events
 WHERE (?1 = '' OR severity = ?1)
 ORDER BY created_at DESC, id DESC
 LIMIT ?3 OFFSET ?2
@@ -176,6 +223,7 @@ func (q *Queries) ListRecentPluginAuditEvents(ctx context.Context, arg ListRecen
 			&i.ActorUserID,
 			&i.PayloadJson,
 			&i.CreatedAt,
+			&i.RunID,
 		); err != nil {
 			return nil, err
 		}

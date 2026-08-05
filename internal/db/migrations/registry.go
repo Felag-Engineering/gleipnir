@@ -42,5 +42,6 @@ func All() []Migration {
 		&AddToolInputDeadlineSource{},
 		&AddToolInputReplayContext{},
 		&MCPTasksInternalServer{},
+		&AddPluginAuditRunID{},
 	}
 }

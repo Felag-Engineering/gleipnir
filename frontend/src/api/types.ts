@@ -62,6 +62,54 @@ export interface ApiRunStep {
   created_at: string
 }
 
+// Matches decisions_handler.go → DecisionSummary
+// (GET /api/v1/runs/:runID/decisions).
+//
+// Tool-initiated HITL decision records (ADR-055 §6.6). These are NOT run steps:
+// ADR-046 keeps the model-visible trace (`/steps`) separate from operational
+// oversight evidence, so they arrive on their own endpoint and a combined
+// timeline is assembled client-side.
+export interface ApiRunDecision {
+  run_id: string
+  request_id: string
+  /** `tool_permission_request` | `tool_input_request` */
+  type: string
+  /** `permission` | `information` */
+  kind: string
+  /** `info` | `warning` | `high` | `critical` */
+  severity: string
+  tool_name?: string
+  channel_entry_id: string
+  channel_instance_id?: string
+  /** `authenticated` | `weak` | `undeclared` | `unrecognized` */
+  channel_assurance: string
+  actor_external_id?: string
+  actor_user_id?: string
+  /** `session` | `directory_mapping` | `unverified` | `none` */
+  link_method: string
+  /**
+   * Whether the acting identity is tied to a Gleipnir user. Render the actor
+   * ID together with this flag — an unverified ID is the channel's claim, not
+   * an identity.
+   */
+  link_verified: boolean
+  effective_deadline?: string
+  deadline_source?: string
+  /** `answered` | `rejected` | `timeout` | `cancelled` | `replayed_after_ttl` */
+  outcome: string
+  considered?: ApiRunDecisionCandidate[]
+  decided_at: string
+}
+
+// One audience entry that was considered and passed over, with the router's
+// reason. A decision made by the third entry only means something alongside
+// why the first two did not make it.
+export interface ApiRunDecisionCandidate {
+  entry_id: string
+  instance_id?: string
+  reason: string
+}
+
 // Matches policy_handler.go → policyDetail (GET /api/v1/policies/:id)
 export interface ApiPolicyDetail {
   id: string

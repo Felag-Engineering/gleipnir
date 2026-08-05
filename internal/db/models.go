@@ -123,6 +123,7 @@ type PluginAuditEvent struct {
 	ActorUserID      *string `json:"actor_user_id"`
 	PayloadJson      string  `json:"payload_json"`
 	CreatedAt        string  `json:"created_at"`
+	RunID            *string `json:"run_id"`
 }
 
 type PluginContainer struct {

@@ -6,12 +6,21 @@
 -- name: InsertPluginAuditEvent :one
 INSERT INTO plugin_audit_events (
     plugin_instance_id, event_type, severity,
-    actor_user_id, payload_json, created_at
+    actor_user_id, payload_json, created_at, run_id
 ) VALUES (
     :plugin_instance_id, :event_type, :severity,
-    :actor_user_id, :payload_json, :created_at
+    :actor_user_id, :payload_json, :created_at, :run_id
 )
 RETURNING *;
+
+-- ListPluginAuditEventsByRun returns the run-scoped rows -- in practice the
+-- tool-initiated HITL decision records (spec sec 6.6). Ascending, because this
+-- feed is read as a sequence alongside the run's trace rather than as a
+-- newest-first log.
+-- name: ListPluginAuditEventsByRun :many
+SELECT * FROM plugin_audit_events
+WHERE run_id = :run_id
+ORDER BY created_at ASC, id ASC;
 
 -- name: ListPluginAuditEventsByInstance :many
 SELECT * FROM plugin_audit_events
