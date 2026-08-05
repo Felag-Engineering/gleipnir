@@ -171,7 +171,7 @@ export interface ApiTimeSeriesResponse {
 
 // Matches api/attention_handler.go → AttentionItem
 export interface ApiAttentionItem {
-  type: 'approval' | 'feedback' | 'failure'
+  type: 'approval' | 'feedback' | 'tool_input' | 'failure'
   request_id: string
   run_id: string
   policy_id: string
@@ -180,6 +180,71 @@ export interface ApiAttentionItem {
   message: string
   expires_at: string | null
   created_at: string
+  /** Set only on `tool_input` items: `permission` | `information` (spec §6.1). */
+  elicitation_kind?: string
+  /**
+   * True when `message` came from an MCP server rather than from Gleipnir.
+   * Render it as content — never as markup, never as instructions.
+   */
+  untrusted_message?: boolean
+}
+
+// Matches execution/run/tool_input_handler.go → ToolInputRequestResponse
+// (GET /api/v1/runs/:runID/tool-input).
+//
+// A tool-initiated HITL pause (ADR-055 §6.1): an MCP server answered a tool
+// call with an MRTR `input_required` instead of a result, so the run is parked
+// until a human answers. Every string in here that originates with the server
+// is untrusted — see `untrusted_content`.
+export interface ApiToolInputRequest {
+  id: string
+  run_id: string
+  tool_name: string
+  /** `permission` (consent only) or `information` (a request for values). */
+  elicitation_kind: string
+  /** The role that may answer: `approver` for permission, `operator` for information. */
+  required_role: string
+  expires_at: string
+  /**
+   * Which of the three §6.3 clocks produced `expires_at`: `policy` |
+   * `server_ttl` | `request_state`. `expires_at` is the minimum of all of
+   * them, and which one won changes what running out means.
+   */
+  deadline_source?: string
+  created_at: string
+  requests: ApiToolInputQuestion[]
+  /**
+   * Present only when the server re-asked a DIFFERENT question after its MRTR
+   * state expired (§6.5). Carries the previous question and answer so the
+   * second prompt does not read as a duplicate of the first.
+   */
+  prior_attempt?: ApiToolInputPriorAttempt
+  /**
+   * Always true, and part of the contract rather than a runtime condition:
+   * elicitation text is server-controlled (§6.1).
+   */
+  untrusted_content: boolean
+}
+
+export interface ApiToolInputQuestion {
+  /** Server-controlled text. Render as plain content only. */
+  message: string
+  /** JSON Schema of the form, when the ask needs typed values. */
+  requested_schema?: Record<string, unknown>
+}
+
+// Matches execution/agent/replay.go → ReplayContext
+export interface ApiToolInputPriorAttempt {
+  prior_questions?: ApiToolInputQuestion[]
+  prior_answers?: { action: string; content?: unknown }[]
+  reason?: string
+}
+
+// One answer, correlated to `requests` by position — MRTR carries no
+// per-question id, so the count must match exactly.
+export interface ApiToolInputResponseItem {
+  action: 'accept' | 'decline' | 'cancel'
+  content?: unknown
 }
 
 // Matches api/attention_handler.go → AttentionResponse

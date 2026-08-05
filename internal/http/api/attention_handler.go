@@ -19,7 +19,7 @@ func NewAttentionHandler(store *db.Store) *AttentionHandler {
 }
 
 // AttentionItem is one entry in the operator's attention queue.
-// Type is "approval", "feedback", or "failure".
+// Type is "approval", "feedback", "tool_input", or "failure".
 type AttentionItem struct {
 	Type       string  `json:"type"`
 	RequestID  string  `json:"request_id"`
@@ -30,7 +30,25 @@ type AttentionItem struct {
 	Message    string  `json:"message"`
 	ExpiresAt  *string `json:"expires_at"`
 	CreatedAt  string  `json:"created_at"`
+
+	// ElicitationKind is set only on tool_input items: "permission" for a
+	// consent-only ask, "information" for a request for values (spec §6.1).
+	// It travels with the queue row because which role may answer follows from
+	// it — a card offering approve/reject to someone who cannot approve is a
+	// button that only fails when pressed.
+	ElicitationKind string `json:"elicitation_kind,omitempty"`
+
+	// UntrustedMessage marks a Message that came from an MCP server rather than
+	// from Gleipnir. Tool-initiated elicitation text is server-controlled (spec
+	// §6.1) and every renderer must treat it as content, never as markup and
+	// never as instructions.
+	UntrustedMessage bool `json:"untrusted_message,omitempty"`
 }
+
+// attentionTypeToolInput is the item type for a tool-initiated request
+// (ADR-055). Named rather than inlined because the string is also the
+// discriminator the frontend switches on.
+const attentionTypeToolInput = "tool_input"
 
 // AttentionResponse wraps the items list returned by GET /api/v1/attention.
 type AttentionResponse struct {
@@ -82,6 +100,10 @@ func (h *AttentionHandler) Get(w http.ResponseWriter, r *http.Request) {
 			Message:    row.Message,
 			ExpiresAt:  expiresAt,
 			CreatedAt:  row.CreatedAt,
+		}
+		if row.ItemType == attentionTypeToolInput {
+			item.ElicitationKind = row.ElicitationKind
+			item.UntrustedMessage = true
 		}
 		items = append(items, item)
 	}

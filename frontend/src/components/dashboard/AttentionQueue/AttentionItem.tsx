@@ -15,11 +15,16 @@ function TypeBadge({ type }: { type: string }) {
   const classMap: Record<string, string> = {
     approval: styles.badgeApproval,
     feedback: styles.badgeFeedback,
+    tool_input: styles.badgeToolInput,
     failure: styles.badgeFailure,
   }
   const labelMap: Record<string, string> = {
     approval: 'APPROVAL',
     feedback: 'QUESTION',
+    // The UI term stays "Feedback request" for the operator-facing vocabulary
+    // (#656); the badge says what the ask IS, which is the thing an operator
+    // triages on. Permission vs information is the §6.1 split.
+    tool_input: 'TOOL ASK',
     failure: 'FAILED',
   }
   return (
@@ -50,6 +55,7 @@ export function AttentionItem({ item, onDismiss }: AttentionItemProps) {
   const accentClassMap: Record<string, string> = {
     approval: styles.accentApproval,
     feedback: styles.accentFeedback,
+    tool_input: styles.accentToolInput,
     failure: styles.accentFailure,
   }
 
@@ -107,6 +113,20 @@ export function AttentionItem({ item, onDismiss }: AttentionItemProps) {
                 Respond
               </button>
             )}
+            {/* No inline approve/reject for a tool ask. Unlike an ADR-008
+                approval, the operator is answering a question a server asked,
+                and the question — plus its schema, its deadline source, and
+                any prior attempt — only exists on the run detail card. A
+                one-click Approve here would be consent given without having
+                read what was asked. */}
+            {item.type === 'tool_input' && (
+              <button
+                className={`${styles.actionButton} ${styles.actionFeedback}`}
+                onClick={() => navigate(`/runs/${item.run_id}`)}
+              >
+                {item.elicitation_kind === 'permission' ? 'Review' : 'Respond'}
+              </button>
+            )}
             {item.type === 'failure' && (
               <>
                 <button
@@ -131,6 +151,14 @@ export function AttentionItem({ item, onDismiss }: AttentionItemProps) {
             <>Tool <code className={styles.toolName}>{item.tool_name}</code> requires approval</>
           )}
           {item.type === 'feedback' && item.message.slice(0, 120)}
+          {/* Server-controlled text (§6.1). React escapes it; it is never run
+              through a markdown renderer here or anywhere else. */}
+          {item.type === 'tool_input' && (
+            <>
+              <code className={styles.toolName}>{item.tool_name}</code>{' '}
+              {item.message ? item.message.slice(0, 120) : 'is asking for a response'}
+            </>
+          )}
           {item.type === 'failure' && item.message.slice(0, 120)}
         </div>
         {approveRun.isError && item.type === 'approval' && (

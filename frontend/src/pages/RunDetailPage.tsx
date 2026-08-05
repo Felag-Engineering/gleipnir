@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router'
 import { useRun } from '@/hooks/queries/runs'
-import { useRunSteps } from '@/hooks/queries/runs'
+import { useRunSteps, useToolInput } from '@/hooks/queries/runs'
 import { useCancelRun } from '@/hooks/mutations/runs'
 import { useRunTimeline } from '@/hooks/useRunTimeline'
 import { useScrollSentinel } from '@/hooks/useScrollSentinel'
@@ -17,6 +17,7 @@ import {
 } from '@/components/RunDetail'
 import { TriggerRunModal } from '@/components/TriggerRunModal'
 import { ApprovalActions } from '@/components/RunDetail/ApprovalActions'
+import { ToolInputCard } from '@/components/RunDetail/ToolInputCard'
 import { CopyBlock } from '@/components/CopyBlock'
 import type { FilterKey } from '@/components/RunDetail'
 import type { CapabilitySnapshotV2, GrantedToolEntry } from '@/components/RunDetail/types'
@@ -37,6 +38,11 @@ export default function RunDetailPage() {
     hasMore: hasOlderSteps,
     loadMore: loadOlderSteps,
   } = useRunSteps(id)
+
+  // Only asked for while the run is actually parked on a human. A run that is
+  // running or finished has no pending request, and polling for one on every
+  // run detail view would be a request per page load that answers 404.
+  const { request: toolInputRequest } = useToolInput(id, run?.status === 'waiting_for_feedback')
 
   usePageTitle(runStatus === 'error' ? 'Run not found' : (id ? `Run ${id.slice(0, 8)}` : 'Run'))
   const [filter, setFilter] = useState<FilterKey>('all')
@@ -170,6 +176,8 @@ export default function RunDetailPage() {
                 onCancel={handleCancel}
                 cancelPending={cancelRun.isPending}
               />
+
+              {toolInputRequest && <ToolInputCard request={toolInputRequest} />}
 
               {run.status === 'waiting_for_approval' && (
                 <div className={styles.approvalBox} role="alert">
