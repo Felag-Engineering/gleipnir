@@ -170,6 +170,15 @@ func run(cfg config.Config) error {
 		mcp.WithMCPTimeout(cfg.MCPTimeout),
 		mcp.WithEncryptionKey(encryptionKey),
 		mcp.WithToolNamespaceArbiter(arbiter),
+		mcp.WithElicitationControls(
+			mcp.ElicitationLimits{
+				MaxRequestStateBytes: cfg.ElicitationMaxRequestStateBytes,
+				MaxRequests:          cfg.ElicitationMaxRequests,
+				MaxRequestsBytes:     cfg.ElicitationMaxRequestsBytes,
+			},
+			cfg.ElicitationRatePerSec,
+			cfg.ElicitationBurst,
+		),
 	)
 
 	// configureProvider creates an LLM client and registers it in the provider

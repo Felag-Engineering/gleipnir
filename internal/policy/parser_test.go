@@ -1315,3 +1315,39 @@ agent:
 		t.Errorf("max_tool_calls_per_run = %d, want 0 (explicit zero must not be replaced by default)", p.Agent.Limits.MaxToolCallsPerRun)
 	}
 }
+
+// max_elicitations_per_run is a sibling of the other run limits: defaulted when
+// omitted, honored when set, and preserved at an explicit zero (unlimited).
+func TestParse_MaxElicitationsPerRun(t *testing.T) {
+	base := `
+name: test
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: s.t
+agent:
+  task: do it
+`
+	tests := []struct {
+		name  string
+		limit string
+		want  int
+	}{
+		{name: "omitted takes the default", limit: "", want: defaultMaxElicitationsPerRun},
+		{name: "explicit value wins", limit: "\n  limits:\n    max_elicitations_per_run: 3", want: 3},
+		{name: "explicit zero means unlimited", limit: "\n  limits:\n    max_elicitations_per_run: 0", want: 0},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := Parse(base+tc.limit, "anthropic", "claude-sonnet-4-6")
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if p.Agent.Limits.MaxElicitationsPerRun != tc.want {
+				t.Errorf("max_elicitations_per_run = %d, want %d", p.Agent.Limits.MaxElicitationsPerRun, tc.want)
+			}
+		})
+	}
+}

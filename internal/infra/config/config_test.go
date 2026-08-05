@@ -432,3 +432,58 @@ func TestLoad_EncryptionKeyValidation(t *testing.T) {
 		})
 	}
 }
+
+// The elicitation caps default to the spec §6.2 values and read overrides from
+// the environment. A bad value falls back rather than stopping the boot — a
+// typo in a tuning knob must not take the server down.
+func TestLoad_ElicitationControls(t *testing.T) {
+	t.Setenv("GLEIPNIR_ENCRYPTION_KEY", strings.Repeat("a", 64))
+
+	t.Run("defaults", func(t *testing.T) {
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.ElicitationMaxRequestStateBytes != 16<<10 {
+			t.Errorf("MaxRequestStateBytes = %d, want 16384", cfg.ElicitationMaxRequestStateBytes)
+		}
+		if cfg.ElicitationMaxRequests != 8 {
+			t.Errorf("MaxRequests = %d, want 8", cfg.ElicitationMaxRequests)
+		}
+		if cfg.ElicitationMaxRequestsBytes != 64<<10 {
+			t.Errorf("MaxRequestsBytes = %d, want 65536", cfg.ElicitationMaxRequestsBytes)
+		}
+		if cfg.ElicitationRatePerSec != 1 {
+			t.Errorf("RatePerSec = %v, want 1", cfg.ElicitationRatePerSec)
+		}
+		if cfg.ElicitationBurst != 5 {
+			t.Errorf("Burst = %d, want 5", cfg.ElicitationBurst)
+		}
+	})
+
+	t.Run("overrides", func(t *testing.T) {
+		t.Setenv("GLEIPNIR_ELICITATION_MAX_REQUESTS", "3")
+		t.Setenv("GLEIPNIR_ELICITATION_RATE_PER_SEC", "0.5")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.ElicitationMaxRequests != 3 {
+			t.Errorf("MaxRequests = %d, want 3", cfg.ElicitationMaxRequests)
+		}
+		if cfg.ElicitationRatePerSec != 0.5 {
+			t.Errorf("RatePerSec = %v, want 0.5", cfg.ElicitationRatePerSec)
+		}
+	})
+
+	t.Run("unparseable value falls back", func(t *testing.T) {
+		t.Setenv("GLEIPNIR_ELICITATION_RATE_PER_SEC", "banana")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.ElicitationRatePerSec != 1 {
+			t.Errorf("RatePerSec = %v, want the default 1", cfg.ElicitationRatePerSec)
+		}
+	})
+}

@@ -363,6 +363,17 @@ agent:
     #   Set to 0 for unlimited (no per-run cap).
     max_tool_calls_per_run: 50
 
+    # max_elicitations_per_run: integer — optional, default: 10
+    #   Maximum number of times this run may interrupt a human through a
+    #   tool-initiated input request (an MCP server pausing a tool call to ask
+    #   for permission or for a value).
+    #   Unlike the two limits above, exhausting this one does NOT fail the run:
+    #   the tool call that asked is abandoned and the agent continues without
+    #   it. What is being rationed is operator attention — being asked the same
+    #   thing repeatedly trains people to click through without reading.
+    #   Set to 0 for unlimited (no per-run cap).
+    max_elicitations_per_run: 10
+
   # concurrency: skip | queue | parallel | replace — optional, default: skip
   #   Behaviour when a trigger fires while a run for this policy is active.
   #
