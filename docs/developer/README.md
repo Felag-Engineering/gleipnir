@@ -15,8 +15,11 @@ For people writing Gleipnir code. If you're looking for how to *run* Gleipnir, s
 - [Adding an LLM provider](adding-an-llm-provider.md) — checklist for implementing the `LLMClient` interface and wiring it in.
 - [Database workflow](database-workflow.md) — migrations, sqlc queries, and the full add-a-table workflow.
 - [Testing patterns](testing-patterns.md) — test helpers in `testutil/`, mock LLM clients, agent integration tests.
+- [Writing a tool that asks a human](tool-initiated-hitl.md) — for MCP server authors: the MRTR round trip, the idempotency obligation that comes with it, elicitation kinds, and the abuse caps a misbehaving server hits.
 
 ### Reference
 - [Manual testing](manual-testing.md) — live integration test environment with real MCP servers and the Slack plugin.
+- [MCP realignment spec](mcp-realignment-spec.md) — the target architecture for ADR-053…ADR-060 (containerized plugins, the `io.gleipnir/channel` and `io.gleipnir/events` extensions, tool-initiated HITL). The §10–§11 client half and the §6 HITL half have shipped; the container half has not.
+- [`io.gleipnir/channel` extension](extension-io-gleipnir-channel.md) — the host↔channel contract: payloads, task lifecycle, assurance declaration, versioning policy, conformance checklist.
 - [Plugin system spec](plugin-system-spec.md) — full design specification for the go-plugin extension system (process model, services, credentials, trust, observability).
 - [Scheduler dispatcher](dispatcher.md) — forward-looking design for a centralized scheduling layer (ADR-036). **Not yet implemented** — the scheduled/poll/cron triggers each still own their own loop today.
