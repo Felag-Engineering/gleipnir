@@ -36,6 +36,23 @@ const SSE_INVALIDATIONS: Record<string, InvalidationSpec> = {
     parseRunId: true,
     runKeys: (id) => [queryKeys.runs.detail(id), queryKeys.runs.steps(id)],
   },
+  // Tool-initiated HITL (ADR-055 §6.1). Created lands the request in the
+  // attention queue; resolved clears it there and on any open run detail.
+  'tool_input.created': {
+    keys: [queryKeys.runs.all, queryKeys.stats.all, queryKeys.attention.all],
+    parseRunId: true,
+    runKeys: (id) => [queryKeys.runs.detail(id), queryKeys.runs.toolInput(id)],
+  },
+  'tool_input.resolved': {
+    keys: [queryKeys.runs.all, queryKeys.stats.all, queryKeys.attention.all],
+    parseRunId: true,
+    runKeys: (id) => [
+      queryKeys.runs.detail(id),
+      queryKeys.runs.steps(id),
+      queryKeys.runs.toolInput(id),
+      queryKeys.runs.decisions(id),
+    ],
+  },
   'feedback.timed_out': {
     keys: [queryKeys.runs.all, queryKeys.stats.all, queryKeys.attention.all],
     parseRunId: true,

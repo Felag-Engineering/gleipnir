@@ -68,7 +68,7 @@ All API calls go through a shared `apiFetch<T>(path, init?)` wrapper (`src/api/f
 
 A single `useSSE` hook at the root layout connects to `GET /api/v1/events`. On event arrival, it invalidates relevant TanStack Query caches. For high-frequency `run.step_added` events, use optimistic cache updates instead of refetching.
 
-Event types: `run.status_changed`, `run.step_added`, `approval.created`, `approval.resolved`.
+Event types: `run.status_changed`, `run.step_added`, `approval.created`, `approval.resolved`, `feedback.created`/`.resolved`/`.timed_out`, `tool_input.created`/`.resolved`.
 
 The Go SSE handler sets `X-Accel-Buffering: no` for compatibility with upstream reverse proxies (ADR-016).
 
@@ -98,6 +98,7 @@ Organized by feature area (Layout, dashboard/, AgentEditor/, AgentList/, RunDeta
 
 - **MCP server header editor** (`ServerDetailModal`): existing header names are read-only, value fields start empty with a placeholder; saves fan out via `useSetMcpServerHeader`/`useDeleteMcpServerHeader`; no redaction sentinel (ADR-039).
 - **SchemaForm** renders plugin config forms (RJSF was removed in #627 — do not reintroduce `@rjsf/*`). `optionsContext` wires `AsyncCombobox` for `x-gleipnir-options` properties (degrades to free text when the plugin can't serve options); required markers render via CSS `::after` to keep DOM text clean for `getByLabelText`. The audience editor's `response_buttons` field uses `AudienceEditor/ResponseButtonsEditor` and omits the key when empty so the backend Approve/Reject default applies.
+- **ToolInputCard** (`RunDetail/ToolInputCard`) renders a tool-initiated HITL request (ADR-055 §6.1). Two renderings decided by `elicitation_kind`: `permission` is an approve/reject ask (approver+), `information` is a `SchemaForm` built from the server's `requestedSchema` (operator+). Someone without the required role still sees the question — reading what a run is blocked on is not the same authority as answering it, and hiding it from an auditor would make the decision unauditable. Every elicitation string is **server-controlled**: it is rendered as a plain text node and must never be passed through `renderInlineMarkdown` or any other renderer. A URL inside the message becomes an explicit "open in browser" step with the *hostname displayed separately* (`elicitationLink.ts`) — never auto-opened, never framed, and non-`http(s)` schemes are refused outright, because the string is chosen by the server and a `javascript:` anchor is a script it got a human to run. The countdown is the *effective* deadline (min of the three §6.3 clocks) and `deadline_source` selects the sentence explaining which clock won.
 - **Toast** (`ToastProvider`/`useToast`): fire a success toast only when the UI has no other confirmation — actions that change a visible badge/toggle in place (pause/resume, tool enable/disable, user activate/deactivate) get NO success toast, only an error toast; `Agent saved`/`Agent deleted`/`User created` keep theirs. Auto-dismiss 4s/6s, `duration:0` sticky, stack capped at 3, identical toasts deduped.
 
 ### Hooks (`src/hooks/`)

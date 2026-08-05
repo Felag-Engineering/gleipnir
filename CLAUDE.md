@@ -208,7 +208,7 @@ Routes are registered in `internal/http/api/router.go` via `BuildRouter`, which 
 - `/api/v1/events` — SSE stream (`text/event-stream`) for real-time updates
 - `/api/v1/models` — list/refresh available LLM models
 - `/api/v1/stats`, `/api/v1/stats/timeseries` — dashboard statistics
-- `/api/v1/attention` — items needing operator attention
+- `/api/v1/attention` — items needing operator attention. Four item types: `approval`, `feedback`, `tool_input`, `failure`. A `tool_input` row carries `elicitation_kind` (the §6.1 permission/information split, which decides who may answer) and `untrusted_message: true` (the text is server-controlled). The queue offers no inline approve for it — the question, its schema, its deadline source, and any prior attempt live on the run detail card, and a one-click approval in the queue would be consent given without having read the ask (#804)
 - `/api/v1/users/*` — user management (admin)
 - `/api/v1/settings/preferences` — user preferences
 - `/api/v1/health` — health check

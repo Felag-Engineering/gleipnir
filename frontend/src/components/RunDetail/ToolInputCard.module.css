@@ -1,0 +1,174 @@
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  margin-bottom: var(--space-4);
+  background: var(--bg-elevated);
+  border: 1px solid color-mix(in srgb, var(--color-purple) 30%, var(--border-subtle));
+  border-left: 3px solid var(--color-purple);
+  border-radius: var(--radius-md);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.badge {
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.06em;
+}
+
+/* Permission and information are visually distinct because they are different
+   asks: one is an authorization decision, the other is data entry. */
+.badgePermission {
+  background: color-mix(in srgb, var(--color-amber) 20%, transparent);
+  color: var(--color-amber);
+}
+
+.badgeInformation {
+  background: color-mix(in srgb, var(--color-purple) 20%, transparent);
+  color: var(--color-purple);
+}
+
+.tool {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-second);
+}
+
+.countdown {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-second);
+}
+
+.countdownUrgent {
+  color: var(--color-red);
+}
+
+.provenance {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.deadlineNote {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.question {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--bg-surface);
+  border-radius: var(--radius-md);
+}
+
+/* Server-controlled text. Rendered as content — no markup, no link
+   auto-detection beyond the explicit URL step below. */
+.untrusted {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.fields {
+  border: none;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+
+.linkStep {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-elevated);
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.linkLabel {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+/* The host is displayed on its own because a look-alike domain is the attack,
+   and it is invisible inside a long URL. */
+.linkHost {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.linkAnchor {
+  margin-left: auto;
+  font-size: var(--text-xs);
+  color: var(--color-blue);
+}
+
+.prior {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: color-mix(in srgb, var(--color-amber) 8%, var(--bg-surface));
+  border: 1px solid color-mix(in srgb, var(--color-amber) 30%, transparent);
+  border-radius: var(--radius-md);
+}
+
+.priorLabel {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  color: var(--color-amber);
+}
+
+.priorReason {
+  font-size: var(--text-xs);
+  color: var(--text-second);
+}
+
+.priorRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.priorAnswer {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.roleNotice {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.error {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--color-red);
+}

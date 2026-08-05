@@ -15,7 +15,7 @@ import type { ApiRun, ApiRunStep } from '@/api/types'
 vi.mock('@/hooks/queries/runs')
 
 import { useRun } from '@/hooks/queries/runs'
-import { useRunSteps } from '@/hooks/queries/runs'
+import { useRunSteps, useToolInput } from '@/hooks/queries/runs'
 
 // --- Helpers ---
 
@@ -54,6 +54,15 @@ function makeStep(overrides?: Partial<ApiRunStep>): ApiRunStep {
     ...overrides,
   }
 }
+
+// The whole module is mocked, so every hook the page calls needs a return
+// value. useToolInput answers "not paused on anything" by default; the cases
+// that care about the card set their own.
+beforeEach(() => {
+  vi.mocked(useToolInput).mockReturnValue({
+    request: null,
+  } as ReturnType<typeof useToolInput>)
+})
 
 function renderPage(queryClient = makeQueryClient()) {
   return render(
@@ -1044,5 +1053,42 @@ describe('RunDetailPage — live duration counter', () => {
     })
 
     expect(screen.getByText('1m 0s')).toBeInTheDocument()
+  })
+})
+
+describe('RunDetailPage — tool-initiated request', () => {
+  const pendingRequest = {
+    id: 'tir-1',
+    run_id: 'r1',
+    tool_name: 'deploy.release',
+    elicitation_kind: 'permission',
+    required_role: 'approver',
+    expires_at: '2025-01-01T12:30:00Z',
+    deadline_source: 'policy',
+    created_at: '2025-01-01T12:00:00Z',
+    requests: [{ message: 'Delete 12 production records?' }],
+    untrusted_content: true,
+  }
+
+  it('shows the card when the run is parked on a human', () => {
+    mockLoaded(makeRun({ status: 'waiting_for_feedback' }))
+    vi.mocked(useToolInput).mockReturnValue({
+      request: pendingRequest,
+    } as ReturnType<typeof useToolInput>)
+
+    renderPage()
+
+    expect(screen.getByText('Delete 12 production records?')).toBeInTheDocument()
+    expect(screen.getByLabelText('Tool-initiated request')).toBeInTheDocument()
+  })
+
+  // A run that is running or finished has no pending request, and asking on
+  // every run detail view would be one request per page load that answers 404.
+  it('does not ask for a request the run cannot have', () => {
+    mockLoaded(makeRun({ status: 'complete' }))
+    renderPage()
+
+    expect(vi.mocked(useToolInput)).toHaveBeenCalledWith('r1', false)
+    expect(screen.queryByLabelText('Tool-initiated request')).not.toBeInTheDocument()
   })
 })

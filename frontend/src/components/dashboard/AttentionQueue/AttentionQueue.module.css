@@ -74,6 +74,10 @@
 
 .accentApproval { background: var(--color-orange); }
 .accentFeedback { background: var(--color-purple); }
+/* A tool ask is its own colour: it comes from a server mid-call, not from the
+   host's own gate, and an operator triaging the queue should be able to tell
+   the two apart before opening either. */
+.accentToolInput { background: var(--color-amber); }
 .accentFailure  { background: var(--color-red); }
 
 .itemBody {
@@ -108,6 +112,10 @@
 
 .badgeFeedback {
   composes: colorPurple from '../../../styles/badges.module.css';
+}
+
+.badgeToolInput {
+  composes: colorAmber from '../../../styles/badges.module.css';
 }
 
 .badgeFailure {

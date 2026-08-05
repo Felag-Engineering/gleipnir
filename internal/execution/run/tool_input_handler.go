@@ -39,6 +39,13 @@ type ToolInputRequestResponse struct {
 	CreatedAt       string              `json:"created_at"`
 	Requests        []ToolInputQuestion `json:"requests"`
 
+	// DeadlineSource names which of the three clocks produced ExpiresAt (spec
+	// §6.3). ExpiresAt is the MINIMUM of the policy timeout, the server's task
+	// TTL, and any requestState TTL, and an operator reading "12 minutes left"
+	// deserves to know whether that is Gleipnir's patience or the server's —
+	// the two mean different things when it runs out.
+	DeadlineSource string `json:"deadline_source,omitempty"`
+
 	// PriorAttempt is present only when the server re-asked a DIFFERENT
 	// question after the operator had already answered one (spec §6.5). It
 	// carries the previous question and answer so the second prompt does not
@@ -132,11 +139,20 @@ func (h *RunsHandler) GetToolInput(w http.ResponseWriter, r *http.Request) {
 		ElicitationKind:  row.ElicitationKind,
 		RequiredRole:     kind.RequiredRole().String(),
 		ExpiresAt:        row.ExpiresAt,
+		DeadlineSource:   deadlineSourceOf(row),
 		CreatedAt:        row.CreatedAt,
 		Requests:         out,
 		PriorAttempt:     prior,
 		UntrustedContent: true,
 	})
+}
+
+// deadlineSourceOf reads the nullable deadline_source column as a string.
+func deadlineSourceOf(row db.ToolInputRequest) string {
+	if row.DeadlineSource == nil {
+		return ""
+	}
+	return *row.DeadlineSource
 }
 
 // replayContextOf reads the nullable replay_context column as a string.
@@ -226,7 +242,28 @@ func (h *RunsHandler) SubmitToolInput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The attention queue and any open run detail both need to stop showing a
+	// request that has been answered. Published after delivery, never before:
+	// an event announcing a resolution that then failed validation would tell
+	// every other operator the request is gone while it is still waiting.
+	h.publishToolInputResolved(runID, row.ID)
+
 	httputil.WriteJSON(w, http.StatusAccepted, map[string]string{"run_id": runID, "request_id": row.ID})
+}
+
+// publishToolInputResolved emits the SSE event that clears the request from
+// live views. Best-effort: the answer is already delivered, and a marshalling
+// hiccup must not turn a successful resolution into an error.
+func (h *RunsHandler) publishToolInputResolved(runID, requestID string) {
+	if h.publisher == nil {
+		return
+	}
+	data, err := json.Marshal(map[string]string{"run_id": runID, "request_id": requestID})
+	if err != nil {
+		slog.Warn("marshalling tool_input.resolved event failed", "run_id", runID, "err", err)
+		return
+	}
+	h.publisher.Publish("tool_input.resolved", data)
 }
 
 // pendingToolInput loads the run's single pending request, writing the error

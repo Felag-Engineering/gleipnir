@@ -287,7 +287,8 @@ SELECT
   ar.tool_name,
   '' AS message,
   ar.expires_at,
-  ar.created_at
+  ar.created_at,
+  '' AS elicitation_kind
 FROM approval_requests ar
 JOIN runs r ON ar.run_id = r.id
 JOIN policies p ON r.policy_id = p.id
@@ -302,30 +303,61 @@ SELECT
   fr.tool_name,
   fr.message,
   COALESCE(fr.expires_at, ''),
-  fr.created_at
+  fr.created_at,
+  '' AS elicitation_kind
 FROM feedback_requests fr
 JOIN runs r ON fr.run_id = r.id
 JOIN policies p ON r.policy_id = p.id
 WHERE fr.status = 'pending' AND r.status = 'waiting_for_feedback'
+UNION ALL
+SELECT
+  'tool_input' AS item_type,
+  tir.id AS request_id,
+  r.id AS run_id,
+  r.policy_id,
+  p.name AS policy_name,
+  tir.tool_name,
+  COALESCE(json_extract(tir.request_payload, '$[0].message'), ''),
+  tir.expires_at,
+  tir.created_at,
+  -- Which role may answer follows from the classification (spec sec 6.1), so the
+  -- queue carries it: a card that renders approve/reject to someone who cannot
+  -- approve is a button that only fails when pressed.
+  tir.elicitation_kind
+FROM tool_input_requests tir
+JOIN runs r ON tir.run_id = r.id
+JOIN policies p ON r.policy_id = p.id
+WHERE tir.status = 'pending' AND r.status = 'waiting_for_feedback'
 ORDER BY 9 ASC
 `
 
 type ListAttentionItemsRow struct {
-	ItemType   string `json:"item_type"`
-	RequestID  string `json:"request_id"`
-	RunID      string `json:"run_id"`
-	PolicyID   string `json:"policy_id"`
-	PolicyName string `json:"policy_name"`
-	ToolName   string `json:"tool_name"`
-	Message    string `json:"message"`
-	ExpiresAt  string `json:"expires_at"`
-	CreatedAt  string `json:"created_at"`
+	ItemType        string `json:"item_type"`
+	RequestID       string `json:"request_id"`
+	RunID           string `json:"run_id"`
+	PolicyID        string `json:"policy_id"`
+	PolicyName      string `json:"policy_name"`
+	ToolName        string `json:"tool_name"`
+	Message         string `json:"message"`
+	ExpiresAt       string `json:"expires_at"`
+	CreatedAt       string `json:"created_at"`
+	ElicitationKind string `json:"elicitation_kind"`
 }
 
 // ListAttentionItems returns pending approval requests and pending feedback
 // requests joined with their parent runs and policies for the attention queue.
 // expires_at is COALESCE'd to ” so the UNION columns are uniformly non-null;
 // the Go handler converts ” back to nil before returning to the client.
+// Tool-initiated requests (ADR-055 spec sec 6.1). A run paused on one of these
+// is waiting on a person exactly as an approval or a feedback request is, so it
+// belongs in the same queue -- a pause an operator cannot see is a pause nobody
+// answers until it times out.
+//
+// The message is the FIRST question's text, pulled out of the JSON payload.
+// Server-controlled and untrusted, like every other elicitation string; the
+// queue renders it as content. A request bundling several questions shows the
+// first here and all of them on the run detail card, because a queue row is a
+// pointer, not the form.
 func (q *Queries) ListAttentionItems(ctx context.Context) ([]ListAttentionItemsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listAttentionItems)
 	if err != nil {
@@ -345,6 +377,7 @@ func (q *Queries) ListAttentionItems(ctx context.Context) ([]ListAttentionItemsR
 			&i.Message,
 			&i.ExpiresAt,
 			&i.CreatedAt,
+			&i.ElicitationKind,
 		); err != nil {
 			return nil, err
 		}

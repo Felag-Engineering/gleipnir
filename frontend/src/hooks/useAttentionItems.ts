@@ -4,7 +4,7 @@ import { apiFetch } from '@/api/fetch'
 import type { ApiAttentionResponse, ApiAttentionItem } from '@/api/types'
 import { queryKeys } from './queryKeys'
 
-export type AttentionItemType = 'approval' | 'feedback' | 'failure'
+export type AttentionItemType = 'approval' | 'feedback' | 'tool_input' | 'failure'
 
 // AttentionItem is the frontend representation of an attention queue entry.
 // It adds a computed sortKey for urgency ordering.

@@ -1,7 +1,7 @@
 import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { useState, useEffect } from 'react'
-import { apiFetch } from '@/api/fetch'
-import type { ApiRun, ApiRunDecision, ApiRunsResponse, ApiRunStep } from '@/api/types'
+import { apiFetch, ApiError } from '@/api/fetch'
+import type { ApiRun, ApiRunDecision, ApiRunsResponse, ApiRunStep, ApiToolInputRequest } from '@/api/types'
 import { queryKeys } from '../queryKeys'
 
 // PAGE_SIZE_STEPS is the number of steps fetched per request, used by both the
@@ -35,6 +35,31 @@ export function useRunDecisions(id?: string) {
   })
 
   return { ...query, decisions: query.data ?? [] }
+}
+
+// useToolInput loads the tool-initiated request a run is paused on
+// (ADR-055 §6.1), or nothing when it is not paused on one.
+//
+// A 404 is the ordinary answer for a run with no pending request, so it is not
+// retried and not surfaced as an error — a run that simply is not waiting on a
+// human should not paint an error state onto its detail page. Anything else is
+// a real failure and stays an error.
+export function useToolInput(id?: string, enabled = true) {
+  const query = useQuery({
+    queryKey: queryKeys.runs.toolInput(id ?? ''),
+    queryFn: async () => {
+      try {
+        return await apiFetch<ApiToolInputRequest>(`/runs/${encodeURIComponent(id!)}/tool-input`)
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 404) return null
+        throw err
+      }
+    },
+    enabled: Boolean(id) && enabled,
+    retry: false,
+  })
+
+  return { ...query, request: query.data ?? null }
 }
 
 export interface RunsFilterParams {
