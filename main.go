@@ -118,6 +118,16 @@ func run(cfg config.Config) error {
 	)
 	feedbackScanner.Start(ctx)
 
+	// Tool-initiated input requests (ADR-055) share the feedback scan interval:
+	// both measure the same thing — how long a human has been asked to wait —
+	// so a second knob would be a setting nobody could reason about separately.
+	toolInputScanner := timeout.NewToolInputScanner(
+		store,
+		cfg.FeedbackScanInterval,
+		timeout.WithPublisher(broadcaster),
+	)
+	toolInputScanner.Start(ctx)
+
 	// Apply the LLM transient-failure retry policy BEFORE any provider client is
 	// constructed. The Anthropic/OpenAI SDKs retry internally — they read
 	// MaxAttempts (via SDKMaxRetries) at construction. Google + openaicompat have
@@ -544,6 +554,7 @@ func run(cfg config.Config) error {
 		scheduler.Wait()
 		approvalScanner.Wait()
 		feedbackScanner.Wait()
+		toolInputScanner.Wait()
 		runManager.Wait()
 		close(runsDrained)
 	}()

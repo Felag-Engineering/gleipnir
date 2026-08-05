@@ -39,5 +39,6 @@ func All() []Migration {
 		&AddMCPToolCanonicalSchema{},
 		&AddToolInputRequestsAndMCPTasks{},
 		&AddContainerDesiredState{},
+		&AddToolInputDeadlineSource{},
 	}
 }

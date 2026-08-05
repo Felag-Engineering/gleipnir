@@ -1,6 +1,6 @@
 -- name: CreateToolInputRequest :one
-INSERT INTO tool_input_requests (id, run_id, server_id, tool_name, call_args, request_state, request_payload, elicitation_kind, status, expires_at, created_at)
-VALUES (:id, :run_id, :server_id, :tool_name, :call_args, :request_state, :request_payload, :elicitation_kind, 'pending', :expires_at, :created_at)
+INSERT INTO tool_input_requests (id, run_id, server_id, tool_name, call_args, request_state, request_payload, elicitation_kind, status, expires_at, deadline_source, created_at)
+VALUES (:id, :run_id, :server_id, :tool_name, :call_args, :request_state, :request_payload, :elicitation_kind, 'pending', :expires_at, :deadline_source, :created_at)
 RETURNING *;
 
 -- name: GetToolInputRequest :one
@@ -37,3 +37,20 @@ SELECT * FROM tool_input_requests WHERE status = 'pending';
 SELECT * FROM tool_input_requests
 WHERE run_id = :run_id AND status = 'pending'
 ORDER BY created_at;
+
+-- ListExpiredToolInputRequests returns pending tool input requests whose
+-- effective deadline has passed, for the timeout scanner. Without this the row
+-- of a run paused when the host died would stay pending forever: the in-process
+-- timer that would have expired it died with the process.
+-- name: ListExpiredToolInputRequests :many
+SELECT * FROM tool_input_requests
+WHERE status = 'pending' AND expires_at <= :cutoff;
+
+-- UpdateToolInputRequestDeadline extends or shortens a pending request's
+-- effective deadline, for when a server revises its task TTL mid-wait
+-- (spec sec 6.3). Guarded on status so a resolved or timed-out request cannot
+-- be given a new lease.
+-- name: UpdateToolInputRequestDeadline :execrows
+UPDATE tool_input_requests
+SET expires_at = :expires_at, deadline_source = :deadline_source
+WHERE id = :id AND status = 'pending';
