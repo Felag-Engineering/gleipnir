@@ -642,7 +642,7 @@ CREATE INDEX idx_tool_input_requests_status_expires ON tool_input_requests(statu
 CREATE TABLE mcp_tasks (
     id                TEXT    PRIMARY KEY,                                              -- ULID
     run_id            TEXT    NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-    server_id         TEXT    NOT NULL REFERENCES mcp_servers(id) ON DELETE CASCADE,     -- server hosting the durable task
+    server_id         TEXT    REFERENCES mcp_servers(id) ON DELETE CASCADE,              -- nullable: NULL means an internal (in-app) task with no MCP server behind it (spec §6.4)
     task_id           TEXT    NOT NULL,                                                 -- server-assigned Tasks-extension task id (SEP-2663)
     kind              TEXT    NOT NULL CHECK(kind IN ('tool_call', 'channel_request')),  -- reused by both the tool-initiated wait path and the eventual channel-Request-as-task path (spec §6.4)
     poll_interval_ms  INTEGER,                                                          -- nullable; server-suggested poll cadence

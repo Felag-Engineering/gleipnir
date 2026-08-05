@@ -41,5 +41,6 @@ func All() []Migration {
 		&AddContainerDesiredState{},
 		&AddToolInputDeadlineSource{},
 		&AddToolInputReplayContext{},
+		&MCPTasksInternalServer{},
 	}
 }

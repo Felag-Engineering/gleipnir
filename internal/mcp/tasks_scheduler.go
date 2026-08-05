@@ -222,7 +222,15 @@ func (s *PollScheduler) Cancel(ctx context.Context, taskID string) error {
 		return nil
 	}
 
-	client, err := s.resolver.ClientForServerID(ctx, task.ServerID)
+	if task.ServerID == nil {
+		// An internal task (spec §6.4: the in-app channel runs the same
+		// lifecycle with no MCP hop). There is no server to send tasks/cancel
+		// to, so cancellation is purely the local row transition.
+		s.finalize(ctx, task, "cancelled", nil, ErrTaskCanceled)
+		return nil
+	}
+
+	client, err := s.resolver.ClientForServerID(ctx, *task.ServerID)
 	if err != nil {
 		return fmt.Errorf("resolve client for task %q: %w", taskID, err)
 	}
@@ -254,10 +262,18 @@ func (s *PollScheduler) pollOne(ctx context.Context, task db.McpTask) {
 		return
 	}
 
-	client, err := s.resolver.ClientForServerID(ctx, task.ServerID)
+	if task.ServerID == nil {
+		// Internal tasks are resolved by an operator acting in the UI, not by
+		// polling a server that does not exist. Rescheduling one would spin
+		// forever; dropping it from the schedule is correct because the
+		// in-app completion path drives it directly.
+		return
+	}
+
+	client, err := s.resolver.ClientForServerID(ctx, *task.ServerID)
 	if err != nil {
 		slog.WarnContext(ctx, "mcp task poll: resolve server client failed",
-			"task_id", task.ID, "server_id", task.ServerID, "err", err)
+			"task_id", task.ID, "server_id", *task.ServerID, "err", err)
 		s.scheduleNext(task.ID, defaultTaskPollInterval)
 		return
 	}
