@@ -52,6 +52,20 @@ const (
 	ActionStop   ActionKind = "stop"
 	ActionRemove ActionKind = "remove"
 
+	// ActionCreateNetwork creates the instance's dedicated internal network
+	// (spec §7). It is its own step ahead of ActionCreate because a container
+	// cannot attach to a network that does not exist, and because allocating
+	// the subnet is a write whose result the next pass should observe rather
+	// than assume.
+	ActionCreateNetwork ActionKind = "create_network"
+
+	// ActionRemoveNetwork tears the network down and returns its subnet to the
+	// pool. It runs only after the instance's container is gone — removing a
+	// network still in use fails at the socket, and a subnet released while a
+	// container still holds addresses in it could be handed to another
+	// instance.
+	ActionRemoveNetwork ActionKind = "remove_network"
+
 	// ActionDriftDetected reports that a running container no longer matches
 	// its desired image digest or config hash. The core loop does NOT act on
 	// it: replacing a running container is a generation rotation
@@ -81,20 +95,25 @@ const (
 )
 
 // planFor decides the one step to take for a single instance. It is a pure
-// function of (desired row, observed container) so the whole convergence table
-// is testable without a runtime: desired == nil means no desired-state row
-// exists (an orphan), observed == nil means no container carries this
-// instance's label.
+// function of (desired row, observed container, network present) so the whole
+// convergence table is testable without a runtime: desired == nil means no
+// desired-state row exists (an orphan), observed == nil means no container
+// carries this instance's label, and hasNetwork reports whether the instance's
+// dedicated internal network already exists.
 //
 // Exactly one step is returned even when several are needed. A container that
 // must be created and then started takes two passes, and a running orphan
 // takes two more (stop, then remove) — the loop converges over N passes rather
 // than trying to drive a sequence to completion inside one.
-func planFor(desired *db.PluginContainer, observed *container.ContainerInfo) Action {
+func planFor(desired *db.PluginContainer, observed *container.ContainerInfo, hasNetwork bool) Action {
 	switch {
 	case desired == nil && observed == nil:
-		// Nothing on either side; not reachable through Reconcile's diff, but
-		// defined so the function is total.
+		// No container and no desired row. A network may still be left behind
+		// by an instance whose container is already gone — that is the second
+		// half of the teardown, and the only case this branch is reachable for.
+		if hasNetwork {
+			return Action{Kind: ActionRemoveNetwork, Reason: "orphan: no desired-state row for this network"}
+		}
 		return Action{Kind: ActionNone}
 
 	case desired == nil:
@@ -120,14 +139,23 @@ func planFor(desired *db.PluginContainer, observed *container.ContainerInfo) Act
 		// Desired but absent. Only create what is meant to run: creating a
 		// container purely to leave it stopped would be a socket write with no
 		// converging effect.
-		if desired.DesiredState == DesiredRunning {
+		if desired.DesiredState != DesiredRunning {
+			return Action{Kind: ActionNone, InstanceID: desired.PluginInstanceID}
+		}
+		// The network comes first — a container cannot attach to one that does
+		// not exist yet.
+		if !hasNetwork {
 			return Action{
-				Kind:       ActionCreate,
+				Kind:       ActionCreateNetwork,
 				InstanceID: desired.PluginInstanceID,
-				Reason:     "desired container does not exist",
+				Reason:     "instance has no dedicated internal network yet",
 			}
 		}
-		return Action{Kind: ActionNone, InstanceID: desired.PluginInstanceID}
+		return Action{
+			Kind:       ActionCreate,
+			InstanceID: desired.PluginInstanceID,
+			Reason:     "desired container does not exist",
+		}
 
 	default:
 		return planForExisting(desired, observed)

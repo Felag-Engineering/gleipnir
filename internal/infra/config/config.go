@@ -59,6 +59,13 @@ type Config struct {
 	ElicitationMaxRequestsBytes     int     // GLEIPNIR_ELICITATION_MAX_REQUESTS_BYTES, default 65536
 	ElicitationRatePerSec           float64 // GLEIPNIR_ELICITATION_RATE_PER_SEC, default 1
 	ElicitationBurst                int     // GLEIPNIR_ELICITATION_BURST, default 5
+
+	// PluginSubnetPool is the base CIDR per-instance plugin networks are
+	// carved from, one /24 each (ADR-056, spec §7). The default /16 holds 256
+	// instances; stock container-runtime default pools exhaust at roughly 30
+	// networks, which is why Gleipnir allocates explicitly instead of letting
+	// the daemon choose.
+	PluginSubnetPool string // GLEIPNIR_PLUGIN_SUBNET_POOL, default 10.83.0.0/16
 }
 
 // Load reads configuration from environment variables, applies defaults for
@@ -96,6 +103,7 @@ func Load() (Config, error) {
 		LLMRetryMaxAttempts:       envInt("GLEIPNIR_LLM_RETRY_MAX_ATTEMPTS", 4),
 		LLMRetryInitialBackoff:    envDuration("GLEIPNIR_LLM_RETRY_INITIAL_BACKOFF", 1*time.Second),
 		LLMRetryMaxBackoff:        envDuration("GLEIPNIR_LLM_RETRY_MAX_BACKOFF", 30*time.Second),
+		PluginSubnetPool:          envOrDefault("GLEIPNIR_PLUGIN_SUBNET_POOL", "10.83.0.0/16"),
 
 		ElicitationMaxRequestStateBytes: envInt("GLEIPNIR_ELICITATION_MAX_REQUEST_STATE_BYTES", 16<<10),
 		ElicitationMaxRequests:          envInt("GLEIPNIR_ELICITATION_MAX_REQUESTS", 8),

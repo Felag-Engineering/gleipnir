@@ -52,6 +52,11 @@ type Config struct {
 	// Publisher receives EventPassCompleted after each pass. Optional.
 	Publisher event.Publisher
 
+	// Subnets allocates each instance its dedicated /24 (spec §7). Required
+	// for the network lifecycle: without it the loop can converge containers
+	// on networks something else created, but cannot create one itself.
+	Subnets *SubnetAllocator
+
 	// NetworkNameFor overrides how an instance's network name is derived.
 	// Optional — the default is derived from the desired row, and per-instance
 	// network creation is a separate concern that owns the real naming.
@@ -86,6 +91,7 @@ type Reconciler struct {
 	posture   container.Posture
 	interval  time.Duration
 	publisher event.Publisher
+	subnets   *SubnetAllocator
 	networkFn func(db.PluginContainer) string
 
 	// kick carries a nudge from a desired-state write. Buffered at 1 and sent
@@ -122,6 +128,7 @@ func New(cfg Config) (*Reconciler, error) {
 		posture:   cfg.Posture,
 		interval:  interval,
 		publisher: cfg.Publisher,
+		subnets:   cfg.Subnets,
 		networkFn: networkFn,
 		kick:      make(chan struct{}, 1),
 	}, nil
@@ -235,8 +242,13 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (PassResult, error) {
 		return PassResult{}, fmt.Errorf("listing managed containers: %w", err)
 	}
 
+	networks, err := r.runtime.ListNetworksByLabel(ctx, LabelManaged, ManagedValue)
+	if err != nil {
+		return PassResult{}, fmt.Errorf("listing managed networks: %w", err)
+	}
+
 	result := PassResult{Desired: len(desired), Observed: len(observed)}
-	for _, action := range planPass(desired, observed) {
+	for _, action := range planPass(desired, observed, networks) {
 		if action.Kind == ActionNone {
 			continue
 		}
@@ -268,7 +280,7 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (PassResult, error) {
 // with no instance label cannot be matched to any desired row, so it is
 // planned as an orphan — which is the correct reading: Gleipnir labelled it as
 // managed, and nothing claims it.
-func planPass(desired []db.PluginContainer, observed []container.ContainerInfo) []Action {
+func planPass(desired []db.PluginContainer, observed []container.ContainerInfo, networks []container.NetworkInfo) []Action {
 	byInstance := make(map[string]*container.ContainerInfo, len(observed))
 	var unlabelled []container.ContainerInfo
 	for i := range observed {
@@ -280,22 +292,47 @@ func planPass(desired []db.PluginContainer, observed []container.ContainerInfo) 
 		byInstance[id] = &observed[i]
 	}
 
-	actions := make([]Action, 0, len(desired)+len(observed))
+	networkByInstance := make(map[string]container.NetworkInfo, len(networks))
+	for _, n := range networks {
+		if id := n.Labels[LabelInstance]; id != "" {
+			networkByInstance[id] = n
+		}
+	}
+
+	actions := make([]Action, 0, len(desired)+len(observed)+len(networks))
 	seen := make(map[string]bool, len(desired))
 	for i := range desired {
 		row := &desired[i]
 		seen[row.PluginInstanceID] = true
-		actions = append(actions, planFor(row, byInstance[row.PluginInstanceID]))
+		_, hasNetwork := networkByInstance[row.PluginInstanceID]
+		actions = append(actions, planFor(row, byInstance[row.PluginInstanceID], hasNetwork))
 	}
 
-	// Everything managed that no desired row claims is an orphan.
+	// Everything managed that no desired row claims is an orphan. A container
+	// goes first; its network is torn down on a later pass, once the container
+	// is actually gone.
 	for id, info := range byInstance {
 		if !seen[id] {
-			actions = append(actions, planFor(nil, info))
+			_, hasNetwork := networkByInstance[id]
+			actions = append(actions, planFor(nil, info, hasNetwork))
 		}
 	}
 	for i := range unlabelled {
-		actions = append(actions, planFor(nil, &unlabelled[i]))
+		actions = append(actions, planFor(nil, &unlabelled[i], false))
+	}
+
+	// A network whose instance has neither a desired row nor a container left
+	// is the second half of a teardown.
+	for id := range networkByInstance {
+		if seen[id] {
+			continue
+		}
+		if _, stillRunning := byInstance[id]; stillRunning {
+			continue
+		}
+		action := planFor(nil, nil, true)
+		action.InstanceID = id
+		actions = append(actions, action)
 	}
 	return actions
 }
@@ -331,6 +368,16 @@ func (r *Reconciler) apply(ctx context.Context, action Action, desired []db.Plug
 		}
 		return nil
 
+	case ActionCreateNetwork:
+		row, ok := findDesired(desired, action.InstanceID)
+		if !ok {
+			return fmt.Errorf("no desired row for instance %q", action.InstanceID)
+		}
+		return r.createNetwork(ctx, row)
+
+	case ActionRemoveNetwork:
+		return r.removeNetwork(ctx, action.InstanceID)
+
 	case ActionRemove:
 		// force=false deliberately: a container this pass believes is stopped
 		// but the runtime still considers running means the two disagree, and
@@ -344,6 +391,72 @@ func (r *Reconciler) apply(ctx context.Context, action Action, desired []db.Plug
 	default:
 		return fmt.Errorf("unhandled action kind %q", action.Kind)
 	}
+}
+
+// createNetwork allocates the instance's subnet and creates its dedicated
+// internal network.
+//
+// Allocation happens first and is idempotent, so a pass that creates the subnet
+// row and then fails at the socket leaves an allocation the next pass reuses
+// rather than a leaked slot. The reverse order — create the network, then
+// record the subnet — could leave a network nothing knows about.
+func (r *Reconciler) createNetwork(ctx context.Context, row db.PluginContainer) error {
+	if r.subnets == nil {
+		return fmt.Errorf("no subnet allocator configured; cannot create a network for instance %q", row.PluginInstanceID)
+	}
+
+	subnet, err := r.subnets.Allocate(ctx, row.PluginInstanceID)
+	if err != nil {
+		return fmt.Errorf("allocating subnet for instance %q: %w", row.PluginInstanceID, err)
+	}
+
+	name := r.networkFn(row)
+	id, err := r.runtime.CreateNetwork(ctx, container.NetworkOptions{
+		Name: name,
+		Labels: map[string]string{
+			LabelManaged:  ManagedValue,
+			LabelInstance: row.PluginInstanceID,
+		},
+		Subnet: subnet.String(),
+		// Internal is the default-deny the egress-grants work builds on: a
+		// plugin container has no route off its own network until something
+		// deliberately gives it one.
+		Internal: true,
+	})
+	if err != nil {
+		return fmt.Errorf("creating network %q for instance %q: %w", name, row.PluginInstanceID, err)
+	}
+
+	logctx.Logger(ctx).InfoContext(ctx, "reconciler: created instance network",
+		"instance_id", row.PluginInstanceID, "network", name, "network_id", string(id), "subnet", subnet.String())
+	return nil
+}
+
+// removeNetwork tears down an instance's network and returns its subnet to the
+// pool.
+//
+// The subnet is released only after the network is gone. Releasing first would
+// let another instance be handed a subnet that a still-existing network is
+// using, which the runtime would reject at create time — turning a clean
+// teardown into a stuck one.
+func (r *Reconciler) removeNetwork(ctx context.Context, instanceID string) error {
+	networks, err := r.runtime.ListNetworksByLabel(ctx, LabelInstance, instanceID)
+	if err != nil {
+		return fmt.Errorf("listing networks for instance %q: %w", instanceID, err)
+	}
+	for _, n := range networks {
+		if err := r.runtime.RemoveNetwork(ctx, n.ID); err != nil {
+			return fmt.Errorf("removing network %q: %w", n.Name, err)
+		}
+	}
+
+	if r.subnets != nil {
+		if err := r.subnets.Release(ctx, instanceID); err != nil {
+			return err
+		}
+	}
+	logctx.Logger(ctx).InfoContext(ctx, "reconciler: removed instance network", "instance_id", instanceID)
+	return nil
 }
 
 // createOptions builds the create request for a desired row. Every field the
