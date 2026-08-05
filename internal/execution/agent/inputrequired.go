@@ -200,10 +200,15 @@ type InputRoutingRequest struct {
 	Result   *mcp.InputRequiredResult
 
 	// Timeout is the human leg's deadline, resolved by the caller from the
-	// policy. Zero or negative falls back to fallbackInputTimeout. Full
-	// precedence against server-side TTLs (spec §6.3) is a later milestone;
-	// today the policy clock is the only clock consulted.
+	// policy. Zero or negative falls back to fallbackInputTimeout.
 	Timeout time.Duration
+
+	// ServerTaskTTL and RequestStateTTL are the server-side clocks that can
+	// shorten the wait (spec §6.3). Zero means the clock does not apply, which
+	// is the common case: neither is reachable until a wait is backed by a
+	// durable task or a server declares a requestState TTL out-of-band.
+	ServerTaskTTL   time.Time
+	RequestStateTTL time.Time
 }
 
 // PersistedInputRequest is the wire shape of one entry in
@@ -403,7 +408,25 @@ func (h *InputRequiredHandler) Route(ctx context.Context, req InputRoutingReques
 	if timeout <= 0 {
 		timeout = fallbackInputTimeout
 	}
-	expiresAt := time.Now().UTC().Add(timeout).Format(time.RFC3339Nano)
+
+	// The deadline that governs this wait is the minimum of every applicable
+	// clock (spec §6.3), computed once here so no caller re-derives it.
+	deadline, source := EffectiveDeadline(DeadlineInputs{
+		Now:             timeNow(),
+		PolicyTimeout:   timeout,
+		ServerTaskTTL:   req.ServerTaskTTL,
+		RequestStateTTL: req.RequestStateTTL,
+	})
+	expiresAt := deadline.UTC().Format(time.RFC3339Nano)
+
+	// The in-process wait follows the EFFECTIVE deadline, not the policy
+	// timeout: a server clock that expires first must end the wait first, or
+	// the host would sit holding an answer slot the server has already
+	// abandoned.
+	waitFor := time.Until(deadline)
+	if waitFor < 0 {
+		waitFor = 0
+	}
 
 	if err := checkPersistedSize(req.Result, requestID); err != nil {
 		return nil, err
@@ -431,11 +454,12 @@ func (h *InputRequiredHandler) Route(ctx context.Context, req InputRoutingReques
 		RequestPayload:  string(requestPayload),
 		ElicitationKind: string(classifyElicitationKind(req.Result.InputRequests)),
 		ExpiresAt:       expiresAt,
+		DeadlineSource:  string(source),
 	})); err != nil {
 		return nil, fmt.Errorf("transitioning run to waiting_for_feedback for tool input: %w", err)
 	}
 
-	timer := time.NewTimer(timeout)
+	timer := time.NewTimer(waitFor)
 	defer timer.Stop()
 
 	select {
@@ -462,9 +486,8 @@ func (h *InputRequiredHandler) Route(ctx context.Context, req InputRoutingReques
 					ID:         requestID,
 				})
 			},
-			errorCode: model.ErrorCodeFeedbackTimeout,
-			wonMessage: fmt.Sprintf("tool input timeout: operator did not answer %s within %s",
-				req.ToolName, timeout),
+			errorCode:   model.ErrorCodeFeedbackTimeout,
+			wonMessage:  timeoutMessage(req.ToolName, source, timeout),
 			lostMessage: fmt.Sprintf("tool input timeout: already resolved by scanner for tool %s", req.ToolName),
 		})
 		return nil, &InputRoutingError{RequestID: requestID, Err: err}

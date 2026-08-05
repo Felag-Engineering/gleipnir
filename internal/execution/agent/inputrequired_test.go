@@ -1183,3 +1183,95 @@ func TestInputRequiredHandler_Route_OversizePayloadIsRefusedBeforePersisting(t *
 		})
 	}
 }
+
+// The effective deadline reaches the row, and so does the clock that produced
+// it — that pairing is what lets a later failure explain itself.
+func TestInputRequiredHandler_Route_PersistsTheEffectiveDeadline(t *testing.T) {
+	tests := []struct {
+		name       string
+		serverTTL  time.Duration // relative to now; zero means no server clock
+		timeout    time.Duration
+		wantSource DeadlineSource
+	}{
+		{
+			name:       "policy clock governs when no server clock applies",
+			timeout:    time.Hour,
+			wantSource: DeadlineSourcePolicy,
+		},
+		{
+			name:       "a shorter server TTL governs",
+			serverTTL:  5 * time.Minute,
+			timeout:    time.Hour,
+			wantSource: DeadlineSourceServerTTL,
+		},
+		{
+			name:       "a longer server TTL does not extend the policy clock",
+			serverTTL:  2 * time.Hour,
+			timeout:    time.Minute,
+			wantSource: DeadlineSourcePolicy,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, pub, _, h := newRoutingFixture(t, time.Minute)
+
+			req := routeRequest(permissionAsk("deploy to prod?"), tc.timeout)
+			if tc.serverTTL != 0 {
+				req.ServerTaskTTL = time.Now().UTC().Add(tc.serverTTL)
+			}
+
+			go func() { _, _ = h.Route(context.Background(), req) }()
+			requestID := awaitPendingToolInputID(t, pub, s)
+
+			row, err := s.GetToolInputRequest(context.Background(), requestID)
+			if err != nil {
+				t.Fatalf("GetToolInputRequest: %v", err)
+			}
+			if row.DeadlineSource == nil {
+				t.Fatal("deadline_source is NULL; a freshly written pause always knows its clock")
+			}
+			if *row.DeadlineSource != string(tc.wantSource) {
+				t.Errorf("deadline_source = %q, want %q", *row.DeadlineSource, tc.wantSource)
+			}
+
+			deadline, err := time.Parse(time.RFC3339Nano, row.ExpiresAt)
+			if err != nil {
+				t.Fatalf("expires_at %q does not parse: %v", row.ExpiresAt, err)
+			}
+			if tc.wantSource == DeadlineSourceServerTTL && time.Until(deadline) > tc.timeout {
+				t.Errorf("effective deadline %s is past the policy timeout; the server clock did not shorten it", row.ExpiresAt)
+			}
+
+			// Release the goroutine.
+			_ = h.Decline(requestID)
+		})
+	}
+}
+
+// A server TTL already in the past ends the wait immediately rather than
+// hanging for the full policy timeout — and records that the server ended it.
+func TestInputRequiredHandler_Route_ExpiredServerTTLEndsTheWaitAtOnce(t *testing.T) {
+	_, _, _, h := newRoutingFixture(t, time.Hour)
+
+	req := routeRequest(permissionAsk("deploy to prod?"), time.Hour)
+	req.ServerTaskTTL = time.Now().UTC().Add(-time.Hour)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := h.Route(context.Background(), req)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Route: want a timeout error for an already-expired server TTL")
+		}
+		if !strings.Contains(err.Error(), "the server, not Gleipnir, ended this wait") {
+			t.Errorf("error = %v, want it to name the server as the cause", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Route waited on the policy clock despite an expired server TTL")
+	}
+}

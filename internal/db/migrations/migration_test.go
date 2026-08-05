@@ -1015,3 +1015,109 @@ func TestAddContainerDesiredStateSkipsOnFreshSchema(t *testing.T) {
 		t.Fatal("ShouldSkip returned false on a fresh initial schema — did 0001_initial.sql forget the container substrate tables?")
 	}
 }
+
+// TestAddToolInputDeadlineSource verifies migration 0046 on the upgrade path:
+// the column is added, existing rows keep NULL (which means "written before
+// this column existed", not "the policy clock won"), the CHECK constraint holds,
+// and the migration is idempotent.
+func TestAddToolInputDeadlineSource(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+
+	// Build the pre-0046 shape by hand: the tool_input_requests table WITHOUT
+	// deadline_source, plus the parents it references.
+	seedPreToolInputRequestsBaseline(t, db)
+	if _, err := db.ExecContext(ctx, `
+CREATE TABLE tool_input_requests (
+    id                TEXT    PRIMARY KEY,
+    run_id            TEXT    NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    server_id         TEXT    NOT NULL REFERENCES mcp_servers(id) ON DELETE CASCADE,
+    tool_name         TEXT    NOT NULL,
+    call_args         TEXT    NOT NULL,
+    request_state     TEXT    NOT NULL,
+    request_payload   TEXT    NOT NULL,
+    elicitation_kind  TEXT    NOT NULL CHECK(elicitation_kind IN ('permission', 'information')),
+    status            TEXT    NOT NULL CHECK(status IN ('pending', 'resolved', 'timed_out')),
+    response          TEXT,
+    resolved_at       TEXT,
+    expires_at        TEXT    NOT NULL,
+    created_at        TEXT    NOT NULL
+)`); err != nil {
+		t.Fatalf("seed pre-0046 tool_input_requests: %v", err)
+	}
+
+	m := &migrations.AddToolInputDeadlineSource{}
+	skip, err := m.ShouldSkip(ctx, db)
+	if err != nil {
+		t.Fatalf("ShouldSkip: %v", err)
+	}
+	if skip {
+		t.Fatal("ShouldSkip returned true against the pre-target baseline")
+	}
+
+	// Seed the parents and a row that predates the column.
+	for _, stmt := range []string{
+		`INSERT INTO policies(id, name, trigger_type, yaml, created_at, updated_at) VALUES ('p1', 'policy-1', 'manual', '{}', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+		`INSERT INTO runs(id, policy_id, status, trigger_type, trigger_payload, started_at, created_at) VALUES ('r1', 'p1', 'waiting_for_feedback', 'manual', '{}', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+		`INSERT INTO mcp_servers(id, name, url, created_at) VALUES ('s1', 'srv', 'http://localhost:8080', '2024-01-01T00:00:00Z')`,
+		`INSERT INTO tool_input_requests (id, run_id, server_id, tool_name, call_args, request_state, request_payload, elicitation_kind, status, expires_at, created_at)
+		 VALUES ('tir-old', 'r1', 's1', 'deploy', '{}', 'state', '[]', 'permission', 'pending', '2024-01-01T01:00:00Z', '2024-01-01T00:00:00Z')`,
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("seed: %v\nstatement: %s", err, stmt)
+		}
+	}
+
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	// The pre-existing row reads NULL — unknown, not "policy".
+	var source *string
+	if err := db.QueryRowContext(ctx, `SELECT deadline_source FROM tool_input_requests WHERE id = 'tir-old'`).Scan(&source); err != nil {
+		t.Fatalf("read deadline_source: %v", err)
+	}
+	if source != nil {
+		t.Errorf("deadline_source = %v for a pre-migration row, want NULL", *source)
+	}
+
+	// Known values are accepted.
+	for _, valid := range []string{"policy", "server_ttl", "request_state"} {
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO tool_input_requests (id, run_id, server_id, tool_name, call_args, request_state, request_payload, elicitation_kind, status, expires_at, deadline_source, created_at)
+			 VALUES (?, 'r1', 's1', 'deploy', '{}', 'state', '[]', 'permission', 'pending', '2024-01-01T01:00:00Z', ?, '2024-01-01T00:00:00Z')`,
+			"tir-"+valid, valid,
+		); err != nil {
+			t.Errorf("insert with deadline_source %q: %v", valid, err)
+		}
+	}
+
+	// An unknown clock is rejected rather than silently stored.
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO tool_input_requests (id, run_id, server_id, tool_name, call_args, request_state, request_payload, elicitation_kind, status, expires_at, deadline_source, created_at)
+		 VALUES ('tir-bogus', 'r1', 's1', 'deploy', '{}', 'state', '[]', 'permission', 'pending', '2024-01-01T01:00:00Z', 'sundial', '2024-01-01T00:00:00Z')`,
+	); err == nil {
+		t.Error("an unknown deadline_source was accepted, want a CHECK violation")
+	}
+
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("second Apply (idempotency): %v", err)
+	}
+}
+
+// TestAddToolInputDeadlineSourceSkipsOnFreshSchema is the hand-sync gate for
+// 0001_initial.sql — sqlc reads only that file, so a column added by migration
+// but not there would be invisible to the generated code.
+func TestAddToolInputDeadlineSourceSkipsOnFreshSchema(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	applyInitialSchema(t, db)
+
+	skip, err := (&migrations.AddToolInputDeadlineSource{}).ShouldSkip(ctx, db)
+	if err != nil {
+		t.Fatalf("ShouldSkip: %v", err)
+	}
+	if !skip {
+		t.Fatal("ShouldSkip returned false on a fresh initial schema — did 0001_initial.sql forget deadline_source?")
+	}
+}

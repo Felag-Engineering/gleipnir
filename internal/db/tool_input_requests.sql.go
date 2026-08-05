@@ -10,22 +10,23 @@ import (
 )
 
 const createToolInputRequest = `-- name: CreateToolInputRequest :one
-INSERT INTO tool_input_requests (id, run_id, server_id, tool_name, call_args, request_state, request_payload, elicitation_kind, status, expires_at, created_at)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', ?9, ?10)
-RETURNING id, run_id, server_id, tool_name, call_args, request_state, request_payload, elicitation_kind, status, response, resolved_at, expires_at, created_at
+INSERT INTO tool_input_requests (id, run_id, server_id, tool_name, call_args, request_state, request_payload, elicitation_kind, status, expires_at, deadline_source, created_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', ?9, ?10, ?11)
+RETURNING id, run_id, server_id, tool_name, call_args, request_state, request_payload, elicitation_kind, status, response, resolved_at, expires_at, deadline_source, created_at
 `
 
 type CreateToolInputRequestParams struct {
-	ID              string `json:"id"`
-	RunID           string `json:"run_id"`
-	ServerID        string `json:"server_id"`
-	ToolName        string `json:"tool_name"`
-	CallArgs        string `json:"call_args"`
-	RequestState    string `json:"request_state"`
-	RequestPayload  string `json:"request_payload"`
-	ElicitationKind string `json:"elicitation_kind"`
-	ExpiresAt       string `json:"expires_at"`
-	CreatedAt       string `json:"created_at"`
+	ID              string  `json:"id"`
+	RunID           string  `json:"run_id"`
+	ServerID        string  `json:"server_id"`
+	ToolName        string  `json:"tool_name"`
+	CallArgs        string  `json:"call_args"`
+	RequestState    string  `json:"request_state"`
+	RequestPayload  string  `json:"request_payload"`
+	ElicitationKind string  `json:"elicitation_kind"`
+	ExpiresAt       string  `json:"expires_at"`
+	DeadlineSource  *string `json:"deadline_source"`
+	CreatedAt       string  `json:"created_at"`
 }
 
 func (q *Queries) CreateToolInputRequest(ctx context.Context, arg CreateToolInputRequestParams) (ToolInputRequest, error) {
@@ -39,6 +40,7 @@ func (q *Queries) CreateToolInputRequest(ctx context.Context, arg CreateToolInpu
 		arg.RequestPayload,
 		arg.ElicitationKind,
 		arg.ExpiresAt,
+		arg.DeadlineSource,
 		arg.CreatedAt,
 	)
 	var i ToolInputRequest
@@ -55,6 +57,7 @@ func (q *Queries) CreateToolInputRequest(ctx context.Context, arg CreateToolInpu
 		&i.Response,
 		&i.ResolvedAt,
 		&i.ExpiresAt,
+		&i.DeadlineSource,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -83,7 +86,7 @@ func (q *Queries) ExpireToolInputRequest(ctx context.Context, arg ExpireToolInpu
 }
 
 const getPendingToolInputRequestsByRun = `-- name: GetPendingToolInputRequestsByRun :many
-SELECT id, run_id, server_id, tool_name, call_args, request_state, request_payload, elicitation_kind, status, response, resolved_at, expires_at, created_at FROM tool_input_requests
+SELECT id, run_id, server_id, tool_name, call_args, request_state, request_payload, elicitation_kind, status, response, resolved_at, expires_at, deadline_source, created_at FROM tool_input_requests
 WHERE run_id = ?1 AND status = 'pending'
 ORDER BY created_at
 `
@@ -114,6 +117,7 @@ func (q *Queries) GetPendingToolInputRequestsByRun(ctx context.Context, runID st
 			&i.Response,
 			&i.ResolvedAt,
 			&i.ExpiresAt,
+			&i.DeadlineSource,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -130,7 +134,7 @@ func (q *Queries) GetPendingToolInputRequestsByRun(ctx context.Context, runID st
 }
 
 const getToolInputRequest = `-- name: GetToolInputRequest :one
-SELECT id, run_id, server_id, tool_name, call_args, request_state, request_payload, elicitation_kind, status, response, resolved_at, expires_at, created_at FROM tool_input_requests WHERE id = ?1
+SELECT id, run_id, server_id, tool_name, call_args, request_state, request_payload, elicitation_kind, status, response, resolved_at, expires_at, deadline_source, created_at FROM tool_input_requests WHERE id = ?1
 `
 
 func (q *Queries) GetToolInputRequest(ctx context.Context, id string) (ToolInputRequest, error) {
@@ -149,13 +153,61 @@ func (q *Queries) GetToolInputRequest(ctx context.Context, id string) (ToolInput
 		&i.Response,
 		&i.ResolvedAt,
 		&i.ExpiresAt,
+		&i.DeadlineSource,
 		&i.CreatedAt,
 	)
 	return i, err
 }
 
+const listExpiredToolInputRequests = `-- name: ListExpiredToolInputRequests :many
+SELECT id, run_id, server_id, tool_name, call_args, request_state, request_payload, elicitation_kind, status, response, resolved_at, expires_at, deadline_source, created_at FROM tool_input_requests
+WHERE status = 'pending' AND expires_at <= ?1
+`
+
+// ListExpiredToolInputRequests returns pending tool input requests whose
+// effective deadline has passed, for the timeout scanner. Without this the row
+// of a run paused when the host died would stay pending forever: the in-process
+// timer that would have expired it died with the process.
+func (q *Queries) ListExpiredToolInputRequests(ctx context.Context, cutoff string) ([]ToolInputRequest, error) {
+	rows, err := q.db.QueryContext(ctx, listExpiredToolInputRequests, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ToolInputRequest
+	for rows.Next() {
+		var i ToolInputRequest
+		if err := rows.Scan(
+			&i.ID,
+			&i.RunID,
+			&i.ServerID,
+			&i.ToolName,
+			&i.CallArgs,
+			&i.RequestState,
+			&i.RequestPayload,
+			&i.ElicitationKind,
+			&i.Status,
+			&i.Response,
+			&i.ResolvedAt,
+			&i.ExpiresAt,
+			&i.DeadlineSource,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listResumableToolInputRequests = `-- name: ListResumableToolInputRequests :many
-SELECT id, run_id, server_id, tool_name, call_args, request_state, request_payload, elicitation_kind, status, response, resolved_at, expires_at, created_at FROM tool_input_requests WHERE status = 'pending'
+SELECT id, run_id, server_id, tool_name, call_args, request_state, request_payload, elicitation_kind, status, response, resolved_at, expires_at, deadline_source, created_at FROM tool_input_requests WHERE status = 'pending'
 `
 
 // ListResumableToolInputRequests returns every pending tool input request so
@@ -183,6 +235,7 @@ func (q *Queries) ListResumableToolInputRequests(ctx context.Context) ([]ToolInp
 			&i.Response,
 			&i.ResolvedAt,
 			&i.ExpiresAt,
+			&i.DeadlineSource,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -216,6 +269,30 @@ type ResolveToolInputRequestParams struct {
 // resolved or expired the request.
 func (q *Queries) ResolveToolInputRequest(ctx context.Context, arg ResolveToolInputRequestParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, resolveToolInputRequest, arg.Response, arg.ResolvedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const updateToolInputRequestDeadline = `-- name: UpdateToolInputRequestDeadline :execrows
+UPDATE tool_input_requests
+SET expires_at = ?1, deadline_source = ?2
+WHERE id = ?3 AND status = 'pending'
+`
+
+type UpdateToolInputRequestDeadlineParams struct {
+	ExpiresAt      string  `json:"expires_at"`
+	DeadlineSource *string `json:"deadline_source"`
+	ID             string  `json:"id"`
+}
+
+// UpdateToolInputRequestDeadline extends or shortens a pending request's
+// effective deadline, for when a server revises its task TTL mid-wait
+// (spec sec 6.3). Guarded on status so a resolved or timed-out request cannot
+// be given a new lease.
+func (q *Queries) UpdateToolInputRequestDeadline(ctx context.Context, arg UpdateToolInputRequestDeadlineParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateToolInputRequestDeadline, arg.ExpiresAt, arg.DeadlineSource, arg.ID)
 	if err != nil {
 		return 0, err
 	}

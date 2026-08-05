@@ -210,6 +210,57 @@ func NewPluginRequestScanner(store *db.Store, interval time.Duration, opts ...Sc
 	return NewScanner(store, interval, cfg, opts...)
 }
 
+// NewToolInputScanner creates a Scanner for expired tool-initiated input
+// requests (ADR-055, spec §6.3).
+//
+// Without this scanner a tool-input wait has only an in-process timer, which
+// dies with the process: a host that restarts while a run is paused leaves the
+// row pending forever, holding a run in waiting_for_feedback that nothing will
+// ever resolve. That is the same hole the approval and feedback scanners exist
+// to close, and it is why the row carries an effective deadline rather than
+// just a policy timeout — the deadline outlives the process that set it.
+//
+// The scan compares against expires_at, which is the EFFECTIVE deadline (the
+// minimum of the policy timeout and any server-side clock), so a server TTL
+// that lands before the policy timeout is honored here too.
+func NewToolInputScanner(store *db.Store, interval time.Duration, opts ...ScannerOption) *Scanner {
+	cfg := Config{
+		Name: "tool_input",
+		ListExpired: func(ctx context.Context, cutoff string) ([]ExpiredItem, error) {
+			rows, err := store.Queries().ListExpiredToolInputRequests(ctx, cutoff)
+			if err != nil {
+				return nil, err
+			}
+			items := make([]ExpiredItem, len(rows))
+			for i, r := range rows {
+				items[i] = ExpiredItem{ID: r.ID, RunID: r.RunID, ToolName: r.ToolName}
+			}
+			return items, nil
+		},
+		ClaimTimeout: func(ctx context.Context, id string, now string) (int64, error) {
+			return store.Queries().ExpireToolInputRequest(ctx, db.ExpireToolInputRequestParams{
+				ResolvedAt: &now,
+				ID:         id,
+			})
+		},
+		WaitingRunStatus: model.RunStatusWaitingForFeedback,
+		ErrorCode:        string(model.ErrorCodeFeedbackTimeout),
+		ErrorMessage: func(toolName string) string {
+			return fmt.Sprintf("tool input timeout: no operator answered the request from %s before its deadline", toolName)
+		},
+		SSEEventName: "tool_input.timed_out",
+		SSEPayload: func(id, runID string) map[string]string {
+			return map[string]string{
+				"request_id": id,
+				"run_id":     runID,
+				"status":     "timed_out",
+			}
+		},
+		OnTimeoutClaimed: func(ctx context.Context) { toolInputTimeoutsTotal.Inc() },
+	}
+	return NewScanner(store, interval, cfg, opts...)
+}
+
 // Scanner periodically scans for expired pending requests and resolves them as
 // timed-out failures. It is constructed via NewApprovalScanner or
 // NewFeedbackScanner, which supply domain-specific callbacks.

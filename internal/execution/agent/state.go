@@ -127,6 +127,7 @@ type ToolInputPayload struct {
 	RequestPayload  string // JSON-encoded elicitation payload (messages + schemas)
 	ElicitationKind string // "permission" | "information" (spec §6.1)
 	ExpiresAt       string // RFC3339Nano; never empty (the column is NOT NULL)
+	DeadlineSource  string // which clock produced ExpiresAt (spec §6.3)
 }
 
 type transitionOpts struct {
@@ -288,6 +289,7 @@ func (sm *RunStateMachine) Transition(ctx context.Context, next model.RunStatus,
 			RequestPayload:  p.RequestPayload,
 			ElicitationKind: p.ElicitationKind,
 			ExpiresAt:       p.ExpiresAt,
+			DeadlineSource:  &p.DeadlineSource,
 			CreatedAt:       time.Now().UTC().Format(time.RFC3339Nano),
 		}); err != nil {
 			return fmt.Errorf("creating tool input request record: %w", err)
