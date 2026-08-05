@@ -161,6 +161,17 @@ type discoverParams struct {
 type discoverResult struct {
 	ResultType        string   `json:"resultType"` // absent ⇒ "complete"
 	SupportedVersions []string `json:"supportedVersions"`
+	// Capabilities carries the standard extensions map (spec §4/§5: extensions
+	// are "negotiated via the standard extensions capability map"). Decoded
+	// here rather than on the legacy initialize path because the 2026-07-28
+	// transport is stateless and never runs initialize at all — server/discover
+	// IS the modern handshake, so it is the only place a modern server can
+	// declare anything.
+	//
+	// Tolerantly typed for the same reason Meta is: a malformed capabilities
+	// object must not fail this struct's Unmarshal and flip a definitively
+	// modern result to the legacy fallback (#742 cycle 1 Finding 1).
+	Capabilities json.RawMessage `json:"capabilities"`
 	// Meta is untrusted, optional, and purely diagnostic — it must never be
 	// able to influence protocol-era classification. json.RawMessage never
 	// fails to decode for any valid JSON value (object, string, number, bool,
@@ -197,6 +208,12 @@ type ProbeResult struct {
 	Era             ProtocolEra // where Version came from
 	ServerSupported []string    // raw advertised list, server order; diagnostic only
 	ServerInfo      ServerInfo  // server's self-reported identity; zero when it sent none
+
+	// Channel is the server's io.gleipnir/channel declaration and whether it
+	// declared the extension at all (spec §4). Only a modern probe can
+	// populate these — the extension requires the 2026-07-28 transport.
+	Channel         ChannelCapability
+	ChannelDeclared bool
 }
 
 // ErrNoCompatibleProtocolVersion reports a server that is definitively
@@ -223,6 +240,20 @@ type discoverClassification struct {
 	Advertised []string      // supportedVersions, or -32022 data.supported
 	ModernErr  *JSONRPCError // the recognized MCP-reserved error, if any
 	ServerInfo ServerInfo    // captured from a discoverModern result's _meta; zero on an error envelope
+
+	// Channel is the server's io.gleipnir/channel declaration, when it made
+	// one (spec §4, Amendment 1). ChannelDeclared distinguishes "did not
+	// declare the extension" from "declared it and the body was unreadable" —
+	// the first is a server that does no channel work, the second is a broken
+	// channel plugin, and routing should say which.
+	Channel         ChannelCapability
+	ChannelDeclared bool
+}
+
+// discoverCapabilities is the subset of a server/discover result's
+// capabilities object this client reads.
+type discoverCapabilities struct {
+	Extensions map[string]json.RawMessage `json:"extensions"`
 }
 
 // classifyDiscoverResponse implements the HTTP era-detection algorithm from
@@ -276,11 +307,23 @@ func classifyDiscoverResponse(status int, payload []byte) discoverClassification
 		// tools/list-shaped fake, or "{}") gives us nothing to pin, so it is
 		// classified legacy rather than unclassified.
 		if err := json.Unmarshal(envelope.Result, &result); err == nil && len(result.SupportedVersions) > 0 {
-			return discoverClassification{
+			cls := discoverClassification{
 				Outcome:    discoverModern,
 				Advertised: result.SupportedVersions,
 				ServerInfo: parseServerInfo(result.Meta),
 			}
+			// Extensions decode tolerantly and never affect the era
+			// classification above: a server whose capabilities object is
+			// garbage is still definitively modern, and treating it otherwise
+			// would drop it to the legacy transport over an optional field.
+			var caps discoverCapabilities
+			if err := json.Unmarshal(result.Capabilities, &caps); err == nil {
+				if raw, ok := caps.Extensions[ExtensionChannel]; ok {
+					cls.Channel = parseChannelCapability(raw)
+					cls.ChannelDeclared = true
+				}
+			}
+			return cls
 		}
 		return discoverClassification{Outcome: discoverLegacy}
 	}
@@ -369,7 +412,18 @@ func (c *Client) ProbeProtocolVersion(ctx context.Context) (ProbeResult, error) 
 					"reported_version", cls.ServerInfo.Version,
 					"protocol_version", v)
 			}
-			return ProbeResult{Version: v, Era: EraModern, ServerSupported: cls.Advertised, ServerInfo: cls.ServerInfo}, nil
+			c.mu.Lock()
+			c.channelCap = cls.Channel
+			c.channelDeclared = cls.ChannelDeclared
+			c.mu.Unlock()
+			return ProbeResult{
+				Version:         v,
+				Era:             EraModern,
+				ServerSupported: cls.Advertised,
+				ServerInfo:      cls.ServerInfo,
+				Channel:         cls.Channel,
+				ChannelDeclared: cls.ChannelDeclared,
+			}, nil
 		}
 		// Confirmed modern, nothing in common. basic/versioning.md §Protocol
 		// Version Negotiation gives exactly two options — retry with a

@@ -150,7 +150,7 @@ internal/
     google/           — Google AI client
     openai/           — OpenAI API client
     openaicompat/     — OpenAI-compatible provider loader (bootstraps third-party OpenAI-compatible backends)
-  mcp/                — MCP HTTP client, tool registry, capability tags
+  mcp/                — MCP HTTP client, tool registry, capability tags. Also hosts the client side of Gleipnir's own MCP extensions: `io.gleipnir/channel` (`channel.go`, #800 — `channel/notify` + `channel/request`, the latter returning a Tasks task). Extensions are negotiated in the `server/discover` capabilities map, NOT by attempting a method: on the 2026-07-28 transport there is no `initialize`, and a host that probed by calling would be delivering messages to find out whether it could. Contract: `docs/developer/extension-io-gleipnir-channel.md`.
   model/              — domain types (Policy, Run, RunStep, ApprovalRequest, enums, ...)
   plugin/             — host-side plugin substrate: loader (fsnotify watcher, tarball extractor, minisign verifier, DB installer), subprocess + generation lifecycle, identity-token auth, hostsvc host-RPC server, tool/channel/trigger dispatch, binding evaluation, event dedup, and OAuth orchestration. Sub-package map with invariants: internal/plugin/CLAUDE.md.
   policy/             — YAML parser, validator, system prompt renderer

@@ -270,6 +270,13 @@ type Client struct {
 	protocolVersion   string // pinned per-server version; "" = unpinned/legacy
 	negotiatedVersion string // legacy initialize result; guarded by mu
 
+	// channelCap is the server's io.gleipnir/channel declaration from the
+	// initialize handshake (spec §4, Amendment 1). Guarded by mu; zero-valued
+	// until initialize runs and for every server that does not declare the
+	// extension — which is most of them, and is not an error.
+	channelCap      ChannelCapability
+	channelDeclared bool
+
 	// elicitationLimits and elicitationRate bound what one server can push at
 	// an operator through MRTR input_required (spec §6.2). Both are host
 	// self-protection with safe defaults, so a Client built without them
