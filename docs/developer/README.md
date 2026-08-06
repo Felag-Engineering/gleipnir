@@ -21,5 +21,6 @@ For people writing Gleipnir code. If you're looking for how to *run* Gleipnir, s
 - [Manual testing](manual-testing.md) — live integration test environment with real MCP servers and the Slack plugin.
 - [MCP realignment spec](mcp-realignment-spec.md) — the target architecture for ADR-053…ADR-060 (containerized plugins, the `io.gleipnir/channel` and `io.gleipnir/events` extensions, tool-initiated HITL). The §10–§11 client half and the §6 HITL half have shipped; the container half has not.
 - [`io.gleipnir/channel` extension](extension-io-gleipnir-channel.md) — the host↔channel contract: payloads, task lifecycle, assurance declaration, versioning policy, conformance checklist.
+- [Manual mode](manual-mode.md) — the operator-owned container posture: what Gleipnir does and does not touch, the label contract, what discovery concludes, a reference compose file, and the four ways to get it silently wrong.
 - [Plugin system spec](plugin-system-spec.md) — full design specification for the go-plugin extension system (process model, services, credentials, trust, observability).
 - [Scheduler dispatcher](dispatcher.md) — forward-looking design for a centralized scheduling layer (ADR-036). **Not yet implemented** — the scheduled/poll/cron triggers each still own their own loop today.
