@@ -53,7 +53,14 @@ func setupCronFixture(t *testing.T) (*db.Store, *CronRunner) {
 	runner := NewCronRunner(store, launcher, resolver)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
+	// Cancel AND join the runner's loop goroutines (Notify starts them even
+	// without Start) before the manager drain above — t.Cleanup is LIFO, and
+	// a loop still running at drain time can reach RunLauncher.Launch, whose
+	// wg.Add races manager.Wait (#787).
+	t.Cleanup(func() {
+		cancel()
+		runner.Wait()
+	})
 	runner.mu.Lock()
 	runner.rootCtx = ctx
 	runner.mu.Unlock()
@@ -238,6 +245,14 @@ func TestCronRunner_Start_LoadsActivePolicies(t *testing.T) {
 	insertCronPolicy(t, store, "pol-cron-start", "cron-start", yaml)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel the root context first so all goroutines (including the
+	// reconcile loop) exit cleanly, then join them — registered after
+	// t.Cleanup(manager.Wait) so the runner is drained before the manager
+	// (t.Cleanup is LIFO; #787). Cleanup-based so failure paths drain too.
+	t.Cleanup(func() {
+		cancel()
+		runner.Wait()
+	})
 
 	if err := runner.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -246,11 +261,6 @@ func TestCronRunner_Start_LoadsActivePolicies(t *testing.T) {
 	if !hasCronLoop(runner, "pol-cron-start") {
 		t.Error("expected a loop to be started for existing cron policy on Start")
 	}
-
-	// Cancel the root context first so all goroutines (including the reconcile
-	// loop) exit cleanly, then wait for them to finish.
-	cancel()
-	runner.Wait()
 }
 
 func TestCronRunner_Fire_PayloadShape(t *testing.T) {

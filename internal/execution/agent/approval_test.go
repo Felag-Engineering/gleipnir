@@ -533,6 +533,14 @@ func TestApprovalHandler_Wait_NoDispatcherConfigured(t *testing.T) {
 
 // TestApprovalHandler_Wait_ContextCancelled verifies that context cancellation
 // while blocking returns a wrapped ctx.Err().
+//
+// The cancellation happens only once the wait is KNOWN to be blocking, which
+// the approval.created event establishes. The previous shape raced a 30ms
+// wall-clock deadline against the setup work — writing the approval_request
+// step and transitioning the run — and under load the deadline won, so the
+// error came back as "writing approval request step: context deadline
+// exceeded" and the assertion failed on a behavior that was correct. Same
+// fix as TestFeedbackHandler_Wait_ContextCancelled (signal-don't-poll).
 func TestApprovalHandler_Wait_ContextCancelled(t *testing.T) {
 	s := testutil.NewTestStore(t)
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
@@ -540,21 +548,36 @@ func TestApprovalHandler_Wait_ContextCancelled(t *testing.T) {
 
 	approvalCh := make(chan bool) // unbuffered — nothing sends
 
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
+	pub := &capturePublisher{}
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
 	h := NewApprovalHandler(w, sm, (<-chan bool)(approvalCh))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// No tool timeout → blocks until context or approval.
-	err := h.Wait(ctx, "run1", approvalEntry(0), "my-server.do_thing", map[string]any{})
-	if err == nil {
-		t.Fatal("expected error on context cancellation, got nil")
-	}
-	if !strings.Contains(err.Error(), "context cancelled") {
-		t.Errorf("error = %q, want to contain 'context cancelled'", err.Error())
+	done := make(chan error, 1)
+	go func() {
+		// No tool timeout → blocks until context or approval.
+		done <- h.Wait(ctx, "run1", approvalEntry(0), "my-server.do_thing", map[string]any{})
+	}()
+
+	// The pending row exists and the run has transitioned, so Wait is now
+	// parked on its select. Only now is cancelling it a test of cancellation.
+	pub.waitForEvent(t, "approval.created", 5*time.Second)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected error on context cancellation, got nil")
+		}
+		if !strings.Contains(err.Error(), "context cancelled") {
+			t.Errorf("error = %q, want to contain 'context cancelled'", err.Error())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Wait did not return after its context was cancelled")
 	}
 }

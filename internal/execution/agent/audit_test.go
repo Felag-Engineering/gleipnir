@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"sync"
 	"testing"
@@ -137,14 +138,50 @@ func TestAuditWriter_StopDrainsQueue(t *testing.T) {
 	}
 }
 
+// blockingAuditPublisher parks the AuditWriter's worker loop inside Publish
+// until release is closed, signalling entry via the buffered entered channel.
+// Tests use it to make the worker deterministically busy mid-step.
+type blockingAuditPublisher struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (p *blockingAuditPublisher) Publish(eventType string, data json.RawMessage) {
+	select {
+	case p.entered <- struct{}{}:
+	default:
+	}
+	<-p.release
+}
+
 func TestAuditWriter_ContextCancellation(t *testing.T) {
 	s := testutil.NewTestStore(t)
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
 
-	// Use a queue depth of 0 to force the enqueue to block immediately, so
-	// the cancel fires while Write is waiting to send into the queue.
-	w := NewAuditWriter(s.Queries(), WithQueueDepth(0))
+	// An unbuffered queue alone does NOT make the enqueue block: the worker
+	// loop is an always-ready receiver, so a select between the send and an
+	// already-cancelled ctx.Done() has two ready cases and picks one at
+	// random — the old shape of this test flaked on the coin toss (#763).
+	// Parking the worker inside a blocking Publish makes the queue genuinely
+	// unready, so the cancelled-context branch is the only path Write can take.
+	pub := &blockingAuditPublisher{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	w := NewAuditWriter(s.Queries(), WithQueueDepth(0), WithPublisher(pub))
+
+	// Occupy the worker. This Write blocks until release, so run it aside.
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- w.Write(context.Background(), Step{
+			RunID:   "r1",
+			Type:    model.StepTypeThought,
+			Content: "occupies the worker",
+		})
+	}()
+	select {
+	case <-pub.entered: // worker is now parked inside Publish
+	case <-time.After(10 * time.Second):
+		t.Fatal("worker never reached Publish for the first write")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already cancelled
@@ -154,8 +191,13 @@ func TestAuditWriter_ContextCancellation(t *testing.T) {
 		Type:    model.StepTypeThought,
 		Content: "should not land",
 	})
-	if err == nil {
-		t.Fatal("expected error from cancelled context, got nil")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Write with cancelled context: err = %v, want context.Canceled", err)
+	}
+
+	close(pub.release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Write: %v", err)
 	}
 
 	// No deadlock: Close must return promptly.
@@ -166,8 +208,17 @@ func TestAuditWriter_ContextCancellation(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("Close deadlocked after context cancellation")
+	}
+
+	// Only the worker-occupying step landed; the cancelled Write never enqueued.
+	got, err := s.CountRunSteps(context.Background(), "r1")
+	if err != nil {
+		t.Fatalf("CountRunSteps: %v", err)
+	}
+	if got != 1 {
+		t.Errorf("run steps = %d, want 1 (cancelled write must not land)", got)
 	}
 }
 

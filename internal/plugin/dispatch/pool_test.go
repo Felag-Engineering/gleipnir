@@ -818,11 +818,14 @@ func TestPool_QueueFull(t *testing.T) {
 
 	// Wait for both queue-slot claims (see the claimed comment above): after
 	// the second claim the semaphore and the queue are both provably full, so
-	// a third call must be rejected with ErrQueueFull.
+	// a third call must be rejected with ErrQueueFull. The deadlines exist
+	// only to fail loudly if a checkpoint never arrives — a passing run never
+	// waits on them — so they are sized for a CPU-starved CI runner, where 5s
+	// was observed to be too tight (#767).
 	for i := 0; i < 2; i++ {
 		select {
 		case <-claimed:
-		case <-time.After(5 * time.Second):
+		case <-time.After(30 * time.Second):
 			t.Fatalf("queue-slot claim %d not observed", i+1)
 		}
 	}
@@ -830,7 +833,7 @@ func TestPool_QueueFull(t *testing.T) {
 	// semaphore either way; this just anchors the test to real execution).
 	select {
 	case <-arrived:
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("in-flight call did not arrive at server")
 	}
 
@@ -845,7 +848,7 @@ func TestPool_QueueFull(t *testing.T) {
 	go func() { wg.Wait(); close(done) }()
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("goroutines did not drain")
 	}
 }

@@ -6,6 +6,8 @@ Gleipnir is a homelab-scale autonomous agent orchestrator. It runs AI agents wit
 
 **Backend:**
 ```bash
+make tools               # install the pinned sqlc + buf the drift lanes need
+                         # (fresh worktrees/containers have neither on PATH)
 sqlc generate            # regenerate internal/db/ from internal/db/queries/*.sql
 make ci-local            # PR CI gate locally, narrowed to your diff; safe on a
                          # dirty tree — this is the dev-loop's pre-PR merge gate
@@ -182,7 +184,7 @@ internal/
 
 **Testing time-dependent code.** Anything depending on `time.Now()` must route through an injectable package-level clock (`var timeNow = func() time.Time { return time.Now() }`); tests swap it via `t.Cleanup`, never wall-clock timing. Tests that mutate the shared clock must not use `t.Parallel()`; advancing a fake clock also refills `rate.Limiter` tokens — drain the burst first. Canonical example: `internal/plugin/hostsvc/event_ratelimit_test.go`; full rules + war stories: `docs/developer/testing-patterns.md`.
 
-**Drain launched runs before cleanup.** Any test that can launch a run must register `t.Cleanup(mgr.Wait)` **after** the `testutil.NewTestStore` call (cleanup is LIFO — the RunManager drains before the store closes). Use `testutil.NewMockLLMClient()` for runs that can reach the LLM; `NewNoopLLMClient` (panics on any call) only for paths that provably never launch. Full pattern: `docs/developer/testing-patterns.md`.
+**Drain launched runs before cleanup.** Any test that can launch a run must register `t.Cleanup(mgr.Wait)` **after** the `testutil.NewTestStore` call (cleanup is LIFO — the RunManager drains before the store closes). A test that starts a **trigger source** (Scheduler/Poller/CronRunner) must additionally cancel + join that source *before* the manager drain — register its cleanup after `t.Cleanup(mgr.Wait)`; a still-running source reaching `Launch` races `mgr.Wait` (undefined per `sync.WaitGroup`, #787). Use `testutil.NewMockLLMClient()` for runs that can reach the LLM; `NewNoopLLMClient` (panics on any call) only for paths that provably never launch. Full pattern: `docs/developer/testing-patterns.md`.
 
 **Signal-don't-poll.** Never wait for an async side effect on a tight wall-clock poll — synchronize on an event the system already publishes (e.g. `capturePublisher.waitForEvent`), with the deadline as a generous CI bound. Unavoidable wall-clock waits use deadlines at least 5× the expected duration. Full pattern: `docs/developer/testing-patterns.md`.
 

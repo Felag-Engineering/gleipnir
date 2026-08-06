@@ -46,6 +46,22 @@ func newTestSettings(provider, modelName string) *settings.Service {
 // trigger tests share a single definition.
 const minimalWebhookPolicy = testutil.MinimalWebhookPolicy
 
+// stopTriggerSource registers cleanup that cancels the trigger source's root
+// context and joins its goroutines. Call it immediately after a successful
+// Scheduler/Poller/CronRunner Start, AFTER t.Cleanup(manager.Wait) has been
+// registered: t.Cleanup is LIFO, so the source is joined BEFORE the RunManager
+// drain. A source still running at drain time can reach RunLauncher.Launch —
+// whose RunManager wg.Add races manager.Wait, which is undefined behavior per
+// sync.WaitGroup (#787). Production orders shutdown the same way: main.go
+// quiesces and joins every trigger source before runManager.Wait().
+func stopTriggerSource(t *testing.T, cancel context.CancelFunc, wait func()) {
+	t.Helper()
+	t.Cleanup(func() {
+		cancel()
+		wait()
+	})
+}
+
 // insertTestPolicy inserts a webhook policy with the given ID and YAML.
 func insertTestPolicy(t *testing.T, store *db.Store, policyID, yaml string) {
 	t.Helper()

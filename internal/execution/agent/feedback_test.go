@@ -408,66 +408,46 @@ func TestFeedbackHandler_HandleAskOperator_ReasonNotString(t *testing.T) {
 	}
 }
 
-// TestFeedbackHandler_HandleAskOperator_TimeoutResolution verifies three timeout
-// resolution cases: (1) empty feedbackCfg → defaultTimeout used; (2) invalid
-// duration string → defaultTimeout used; (3) valid policy timeout → policy value used.
-func TestFeedbackHandler_HandleAskOperator_TimeoutResolution(t *testing.T) {
+// TestFeedbackHandler_HandleAskOperator_TimeoutFires verifies end-to-end that a
+// resolved timeout actually expires the wait with a 'feedback timeout' error.
+// It asserts only the outcome — that the call returned and how, never how fast:
+// the previous shape (TimeoutResolution) asserted an *upper* wall-clock bound
+// on when the timeout fired, which failed on a loaded QEMU arm64 runner that
+// overshot a 500ms bound by 20ms (#785). Which timeout value gets resolved is
+// pure value logic, covered by TestResolveOperatorTimeout in
+// inputrequired_test.go.
+func TestFeedbackHandler_HandleAskOperator_TimeoutFires(t *testing.T) {
 	const defaultTimeout = 100 * time.Millisecond
 
-	cases := []struct {
-		name           string
-		feedbackCfg    model.FeedbackConfig
-		wantFasterThan time.Duration // rough upper bound for the timeout path
-		wantSlowerThan time.Duration // lower bound so we know the timeout fired
-	}{
-		{
-			name:           "empty_timeout_uses_default",
-			feedbackCfg:    model.FeedbackConfig{Enabled: true, Timeout: ""},
-			wantFasterThan: defaultTimeout * 5,
-			wantSlowerThan: 0,
-		},
-		{
-			name:           "invalid_timeout_uses_default",
-			feedbackCfg:    model.FeedbackConfig{Enabled: true, Timeout: "not-a-duration"},
-			wantFasterThan: defaultTimeout * 5,
-			wantSlowerThan: 0,
-		},
-		{
-			name:           "valid_timeout_uses_policy_value",
-			feedbackCfg:    model.FeedbackConfig{Enabled: true, Timeout: "50ms"},
-			wantFasterThan: 500 * time.Millisecond,
-			wantSlowerThan: 0,
-		},
-	}
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			s := testutil.NewTestStore(t)
-			testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
-			testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
+	w := NewAuditWriter(s.Queries())
+	defer w.Close() //nolint:errcheck
 
-			sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
-			w := NewAuditWriter(s.Queries())
-			defer w.Close() //nolint:errcheck
+	h := NewFeedbackHandler(w, sm, defaultTimeout)
 
-			h := NewFeedbackHandler(w, sm, defaultTimeout)
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := h.HandleAskOperator(context.Background(), "run1", AskOperatorToolName,
+			map[string]any{"reason": "test"}, model.FeedbackConfig{Enabled: true, Timeout: ""})
+		done <- err
+	}()
 
-			start := time.Now()
-			_, _, err := h.HandleAskOperator(context.Background(), "run1", AskOperatorToolName,
-				map[string]any{"reason": "test"}, tc.feedbackCfg)
-			elapsed := time.Since(start)
-
-			if err == nil {
-				t.Fatal("expected timeout error, got nil")
-			}
-			if !strings.Contains(err.Error(), "feedback timeout") {
-				t.Errorf("error = %q, want to contain 'feedback timeout'", err.Error())
-			}
-			if tc.wantFasterThan > 0 && elapsed >= tc.wantFasterThan {
-				t.Errorf("elapsed %v >= %v, timeout should have fired sooner", elapsed, tc.wantFasterThan)
-			}
-		})
+	// Generous CI bound (600× the timeout), per the signal-don't-poll rule: the
+	// deadline exists only to fail loudly if the timeout never fires.
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected timeout error, got nil")
+		}
+		if !strings.Contains(err.Error(), "feedback timeout") {
+			t.Errorf("error = %q, want to contain 'feedback timeout'", err.Error())
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("HandleAskOperator did not return after its feedback timeout")
 	}
 }
 

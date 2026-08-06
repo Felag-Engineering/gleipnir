@@ -302,6 +302,7 @@ func TestPoller_CheckMatchFires(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
@@ -317,6 +318,7 @@ func TestPoller_CheckMatchFires(t *testing.T) {
 	if err := poller.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	stopTriggerSource(t, cancel, poller.Wait)
 
 	runs := waitForRuns(t, store, "pol-match-fires", 1, 8*time.Second)
 	if len(runs) == 0 {
@@ -355,6 +357,7 @@ func TestPoller_CheckNoMatchNoRun(t *testing.T) {
 	if err := poller.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	stopTriggerSource(t, cancel, poller.Wait)
 
 	// Wait several poll intervals — no run should appear.
 	time.Sleep(800 * time.Millisecond)
@@ -410,6 +413,7 @@ func TestPoller_ReusesResolvedClientAcrossTicks(t *testing.T) {
 	if err := poller.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	stopTriggerSource(t, cancel, poller.Wait)
 
 	// signal-don't-poll: block on at least two tools/call ticks instead of a
 	// wall-clock sleep, with a generous CI deadline.
@@ -442,6 +446,7 @@ func TestPoller_MatchAny_OnePassFires(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
@@ -457,6 +462,7 @@ func TestPoller_MatchAny_OnePassFires(t *testing.T) {
 	if err := poller.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	stopTriggerSource(t, cancel, poller.Wait)
 
 	runs := waitForRuns(t, store, "pol-any-pass", 1, 8*time.Second)
 	if len(runs) == 0 {
@@ -517,6 +523,7 @@ agent:
 	if err := poller.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	stopTriggerSource(t, cancel, poller.Wait)
 
 	time.Sleep(800 * time.Millisecond)
 
@@ -561,6 +568,7 @@ func TestPoller_ToolErrorTreatedAsNotPassed(t *testing.T) {
 	if err := poller.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	stopTriggerSource(t, cancel, poller.Wait)
 
 	time.Sleep(800 * time.Millisecond)
 
@@ -607,6 +615,7 @@ func TestPoller_ConcurrencySkip(t *testing.T) {
 	if err := poller.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	stopTriggerSource(t, cancel, poller.Wait)
 
 	// Several poll intervals pass. The active run blocks new launches.
 	time.Sleep(600 * time.Millisecond)
@@ -651,6 +660,7 @@ func TestPoller_GracefulShutdown(t *testing.T) {
 	if err := poller.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	stopTriggerSource(t, cancel, poller.Wait)
 
 	// Let a couple of intervals pass, then cancel.
 	time.Sleep(250 * time.Millisecond)
@@ -818,6 +828,7 @@ func TestPoller_CheckTimeout_CancelsCallTool(t *testing.T) {
 	if err := poller.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	stopTriggerSource(t, cancel, poller.Wait)
 
 	// Wait several poll intervals to give the poller multiple chances to
 	// attempt and time out the hanging tool call.
@@ -883,6 +894,7 @@ func TestPoller_SkipsLoop_WhenNoSystemDefaultAndNoModelInYAML(t *testing.T) {
 	if err := poller.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	stopTriggerSource(t, cancel, poller.Wait)
 
 	// Let the poller attempt to start a loop; it should skip due to missing model.
 	time.Sleep(300 * time.Millisecond)

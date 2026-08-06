@@ -136,6 +136,7 @@ func TestScheduler_SkipsPastTimestampsOnStartup(t *testing.T) {
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	stopTriggerSource(t, cancel, scheduler.Wait)
 
 	// Give the scheduler a moment — no goroutines should fire for past times.
 	time.Sleep(100 * time.Millisecond)
@@ -180,6 +181,7 @@ func TestScheduler_FiresFutureTimestamp(t *testing.T) {
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	stopTriggerSource(t, cancel, scheduler.Wait)
 
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
@@ -225,6 +227,7 @@ func TestScheduler_AutoPausesAfterAllTimesConsumed(t *testing.T) {
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	stopTriggerSource(t, cancel, scheduler.Wait)
 
 	// Wait for the policy to be paused (removed from active scheduled policies).
 	deadline := time.Now().Add(8 * time.Second)
@@ -280,6 +283,7 @@ func TestScheduler_DeduplicatesAlreadyFiredTime(t *testing.T) {
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	stopTriggerSource(t, cancel, scheduler.Wait)
 
 	// Let the timer fire and dedup logic run.
 	time.Sleep(3 * time.Second)
@@ -327,6 +331,7 @@ func TestScheduler_ConcurrencySkip_BlocksWhenActive(t *testing.T) {
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	stopTriggerSource(t, cancel, scheduler.Wait)
 
 	// Wait for the timer to fire and the concurrency check to block it.
 	time.Sleep(4 * time.Second)
@@ -376,6 +381,7 @@ func TestScheduler_ConcurrencySkip_AutoPausesWhenExhausted(t *testing.T) {
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	stopTriggerSource(t, cancel, scheduler.Wait)
 
 	// Wait for the policy to be paused (removed from active scheduled policies).
 	deadline := time.Now().Add(8 * time.Second)
@@ -428,6 +434,7 @@ func TestScheduler_ConcurrencySkip_ProceedsWhenIdle(t *testing.T) {
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	stopTriggerSource(t, cancel, scheduler.Wait)
 
 	// Wait for the timer to fire and the run to be created.
 	deadline := time.Now().Add(8 * time.Second)
@@ -476,6 +483,7 @@ func TestScheduler_ConcurrencyQueue_EnqueuesWhenActive(t *testing.T) {
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	stopTriggerSource(t, cancel, scheduler.Wait)
 
 	// Wait for the timer to fire and the trigger to be enqueued.
 	deadline := time.Now().Add(8 * time.Second)
@@ -513,6 +521,7 @@ func TestScheduler_ConcurrencyQueue_LaunchesWhenIdle(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
@@ -528,6 +537,7 @@ func TestScheduler_ConcurrencyQueue_LaunchesWhenIdle(t *testing.T) {
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	stopTriggerSource(t, cancel, scheduler.Wait)
 
 	// Wait for the timer to fire and the run to be created.
 	deadline := time.Now().Add(8 * time.Second)
@@ -603,6 +613,7 @@ func TestScheduler_SkipsPolicy_WhenNoSystemDefaultAndNoModelInYAML(t *testing.T)
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	stopTriggerSource(t, cancel, scheduler.Wait)
 
 	// Give the scheduler time to process startup and the future timer (it should not arm).
 	time.Sleep(500 * time.Millisecond)
@@ -670,6 +681,7 @@ func TestScheduler_Wait_DrainsInFlightFire(t *testing.T) {
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	stopTriggerSource(t, cancel, scheduler.Wait)
 
 	// Wait until fire() has reached agent construction (it is now in-flight,
 	// holding the wg counter above zero).

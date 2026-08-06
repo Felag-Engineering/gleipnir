@@ -180,6 +180,18 @@ jobs:
           # unauthenticated GitHub API rate limit on shared runners.
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      # buf.gen.yaml invokes local codegen plugins (formerly BSR remote
+      # plugins, which made generation depend on the BSR service being up —
+      # the source of the intermittent 403s, #827). Versions are pinned in
+      # the Makefile so CI and `make tools` cannot drift apart.
+      - name: Install codegen plugins
+        run: make tools
+
       - name: Regenerate stubs
         run: buf generate
 
