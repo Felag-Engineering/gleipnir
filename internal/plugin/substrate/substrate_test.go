@@ -31,13 +31,29 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/testutil"
 )
 
-// probeImageEnv names the tiny image used for the reachability probe. It must
-// already be present locally: an instance network is Internal, so a container
-// on one cannot pull anything, and a test that depended on a pull would be
-// testing the runner's network rather than the substrate.
+// probeImageEnv names the image this suite runs. It must already be present
+// locally: an instance network is Internal, so a container on one cannot pull
+// anything, and a test that depended on a pull would be testing the runner's
+// network rather than the substrate.
 const probeImageEnv = "GLEIPNIR_SUBSTRATE_PROBE_IMAGE"
 
-const defaultProbeImage = "docker.io/library/busybox:latest"
+// defaultProbeImage is built by the CI job (and by the one-liner in
+// docs/developer/container-substrate.md) rather than pulled, because the image
+// has to satisfy two requirements at once and no stock tag does both.
+//
+// It must STAY RUNNING under its default command. The reconciler creates
+// instance containers from a desired-state row, which carries no command
+// override, so the image's own CMD is what runs — and the planner correctly
+// restarts an exited container when the row says `running`. A stock busybox
+// (CMD ["sh"], which exits immediately without a TTY) therefore flaps rather
+// than converging, and a test that waited for "running" would be waiting to
+// catch it mid-flap. That is not a hypothetical: it is what the first CI run of
+// this suite did, and it passed the single-instance case by luck while the
+// two-instance case never saw both containers up at the same instant.
+//
+// It must also carry `nc`, because the isolation probe is a container dialing
+// across a network boundary.
+const defaultProbeImage = "localhost/gleipnir-substrate:latest"
 
 // labelRun tags everything this suite creates so cleanup can find it by label
 // even after a panic — the same discovery primitive the reconciler itself
@@ -282,9 +298,14 @@ func requireProbeImage(t *testing.T, rt container.Runtime) string {
 	ctx, cancel := context.WithTimeout(context.Background(), convergeBudget)
 	defer cancel()
 	if _, err := rt.ImageInspect(ctx, ref); err != nil {
-		t.Fatalf("probe image %q is not present locally: %v\n"+
-			"pull it before running this suite (an instance network is Internal, so a container cannot pull), "+
-			"or set %s", ref, err, probeImageEnv)
+		t.Fatalf("image %q is not present locally: %v\n\n"+
+			"Build it first (an instance network is Internal, so a container cannot pull one):\n"+
+			"  podman build -t %s -f - <<'EOF'\n"+
+			"  FROM docker.io/library/busybox:latest\n"+
+			"  CMD [\"sleep\", \"infinity\"]\n"+
+			"  EOF\n\n"+
+			"Or point %s at an image that stays running under its default command and has nc.",
+			ref, err, ref, probeImageEnv)
 	}
 	return ref
 }
@@ -362,6 +383,13 @@ func TestSubstrate_ConvergesToRunning(t *testing.T) {
 		return ok && info.State == container.ContainerStateRunning
 	})
 
+	// Still running a moment later. "Reached running once" is satisfied by a
+	// container that exits immediately and gets restarted — the planner treats
+	// an exited container with a `running` row as something to start again, so a
+	// flapping instance passes a single point-in-time check while converging to
+	// nothing.
+	assertStaysRunning(t, h, instance)
+
 	ctx, cancel := context.WithTimeout(context.Background(), convergeBudget)
 	defer cancel()
 
@@ -435,6 +463,26 @@ func TestSubstrate_EastWestIsolation(t *testing.T) {
 			target, out)
 	} else {
 		t.Logf("cross-network dial to %s failed as required: %v", target, err)
+	}
+}
+
+// assertStaysRunning re-checks an instance shortly after it first reported
+// running, so a flap cannot pass for convergence.
+func assertStaysRunning(t *testing.T, h *harness, instanceID string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), convergeBudget)
+	defer cancel()
+
+	for i := 0; i < 3; i++ {
+		time.Sleep(time.Second)
+		info, ok := h.managedContainer(ctx, instanceID)
+		if !ok {
+			t.Fatalf("%s: container vanished after reporting running", instanceID)
+		}
+		if info.State != container.ContainerStateRunning {
+			t.Fatalf("%s: state is %q one second after reporting running — the container is flapping, "+
+				"not converged (does the image stay up under its default command?)", instanceID, info.State)
+		}
 	}
 }
 

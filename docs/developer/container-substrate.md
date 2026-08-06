@@ -131,15 +131,30 @@ What a Fake cannot answer is whether the *daemon* agrees:
 ### Running it
 
 ```bash
-# Requires a working socket and the probe image already pulled.
-podman pull docker.io/library/busybox:latest
+# The suite runs one image, which has to be built rather than pulled.
+podman build -t localhost/gleipnir-substrate:latest -f - <<'EOF'
+FROM docker.io/library/busybox:latest
+CMD ["sleep", "infinity"]
+EOF
+
 go test -tags substrate -count=1 ./internal/plugin/substrate/
 ```
 
-The probe image must be **local**: an instance network is `Internal`, so a
-container on one cannot pull, and a suite that depended on a pull would be
-testing the runner's network instead of the substrate. Override it with
-`GLEIPNIR_SUBSTRATE_PROBE_IMAGE`.
+Three requirements, and no stock tag meets all of them:
+
+1. **It must stay running under its default command.** The reconciler creates
+   instance containers from a desired-state row, which carries no command
+   override — so the image's own `CMD` is what runs, and the planner correctly
+   restarts an exited container while the row says `running`. A stock busybox
+   (`CMD ["sh"]`, which exits immediately without a TTY) therefore *flaps*
+   rather than converging.
+2. **It must carry `nc`**, because the isolation probe is a container dialing
+   across a network boundary.
+3. **It must be local.** An instance network is `Internal`, so a container on
+   one cannot pull; a suite that depended on a pull would be testing the
+   runner's network instead of the substrate.
+
+Override with `GLEIPNIR_SUBSTRATE_PROBE_IMAGE` if you have something that fits.
 
 ### Why a build tag rather than a runtime skip
 

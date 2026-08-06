@@ -535,11 +535,29 @@ jobs:
           echo "::error::rootless podman socket did not appear"
           exit 1
 
-      - name: Pre-pull the probe image
-        # An instance network is Internal, so a container on one cannot pull.
-        # The probe image has to be here before the suite starts, or the
-        # isolation assertion would be testing the runner's network instead.
-        run: podman pull docker.io/library/busybox:latest
+      - name: Build the substrate test image
+        # Built rather than pulled, because the image has to satisfy two
+        # requirements at once and no stock tag does both.
+        #
+        # It must STAY RUNNING under its default command: the reconciler creates
+        # instance containers from a desired-state row, which carries no command
+        # override, so the image's own CMD is what runs — and the planner
+        # correctly restarts an exited container while the row says `running`. A
+        # stock busybox (CMD ["sh"], which exits immediately without a TTY)
+        # therefore flaps instead of converging.
+        #
+        # It must also carry `nc`, because the isolation probe is a container
+        # dialing across a network boundary.
+        #
+        # It must be LOCAL either way: an instance network is Internal, so a
+        # container on one cannot pull, and a suite that depended on a pull
+        # would be testing the runner's network instead of the substrate.
+        run: |
+          set -euo pipefail
+          podman build -t localhost/gleipnir-substrate:latest -f - <<'EOF'
+          FROM docker.io/library/busybox:latest
+          CMD ["sleep", "infinity"]
+          EOF
 
       - name: Substrate suite
         run: go test -tags substrate -count=1 -timeout 12m -v ./internal/plugin/substrate/
