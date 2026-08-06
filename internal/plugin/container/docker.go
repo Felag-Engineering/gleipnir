@@ -261,6 +261,8 @@ func fromInspectResponse(resp dockercontainer.InspectResponse) ContainerInfo {
 	info.Name = trimLeadingSlash(resp.Name)
 	if resp.State != nil {
 		info.State = ContainerState(resp.State.Status)
+		info.OOMKilled = resp.State.OOMKilled
+		info.ExitCode = resp.State.ExitCode
 		if resp.State.Health != nil {
 			info.Health = string(resp.State.Health.Status)
 		}

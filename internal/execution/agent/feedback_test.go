@@ -247,26 +247,52 @@ func TestFeedbackHandler_Wait_Timeout_ScannerWins(t *testing.T) {
 
 // TestFeedbackHandler_Wait_ContextCancelled verifies that context cancellation
 // while blocking returns a wrapped ctx.Err().
+//
+// The cancellation happens only once the wait is KNOWN to be blocking, which
+// the feedback.created event establishes. The previous shape raced a 30ms
+// wall-clock deadline against the setup work — writing the feedback_request
+// step and transitioning the run — and on a loaded arm64 runner the deadline
+// won, so the error came back as "writing feedback_request step: context
+// deadline exceeded" and the assertion failed on a behavior that was correct.
+// Synchronizing on the event the system already publishes is the rule
+// (CLAUDE.md "Signal-don't-poll"); a timer here was never testing cancellation
+// during the block, only hoping to arrive during it.
 func TestFeedbackHandler_Wait_ContextCancelled(t *testing.T) {
 	s := testutil.NewTestStore(t)
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
+	pub := &capturePublisher{}
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
 	h := NewFeedbackHandler(w, sm, time.Minute)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	_, err := h.Wait(ctx, "run1", AskOperatorToolName, "{}", "please answer", 0)
-	if err == nil {
-		t.Fatal("expected error on context cancellation, got nil")
-	}
-	if !strings.Contains(err.Error(), "context cancelled") {
-		t.Errorf("error = %q, want to contain 'context cancelled'", err.Error())
+	done := make(chan error, 1)
+	go func() {
+		_, err := h.Wait(ctx, "run1", AskOperatorToolName, "{}", "please answer", 0)
+		done <- err
+	}()
+
+	// The pending row exists and the run has transitioned, so Wait is now
+	// parked on its select. Only now is cancelling it a test of cancellation.
+	awaitPendingFeedbackID(t, pub, s, "run1")
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected error on context cancellation, got nil")
+		}
+		if !strings.Contains(err.Error(), "context cancelled") {
+			t.Errorf("error = %q, want to contain 'context cancelled'", err.Error())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Wait did not return after its context was cancelled")
 	}
 }
 
