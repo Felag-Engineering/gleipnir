@@ -1,4 +1,4 @@
-.PHONY: help build test security security-go security-frontend proto lint-plugins lint-plugins-self-test lint lint-go-fmt lint-staticcheck ci-local ci-local-full ci-local-lanes ci-local-lint ci-local-drift ci-local-backend ci-local-sdk ci-local-frontend ci-local-scope-self-test
+.PHONY: help build test tools security security-go security-frontend proto lint-plugins lint-plugins-self-test lint lint-go-fmt lint-staticcheck ci-local ci-local-full ci-local-lanes ci-local-lint ci-local-drift ci-local-backend ci-local-sdk ci-local-frontend ci-local-scope-self-test
 
 help:
 	@echo "Targets:"
@@ -13,10 +13,13 @@ help:
 	@echo "  ci-local-full              same gate with no narrowing — every lane, every"
 	@echo "                             package (what ci-local did before scoping)"
 	@echo "  ci-local-scope-self-test   prove the gate scoper never drops coverage"
+	@echo "  tools                      install the pinned sqlc + buf versions the"
+	@echo "                             ci-local drift lanes require (fresh worktrees"
+	@echo "                             lack both)"
 	@echo "  security                   run all security scans (govulncheck + npm audit)"
 	@echo "  security-go                govulncheck ./..."
 	@echo "  security-frontend          npm audit --omit=dev (in frontend/)"
-	@echo "  proto                      regenerate plugin-sdk/gen/ from .proto sources (requires buf)"
+	@echo "  proto                      regenerate plugin-sdk/gen/ from .proto sources (run 'make tools' first)"
 	@echo "  lint-plugins               enforce /plugins/* import boundary"
 	@echo "  lint-plugins-self-test     prove the lint catches a deliberate violation"
 	@echo "  lint                       run all lint checks (gofmt + import boundary + staticcheck)"
@@ -29,6 +32,27 @@ build:
 test:
 	go test -race ./...
 
+# Pinned codegen tool versions. sqlc matches CI's sqlc-drift job
+# (.github/workflows/ci.yml, sqlc-version); the protoc plugins are the local
+# codegen plugins buf.gen.yaml invokes (formerly BSR remote plugins, #827).
+# Pinning matters: the drift lanes compare generated output byte-for-byte, so
+# a differing local tool version produces spurious drift rather than a clean
+# signal.
+SQLC_VERSION               ?= v1.30.0
+BUF_VERSION                ?= v1.47.2
+PROTOC_GEN_GO_VERSION      ?= v1.36.10
+PROTOC_GEN_GO_GRPC_VERSION ?= v1.5.1
+
+# Provision the codegen tools the ci-local drift lanes require. A fresh
+# worktree/container has none of them on PATH, and the gate refuses to run
+# without them. `go install` drops binaries in GOBIN (default:
+# $(go env GOPATH)/bin) — make sure that directory is on PATH.
+tools:
+	go install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
+	go install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
+	go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
+	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GO_GRPC_VERSION)
+
 security: security-go security-frontend
 
 security-go:
@@ -38,8 +62,9 @@ security-frontend:
 	cd frontend && npm audit --omit=dev
 
 # Regenerate gRPC/protobuf stubs from .proto sources.
-# Requires buf: https://buf.build/docs/installation
-# Pinned plugin versions are declared in buf.gen.yaml.
+# Requires buf plus the local protoc-gen-go plugins — `make tools` installs
+# all of them at the pinned versions (buf.gen.yaml names the plugins; the
+# version pins live above so CI and local installs share one list).
 # The proto-gen-drift CI job ensures checked-in stubs are never stale.
 proto:
 	buf generate
@@ -153,10 +178,10 @@ ci-local-scope-self-test:
 	@./scripts/ci-local-scope-self-test.sh
 
 ci-local-drift:
-	@command -v sqlc >/dev/null || { echo "ci-local: sqlc is required for the sqlc-drift lane (CI pins 1.30.0) — https://docs.sqlc.dev/en/latest/overview/install.html"; exit 1; }
-	@command -v buf  >/dev/null || { echo "ci-local: buf is required for the proto lanes — https://buf.build/docs/installation"; exit 1; }
+	@command -v sqlc >/dev/null || { echo "ci-local: sqlc is required for the sqlc-drift lane — run 'make tools' (installs the pinned $(SQLC_VERSION))"; exit 1; }
+	@command -v buf  >/dev/null || { echo "ci-local: buf is required for the proto lanes — run 'make tools' (installs the pinned $(BUF_VERSION))"; exit 1; }
 	@before=$$( (git status --porcelain -- internal/db/; git diff -- internal/db/) | sha256sum); \
-	sqlc generate; \
+	sqlc generate || { echo "ci-local: 'sqlc generate' failed — a failed generation produces no output and would read as no-drift, so the lane fails instead of passing vacuously"; exit 1; }; \
 	after=$$( (git status --porcelain -- internal/db/; git diff -- internal/db/) | sha256sum); \
 	if [ "$$before" != "$$after" ]; then \
 		echo "ci-local: sqlc drift — 'sqlc generate' changed internal/db/; stage the regenerated files"; \
@@ -168,7 +193,7 @@ ci-local-drift:
 		echo "ci-local: no .proto files; skipping buf lint (mirrors CI)"; \
 	fi
 	@before=$$( (git status --porcelain -- plugin-sdk/gen/; git diff -- plugin-sdk/gen/) | sha256sum); \
-	buf generate; \
+	buf generate || { echo "ci-local: 'buf generate' failed (BSR unreachable?) — a failed generation produces no output and would read as no-drift, so the lane fails instead of passing vacuously"; exit 1; }; \
 	after=$$( (git status --porcelain -- plugin-sdk/gen/; git diff -- plugin-sdk/gen/) | sha256sum); \
 	if [ "$$before" != "$$after" ]; then \
 		echo "ci-local: proto gen drift — 'buf generate' changed plugin-sdk/gen/; stage the regenerated files"; \
