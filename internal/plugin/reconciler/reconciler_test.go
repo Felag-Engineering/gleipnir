@@ -12,6 +12,7 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/plugin/container"
+	"github.com/felag-engineering/gleipnir/internal/plugin/resources"
 )
 
 // countingRuntime wraps a Runtime and counts the calls that WRITE to the
@@ -779,5 +780,62 @@ func TestReconciler_NoEgressProxyLeavesEnvAlone(t *testing.T) {
 	got := r.withEgressEnv(context.Background(), opts, "inst-1")
 	if len(got.Env) != 1 || got.Env[0] != "PATH=/usr/bin" {
 		t.Errorf("env = %v, want it untouched", got.Env)
+	}
+}
+
+// A desired row with no limits produces a container with the host DEFAULT
+// caps, not an uncapped one. NULL means "nobody specified", not "no limit" —
+// and an unlimited container on a homelab host is one plugin away from an OOM
+// that takes Gleipnir with it (#815).
+func TestReconciler_CreateOptionsAlwaysCarryLimits(t *testing.T) {
+	memory := int64(512 << 20)
+	cpu := int64(1500)
+
+	tests := []struct {
+		name       string
+		row        db.PluginContainer
+		wantMemory int64
+		wantNano   int64
+	}{
+		{
+			name:       "no limits declared falls back to the host defaults",
+			row:        db.PluginContainer{PluginInstanceID: "inst-1", ImageRef: "img", ImageDigest: "sha256:abc"},
+			wantMemory: resources.DefaultMemoryBytes,
+			wantNano:   resources.DefaultCPUMillicores * 1_000_000,
+		},
+		{
+			name: "declared limits are applied verbatim",
+			row: db.PluginContainer{
+				PluginInstanceID: "inst-1", ImageRef: "img", ImageDigest: "sha256:abc",
+				MemoryLimitBytes: &memory, CpuLimitMillicores: &cpu,
+			},
+			wantMemory: 512 << 20,
+			wantNano:   1_500_000_000,
+		},
+		{
+			name: "a partially declared row keeps the default for the other axis",
+			row: db.PluginContainer{
+				PluginInstanceID: "inst-1", ImageRef: "img", ImageDigest: "sha256:abc",
+				MemoryLimitBytes: &memory,
+			},
+			wantMemory: 512 << 20,
+			wantNano:   resources.DefaultCPUMillicores * 1_000_000,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r, err := New(Config{Runtime: container.NewFake(), Store: &fakeStore{}})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			opts := r.createOptions(tc.row)
+			if opts.Resources.MemoryBytes != tc.wantMemory {
+				t.Errorf("memory = %d, want %d", opts.Resources.MemoryBytes, tc.wantMemory)
+			}
+			if opts.Resources.NanoCPUs != tc.wantNano {
+				t.Errorf("nanoCPUs = %d, want %d", opts.Resources.NanoCPUs, tc.wantNano)
+			}
+		})
 	}
 }

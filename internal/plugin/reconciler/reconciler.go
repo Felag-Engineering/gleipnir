@@ -14,6 +14,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/infra/logctx"
 	"github.com/felag-engineering/gleipnir/internal/plugin/container"
 	"github.com/felag-engineering/gleipnir/internal/plugin/egress"
+	"github.com/felag-engineering/gleipnir/internal/plugin/resources"
 )
 
 // EventPassCompleted is published after every reconcile pass, converged or not.
@@ -522,14 +523,24 @@ func (r *Reconciler) createOptions(row db.PluginContainer) container.CreateOptio
 		},
 		Network: r.networkFn(row),
 	}
+	// The desired row holds the ALREADY-RESOLVED envelope (manifest, then admin
+	// override, per resources.Resolve). A NULL here therefore means "nobody
+	// specified", not "no limit" — so the host default applies rather than the
+	// container running uncapped. An unlimited container on a homelab host is
+	// one plugin away from an OOM that takes Gleipnir with it, which is the
+	// whole reason §7 moved from sampling RSS to enforcing cgroup caps.
+	var declared resources.Limits
 	if row.MemoryLimitBytes != nil {
-		opts.Resources.MemoryBytes = *row.MemoryLimitBytes
+		declared.MemoryBytes = *row.MemoryLimitBytes
 	}
 	if row.CpuLimitMillicores != nil {
-		// The runtime speaks nano-CPUs (1e9 == one core); the desired row
-		// stores millicores (1000 == one core).
-		opts.Resources.NanoCPUs = *row.CpuLimitMillicores * 1_000_000
+		declared.CPUMillicores = *row.CpuLimitMillicores
 	}
+	effective := resources.Resolve(declared, resources.Limits{})
+	opts.Resources.MemoryBytes = effective.MemoryBytes
+	// The runtime speaks nano-CPUs (1e9 == one core); the row stores
+	// millicores (1000 == one core).
+	opts.Resources.NanoCPUs = effective.NanoCPUs()
 	return opts
 }
 
