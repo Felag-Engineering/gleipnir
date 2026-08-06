@@ -96,3 +96,52 @@ func TestReadOnlyRuntime_ImageInspectDelegates(t *testing.T) {
 		t.Errorf("ImageInspect: %v", err)
 	}
 }
+
+// ImageRemove drops the image under every reference it answered to. A removal
+// that cleared only the digest would leave the repo:tag resolving to bytes that
+// are gone.
+func TestFakeImageRemove_ClearsEveryReference(t *testing.T) {
+	f := NewFake()
+	f.AddImage(ImageInfo{
+		ID:          "sha256:abc",
+		RepoTags:    []string{"ghcr.io/example/plugin:1.0.0"},
+		RepoDigests: []string{"ghcr.io/example/plugin@sha256:abc"},
+	})
+
+	if err := f.ImageRemove(context.Background(), "sha256:abc"); err != nil {
+		t.Fatalf("ImageRemove: %v", err)
+	}
+	for _, ref := range []string{"sha256:abc", "ghcr.io/example/plugin:1.0.0", "ghcr.io/example/plugin@sha256:abc"} {
+		if _, err := f.ImageInspect(context.Background(), ref); !errors.Is(err, ErrImageNotFound) {
+			t.Errorf("%s still resolves after removal", ref)
+		}
+	}
+}
+
+// Removing an image that is not there reports it rather than succeeding. GC
+// treats that as reclaimed, but the distinction is the caller's to make — this
+// layer answering "sure, done" would erase it.
+func TestFakeImageRemove_MissingImageIsReported(t *testing.T) {
+	if err := NewFake().ImageRemove(context.Background(), "sha256:nope"); !errors.Is(err, ErrImageNotFound) {
+		t.Errorf("ImageRemove error = %v, want ErrImageNotFound", err)
+	}
+}
+
+// In manual posture the operator loaded the image, so reclaiming it is theirs
+// to decide. GC "reports orphans and removes nothing" only holds if this
+// refuses rather than obliging.
+func TestReadOnlyRuntime_ImageRemoveIsAWrite(t *testing.T) {
+	inner := NewFake()
+	inner.AddImage(ImageInfo{ID: "sha256:abc"})
+	ro := NewReadOnlyRuntime(inner)
+
+	if err := ro.ImageRemove(context.Background(), "sha256:abc"); !errors.Is(err, ErrManualModeWrite) {
+		t.Errorf("ImageRemove error = %v, want ErrManualModeWrite", err)
+	}
+	if len(inner.ImageRemovals) != 0 {
+		t.Error("the wrapped runtime saw a removal; the wrapper must not reach inner's write path")
+	}
+	if _, err := inner.ImageInspect(context.Background(), "sha256:abc"); err != nil {
+		t.Errorf("the image was removed anyway: %v", err)
+	}
+}

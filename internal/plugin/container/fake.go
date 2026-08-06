@@ -45,6 +45,15 @@ type Fake struct {
 	// that manual mode did not touch the socket at all.
 	Loads       int
 	LoadedBytes int64
+
+	// RemoveImageErr, when non-nil, fails ImageRemove. The realistic value is
+	// the daemon's "image is in use by a container" refusal.
+	RemoveImageErr error
+
+	// ImageRemovals records every reference ImageRemove was asked to delete, in
+	// order — what a GC test asserts against, since "which images did it
+	// reclaim, and how many" is the whole question.
+	ImageRemovals []string
 }
 
 type fakeContainer struct {
@@ -276,6 +285,31 @@ func (f *Fake) ImageLoad(_ context.Context, archive io.Reader) error {
 		for _, ref := range info.RepoDigests {
 			f.images[ref] = info
 		}
+	}
+	return nil
+}
+
+// ImageRemove drops an image from the Fake's store under every reference it
+// answers to. RemoveImageErr lets a test express the daemon refusing a removal
+// — the case GC must survive, since a refusal means Gleipnir's records
+// disagreed with the daemon about who still needs the image.
+func (f *Fake) ImageRemove(_ context.Context, ref string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.RemoveImageErr != nil {
+		return f.RemoveImageErr
+	}
+	info, ok := f.images[ref]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrImageNotFound, ref)
+	}
+	f.ImageRemovals = append(f.ImageRemovals, ref)
+	delete(f.images, info.ID)
+	for _, r := range info.RepoTags {
+		delete(f.images, r)
+	}
+	for _, r := range info.RepoDigests {
+		delete(f.images, r)
 	}
 	return nil
 }
