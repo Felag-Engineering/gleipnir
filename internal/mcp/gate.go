@@ -64,6 +64,19 @@ func (l ServerLimits) unbounded() bool {
 	return l.MaxConcurrent < 0 && l.MaxQueueDepth < 0
 }
 
+// testHookQueueSlotClaimed fires immediately after a caller claims a queue
+// slot. Always nil in production; set only by tests in this package.
+//
+// It exists because "the queue is full" cannot be observed from outside without
+// probing, and a probe that acquires is a probe that TAKES the slot it is
+// looking for — so a spinning prober competes with the waiter it is waiting
+// for, and on a loaded machine it can keep winning indefinitely. Mirrors
+// internal/plugin/dispatch's testHookQueueSlotClaimed, which exists for the
+// identical reason.
+//
+// A test that sets this mutates package state and must not call t.Parallel.
+var testHookQueueSlotClaimed func()
+
 // serverGate is one server's semaphore plus its bounded waiting room.
 //
 // Two channels rather than one counter: the queue slot is claimed BEFORE
@@ -109,6 +122,9 @@ func (g *serverGate) acquire(ctx context.Context) (func(), error) {
 	if g.queue != nil {
 		select {
 		case g.queue <- struct{}{}:
+			if testHookQueueSlotClaimed != nil {
+				testHookQueueSlotClaimed()
+			}
 		default:
 			return nil, ErrQueueFull
 		}

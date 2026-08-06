@@ -375,6 +375,16 @@ func TestServerLimits_ResolveAndUnbounded(t *testing.T) {
 // the depth the answer is immediate, because the whole point is to not add one
 // more blocked goroutine.
 func TestServerGate_QueueDepthRejectsWithoutWaiting(t *testing.T) {
+	// claimed fires once per successful queue-slot claim. Synchronizing on it
+	// rather than probing is the whole point: a probe that acquires TAKES the
+	// slot it is looking for, so a spinning prober competes with the waiter it
+	// is waiting for and on a loaded machine can keep winning indefinitely.
+	// Generous buffer so an unexpected extra claim surfaces as an assertion
+	// failure rather than a blocked hook.
+	claimed := make(chan struct{}, 8)
+	testHookQueueSlotClaimed = func() { claimed <- struct{}{} }
+	t.Cleanup(func() { testHookQueueSlotClaimed = nil })
+
 	gate := newServerGate(ServerLimits{MaxConcurrent: 1, MaxQueueDepth: 2})
 	ctx := context.Background()
 
@@ -393,28 +403,20 @@ func TestServerGate_QueueDepthRejectsWithoutWaiting(t *testing.T) {
 		}
 	}()
 
-	// Synchronize on the queue actually being full rather than sleeping: the
-	// third caller is rejected only once the second has claimed its slot.
-	//
-	// The probe uses an already-cancelled context so it can never block. The
-	// queue check runs before the semaphore wait, so a full queue still answers
-	// ErrQueueFull; a probe admitted instead reports its own cancellation and
-	// gives its slot straight back. Telling those two apart is exactly what the
-	// gate promises, so the synchronization is itself the assertion.
-	cancelled, cancel := context.WithCancel(context.Background())
-	cancel()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		_, probeErr := gate.acquire(cancelled)
-		if errors.Is(probeErr, ErrQueueFull) {
-			break
+	// After the second claim the queue is provably full: the holder cannot
+	// release its slot until it releases the semaphore, and the waiter is
+	// parked on that semaphore holding the other slot. So the next caller must
+	// be refused — deterministically, with no loop and no deadline.
+	for i := 0; i < 2; i++ {
+		select {
+		case <-claimed:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("queue-slot claim %d not observed", i+1)
 		}
-		if !errors.Is(probeErr, context.Canceled) {
-			t.Fatalf("probe error = %v, want either a full queue or its own cancellation", probeErr)
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the queue never filled; the third caller was admitted")
-		}
+	}
+
+	if _, err := gate.acquire(ctx); !errors.Is(err, ErrQueueFull) {
+		t.Errorf("third acquire error = %v, want ErrQueueFull", err)
 	}
 
 	releaseHeld()
