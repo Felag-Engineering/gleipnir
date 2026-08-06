@@ -47,6 +47,29 @@ Gleipnir runs a second extension system parallel to MCP: HashiCorp `go-plugin`-b
 
 The full design specification lives in `docs/developer/plugin-system-spec.md`. ADRs 041-049 record the individual architectural decisions.
 
+## Container substrate (ADR-056, not yet wired into `main.go`)
+
+The MCP realignment replaces the go-plugin subprocess substrate above with
+signed, containerized MCP servers. The packages below exist and are tested; the
+reconciler is **not** started by `main.go` yet, because nothing writes
+`plugin_containers` rows until the manifest-v2 loader work lands.
+
+| Package | Owns |
+|---|---|
+| `internal/plugin/container` | Typed wrapper over the Moby client; `ValidateCreate` self-constraint; `ReadOnlyRuntime` for manual posture |
+| `internal/plugin/reconciler` | Level-triggered convergence loop, per-instance `/24` subnet allocation, generation rotation, label-based manual-mode discovery, image/network/token GC |
+| `internal/plugin/egress` | Host-side CONNECT proxy turning manifest-declared, admin-consented egress grants into enforcement |
+| `internal/plugin/resources` | cgroup memory/CPU caps from manifest + admin override; container stats; OOM attribution |
+| `internal/plugin/logcapture` | Container stdout/stderr into the host logger, marked uncorrelated (ADR-047) |
+| `internal/plugin/caphealth` | Per-capability health, so one broken capability narrows routing instead of downing an instance |
+| `internal/plugin/substrate` | The real-daemon integration suite (build tag `substrate`) |
+
+Operator and design docs: [container-substrate.md](container-substrate.md),
+[container-networking.md](container-networking.md),
+[container-gc.md](container-gc.md), [manual-mode.md](manual-mode.md),
+[egress-containment.md](egress-containment.md),
+[managed-mcp-endpoints.md](managed-mcp-endpoints.md).
+
 ## Human-in-the-loop
 
 Three sources can pause a run, unified on the run state machine and — from
@@ -85,7 +108,7 @@ authors: [Writing a tool that asks a human](tool-initiated-hitl.md).
 | Storage | SQLite (WAL mode, single file) |
 | LLM | Anthropic SDK, Google Gemini SDK, OpenAI API, OpenAI-compatible |
 | Tools | MCP over HTTP transport (JSON-RPC) |
-| Plugins | HashiCorp go-plugin subprocesses, gRPC/UDS, Minisign signing |
+| Plugins | HashiCorp go-plugin subprocesses, gRPC/UDS, Minisign signing (v1.1); containerized MCP servers via Docker/Podman in progress (ADR-056) |
 | Real-time | Server-Sent Events |
 | Deployment | Docker Compose |
 | Embedding | React build served via `go:embed` |

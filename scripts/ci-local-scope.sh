@@ -47,6 +47,7 @@ emit_full() {
 	echo "CI_LOCAL_GO_PKGS=./..."
 	echo "CI_LOCAL_RUN_SDK=1"
 	echo "CI_LOCAL_RUN_FRONTEND=1"
+	echo "CI_LOCAL_RUN_SUBSTRATE=1"
 	echo "CI_LOCAL_PLUGIN_DIRS=${all_plugin_dirs}"
 	exit 0
 }
@@ -87,8 +88,30 @@ fi
 
 run_frontend=0
 run_sdk=0
+run_substrate=0
 plugin_dirs=""
 root_go_changed=""
+
+# Packages the real-daemon integration suite exercises (issue #820). A change
+# to any of them can only be proven against an actual runtime — the whole point
+# of that suite is the questions container.Fake cannot answer: whether a
+# network created Internal really has no route out, whether a subnet the
+# allocator carved is one the daemon accepts, whether an image GC believes is
+# unreferenced is one the daemon will actually delete.
+#
+# Listed by directory prefix rather than derived from the import graph on
+# purpose. The suite imports internal/plugin/{container,reconciler} directly, so
+# a graph-derived set would be exactly these two — but the lane also has to fire
+# for egress and resources, whose behaviour it depends on WITHOUT importing (the
+# proxy env a container is created with, the cgroup caps it is created under).
+# A rule that only followed imports would silently stop covering them.
+substrate_dirs="
+internal/plugin/substrate
+internal/plugin/container
+internal/plugin/reconciler
+internal/plugin/egress
+internal/plugin/resources
+"
 
 while IFS= read -r f; do
 	case "$f" in
@@ -116,6 +139,16 @@ while IFS= read -r f; do
 		continue
 		;;
 	esac
+	# Substrate membership is by prefix and does NOT `continue`: these are
+	# ordinary root-module packages that must still be raced like any other.
+	# The lane is additive, never a substitute for the unit coverage.
+	while IFS= read -r d; do
+		[ -z "$d" ] && continue
+		case "$f" in
+		"$d"/*) run_substrate=1 ;;
+		esac
+	done <<<"$substrate_dirs"
+
 	root_go_changed="$root_go_changed$f"$'\n'
 done <<<"$changed_files"
 
@@ -208,4 +241,5 @@ echo "CI_LOCAL_SCOPE_REASON=narrowed to the packages this diff can reach"
 echo "CI_LOCAL_GO_PKGS=${go_pkgs}"
 echo "CI_LOCAL_RUN_SDK=${run_sdk}"
 echo "CI_LOCAL_RUN_FRONTEND=${run_frontend}"
+echo "CI_LOCAL_RUN_SUBSTRATE=${run_substrate}"
 echo "CI_LOCAL_PLUGIN_DIRS=${plugin_dirs# }"

@@ -12,6 +12,13 @@ on:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
       - 'v[0-9]+.[0-9]+.[0-9]+-*'
+  # The substrate real-daemon lane is required on PRs that reach it and
+  # scheduled otherwise (issue #820). Without the schedule, a week where nobody
+  # touched those packages would be a week nobody checked the substrate still
+  # works against a real runtime — and drift there comes from the runtime
+  # changing underneath us, not only from our diffs.
+  schedule:
+    - cron: '17 4 * * *'
 
 jobs:
   backend-tests:
@@ -421,6 +428,156 @@ jobs:
       - name: Tear down
         if: always()
         run: podman rm -f gleipnir || true
+
+  # The substrate suite is behind a build tag, so no default lane compiles it.
+  # A change to a package it imports (internal/db, internal/testutil) could
+  # break it while never selecting the daemon job — this catches that in
+  # seconds, without needing a socket.
+  substrate-build:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: Vet the substrate suite
+        run: go vet -tags substrate ./internal/plugin/substrate/
+        env:
+          GOWORK: off
+
+  # Decides whether the substrate lane has to run for this PR.
+  #
+  # The answer comes from scripts/ci-local-scope.sh — the SAME scoper the local
+  # gate uses — rather than a `paths:` filter maintained separately in YAML. One
+  # source of truth for "does this diff reach the substrate": a second list here
+  # would drift from the first, and the failure mode of that drift is a lane
+  # that silently stops running for the packages it exists to cover.
+  substrate-scope:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.scope.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - id: scope
+        name: Ask the scoper whether this diff reaches the substrate
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          changed=$(git diff --name-only FETCH_HEAD...HEAD)
+          echo "changed files:"; printf '%s\n' "$changed"
+          # CI_LOCAL_SCOPE_FILES is the scoper's documented seam, so this asks
+          # the same question the local gate asks, with the diff supplied
+          # explicitly instead of inferred from the runner's git topology.
+          run=$(CI_LOCAL_SCOPE_FILES="$changed" ./scripts/ci-local-scope.sh |
+            sed -n 's/^CI_LOCAL_RUN_SUBSTRATE=//p')
+          echo "substrate lane: ${run}"
+          echo "run=${run}" >> "$GITHUB_OUTPUT"
+        env:
+          GOWORK: off
+
+  # The one bounded real-daemon job (ADR-056 §15 "Socket-in-CI test cost").
+  #
+  # Everything else in this milestone tests against container.Fake, which runs
+  # the same self-constraint the real runtime does. What a Fake cannot answer is
+  # whether the DAEMON agrees: that a network created Internal really has no
+  # route out, that a subnet the allocator carved is one the daemon accepts,
+  # that an image GC believes is unreferenced is one the daemon will delete.
+  #
+  # Bounded at 15 minutes on purpose. The value here is a signal that the
+  # substrate still works against a real runtime, not breadth — breadth belongs
+  # in the unit suites, which are seconds. A job that grew past this budget
+  # would be a job people start skipping.
+  substrate-integration:
+    needs: substrate-scope
+    # always() so a scheduled run — where substrate-scope never ran and is
+    # therefore "skipped" — still reaches this job.
+    if: ${{ always() && (needs.substrate-scope.outputs.run == '1' || github.event_name == 'schedule') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Start a rootless Podman socket
+        run: |
+          set -euo pipefail
+          # A writable XDG_RUNTIME_DIR under the runner's temp rather than
+          # /run/user/$(id -u), which the runner user may not own. Posture
+          # detection builds the podman socket path from this, so setting it is
+          # also what makes DetectPosture resolve rootless-podman rather than
+          # falling back to the Docker socket the runner also has.
+          export XDG_RUNTIME_DIR="${RUNNER_TEMP}/xdg"
+          mkdir -p "${XDG_RUNTIME_DIR}/podman"
+          podman system service --time=0 "unix://${XDG_RUNTIME_DIR}/podman/podman.sock" &
+          for i in $(seq 1 30); do
+            if [ -S "${XDG_RUNTIME_DIR}/podman/podman.sock" ]; then
+              echo "podman socket up after ${i}s"
+              echo "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::rootless podman socket did not appear"
+          exit 1
+
+      - name: Build the substrate test image
+        # Built rather than pulled, because the image has to satisfy two
+        # requirements at once and no stock tag does both.
+        #
+        # It must STAY RUNNING under its default command: the reconciler creates
+        # instance containers from a desired-state row, which carries no command
+        # override, so the image's own CMD is what runs — and the planner
+        # correctly restarts an exited container while the row says `running`. A
+        # stock busybox (CMD ["sh"], which exits immediately without a TTY)
+        # therefore flaps instead of converging.
+        #
+        # It must also carry `nc`, because the isolation probe is a container
+        # dialing across a network boundary.
+        #
+        # It must be LOCAL either way: an instance network is Internal, so a
+        # container on one cannot pull, and a suite that depended on a pull
+        # would be testing the runner's network instead of the substrate.
+        run: |
+          set -euo pipefail
+          podman build -t localhost/gleipnir-substrate:latest -f - <<'EOF'
+          FROM docker.io/library/busybox:latest
+          CMD ["sleep", "infinity"]
+          EOF
+
+      - name: Substrate suite
+        run: go test -tags substrate -count=1 -timeout 12m -v ./internal/plugin/substrate/
+        env:
+          GOWORK: off
+
+      - name: Report leftovers
+        if: always()
+        # The suite cleans up by label. This says so out loud rather than
+        # trusting it silently — a leak here would accumulate on a shared
+        # runner image and be invisible until something ran out of address space.
+        run: |
+          echo "containers:"; podman ps -a --filter 'label=gleipnir.substrate-test-run' --format '{{.Names}}' || true
+          echo "networks:";   podman network ls --filter 'label=gleipnir.substrate-test-run' --format '{{.Name}}' || true
+
+      - name: Tear down
+        if: always()
+        run: |
+          podman rm -f $(podman ps -aq --filter 'label=gleipnir.substrate-test-run') 2>/dev/null || true
+          podman network prune -f 2>/dev/null || true
 
   # Publishes :dev on every merge to main. Bleeding-edge tag — do not pull
   # this in production. :latest is reserved for the release job below.

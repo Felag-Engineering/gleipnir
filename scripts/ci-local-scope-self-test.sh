@@ -91,7 +91,44 @@ out=$(scope "internal/schemanorm/normalize.go")
 [ "$(field "$out" CI_LOCAL_RUN_SDK)" = "0" ]
 check "a root-module change does not drag in the SDK lane" $?
 
-# 6. A multi-area diff is the union of its parts, never one of them.
+# 6. The substrate lane (issue #820). It runs the one suite that can answer
+#    questions container.Fake cannot — whether the DAEMON agrees a network is
+#    internal, a subnet is acceptable, an image is removable — so a substrate
+#    change that did not select it would leave exactly those claims unchecked.
+for d in internal/plugin/substrate internal/plugin/container internal/plugin/reconciler; do
+	out=$(scope "$d/x.go")
+	[ "$(field "$out" CI_LOCAL_RUN_SUBSTRATE)" = "1" ]
+	check "a change under $d selects the substrate lane" $?
+done
+
+# egress and resources are the reachability rule that an import-graph-derived
+# set would silently drop: the suite depends on their behaviour (the proxy env a
+# container is created with, the cgroup caps it runs under) without importing
+# either package.
+for d in internal/plugin/egress internal/plugin/resources; do
+	out=$(scope "$d/x.go")
+	[ "$(field "$out" CI_LOCAL_RUN_SUBSTRATE)" = "1" ]
+	check "a change under $d selects the substrate lane (depended on, not imported)" $?
+done
+
+out=$(scope "internal/schemanorm/normalize.go")
+[ "$(field "$out" CI_LOCAL_RUN_SUBSTRATE)" = "0" ]
+check "an unrelated package change does not select the substrate lane" $?
+
+# The lane is additive. A substrate package is an ordinary root-module package
+# and must still be raced — a lane that replaced its unit coverage would trade
+# fast feedback for a daemon round trip.
+out=$(scope "internal/plugin/reconciler/gc.go")
+printf '%s' "$(field "$out" CI_LOCAL_GO_PKGS)" | grep -q "$mod/internal/plugin/reconciler"
+check "a substrate package is still raced, not only handed to the lane" $?
+
+# Anything that widens to the full gate must run the lane too, or "full" would
+# quietly mean "full minus the daemon".
+out=$(scope "Makefile")
+[ "$(field "$out" CI_LOCAL_RUN_SUBSTRATE)" = "1" ]
+check "the full gate includes the substrate lane" $?
+
+# 7. A multi-area diff is the union of its parts, never one of them.
 out=$(scope "$(printf 'frontend/src/x.tsx\ninternal/schemanorm/normalize.go')")
 [ "$(field "$out" CI_LOCAL_RUN_FRONTEND)" = "1" ] &&
 	printf '%s' "$(field "$out" CI_LOCAL_GO_PKGS)" | grep -q "$mod/internal/schemanorm"
