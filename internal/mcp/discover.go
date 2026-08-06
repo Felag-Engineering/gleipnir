@@ -412,17 +412,32 @@ func (c *Client) ProbeProtocolVersion(ctx context.Context) (ProbeResult, error) 
 					"reported_version", cls.ServerInfo.Version,
 					"protocol_version", v)
 			}
+			// The `io.gleipnir/*` extensions are host-plane and reserved to
+			// managed plugin endpoints (spec §3/§5, #819). An external server
+			// declaring one is either confused or probing; either way, believing
+			// it would make a URL an operator pasted in eligible to be asked to
+			// settle a human approval, which no operator designated it for.
+			// Dropped here rather than filtered at a later consumer, because
+			// "external extension opt-in is deferred" has to mean the path does
+			// not exist yet.
+			channel, channelDeclared := cls.Channel, cls.ChannelDeclared
+			if channelDeclared && !c.negotiatesGleipnirExtensions() {
+				slog.Warn("ignoring io.gleipnir extension declared by an external mcp server",
+					"server_name", c.serverName, "extension", ExtensionChannel, "trust_tier", string(c.TrustTier()))
+				channel, channelDeclared = ChannelCapability{}, false
+			}
+
 			c.mu.Lock()
-			c.channelCap = cls.Channel
-			c.channelDeclared = cls.ChannelDeclared
+			c.channelCap = channel
+			c.channelDeclared = channelDeclared
 			c.mu.Unlock()
 			return ProbeResult{
 				Version:         v,
 				Era:             EraModern,
 				ServerSupported: cls.Advertised,
 				ServerInfo:      cls.ServerInfo,
-				Channel:         cls.Channel,
-				ChannelDeclared: cls.ChannelDeclared,
+				Channel:         channel,
+				ChannelDeclared: channelDeclared,
 			}, nil
 		}
 		// Confirmed modern, nothing in common. basic/versioning.md §Protocol

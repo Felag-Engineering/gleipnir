@@ -24,7 +24,7 @@ func (q *Queries) CountMCPServers(ctx context.Context) (int64, error) {
 const createMCPServer = `-- name: CreateMCPServer :one
 INSERT INTO mcp_servers (id, name, url, created_at, auth_headers_encrypted)
 VALUES (?1, ?2, ?3, ?4, ?5)
-RETURNING id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version
+RETURNING id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id
 `
 
 type CreateMCPServerParams struct {
@@ -53,6 +53,51 @@ func (q *Queries) CreateMCPServer(ctx context.Context, arg CreateMCPServerParams
 		&i.CreatedAt,
 		&i.AuthHeadersEncrypted,
 		&i.ProtocolVersion,
+		&i.PluginInstanceID,
+	)
+	return i, err
+}
+
+const createManagedMCPServer = `-- name: CreateManagedMCPServer :one
+INSERT INTO mcp_servers (id, name, url, created_at, plugin_instance_id, protocol_version)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+RETURNING id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id
+`
+
+type CreateManagedMCPServerParams struct {
+	ID               string  `json:"id"`
+	Name             string  `json:"name"`
+	Url              string  `json:"url"`
+	CreatedAt        string  `json:"created_at"`
+	PluginInstanceID *string `json:"plugin_instance_id"`
+	ProtocolVersion  *string `json:"protocol_version"`
+}
+
+// CreateManagedMCPServer registers a managed plugin instance's endpoint. It is
+// separate from CreateMCPServer rather than an optional parameter on it so the
+// operator-facing create path cannot produce a managed row by accident: a
+// managed entry is created by the reconciler on a generation switch, never by
+// an admin filling in a form.
+func (q *Queries) CreateManagedMCPServer(ctx context.Context, arg CreateManagedMCPServerParams) (McpServer, error) {
+	row := q.db.QueryRowContext(ctx, createManagedMCPServer,
+		arg.ID,
+		arg.Name,
+		arg.Url,
+		arg.CreatedAt,
+		arg.PluginInstanceID,
+		arg.ProtocolVersion,
+	)
+	var i McpServer
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Url,
+		&i.LastDiscoveredAt,
+		&i.HasDrift,
+		&i.CreatedAt,
+		&i.AuthHeadersEncrypted,
+		&i.ProtocolVersion,
+		&i.PluginInstanceID,
 	)
 	return i, err
 }
@@ -66,8 +111,20 @@ func (q *Queries) DeleteMCPServer(ctx context.Context, id string) error {
 	return err
 }
 
+const deleteManagedMCPServer = `-- name: DeleteManagedMCPServer :execrows
+DELETE FROM mcp_servers WHERE plugin_instance_id = ?1
+`
+
+func (q *Queries) DeleteManagedMCPServer(ctx context.Context, pluginInstanceID *string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteManagedMCPServer, pluginInstanceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const getMCPServer = `-- name: GetMCPServer :one
-SELECT id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version FROM mcp_servers WHERE id = ?1
+SELECT id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id FROM mcp_servers WHERE id = ?1
 `
 
 func (q *Queries) GetMCPServer(ctx context.Context, id string) (McpServer, error) {
@@ -82,12 +139,38 @@ func (q *Queries) GetMCPServer(ctx context.Context, id string) (McpServer, error
 		&i.CreatedAt,
 		&i.AuthHeadersEncrypted,
 		&i.ProtocolVersion,
+		&i.PluginInstanceID,
+	)
+	return i, err
+}
+
+const getMCPServerByPluginInstance = `-- name: GetMCPServerByPluginInstance :one
+SELECT id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id FROM mcp_servers WHERE plugin_instance_id = ?1
+`
+
+// GetMCPServerByPluginInstance finds the registry entry backing a managed
+// plugin instance. The lookup is by instance, not by generation: a rotation
+// updates this row's url in place, so there is exactly one entry per instance
+// for its whole life.
+func (q *Queries) GetMCPServerByPluginInstance(ctx context.Context, pluginInstanceID *string) (McpServer, error) {
+	row := q.db.QueryRowContext(ctx, getMCPServerByPluginInstance, pluginInstanceID)
+	var i McpServer
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Url,
+		&i.LastDiscoveredAt,
+		&i.HasDrift,
+		&i.CreatedAt,
+		&i.AuthHeadersEncrypted,
+		&i.ProtocolVersion,
+		&i.PluginInstanceID,
 	)
 	return i, err
 }
 
 const listMCPServers = `-- name: ListMCPServers :many
-SELECT id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version FROM mcp_servers ORDER BY created_at ASC
+SELECT id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id FROM mcp_servers ORDER BY created_at ASC
 `
 
 // ListMCPServers is ordered ASC: MCP servers are administrative objects registered
@@ -110,6 +193,7 @@ func (q *Queries) ListMCPServers(ctx context.Context) ([]McpServer, error) {
 			&i.CreatedAt,
 			&i.AuthHeadersEncrypted,
 			&i.ProtocolVersion,
+			&i.PluginInstanceID,
 		); err != nil {
 			return nil, err
 		}
@@ -160,11 +244,48 @@ func (q *Queries) ListMCPServersWithAuthHeaders(ctx context.Context) ([]ListMCPS
 	return items, nil
 }
 
+const listManagedMCPServers = `-- name: ListManagedMCPServers :many
+SELECT id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id FROM mcp_servers WHERE plugin_instance_id IS NOT NULL ORDER BY created_at ASC
+`
+
+func (q *Queries) ListManagedMCPServers(ctx context.Context) ([]McpServer, error) {
+	rows, err := q.db.QueryContext(ctx, listManagedMCPServers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []McpServer
+	for rows.Next() {
+		var i McpServer
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Url,
+			&i.LastDiscoveredAt,
+			&i.HasDrift,
+			&i.CreatedAt,
+			&i.AuthHeadersEncrypted,
+			&i.ProtocolVersion,
+			&i.PluginInstanceID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateMCPServer = `-- name: UpdateMCPServer :one
 UPDATE mcp_servers
 SET name = ?1, url = ?2
 WHERE id = ?3
-RETURNING id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version
+RETURNING id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id
 `
 
 type UpdateMCPServerParams struct {
@@ -185,6 +306,7 @@ func (q *Queries) UpdateMCPServer(ctx context.Context, arg UpdateMCPServerParams
 		&i.CreatedAt,
 		&i.AuthHeadersEncrypted,
 		&i.ProtocolVersion,
+		&i.PluginInstanceID,
 	)
 	return i, err
 }
@@ -292,6 +414,33 @@ func (q *Queries) UpdateMCPServerProtocolVersionIfNotModern(ctx context.Context,
 		query = strings.Replace(query, "/*SLICE:modern_versions*/?", "NULL", 1)
 	}
 	result, err := q.db.ExecContext(ctx, query, queryParams...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const updateManagedMCPServerURL = `-- name: UpdateManagedMCPServerURL :execrows
+UPDATE mcp_servers
+SET url = ?1
+WHERE plugin_instance_id = ?2
+`
+
+type UpdateManagedMCPServerURLParams struct {
+	Url              string  `json:"url"`
+	PluginInstanceID *string `json:"plugin_instance_id"`
+}
+
+// UpdateManagedMCPServerURL repoints a managed entry at a new generation's
+// address. Guarded on plugin_instance_id so this can never move an external
+// server an operator configured.
+//
+// url is part of the registry cache's invalidation key, so this update IS the
+// routing flip: the next resolve rebuilds the client against the new address,
+// while a *Client already handed to a running run keeps the old base URL and
+// drains against the generation it started on.
+func (q *Queries) UpdateManagedMCPServerURL(ctx context.Context, arg UpdateManagedMCPServerURLParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateManagedMCPServerURL, arg.Url, arg.PluginInstanceID)
 	if err != nil {
 		return 0, err
 	}

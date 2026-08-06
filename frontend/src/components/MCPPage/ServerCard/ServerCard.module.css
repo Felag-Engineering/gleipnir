@@ -98,3 +98,10 @@
   border-radius: var(--radius-md);
   font-size: var(--text-xs);
 }
+
+.managedBadge {
+  composes: badgePill from '../../../styles/badges.module.css';
+  composes: colorPurple from '../../../styles/badges.module.css';
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+}

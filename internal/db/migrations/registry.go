@@ -43,5 +43,6 @@ func All() []Migration {
 		&AddToolInputReplayContext{},
 		&MCPTasksInternalServer{},
 		&AddPluginAuditRunID{},
+		&AddMCPServerPluginInstance{},
 	}
 }

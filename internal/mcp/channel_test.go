@@ -9,11 +9,18 @@ import (
 )
 
 // newChannelClient wires a client to a stub channel server.
+//
+// The managed tier is declared explicitly because io.gleipnir/* is host-plane:
+// an external server's declaration is dropped (gate.go), so a channel test that
+// did not say which tier it was exercising would be testing the drop.
 func newChannelClient(t *testing.T, stub *FakeChannelServer) *Client {
 	t.Helper()
 	srv := httptest.NewServer(stub)
 	t.Cleanup(srv.Close)
-	return NewClient(srv.URL, WithProtocolVersion(ProtocolVersion20260728))
+	return NewClient(srv.URL,
+		WithProtocolVersion(ProtocolVersion20260728),
+		WithTrustTier(TrustTierManaged),
+	)
 }
 
 // A notification is delivered and acknowledged, and the channel receives the

@@ -2848,3 +2848,182 @@ func TestSetToolEnabled_ReturnsSimplifiedFor(t *testing.T) {
 		t.Errorf("simplified_for = %v, want %v", envelope.Data.SimplifiedFor, want)
 	}
 }
+
+// --- managed endpoints (#819) -----------------------------------------------
+
+// seedManagedServer inserts a plugin, an instance, and a managed mcp_servers
+// row pointing at it.
+func seedManagedServer(t *testing.T, store *db.Store) (serverID, instanceID string) {
+	t.Helper()
+	if _, err := store.DB().Exec(
+		`INSERT INTO plugins(id, name, plugin_version, manifest_snapshot, trusted_pubkey, status, version, created_at, updated_at)
+		 VALUES ('pl1', 'slack', '1.0.0', '{}', 'pk', 'active', 0, '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("insert plugin: %v", err)
+	}
+	if _, err := store.DB().Exec(
+		`INSERT INTO plugin_instances(id, plugin_id, instance_name, config_json, subscription_scope_json, handshake_versions, health_state, version, created_at, updated_at)
+		 VALUES ('inst-1', 'pl1', 'slack-main', '{}', '{}', '{}', 'healthy', 0, '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("insert plugin instance: %v", err)
+	}
+	if _, err := store.DB().Exec(
+		`INSERT INTO mcp_servers(id, name, url, created_at, plugin_instance_id, protocol_version)
+		 VALUES ('srv-managed', 'slack-main', 'http://10.83.0.2:8080/mcp', '2024-01-01T00:00:00Z', 'inst-1', '2026-07-28')`,
+	); err != nil {
+		t.Fatalf("insert managed server: %v", err)
+	}
+	return "srv-managed", "inst-1"
+}
+
+// A managed entry appears in the ordinary server list — it is one MCP client
+// stack, not a parallel one — but it is labelled and marked non-editable so the
+// UI does not offer an edit the API will refuse.
+func TestMCPHandler_ListLabelsManagedEntries(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	seedManagedServer(t, store)
+	if _, err := store.Queries().CreateMCPServer(context.Background(), db.CreateMCPServerParams{
+		ID: "srv-external", Name: "github", Url: "https://api.example.com/mcp", CreatedAt: "2024-01-02T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("CreateMCPServer: %v", err)
+	}
+
+	router := newMCPRouter(store, mcp.NewRegistry(store.Queries()))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/servers", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Data []struct {
+			ID               string  `json:"id"`
+			TrustTier        string  `json:"trust_tier"`
+			Editable         bool    `json:"editable"`
+			PluginInstanceID *string `json:"plugin_instance_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("got %d servers, want the managed and the external one", len(resp.Data))
+	}
+
+	for _, s := range resp.Data {
+		switch s.ID {
+		case "srv-managed":
+			if s.TrustTier != "managed" || s.Editable {
+				t.Errorf("managed row = %+v, want trust_tier=managed and editable=false", s)
+			}
+			if s.PluginInstanceID == nil || *s.PluginInstanceID != "inst-1" {
+				t.Errorf("managed row does not name its instance: %+v", s)
+			}
+		case "srv-external":
+			if s.TrustTier != "external" || !s.Editable {
+				t.Errorf("external row = %+v, want trust_tier=external and editable=true", s)
+			}
+			if s.PluginInstanceID != nil {
+				t.Errorf("external row names an instance: %+v", s)
+			}
+		}
+	}
+}
+
+// Every operator mutation is refused. 409, not 403: an admin has every
+// permission and still cannot do it, because the conflict is with what the row
+// is, not with who is asking.
+func TestMCPHandler_ManagedEntriesAreNotOperatorEditable(t *testing.T) {
+	key := make([]byte, 32)
+
+	tests := []struct {
+		name    string
+		request func() *http.Request
+	}{
+		{
+			name: "rename or repoint",
+			request: func() *http.Request {
+				body := `{"name":"something-else","url":"https://elsewhere.example.com/mcp"}`
+				r := httptest.NewRequest(http.MethodPut, "/servers/srv-managed", bytes.NewBufferString(body))
+				r.Header.Set("Content-Type", "application/json")
+				return r
+			},
+		},
+		{
+			name: "delete",
+			request: func() *http.Request {
+				return httptest.NewRequest(http.MethodDelete, "/servers/srv-managed", nil)
+			},
+		},
+		{
+			name: "set an auth header",
+			request: func() *http.Request {
+				r := httptest.NewRequest(http.MethodPut, "/servers/srv-managed/headers/X-Api-Key",
+					bytes.NewBufferString(`{"value":"secret"}`))
+				r.Header.Set("Content-Type", "application/json")
+				return r
+			},
+		},
+		{
+			name: "delete an auth header",
+			request: func() *http.Request {
+				return httptest.NewRequest(http.MethodDelete, "/servers/srv-managed/headers/X-Api-Key", nil)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := testutil.NewTestStore(t)
+			seedManagedServer(t, store)
+			router := newMCPRouter(store, mcp.NewRegistry(store.Queries()), key)
+
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, withAdminUser(tc.request()))
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want 409; body = %s", rec.Code, rec.Body.String())
+			}
+
+			// The row is untouched — a refusal that had already half-applied
+			// would be worse than one that succeeded.
+			after, err := store.Queries().GetMCPServer(context.Background(), "srv-managed")
+			if err != nil {
+				t.Fatalf("the managed row is gone after a refused %s: %v", tc.name, err)
+			}
+			if after.Name != "slack-main" || after.Url != "http://10.83.0.2:8080/mcp" {
+				t.Errorf("the refused mutation still landed: %+v", after)
+			}
+			if after.AuthHeadersEncrypted != nil {
+				t.Error("a header was written to a managed endpoint")
+			}
+		})
+	}
+}
+
+// Removing the instance is how a managed entry goes away, and it takes the
+// route with it — a row pointing at a deleted instance is a dangling endpoint
+// the agent could still resolve a tool through.
+func TestMCPHandler_ManagedEntryDisappearsWithItsInstance(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	_, instanceID := seedManagedServer(t, store)
+
+	if _, err := store.DB().Exec(`DELETE FROM plugin_instances WHERE id = ?`, instanceID); err != nil {
+		t.Fatalf("delete instance: %v", err)
+	}
+
+	router := newMCPRouter(store, mcp.NewRegistry(store.Queries()))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/servers", nil))
+
+	var resp struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Data) != 0 {
+		t.Errorf("the managed entry outlived its instance: %+v", resp.Data)
+	}
+}

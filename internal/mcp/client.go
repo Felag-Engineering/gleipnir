@@ -286,6 +286,17 @@ type Client struct {
 	elicitationRate   *elicitationLimiter
 	elicitationRateHz float64
 	elicitationBurst  int
+
+	// trustTier decides whether this server may participate in the
+	// `io.gleipnir/*` extensions (spec §3/§5, #819). The zero value is
+	// external, which is the fail-closed direction: a Client built without an
+	// opinion negotiates nothing private.
+	trustTier TrustTier
+
+	// callGate bounds concurrent tools/call requests to this server and the
+	// queue waiting for a slot. nil means unbounded, which is what a Client
+	// constructed directly (tests, probes) gets.
+	callGate *serverGate
 }
 
 // ClientOption configures a Client. Options are applied sequentially after
@@ -704,6 +715,18 @@ func (c *Client) CallTool(ctx context.Context, name string, input map[string]any
 				Inc()
 		}
 	}()
+
+	// The per-server gate is claimed before anything else this call does — no
+	// header resolution, no request build, and above all no socket. A ceiling
+	// enforced after the work is a ceiling on nothing; and a call rejected with
+	// ErrQueueFull has to be cheap, because "the server is saturated" is
+	// exactly the moment when doing avoidable work per rejected call is worst.
+	release, gateErr := c.callGate.acquire(ctx)
+	if gateErr != nil {
+		err = fmt.Errorf("calling tool %q: %w", name, gateErr)
+		return
+	}
+	defer release()
 
 	// x-mcp-header is a 2026-07-28 feature (spec §11). A legacy-pinned or
 	// never-probed server never negotiated it, so the annotation is not even

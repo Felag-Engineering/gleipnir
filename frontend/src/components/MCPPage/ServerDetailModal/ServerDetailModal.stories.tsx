@@ -13,6 +13,9 @@ const server: ApiMcpServer = {
   has_drift: false,
   created_at: new Date(Date.now() - 86_400_000).toISOString(),
   is_arcade_gateway: false,
+  trust_tier: 'external' as const,
+  plugin_instance_id: null,
+  editable: true,
   protocol_version: '2026-07-28',
 }
 
@@ -113,6 +116,9 @@ export const ArcadeGateway: Story = {
     server: {
       ...server,
       is_arcade_gateway: true,
+      trust_tier: 'external' as const,
+      plugin_instance_id: null,
+      editable: true,
       url: 'https://api.arcade.dev/mcp/test',
       auth_header_keys: ['Authorization', 'Arcade-User-ID'],
     },

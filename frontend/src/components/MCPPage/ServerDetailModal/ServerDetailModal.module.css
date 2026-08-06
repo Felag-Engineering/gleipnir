@@ -387,3 +387,16 @@
   opacity: 0.6;
   cursor: not-allowed;
 }
+
+.managedBadge {
+  composes: badgePill from '../../../styles/badges.module.css';
+  composes: colorPurple from '../../../styles/badges.module.css';
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+}
+
+.managedNote {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  align-self: center;
+}

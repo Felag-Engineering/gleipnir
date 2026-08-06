@@ -42,8 +42,19 @@ CREATE TABLE mcp_servers (
     auth_headers_encrypted  TEXT,                 -- nullable; TEXT stores base64 ciphertext
     -- Negotiated MCP protocol version pinned at server/discover time
     -- (mcp-realignment-spec.md §11). NULL = not yet probed.
-    protocol_version        TEXT                  -- nullable; e.g. '2026-07-28'
+    protocol_version        TEXT,                 -- nullable; e.g. '2026-07-28'
+    -- Set when this entry IS a managed plugin instance's MCP endpoint (ADR-053,
+    -- spec §3). NULL means an ordinary operator-registered external server.
+    -- The trust tier is DERIVED from this column rather than stored beside it:
+    -- two facts that must agree are two facts that can disagree. CASCADE, not
+    -- SET NULL -- this row is a route TO an instance, not a record OF one, and
+    -- a route to a deleted instance is a dangling endpoint, not history.
+    plugin_instance_id      TEXT REFERENCES plugin_instances(id) ON DELETE CASCADE
 );
+-- Partial: every external row's NULL stays out of the index entirely. The row
+-- is per INSTANCE, not per generation -- a rotation updates url in place.
+CREATE UNIQUE INDEX idx_mcp_servers_plugin_instance
+    ON mcp_servers(plugin_instance_id) WHERE plugin_instance_id IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- MCP tools

@@ -20,6 +20,9 @@ const FIXTURE_SERVERS: ApiMcpServer[] = [
     has_drift: false,
     created_at: '2026-03-01T00:00:00Z',
     is_arcade_gateway: false,
+    trust_tier: 'external' as const,
+    plugin_instance_id: null,
+    editable: true,
     protocol_version: '2026-07-28',
   },
   {
@@ -30,6 +33,9 @@ const FIXTURE_SERVERS: ApiMcpServer[] = [
     has_drift: false,
     created_at: '2026-03-05T00:00:00Z',
     is_arcade_gateway: false,
+    trust_tier: 'external' as const,
+    plugin_instance_id: null,
+    editable: true,
     protocol_version: null,
   },
 ]

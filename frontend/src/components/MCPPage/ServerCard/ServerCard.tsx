@@ -21,6 +21,11 @@ export function ServerCard({
   isDiscovering,
   onClick,
 }: Props) {
+  // A managed entry is a plugin instance's endpoint: same MCP client stack,
+  // same tool namespace, but its URL and name belong to the plugin lifecycle.
+  // Saying so on the card is what keeps an operator from reading an
+  // unfamiliar server as one they forgot registering.
+  const isManaged = server.trust_tier === 'managed'
   const isUnreachable = server.last_discovered_at === null
   const hasDrift = server.has_drift
   const toolCount = tools?.length ?? 0
@@ -48,6 +53,11 @@ export function ServerCard({
             {toolCount} {toolCount === 1 ? 'tool' : 'tools'}
           </span>
           <ProtocolBadge version={server.protocol_version} />
+          {isManaged && (
+            <span className={styles.managedBadge} title="Managed by a plugin's lifecycle">
+              Plugin
+            </span>
+          )}
           {isDiscovering && <span className={styles.discoveringBadge}>Discovering...</span>}
           {!isDiscovering && hasDrift && <span className={styles.driftBadge}>Drift</span>}
           {!isDiscovering && isUnreachable && (

@@ -101,6 +101,23 @@ type mcpServerResponse struct {
 	AuthHeaderKeys   []string `json:"auth_header_keys"` // sorted header names; never includes values
 	IsArcadeGateway  bool     `json:"is_arcade_gateway"`
 	ProtocolVersion  *string  `json:"protocol_version"` // negotiated MCP revision pinned at probe time; null = never probed
+
+	// TrustTier is "managed" for a plugin instance's endpoint and "external"
+	// for an operator-registered server (ADR-053, #819). It is derived from
+	// plugin_instance_id, not stored — see mcp.TrustTierOf.
+	TrustTier string `json:"trust_tier"`
+
+	// PluginInstanceID is the instance a managed entry routes to; null for an
+	// external server. Present so the UI can link a managed row back to the
+	// plugin whose lifecycle owns it, rather than showing an entry an operator
+	// cannot edit with no explanation of who does.
+	PluginInstanceID *string `json:"plugin_instance_id"`
+
+	// Editable is false for a managed entry. The URL is owned by the
+	// generation lifecycle and the name is the tool namespace prefix the
+	// signed bundle established; the UI renders these read-only rather than
+	// offering an edit the API will refuse.
+	Editable bool `json:"editable"`
 }
 
 type mcpServerCreateResponse struct {
@@ -159,7 +176,34 @@ func (h *MCPHandler) serverToResponse(s db.McpServer) mcpServerResponse {
 		AuthHeaderKeys:   keys,
 		IsArcadeGateway:  arcade.IsArcadeGateway(s.Url, keys),
 		ProtocolVersion:  s.ProtocolVersion,
+		TrustTier:        string(mcp.TrustTierOf(s)),
+		PluginInstanceID: s.PluginInstanceID,
+		Editable:         !mcp.IsManaged(s),
 	}
+}
+
+// refuseManaged rejects an operator mutation of a managed plugin endpoint,
+// reporting whether it wrote a response.
+//
+// Managed entries are the lifecycle's, not an admin's. Renaming one would
+// change the `<source>` half of every tool dot-name and silently invalidate the
+// tool grants in every policy that uses the plugin; repointing the URL would
+// hold until the next rotation overwrote the edit, which is worse than being
+// refused because it looks like it worked. Deleting one leaves a running,
+// consented container nothing routes to — the way to remove it is to remove the
+// instance, which cascades here.
+//
+// 409 rather than 403: the request is not forbidden to this role, it conflicts
+// with what this row is. An admin has every permission and still cannot do it.
+func refuseManaged(w http.ResponseWriter, server db.McpServer, action string) bool {
+	if !mcp.IsManaged(server) {
+		return false
+	}
+	httputil.WriteError(w, http.StatusConflict,
+		"cannot "+action+" a managed plugin endpoint",
+		"This entry is a plugin instance's MCP endpoint and is owned by the plugin lifecycle. "+
+			"Manage it from the plugin's admin page.")
+	return true
 }
 
 func diffToResponse(d mcp.ToolDiff) toolDiffResponse {
@@ -498,6 +542,10 @@ func (h *MCPHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if refuseManaged(w, server, "delete") {
+		return
+	}
+
 	// ?force=true skips the conflict check below. Callers (the delete modal)
 	// use this after the user has acknowledged that referencing agents will
 	// fail to run.
@@ -580,6 +628,10 @@ func (h *MCPHandler) Update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to get MCP server", err.Error())
+		return
+	}
+
+	if refuseManaged(w, existing, "edit") {
 		return
 	}
 
@@ -786,6 +838,18 @@ func (h *MCPHandler) withMutatedHeaders(
 			return zero, http.StatusNotFound, "MCP server not found", nil
 		}
 		return zero, http.StatusInternalServerError, "failed to get MCP server", err
+	}
+
+	// Both header endpoints funnel through here, so the managed guard sits at
+	// the single choke point rather than being repeated at each caller — one of
+	// two copies is the one a later endpoint forgets to add.
+	//
+	// A managed endpoint's credentials are the plugin's, supplied by the
+	// instance's own credential surface (ADR-049) and consented with the
+	// bundle. An operator-set header on top of that would travel to the plugin
+	// on every call without appearing anywhere the consent screen shows.
+	if mcp.IsManaged(server) {
+		return zero, http.StatusConflict, "cannot set auth headers on a managed plugin endpoint", nil
 	}
 
 	headers, err := h.decryptHeaders(server)
