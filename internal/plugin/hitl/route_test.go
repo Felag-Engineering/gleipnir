@@ -426,7 +426,12 @@ func TestRoute_OverTheRealChannelClient(t *testing.T) {
 	// (an unpinned client is the whole point of a probe), so the discovery pass
 	// is what teaches the client the channel declaration and the caller is what
 	// commits to the version. This is the production order.
-	client := mcp.NewClient(srv.URL, mcp.WithProtocolVersion(mcp.ProtocolVersion20260728))
+	client := mcp.NewClient(srv.URL,
+		mcp.WithProtocolVersion(mcp.ProtocolVersion20260728),
+		// A channel is a managed plugin endpoint; io.gleipnir/* is not
+		// negotiated with external servers (#819).
+		mcp.WithTrustTier(mcp.TrustTierManaged),
+	)
 	probe, err := client.ProbeProtocolVersion(ctx)
 	if err != nil {
 		t.Fatalf("ProbeProtocolVersion: %v", err)

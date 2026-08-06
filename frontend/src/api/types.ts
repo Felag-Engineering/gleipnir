@@ -138,6 +138,21 @@ export interface ApiMcpServer {
   auth_header_keys?: string[] // sorted header names; values are never returned
   is_arcade_gateway: boolean
   protocol_version: string | null // pinned MCP revision; null = never probed
+
+  // 'managed' when this entry is a plugin instance's MCP endpoint, 'external'
+  // for an operator-registered server. Derived server-side from
+  // plugin_instance_id, never stored as its own column.
+  trust_tier: 'managed' | 'external'
+
+  // The instance a managed entry routes to; null for an external server. Lets
+  // the UI link a read-only row back to the plugin whose lifecycle owns it,
+  // rather than showing an uneditable entry with no explanation of who does.
+  plugin_instance_id: string | null
+
+  // False for a managed entry: its URL belongs to the generation lifecycle and
+  // its name is the tool namespace prefix the signed bundle established. Render
+  // those read-only rather than offering an edit the API answers with a 409.
+  editable: boolean
 }
 
 // Matches mcp_handler.go → mcpServerCreateResponse (POST /api/v1/mcp/servers)

@@ -84,6 +84,10 @@ export function ServerDetailModal({
   const deleteHeaderMutation = useDeleteMcpServerHeader()
 
   const toolCount = tools?.length ?? 0
+  // A managed entry is a plugin instance's endpoint. It resolves through the
+  // same client stack as any other server, but its URL, its name, and its
+  // credentials belong to the plugin lifecycle rather than to an admin here.
+  const isManaged = server.trust_tier === 'managed'
   const isUnreachable = server.last_discovered_at === null
   const hasDrift = server.has_drift
 
@@ -227,6 +231,11 @@ export function ServerDetailModal({
                 <span className={styles.toolCountBadge}>
                   {toolCount} {toolCount === 1 ? 'tool' : 'tools'}
                 </span>
+                {isManaged && (
+                  <span className={styles.managedBadge} title="Managed by a plugin's lifecycle">
+                    Plugin
+                  </span>
+                )}
                 {hasDrift && <span className={styles.driftBadge}>Drift</span>}
                 {isUnreachable && <span className={styles.unreachableBadge}>Unreachable</span>}
               </div>
@@ -250,13 +259,26 @@ export function ServerDetailModal({
                 )}
               </div>
               <div className={styles.actions}>
-                <button
-                  type="button"
-                  className={styles.authHeadersBtn}
-                  onClick={openHeaderEditor}
-                >
-                  {existingKeyCount > 0 ? `Auth (${existingKeyCount})` : 'Auth headers'}
-                </button>
+                {/*
+                  A managed entry's credentials come from the plugin's own
+                  credential surface and its lifecycle owns the row, so neither
+                  button is offered — the API answers both with a 409, and an
+                  affordance that always fails is worse than no affordance.
+                  Rediscover stays: it is a read.
+                */}
+                {isManaged ? (
+                  <span className={styles.managedNote}>
+                    Managed by the plugin lifecycle
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    className={styles.authHeadersBtn}
+                    onClick={openHeaderEditor}
+                  >
+                    {existingKeyCount > 0 ? `Auth (${existingKeyCount})` : 'Auth headers'}
+                  </button>
+                )}
                 <button
                   type="button"
                   className={styles.discoverBtn}
@@ -272,13 +294,15 @@ export function ServerDetailModal({
                     <>&#x21bb; Rediscover</>
                   )}
                 </button>
-                <button
-                  type="button"
-                  className={styles.deleteBtn}
-                  onClick={() => onDelete(server, toolCount)}
-                >
-                  Delete
-                </button>
+                {!isManaged && (
+                  <button
+                    type="button"
+                    className={styles.deleteBtn}
+                    onClick={() => onDelete(server, toolCount)}
+                  >
+                    Delete
+                  </button>
+                )}
               </div>
             </div>
           </div>

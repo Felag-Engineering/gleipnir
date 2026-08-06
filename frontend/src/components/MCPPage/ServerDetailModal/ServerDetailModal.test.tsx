@@ -48,6 +48,9 @@ const server: ApiMcpServer = {
   has_drift: false,
   created_at: '2026-04-03T15:43:55Z',
   is_arcade_gateway: false,
+  trust_tier: 'external' as const,
+  plugin_instance_id: null,
+  editable: true,
   protocol_version: '2026-07-28',
 }
 
@@ -313,5 +316,45 @@ describe('ServerDetailModal — accessibility', () => {
     expect(dialog.contains(closeBtn)).toBe(true)
     expect(dialog.contains(rediscoverBtn)).toBe(true)
     expect(dialog.contains(deleteBtn)).toBe(true)
+  })
+})
+
+describe('ServerDetailModal — managed plugin endpoints', () => {
+  const managed: ApiMcpServer = {
+    ...server,
+    name: 'slack-main',
+    trust_tier: 'managed' as const,
+    plugin_instance_id: 'inst-1',
+    editable: false,
+  }
+
+  // The API answers both mutations with a 409, and an affordance that always
+  // fails is worse than no affordance: it reads as a bug rather than as a
+  // boundary.
+  it('offers no auth-header or delete action', () => {
+    render(<ServerDetailModal {...defaultProps} server={managed} />)
+
+    expect(screen.queryByRole('button', { name: /^Auth/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument()
+    expect(screen.getByText(/Managed by the plugin lifecycle/i)).toBeInTheDocument()
+  })
+
+  // Rediscover is a read, and a managed endpoint's tools are discovered exactly
+  // the way any other server's are — that is the whole point of one client stack.
+  it('keeps rediscover, which is a read', () => {
+    render(<ServerDetailModal {...defaultProps} server={managed} />)
+    expect(screen.getByRole('button', { name: /Rediscover/i })).toBeInTheDocument()
+  })
+
+  it('labels the entry so an unfamiliar server does not read as one the operator forgot registering', () => {
+    render(<ServerDetailModal {...defaultProps} server={managed} />)
+    expect(screen.getByTitle(/Managed by a plugin's lifecycle/i)).toBeInTheDocument()
+  })
+
+  it('leaves an external server untouched', () => {
+    render(<ServerDetailModal {...defaultProps} />)
+    expect(screen.getByRole('button', { name: 'Auth headers' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument()
+    expect(screen.queryByText(/Managed by the plugin lifecycle/i)).not.toBeInTheDocument()
   })
 })

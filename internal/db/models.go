@@ -49,6 +49,7 @@ type McpServer struct {
 	CreatedAt            string  `json:"created_at"`
 	AuthHeadersEncrypted *string `json:"auth_headers_encrypted"`
 	ProtocolVersion      *string `json:"protocol_version"`
+	PluginInstanceID     *string `json:"plugin_instance_id"`
 }
 
 type McpTask struct {

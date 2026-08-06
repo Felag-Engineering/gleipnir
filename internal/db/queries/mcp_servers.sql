@@ -67,3 +67,39 @@ UPDATE mcp_servers
 SET protocol_version = :protocol_version
 WHERE id = :id
   AND (protocol_version IN (sqlc.slice('modern_versions'))) IS NOT TRUE;
+
+-- GetMCPServerByPluginInstance finds the registry entry backing a managed
+-- plugin instance. The lookup is by instance, not by generation: a rotation
+-- updates this row's url in place, so there is exactly one entry per instance
+-- for its whole life.
+-- name: GetMCPServerByPluginInstance :one
+SELECT * FROM mcp_servers WHERE plugin_instance_id = :plugin_instance_id;
+
+-- name: ListManagedMCPServers :many
+SELECT * FROM mcp_servers WHERE plugin_instance_id IS NOT NULL ORDER BY created_at ASC;
+
+-- CreateManagedMCPServer registers a managed plugin instance's endpoint. It is
+-- separate from CreateMCPServer rather than an optional parameter on it so the
+-- operator-facing create path cannot produce a managed row by accident: a
+-- managed entry is created by the reconciler on a generation switch, never by
+-- an admin filling in a form.
+-- name: CreateManagedMCPServer :one
+INSERT INTO mcp_servers (id, name, url, created_at, plugin_instance_id, protocol_version)
+VALUES (:id, :name, :url, :created_at, :plugin_instance_id, :protocol_version)
+RETURNING *;
+
+-- UpdateManagedMCPServerURL repoints a managed entry at a new generation's
+-- address. Guarded on plugin_instance_id so this can never move an external
+-- server an operator configured.
+--
+-- url is part of the registry cache's invalidation key, so this update IS the
+-- routing flip: the next resolve rebuilds the client against the new address,
+-- while a *Client already handed to a running run keeps the old base URL and
+-- drains against the generation it started on.
+-- name: UpdateManagedMCPServerURL :execrows
+UPDATE mcp_servers
+SET url = :url
+WHERE plugin_instance_id = :plugin_instance_id;
+
+-- name: DeleteManagedMCPServer :execrows
+DELETE FROM mcp_servers WHERE plugin_instance_id = :plugin_instance_id;

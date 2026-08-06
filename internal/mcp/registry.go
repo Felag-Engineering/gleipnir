@@ -170,6 +170,14 @@ type Registry struct {
 	elicitationRateHz float64
 	elicitationBurst  int
 	cache             *registryCache // per-server client + tool-catalog cache (cache.go)
+
+	// serverLimits bounds call concurrency and queue depth per server (#819).
+	// defaultLimits applies to every server; perServer overrides it by server
+	// NAME rather than ID, mirroring internal/plugin/dispatch's PerInstanceMax
+	// — an operator writing a limit knows the name, and an ID is a ULID nobody
+	// types.
+	defaultLimits ServerLimits
+	perServer     map[string]ServerLimits
 }
 
 // RegistryOption configures a Registry.
@@ -265,6 +273,30 @@ func WithToolNamespaceArbiter(a *toolregistry.Registry) RegistryOption {
 	}
 }
 
+// WithServerCallLimits sets the per-server call concurrency and queue depth
+// applied to every Client the Registry builds, with optional per-server-name
+// overrides.
+//
+// Registry-wide with an override map rather than a DB column: what these bound
+// is Gleipnir's own exposure to a slow or wedged server, which is a host
+// capacity decision, not a property of the server. Putting it in the servers
+// table would let whoever registered a server also decide how much of the host
+// it may occupy.
+func WithServerCallLimits(defaults ServerLimits, perServer map[string]ServerLimits) RegistryOption {
+	return func(r *Registry) {
+		r.defaultLimits = defaults
+		r.perServer = perServer
+	}
+}
+
+// limitsFor returns the limits to build srv's Client with.
+func (r *Registry) limitsFor(srv db.McpServer) ServerLimits {
+	if l, ok := r.perServer[srv.Name]; ok {
+		return l
+	}
+	return r.defaultLimits
+}
+
 // NewRegistry returns a Registry backed by the given sqlc Queries.
 func NewRegistry(queries *db.Queries, opts ...RegistryOption) *Registry {
 	r := &Registry{queries: queries, cache: newRegistryCache()}
@@ -287,6 +319,12 @@ func (r *Registry) newClientForServer(srv db.McpServer) *Client {
 	opts = append(opts,
 		WithElicitationLimits(r.elicitationLimits),
 		WithElicitationRateLimit(r.elicitationRateHz, r.elicitationBurst),
+		// Derived from the row, never passed in by the caller: the tier is a
+		// property of what the server IS, and a call site that could assert it
+		// would be a call site that could get it wrong in the permissive
+		// direction.
+		WithTrustTier(TrustTierOf(srv)),
+		WithServerLimits(r.limitsFor(srv)),
 	)
 
 	if srv.AuthHeadersEncrypted != nil {
