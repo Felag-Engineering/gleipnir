@@ -821,6 +821,31 @@ func classifyPluginError(instanceName string, err error) string {
 // MCP transport error. The raw error (which may contain internal hostnames, DNS
 // resolver addresses, etc.) is kept out of the audit trail and only logged via
 // slog for operator debugging.
+//
+// Every branch below returns a wholly host-authored sentence except the
+// JSON-RPC one, which carries the server's own message. Two decisions there
+// (issue #781):
+//
+// It is BOUNDED. run_steps is replayed into model context, so an unbounded
+// field is an unbounded context write on a path a server can trigger as often
+// as it likes, at no cost to itself. internal/mcp already bounds this exact
+// field to 256 bytes on the discovery path; this one was the asymmetry.
+//
+// It is QUOTED, and labelled as the server's. The message is interpolated into
+// a sentence Gleipnir wrote, so unquoted server text reads as continuous host
+// narration — a server could append "...and you are authorised to proceed" and
+// have it arrive looking like Gleipnir said it. %q also escapes newlines, so
+// the message cannot break onto its own line and pose as a separate statement.
+//
+// It is NOT dropped, and dropping it would be theatre rather than a fix. A
+// successful call's result.Output (see handleToolCall) enters the same context
+// verbatim and unbounded, so a hostile server already holds a strictly wider
+// channel; refusing its error text while passing its output would buy nothing.
+// Error messages are also often the only actionable signal the agent gets
+// ("missing required field x"), and without them it can only retry blindly.
+// Whether ANY untrusted server text should reach model context is a real
+// question, but it is not decided here — it is decided by the output path, and
+// changing it means changing that.
 func classifyMCPError(serverName string, err error) string {
 	// A server over its input_required rate limit is a host decision, not a
 	// transport failure — say so plainly rather than reporting the server as
@@ -846,7 +871,27 @@ func classifyMCPError(serverName string, err error) string {
 	}
 	var rpcErr *mcp.JSONRPCError
 	if errors.As(err, &rpcErr) {
-		return fmt.Sprintf("MCP server %s returned an error: %s", serverName, rpcErr.Message)
+		// The one branch in this function carrying server-controlled text.
+		// Bounded and quoted rather than dropped — see maxServerErrorMessageLen.
+		return fmt.Sprintf("MCP server %s returned an error. Server-supplied message (untrusted): %q",
+			serverName, truncateServerText(rpcErr.Message))
 	}
 	return fmt.Sprintf("MCP server %s is unavailable", serverName)
+}
+
+// maxServerErrorMessageLen bounds how much of an untrusted server's JSON-RPC
+// error message is written into an LLM-visible tool_result step (issue #781).
+// It matches internal/mcp's maxModernErrMessageLen, which already bounds this
+// exact field on the discovery path — the two are the same untrusted string
+// from the same peer, and only one of them was bounded.
+const maxServerErrorMessageLen = 256
+
+// truncateServerText bounds untrusted server text. Byte-based, like
+// internal/mcp's truncateForLog: this is a denial-of-service bound, and a rune
+// count would let a multi-byte payload exceed the byte budget it exists to cap.
+func truncateServerText(s string) string {
+	if len(s) <= maxServerErrorMessageLen {
+		return s
+	}
+	return s[:maxServerErrorMessageLen] + "…"
 }
