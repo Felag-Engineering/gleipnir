@@ -84,6 +84,24 @@ if [ -z "${CI_LOCAL_FULL:-}" ]; then
 	done <<<"$scope_env"
 fi
 
+# substrate_status reports the real-daemon lane, which ci-local NEVER runs.
+#
+# The lane needs a working rootless-Podman socket and a pre-pulled probe image,
+# and it creates real containers and networks on the developer's machine. Making
+# the local gate depend on that would make `make ci-local` fail for reasons that
+# have nothing to do with the diff — so it is CI's, and the local gate says so
+# rather than staying quiet about a lane it did not run.
+#
+# Escape hatch, documented in docs/developer/container-substrate.md:
+#   go test -tags substrate -count=1 ./internal/plugin/substrate/
+substrate_status() {
+	if [ "${CI_LOCAL_RUN_SUBSTRATE:-1}" = "1" ]; then
+		echo "CI-only — this diff reaches it; run 'go test -tags substrate ./internal/plugin/substrate/' against a real socket"
+	else
+		echo "not reached by this diff"
+	fi
+}
+
 # The gate's whole job is to be a trustworthy merge signal, so a narrowed run
 # has to say so on the way in and on the way out. Never let "ci-local ✅" stand
 # alone for a run that skipped lanes.
@@ -102,10 +120,11 @@ summarize() {
 		echo "  race tests:  ${pkg_count} of $(GOWORK=off go list ./... 2>/dev/null | wc -l | tr -d ' ') root packages"
 		echo "  sdk lane:    $([ "${CI_LOCAL_RUN_SDK:-1}" = "1" ] && echo "run" || echo "skipped — no plugin-sdk/, plugins/, or go.work change")"
 		echo "  frontend:    $([ "${CI_LOCAL_RUN_FRONTEND:-1}" = "1" ] && echo "run" || echo "skipped — no frontend/ change")"
+		echo "  substrate:   $(substrate_status)"
 		echo "  ⚠ a scoped pass is an inner-loop signal, not full coverage — CI runs the whole matrix on the pushed branch."
 		echo "  run 'make ci-local-full' for the unnarrowed gate."
 	fi
-	echo "not covered locally (CI-only): docker/arm64/podman image jobs, vuln scans (make security)"
+	echo "not covered locally (CI-only): docker/arm64/podman image jobs, substrate real-daemon suite, vuln scans (make security)"
 }
 
 lock_file="${TMPDIR:-/tmp}/gleipnir-ci-local-$(id -u).lock"
