@@ -129,6 +129,38 @@ func ValidateChannelCapabilities(m *sdkmanifest.Manifest, notify, request bool) 
 	return errs
 }
 
+// denyAllLoader rejects every external schema reference (issue #775).
+//
+// jsonschema.NewCompiler() defaults its URLLoader to jsonschema.FileLoader{},
+// so a compiler built without this override lets a plugin manifest's config
+// schema cause a host-side local file READ at compile time. Three vectors all
+// compile successfully without it -- and compiling successfully is itself the
+// proof the file was read and parsed:
+//
+//	{"$ref":    "file:///path.json"}
+//	{"$schema": "file:///path.json"}
+//	{"$id": "file:///dir/x.json", "$ref": "relative.json"}
+//
+// Plugin manifests are Minisign-signed and TOFU-pinned (ADR-045), so this is
+// not "any third party" -- but TOFU trusts the FIRST key unconditionally, and
+// GLEIPNIR_ALLOW_UNSIGNED_PLUGINS is a documented escape hatch. A hostile
+// first-install bundle, or any instance running that hatch, could otherwise
+// read whatever the Gleipnir process can.
+//
+// This mirrors internal/mcp's denyAllLoader rather than importing it: package
+// boundaries here are intentional (internal/plugin must not grow an import
+// edge to internal/mcp), and ten lines duplicated is the cheaper of the two
+// costs. Keep the two in step.
+//
+// Standard metaschema URLs (https://json-schema.org/...) still resolve: the
+// library serves those from an embedded FS before consulting the configured
+// loader, so pinning "$schema" keeps working.
+type denyAllLoader struct{}
+
+func (denyAllLoader) Load(url string) (any, error) {
+	return nil, fmt.Errorf("configvalidate: external schema reference not permitted: %s", url)
+}
+
 // Compile builds a Validator directly from raw JSON Schema bytes. Use the
 // For* helpers when working with a manifest; use Compile only when you already
 // have raw bytes.
@@ -143,6 +175,14 @@ func compile(schemaBytes []byte) (*Validator, error) {
 		return nil, fmt.Errorf("configvalidate: parse schema JSON: %w", err)
 	}
 	c := jsonschema.NewCompiler()
+	c.UseLoader(denyAllLoader{}) // MANDATORY -- see denyAllLoader's doc comment.
+	// Pin the draft explicitly: the library's own doc on DefaultDraft warns its
+	// default will not stay the same over time, and a schema with no "$schema"
+	// would otherwise silently compile against whatever that becomes in a future
+	// dependency bump. Here it also means the dialect cannot be steered by an
+	// absent or attacker-chosen "$schema".
+	c.DefaultDraft(jsonschema.Draft2020)
+
 	if err := c.AddResource("mem://schema.json", doc); err != nil {
 		return nil, fmt.Errorf("configvalidate: add schema resource: %w", err)
 	}
