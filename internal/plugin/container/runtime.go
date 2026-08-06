@@ -165,7 +165,19 @@ type ContainerInfo struct {
 	// Health is the runtime healthcheck status ("", "starting", "healthy",
 	// "unhealthy"). Spec §7's per-capability health layers on top of this
 	// container-level liveness signal; it does not replace it.
-	Health    string
+	Health string
+
+	// OOMKilled reports that the kernel killed this container for exceeding
+	// its memory cap (#815). It is distinct from an ordinary non-zero exit:
+	// a plugin that crashed on its own has a different fault with a different
+	// fix, and conflating them would send an operator to raise a limit that
+	// was never the problem.
+	OOMKilled bool
+
+	// ExitCode is the container's exit status, meaningful once State is
+	// exited. Zero on a container that is still running.
+	ExitCode int
+
 	CreatedAt time.Time
 }
 
