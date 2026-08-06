@@ -407,6 +407,99 @@ func (q *Queries) ListPluginContainers(ctx context.Context) ([]PluginContainer, 
 	return items, nil
 }
 
+const listPurgeableGenerationTokens = `-- name: ListPurgeableGenerationTokens :many
+SELECT id, plugin_instance_id, generation, container_id, image_digest, config_hash, token_hash, token_revoked_at, status, status_detail, created_at, updated_at FROM plugin_container_generations
+WHERE token_revoked_at IS NOT NULL
+  AND token_revoked_at < ?1
+  AND token_hash NOT LIKE 'purged:%'
+ORDER BY token_revoked_at
+LIMIT ?2
+`
+
+type ListPurgeableGenerationTokensParams struct {
+	Cutoff *string `json:"cutoff"`
+	Limit  int64   `json:"limit"`
+}
+
+// ListPurgeableGenerationTokens returns generations whose instance token was
+// revoked longer ago than the retention window and whose hash is still stored.
+//
+// The window exists because a revoked token is briefly still useful: a host RPC
+// that arrived just before the revocation is correlated to its generation by
+// hash, and purging on the instant of revocation would make the last few
+// moments of a generation's life unattributable. After that it is only
+// material, so it goes.
+//
+// The 'purged:%' guard makes the sweep idempotent. It matches the tombstone
+// the purge writes -- token_hash is NOT NULL UNIQUE, so the hash is replaced
+// by a per-row tombstone rather than cleared, and the row itself survives.
+// Deleting the row instead would be worse in two ways: it would discard the
+// rotation history an operator reads to answer "what has this instance run",
+// and deleting the highest-numbered row would let the next rotation reuse a
+// generation number that a stale container may still be labelled with.
+func (q *Queries) ListPurgeableGenerationTokens(ctx context.Context, arg ListPurgeableGenerationTokensParams) ([]PluginContainerGeneration, error) {
+	rows, err := q.db.QueryContext(ctx, listPurgeableGenerationTokens, arg.Cutoff, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PluginContainerGeneration
+	for rows.Next() {
+		var i PluginContainerGeneration
+		if err := rows.Scan(
+			&i.ID,
+			&i.PluginInstanceID,
+			&i.Generation,
+			&i.ContainerID,
+			&i.ImageDigest,
+			&i.ConfigHash,
+			&i.TokenHash,
+			&i.TokenRevokedAt,
+			&i.Status,
+			&i.StatusDetail,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const purgeContainerGenerationToken = `-- name: PurgeContainerGenerationToken :execrows
+UPDATE plugin_container_generations
+SET token_hash = ?1,
+    updated_at = ?2
+WHERE id = ?3
+  AND token_revoked_at IS NOT NULL
+  AND token_hash NOT LIKE 'purged:%'
+`
+
+type PurgeContainerGenerationTokenParams struct {
+	TokenHash string `json:"token_hash"`
+	UpdatedAt string `json:"updated_at"`
+	ID        string `json:"id"`
+}
+
+// PurgeContainerGenerationToken replaces a revoked generation's token hash with
+// a tombstone. Guarded on the revocation being set and the hash not already
+// being a tombstone, so a live generation's token can never be purged by a
+// racing sweep and a repeated sweep is a no-op.
+func (q *Queries) PurgeContainerGenerationToken(ctx context.Context, arg PurgeContainerGenerationTokenParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, purgeContainerGenerationToken, arg.TokenHash, arg.UpdatedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const revokeContainerGenerationToken = `-- name: RevokeContainerGenerationToken :execrows
 UPDATE plugin_container_generations
 SET token_revoked_at = ?1,

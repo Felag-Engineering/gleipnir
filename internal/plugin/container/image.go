@@ -65,4 +65,16 @@ type ImageRuntime interface {
 	// digest, an image ID, or a repo:tag. It returns ErrImageNotFound when the
 	// runtime has no such image.
 	ImageInspect(ctx context.Context, ref string) (ImageInfo, error)
+
+	// ImageRemove deletes a locally-present image. An image no container
+	// references is reclaimed; one still in use is refused by the runtime,
+	// which is the behaviour GC relies on as its last line of defence — the
+	// caller establishes zero references from Gleipnir's own records first,
+	// and the daemon's own refusal covers the case where those records are
+	// wrong.
+	//
+	// Removing an image that is already gone returns ErrImageNotFound rather
+	// than succeeding. GC treats that as reclaimed (the goal state holds), but
+	// the distinction is the caller's to make, not this layer's to erase.
+	ImageRemove(ctx context.Context, ref string) error
 }

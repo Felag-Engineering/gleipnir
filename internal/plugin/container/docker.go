@@ -376,3 +376,26 @@ func (r *DockerRuntime) ImageInspect(ctx context.Context, ref string) (ImageInfo
 		SizeBytes:   res.Size,
 	}, nil
 }
+
+// ImageRemove deletes a locally-present image.
+//
+// Force is deliberately NOT set. A forced removal untags an image that a
+// container still uses, which would leave a running plugin on an image nothing
+// can name — the exact state a digest pin exists to prevent. GC establishes
+// zero references from Gleipnir's records before calling; if the daemon
+// disagrees, its refusal is the signal that those records were wrong, and
+// forcing would discard it.
+//
+// PruneChildren is likewise off: the layers under a plugin image may be shared
+// with an image Gleipnir did not load, and reclaiming space is never worth
+// touching something outside what it owns.
+func (r *DockerRuntime) ImageRemove(ctx context.Context, ref string) error {
+	_, err := r.cli.ImageRemove(ctx, ref, dockerclient.ImageRemoveOptions{})
+	if err != nil {
+		if cerrdefs.IsNotFound(err) {
+			return fmt.Errorf("%w: %s", ErrImageNotFound, ref)
+		}
+		return fmt.Errorf("container: remove image %s: %w", ref, err)
+	}
+	return nil
+}

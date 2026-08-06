@@ -49,6 +49,13 @@ func (r *ReadOnlyRuntime) ImageLoad(context.Context, io.Reader) error {
 	return ErrManualModeWrite
 }
 
+// ImageRemove is a write. In manual posture the operator loaded the image, so
+// reclaiming it is theirs to decide — GC reports what is unreferenced and
+// removes nothing, which only holds if this refuses rather than obliging.
+func (r *ReadOnlyRuntime) ImageRemove(context.Context, string) error {
+	return ErrManualModeWrite
+}
+
 func (r *ReadOnlyRuntime) Start(context.Context, ContainerID) error {
 	return ErrManualModeWrite
 }
