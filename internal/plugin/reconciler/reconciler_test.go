@@ -729,3 +729,55 @@ func TestReconcile_PoolExhaustionSurfaces(t *testing.T) {
 		t.Errorf("Errors = %d, want 1 — the second instance has nowhere to go", result.Errors)
 	}
 }
+
+// A container is created pointing at the host's egress proxy, and any proxy
+// variables an image or config already carried are gone. A leftover NO_PROXY
+// would be a hole in the containment while every other line still looked
+// correct (#812).
+func TestReconciler_CreatePointsAtTheEgressProxy(t *testing.T) {
+	fake := container.NewFake()
+	store := &fakeStore{}
+	r, err := New(Config{
+		Runtime: fake,
+		Store:   store,
+		EgressEnv: func(_ context.Context, instanceID string) []string {
+			return []string{"HTTPS_PROXY=http://10.83.1.1:8118", "NO_PROXY="}
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	opts := container.CreateOptions{
+		Name:    "c",
+		Image:   "img@sha256:abc",
+		Network: "net",
+		Env:     []string{"PATH=/usr/bin", "NO_PROXY=*", "http_proxy=http://attacker:3128"},
+	}
+	got := r.withEgressEnv(context.Background(), opts, "inst-1")
+
+	want := []string{"PATH=/usr/bin", "HTTPS_PROXY=http://10.83.1.1:8118", "NO_PROXY="}
+	if len(got.Env) != len(want) {
+		t.Fatalf("env = %v, want %v", got.Env, want)
+	}
+	for i := range want {
+		if got.Env[i] != want[i] {
+			t.Errorf("env[%d] = %q, want %q", i, got.Env[i], want[i])
+		}
+	}
+}
+
+// No proxy configured leaves the environment untouched. On an internal-only
+// network that means the instance reaches nothing, which is the correct
+// default rather than a degraded one.
+func TestReconciler_NoEgressProxyLeavesEnvAlone(t *testing.T) {
+	r, err := New(Config{Runtime: container.NewFake(), Store: &fakeStore{}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	opts := container.CreateOptions{Env: []string{"PATH=/usr/bin"}}
+	got := r.withEgressEnv(context.Background(), opts, "inst-1")
+	if len(got.Env) != 1 || got.Env[0] != "PATH=/usr/bin" {
+		t.Errorf("env = %v, want it untouched", got.Env)
+	}
+}
