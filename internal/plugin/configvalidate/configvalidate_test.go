@@ -1,6 +1,8 @@
 package configvalidate_test
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -606,5 +608,100 @@ func TestForSubscriptionScope_NilSchema_AcceptsAnything(t *testing.T) {
 	}
 	if len(errs) != 0 {
 		t.Errorf("expected no errors with nil schema, got %v", errs)
+	}
+}
+
+// --- external schema references (#775) ---------------------------------------
+
+// A plugin manifest's config schema must not be able to make the host read a
+// local file at compile time.
+//
+// The assertion is on WHERE the rejection comes from, not merely that one
+// happened. Without the deny-all loader these schemas COMPILE — and a
+// successful compile is itself the proof the file was read and parsed. When the
+// referenced file is not JSON the failure instead surfaces as a JSON parse
+// error, which is the same proof by another route. So a test that only checked
+// "compile returned an error" would pass in exactly the vulnerable state.
+func TestCompile_RefusesExternalSchemaReferences(t *testing.T) {
+	// A real, readable, non-JSON file. If the loader is ever removed, the
+	// compiler reaches this content and reports a JSON parse error rather than
+	// the loader's message — which is what the assertions below catch.
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "secret.txt")
+	if err := os.WriteFile(secret, []byte("root:x:0:0:very much not json\n"), 0o600); err != nil {
+		t.Fatalf("writing fixture: %v", err)
+	}
+	nested := filepath.Join(dir, "nested.json")
+	if err := os.WriteFile(nested, []byte(`{"type":"string"}`), 0o600); err != nil {
+		t.Fatalf("writing fixture: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		schema string
+	}{
+		{
+			name:   "$ref to a file URL",
+			schema: `{"$ref": "file://` + secret + `"}`,
+		},
+		{
+			name:   "$schema pointing at a file URL",
+			schema: `{"$schema": "file://` + secret + `", "type": "object"}`,
+		},
+		{
+			// The subtle one: $id establishes a file:// base, so an innocuous
+			// RELATIVE $ref resolves against it. A guard that only looked for
+			// the "file://" prefix on $ref would miss this entirely.
+			name:   `$id establishing a file base for a relative $ref`,
+			schema: `{"$id": "file://` + dir + `/root.json", "$ref": "nested.json"}`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := configvalidate.Compile([]byte(tc.schema))
+			if err == nil {
+				t.Fatal("compile succeeded — the reference was resolved, which means the file was read")
+			}
+			if !strings.Contains(err.Error(), "external schema reference not permitted") {
+				t.Errorf("error = %v\nwant the loader's refusal; anything else (especially a JSON parse "+
+					"error) means the file was read before the failure", err)
+			}
+			// Belt and braces: the file's contents must never appear in an
+			// error an operator or a plugin author can see.
+			if strings.Contains(err.Error(), "very much not json") {
+				t.Errorf("the referenced file's contents leaked into the error: %v", err)
+			}
+		})
+	}
+}
+
+// The loader must not break the ordinary case. Standard metaschema URLs are
+// served from the library's embedded FS before the configured loader is
+// consulted, so declaring a dialect keeps working — a deny-all loader that also
+// denied those would have made every well-formed schema uncompilable.
+func TestCompile_StandardMetaschemaStillResolves(t *testing.T) {
+	for _, schema := range []string{
+		`{"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}`,
+		`{"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"}`,
+		`{"type": "object", "properties": {"a": {"type": "string"}}}`,
+	} {
+		if _, err := configvalidate.Compile([]byte(schema)); err != nil {
+			t.Errorf("Compile(%s): %v", schema, err)
+		}
+	}
+}
+
+// An http(s) $ref is refused by the loader rather than fetched. FileLoader
+// already rejected non-file schemes, so this was never an SSRF — but the guard
+// should be the deny-all loader now, not a property of whatever loader the
+// library happens to default to next.
+func TestCompile_RefusesRemoteSchemaReferences(t *testing.T) {
+	_, err := configvalidate.Compile([]byte(`{"$ref": "https://evil.example.com/schema.json"}`))
+	if err == nil {
+		t.Fatal("compile succeeded against a remote $ref")
+	}
+	if !strings.Contains(err.Error(), "external schema reference not permitted") {
+		t.Errorf("error = %v, want the loader's refusal", err)
 	}
 }

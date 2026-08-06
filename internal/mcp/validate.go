@@ -63,6 +63,11 @@ type ArgValidator struct {
 // Standard metaschema URLs (https://json-schema.org/...) are still resolved:
 // the library serves those from an embedded FS before consulting the
 // configured loader, so pinning "$schema" continues to work.
+//
+// internal/plugin/configvalidate has its own copy of this type, for the sibling
+// compiler that validates plugin manifest config schemas (issue #775). The two
+// are duplicated rather than shared because internal/plugin must not grow an
+// import edge to internal/mcp -- keep them in step.
 type denyAllLoader struct{}
 
 func (denyAllLoader) Load(url string) (any, error) {
