@@ -13,6 +13,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	"github.com/felag-engineering/gleipnir/internal/infra/logctx"
 	"github.com/felag-engineering/gleipnir/internal/plugin/container"
+	"github.com/felag-engineering/gleipnir/internal/plugin/egress"
 )
 
 // EventPassCompleted is published after every reconcile pass, converged or not.
@@ -70,6 +71,12 @@ type Config struct {
 	// Optional — the default is derived from the desired row, and per-instance
 	// network creation is a separate concern that owns the real naming.
 	NetworkNameFor func(desired db.PluginContainer) string
+
+	// EgressEnv returns the proxy environment entries a container is created
+	// with (#812). Optional: absent means no proxy is pointed at, and on an
+	// internal-only network that means the instance reaches nothing — which is
+	// the correct default, not a degraded one.
+	EgressEnv func(ctx context.Context, instanceID string) []string
 }
 
 // PassResult summarizes one reconcile pass.
@@ -102,6 +109,14 @@ type Reconciler struct {
 	publisher event.Publisher
 	subnets   *SubnetAllocator
 	networkFn func(db.PluginContainer) string
+
+	// egressEnv supplies the proxy environment a container is created with
+	// (ADR-056 §7 egress containment, #812). A hook rather than a direct
+	// dependency so the reconciler does not import the proxy: it converges
+	// containers, and where the one way out points is the proxy's business.
+	// Nil means no proxy is configured, which — on an internal-only network —
+	// means the instance reaches nothing.
+	egressEnv func(ctx context.Context, instanceID string) []string
 
 	rotations         RotationStore
 	healthGateTimeout time.Duration
@@ -152,6 +167,7 @@ func New(cfg Config) (*Reconciler, error) {
 		publisher: cfg.Publisher,
 		subnets:   cfg.Subnets,
 		networkFn: networkFn,
+		egressEnv: cfg.EgressEnv,
 		kick:      make(chan struct{}, 1),
 
 		rotations:         cfg.Rotations,
@@ -375,7 +391,7 @@ func (r *Reconciler) apply(ctx context.Context, action Action, desired []db.Plug
 			// future refactor from turning a bug into a crash.
 			return fmt.Errorf("no desired row for instance %q", action.InstanceID)
 		}
-		id, err := r.runtime.Create(ctx, r.createOptions(row))
+		id, err := r.runtime.Create(ctx, r.withEgressEnv(ctx, r.createOptions(row), row.PluginInstanceID))
 		if err != nil {
 			return fmt.Errorf("creating container for instance %q: %w", action.InstanceID, err)
 		}
@@ -514,6 +530,25 @@ func (r *Reconciler) createOptions(row db.PluginContainer) container.CreateOptio
 		// stores millicores (1000 == one core).
 		opts.Resources.NanoCPUs = *row.CpuLimitMillicores * 1_000_000
 	}
+	return opts
+}
+
+// withEgressEnv points a container at the host's egress proxy.
+//
+// Existing proxy variables are stripped first. An image that ships its own
+// HTTP_PROXY, or an operator config that sets NO_PROXY, would otherwise leave a
+// bypass in place while every other line still looked correct — and on an
+// internal-only network a bypass does not mean "reaches the internet another
+// way", it means "reaches nothing and looks broken".
+func (r *Reconciler) withEgressEnv(ctx context.Context, opts container.CreateOptions, instanceID string) container.CreateOptions {
+	if r.egressEnv == nil {
+		return opts
+	}
+	env := r.egressEnv(ctx, instanceID)
+	if len(env) == 0 {
+		return opts
+	}
+	opts.Env = append(egress.StripProxyEnv(opts.Env), env...)
 	return opts
 }
 
