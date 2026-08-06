@@ -123,3 +123,39 @@ WHERE id = :id AND token_revoked_at IS NULL;
 
 -- name: DeleteContainerGeneration :exec
 DELETE FROM plugin_container_generations WHERE id = :id;
+
+-- ListPurgeableGenerationTokens returns generations whose instance token was
+-- revoked longer ago than the retention window and whose hash is still stored.
+--
+-- The window exists because a revoked token is briefly still useful: a host RPC
+-- that arrived just before the revocation is correlated to its generation by
+-- hash, and purging on the instant of revocation would make the last few
+-- moments of a generation's life unattributable. After that it is only
+-- material, so it goes.
+--
+-- The 'purged:%' guard makes the sweep idempotent. It matches the tombstone
+-- the purge writes -- token_hash is NOT NULL UNIQUE, so the hash is replaced
+-- by a per-row tombstone rather than cleared, and the row itself survives.
+-- Deleting the row instead would be worse in two ways: it would discard the
+-- rotation history an operator reads to answer "what has this instance run",
+-- and deleting the highest-numbered row would let the next rotation reuse a
+-- generation number that a stale container may still be labelled with.
+-- name: ListPurgeableGenerationTokens :many
+SELECT * FROM plugin_container_generations
+WHERE token_revoked_at IS NOT NULL
+  AND token_revoked_at < :cutoff
+  AND token_hash NOT LIKE 'purged:%'
+ORDER BY token_revoked_at
+LIMIT :limit;
+
+-- PurgeContainerGenerationToken replaces a revoked generation's token hash with
+-- a tombstone. Guarded on the revocation being set and the hash not already
+-- being a tombstone, so a live generation's token can never be purged by a
+-- racing sweep and a repeated sweep is a no-op.
+-- name: PurgeContainerGenerationToken :execrows
+UPDATE plugin_container_generations
+SET token_hash = :token_hash,
+    updated_at = :updated_at
+WHERE id = :id
+  AND token_revoked_at IS NOT NULL
+  AND token_hash NOT LIKE 'purged:%';

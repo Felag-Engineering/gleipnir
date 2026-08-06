@@ -22,13 +22,14 @@ import (
 type countingRuntime struct {
 	container.Runtime
 
-	mu         sync.Mutex
-	creates    int
-	starts     int
-	stops      int
-	removes    int
-	netCreates int
-	netRemoves int
+	mu           sync.Mutex
+	creates      int
+	starts       int
+	stops        int
+	removes      int
+	netCreates   int
+	netRemoves   int
+	imageRemoves int
 }
 
 func (c *countingRuntime) Create(ctx context.Context, opts container.CreateOptions) (container.ContainerID, error) {
@@ -73,10 +74,20 @@ func (c *countingRuntime) RemoveNetwork(ctx context.Context, id container.Networ
 	return c.Runtime.RemoveNetwork(ctx, id)
 }
 
+// ImageRemove is counted as a write: it deletes bytes from the daemon's image
+// store, which is precisely what manual posture must never do to an image the
+// operator loaded.
+func (c *countingRuntime) ImageRemove(ctx context.Context, ref string) error {
+	c.mu.Lock()
+	c.imageRemoves++
+	c.mu.Unlock()
+	return c.Runtime.ImageRemove(ctx, ref)
+}
+
 func (c *countingRuntime) writes() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.creates + c.starts + c.stops + c.removes + c.netCreates + c.netRemoves
+	return c.creates + c.starts + c.stops + c.removes + c.netCreates + c.netRemoves + c.imageRemoves
 }
 
 // fakeStore is the desired-state side of the diff.

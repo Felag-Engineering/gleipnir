@@ -78,6 +78,23 @@ type Config struct {
 	// internal-only network that means the instance reaches nothing — which is
 	// the correct default, not a degraded one.
 	EgressEnv func(ctx context.Context, instanceID string) []string
+
+	// GC is the cleanup store. Required only for ReconcileGC; neither the core
+	// convergence loop nor rotation touches it.
+	GC GCStore
+
+	// TokenRetention is how long a revoked generation token's hash is kept
+	// before GC tombstones it. Zero uses defaultTokenRetention.
+	TokenRetention time.Duration
+
+	// ImagesPerPass bounds image reclaims in one GC pass. Zero uses
+	// defaultImagesPerPass.
+	ImagesPerPass int
+
+	// Now is the clock GC reads for the token-retention cutoff. Zero uses
+	// time.Now; tests inject a fixed instant so a retention window is a
+	// property of the input rather than of how long the test took to run.
+	Now func() time.Time
 }
 
 // PassResult summarizes one reconcile pass.
@@ -123,6 +140,15 @@ type Reconciler struct {
 	healthGateTimeout time.Duration
 	drainTimeout      time.Duration
 
+	// gc and its bounds back ReconcileGC (#818). Nil gc means the cleanup pass
+	// is not configured; it refuses rather than silently doing nothing, since
+	// "GC ran and reclaimed zero" and "GC never ran" are answers an operator
+	// looking at rising disk usage must be able to tell apart.
+	gc             GCStore
+	tokenRetention time.Duration
+	imagesPerPass  int
+	gcNow          func() time.Time
+
 	// tokens holds raw per-generation instance tokens between minting them and
 	// handing them to the container they belong to. In memory only and never
 	// persisted: a stored token is a token a database leak hands to an
@@ -159,6 +185,18 @@ func New(cfg Config) (*Reconciler, error) {
 	if networkFn == nil {
 		networkFn = defaultNetworkName
 	}
+	tokenRetention := cfg.TokenRetention
+	if tokenRetention <= 0 {
+		tokenRetention = defaultTokenRetention
+	}
+	imagesPerPass := cfg.ImagesPerPass
+	if imagesPerPass <= 0 {
+		imagesPerPass = defaultImagesPerPass
+	}
+	gcNow := cfg.Now
+	if gcNow == nil {
+		gcNow = time.Now
+	}
 
 	return &Reconciler{
 		runtime:   cfg.Runtime,
@@ -175,6 +213,11 @@ func New(cfg Config) (*Reconciler, error) {
 		healthGateTimeout: cfg.HealthGateTimeout,
 		drainTimeout:      cfg.DrainTimeout,
 		tokens:            make(map[string]string),
+
+		gc:             cfg.GC,
+		tokenRetention: tokenRetention,
+		imagesPerPass:  imagesPerPass,
+		gcNow:          gcNow,
 	}, nil
 }
 
