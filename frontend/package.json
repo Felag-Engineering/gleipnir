@@ -40,7 +40,7 @@
     "@vitejs/plugin-react": "^6.0.2",
     "@vitest/browser-playwright": "^4.1.7",
     "@vitest/coverage-v8": "^4.1.8",
-    "eventsource": "^4.1.0",
+    "eventsource": "^4.1.1",
     "jsdom": "^29.1.1",
     "msw": "^2.14.6",
     "playwright": "^1.61.0",
