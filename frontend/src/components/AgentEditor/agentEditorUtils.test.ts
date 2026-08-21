@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { load } from 'js-yaml'
 import { yamlToFormState, formStateToYaml, defaultFormState, DEFAULT_YAML } from './agentEditorUtils'
 
 // --- Invalid input ---
@@ -915,5 +916,181 @@ model:
     // source and event_kind must be present
     expect(out).toContain('source: slack-prod')
     expect(out).toContain('event_kind: channel_message')
+  })
+})
+
+describe('round-trip preservation of unmodelled fields (#869)', () => {
+  // The regression this suite exists for: the serializer used to build its
+  // document from an empty object, so any policy field the form does not model
+  // was deleted by a save. ADR-019 makes Form the only editing surface, so
+  // there was no other way to get those fields back.
+
+  it('preserves per-tool ADR-017 params across a round-trip', () => {
+    const yaml = `name: p
+capabilities:
+  tools:
+    - tool: srv.write_file
+      params:
+        path: {}
+agent:
+  task: t
+`
+    const out = formStateToYaml(yamlToFormState(yaml)!)
+    expect(out).toContain('params:')
+    expect(out).toContain('path:')
+    // The grant itself must still be there — preservation must not replace it.
+    expect(out).toContain('tool: srv.write_file')
+  })
+
+  it('keeps each tool\'s own params when several tools are granted', () => {
+    const yaml = `name: p
+capabilities:
+  tools:
+    - tool: srv.alpha
+      params:
+        only_alpha: {}
+    - tool: srv.beta
+    - tool: srv.gamma
+      params:
+        only_gamma: {}
+agent:
+  task: t
+`
+    const out = formStateToYaml(yamlToFormState(yaml)!)
+    const parsed = load(out) as Record<string, any>
+    const tools = parsed.capabilities.tools
+    expect(tools).toHaveLength(3)
+    expect(tools[0]).toEqual({ tool: 'srv.alpha', params: { only_alpha: {} } })
+    // A tool with no params must not inherit a neighbour's.
+    expect(tools[1]).toEqual({ tool: 'srv.beta' })
+    expect(tools[2]).toEqual({ tool: 'srv.gamma', params: { only_gamma: {} } })
+  })
+
+  it('preserves model.options', () => {
+    const yaml = `name: p
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
+  options:
+    enable_prompt_caching: true
+agent:
+  task: t
+`
+    const out = formStateToYaml(yamlToFormState(yaml)!)
+    expect(out).toContain('enable_prompt_caching: true')
+  })
+
+  it('preserves agent.limits.max_elicitations_per_run', () => {
+    const yaml = `name: p
+agent:
+  task: t
+  limits:
+    max_tokens_per_run: 20000
+    max_tool_calls_per_run: 50
+    max_elicitations_per_run: 3
+`
+    const out = formStateToYaml(yamlToFormState(yaml)!)
+    expect(out).toContain('max_elicitations_per_run: 3')
+  })
+
+  it('preserves an unknown top-level key', () => {
+    // Stands in for any field added to schemas/policy.yaml before the form
+    // learns about it — the point of the mechanism is that it needs no update.
+    const yaml = `name: p
+some_future_field: keep-me
+agent:
+  task: t
+`
+    const out = formStateToYaml(yamlToFormState(yaml)!)
+    expect(out).toContain('some_future_field: keep-me')
+  })
+
+  it('lets the form remove a modelled field the operator cleared', () => {
+    // Preservation must not resurrect a value the operator deliberately
+    // deleted, which is why modelled keys are never read back from source.
+    const yaml = `name: p
+description: written once
+folder: ops
+agent:
+  task: t
+`
+    const state = yamlToFormState(yaml)!
+    state.identity.description = ''
+    state.identity.folder = ''
+    const out = formStateToYaml(state)
+    expect(out).not.toContain('written once')
+    expect(out).not.toContain('folder:')
+  })
+
+  it('drops the previous variant\'s fields when the trigger type changes', () => {
+    const yaml = `name: p
+trigger:
+  type: cron
+  cron_expr: "0 9 * * 1"
+  vendor_hint: stale
+agent:
+  task: t
+`
+    const state = yamlToFormState(yaml)!
+    state.trigger = { type: 'manual' }
+    const out = formStateToYaml(state)
+    expect(out).toContain('type: manual')
+    expect(out).not.toContain('cron_expr')
+    expect(out).not.toContain('vendor_hint')
+  })
+
+  it('preserves unmodelled trigger fields when the type is unchanged', () => {
+    const yaml = `name: p
+trigger:
+  type: cron
+  cron_expr: "0 9 * * 1"
+  vendor_hint: keep-me
+agent:
+  task: t
+`
+    const out = formStateToYaml(yamlToFormState(yaml)!)
+    expect(out).toContain('vendor_hint: keep-me')
+  })
+
+  it('is idempotent — a second save reproduces the first byte for byte', () => {
+    // Preserved keys are appended after modelled ones, so the ordering has to
+    // settle on the first pass or every save would churn the stored YAML.
+    const yaml = `name: p
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
+  options:
+    enable_prompt_caching: true
+trigger:
+  type: webhook
+  auth: hmac
+capabilities:
+  tools:
+    - tool: srv.write_file
+      approval: required
+      timeout: 30m
+      on_timeout: reject
+      params:
+        path: {}
+agent:
+  task: t
+  limits:
+    max_tokens_per_run: 20000
+    max_tool_calls_per_run: 50
+    max_elicitations_per_run: 3
+  concurrency: skip
+`
+    const first = formStateToYaml(yamlToFormState(yaml)!)
+    const second = formStateToYaml(yamlToFormState(first)!)
+    expect(second).toBe(first)
+  })
+
+  it('serializes a form state that has no source document', () => {
+    // Drafts persisted to localStorage before this change carry no `source`,
+    // and defaultFormState-derived state may be edited before any parse.
+    const state = yamlToFormState(`name: p\nagent:\n  task: t\n`)!
+    delete state.source
+    expect(() => formStateToYaml(state)).not.toThrow()
+    expect(formStateToYaml(state)).toContain('name: p')
   })
 })

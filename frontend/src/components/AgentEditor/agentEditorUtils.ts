@@ -26,6 +26,73 @@ export interface FormState {
   limits: RunLimitsFormState
   concurrency: ConcurrencyFormState
   model: ModelFormState
+  // source is the parsed policy document this state was read from. It is not
+  // edited by any section — it exists so formStateToYaml can carry across the
+  // fields the form does not model instead of dropping them (#869).
+  source?: Record<string, unknown>
+}
+
+// ---------------------------------------------------------------------------
+// Round-trip preservation (#869)
+// ---------------------------------------------------------------------------
+//
+// The form models a subset of schemas/policy.yaml. Everything outside that
+// subset -- `agent.preamble`, `model.options`, `agent.limits.
+// max_elicitations_per_run`, and per-tool ADR-017 `params` -- used to be
+// destroyed on save, because formStateToYaml built its document from an empty
+// object. ADR-019 makes Form the only editing surface, so a field deleted that
+// way had no route back, and for `params` the deletion silently widened the
+// schema the agent is given.
+//
+// The rule: the form is authoritative for the keys it models, including
+// removing one the operator cleared. Every other key is carried over from
+// `source`. Preserved keys are appended after the modelled ones, so a second
+// save of an unchanged policy reproduces the first save's output byte for byte.
+//
+// Adding a field to a MODELLED_* list means "the form now owns this key" -- do
+// that when a section starts editing it, and not before.
+const MODELLED_ROOT = ['name', 'description', 'folder', 'audience', 'model', 'trigger', 'capabilities', 'agent']
+const MODELLED_MODEL = ['provider', 'name']
+// `preamble` is listed as form-owned even though no section edits it, which
+// means a save deliberately DROPS it. That is pre-existing behaviour pinned by
+// "does not emit preamble" in agentEditorUtils.test.ts and left untouched here.
+// Note it disagrees with the rest of the system: internal/policy/
+// prompt_generator.go:44 still honours agent.preamble and only falls back to the
+// default when it is empty, and schemas/policy.yaml:322 still documents it as an
+// operator-editable ADR-012 field. Resolving that contradiction is out of scope
+// for #869 — see the open question on that issue. Move `preamble` out of this
+// list to start preserving it.
+const MODELLED_AGENT = ['task', 'limits', 'concurrency', 'queue_depth', 'preamble']
+const MODELLED_LIMITS = ['max_tokens_per_run', 'max_tool_calls_per_run']
+const MODELLED_CAPABILITIES = ['tools', 'feedback']
+const MODELLED_FEEDBACK = ['enabled', 'timeout', 'on_timeout']
+const MODELLED_TOOL = ['tool', 'approval', 'timeout', 'on_timeout']
+// Union across every trigger variant. Safe as one list because trigger fields
+// are only preserved when the type is unchanged (see formStateToYaml).
+const MODELLED_TRIGGER = [
+  'type', 'auth', 'fire_at', 'cron_expr', 'source', 'event_kind', 'binding',
+  'interval', 'match', 'checks',
+]
+
+// withPreserved returns rebuilt extended with every key of original the form
+// does not model. A modelled key is never taken from original: if the form
+// omitted it, the operator removed it and it stays removed.
+function withPreserved(
+  rebuilt: Record<string, unknown>,
+  original: unknown,
+  modelled: string[],
+): Record<string, unknown> {
+  if (!isRecord(original)) return rebuilt
+  const out = { ...rebuilt }
+  for (const [key, value] of Object.entries(original)) {
+    if (modelled.includes(key)) continue
+    // rebuilt only ever holds modelled keys, so this cannot fire today. It is
+    // here so that adding an unmodelled key to rebuilt later cannot be
+    // silently overwritten by a stale value from source.
+    if (key in out) continue
+    out[key] = value
+  }
+  return out
 }
 
 export const DEFAULT_YAML = `name: ''
@@ -252,12 +319,14 @@ export function yamlToFormState(yaml: string): FormState | null {
     limits,
     concurrency,
     model,
+    source: p,
   }
 }
 
 // formStateToYaml serializes FormState back to a YAML string.
 export function formStateToYaml(state: FormState): string {
-  const { identity, trigger, capabilities, audience, task, limits, concurrency, model } = state
+  const { identity, trigger, capabilities, audience, task, limits, concurrency, model, source } = state
+  const src = isRecord(source) ? source : {}
 
   // Build trigger object
   let triggerObj: Record<string, unknown>
@@ -298,11 +367,35 @@ export function formStateToYaml(state: FormState): string {
     triggerObj = { type: 'webhook', auth: trigger.auth }
   }
 
+  // Changing the trigger type swaps the whole variant, so the previous
+  // variant's fields are not ours to keep. Preserve within the same type only.
+  const srcTrigger = isRecord(src.trigger) ? src.trigger : undefined
+  if (srcTrigger && srcTrigger.type === triggerObj.type) {
+    triggerObj = withPreserved(triggerObj, srcTrigger, MODELLED_TRIGGER)
+  }
+
   // Build capabilities — single tools array.
+  //
+  // Original entries are indexed by grant string so each rebuilt entry can
+  // recover its own unmodelled keys — ADR-017 `params` above all. Queued rather
+  // than single-valued so that a policy granting the same tool twice stays
+  // deterministic instead of giving both entries the first one's params.
+  const srcCaps = isRecord(src.capabilities) ? src.capabilities : {}
+  const srcTools = new Map<string, Record<string, unknown>[]>()
+  if (Array.isArray(srcCaps.tools)) {
+    for (const entry of srcCaps.tools) {
+      if (!isRecord(entry) || typeof entry.tool !== 'string') continue
+      const queued = srcTools.get(entry.tool)
+      if (queued) queued.push(entry)
+      else srcTools.set(entry.tool, [entry])
+    }
+  }
+
   // t.serverName carries the MCP server display name OR the plugin instance_name;
   // both produce the correct `<source>.<tool>` dot-notation grant string.
   const tools = capabilities.tools.map(t => {
-    const entry: Record<string, unknown> = { tool: `${t.serverName}.${t.name}` }
+    const grant = `${t.serverName}.${t.name}`
+    const entry: Record<string, unknown> = { tool: grant }
     if (t.approvalRequired) {
       entry.approval = 'required'
       // Only emit timeout and on_timeout when approval is on and a timeout is set.
@@ -313,34 +406,42 @@ export function formStateToYaml(state: FormState): string {
         entry.on_timeout = 'reject' // hardcoded — reject is the only valid value
       }
     }
-    return entry
+    return withPreserved(entry, srcTools.get(grant)?.shift(), MODELLED_TOOL)
   })
 
-  const capsObj: Record<string, unknown> = { tools }
+  let capsObj: Record<string, unknown> = { tools }
   // Emit the feedback block only when enabled — omitting it means disabled,
   // following the same pattern as other optional fields (description, folder).
   if (capabilities.feedback.enabled) {
     const feedbackObj: Record<string, unknown> = { enabled: true }
     if (capabilities.feedback.timeout) feedbackObj.timeout = capabilities.feedback.timeout
     if (capabilities.feedback.onTimeout) feedbackObj.on_timeout = capabilities.feedback.onTimeout
-    capsObj.feedback = feedbackObj
+    capsObj.feedback = withPreserved(feedbackObj, srcCaps.feedback, MODELLED_FEEDBACK)
   }
+  capsObj = withPreserved(capsObj, srcCaps, MODELLED_CAPABILITIES)
 
   // Build agent block
-  const agentObj: Record<string, unknown> = {}
+  const srcAgent = isRecord(src.agent) ? src.agent : {}
+  let agentObj: Record<string, unknown> = {}
   agentObj.task = task.task
-  agentObj.limits = {
-    max_tokens_per_run: limits.max_tokens_per_run,
-    max_tool_calls_per_run: limits.max_tool_calls_per_run,
-  }
+  agentObj.limits = withPreserved(
+    {
+      max_tokens_per_run: limits.max_tokens_per_run,
+      max_tool_calls_per_run: limits.max_tool_calls_per_run,
+    },
+    srcAgent.limits,
+    MODELLED_LIMITS,
+  )
   agentObj.concurrency = concurrency.concurrency
   // Emit queue_depth only when mode is queue and depth is non-zero.
   // Omitting it lets the backend apply model.DefaultQueueDepth.
   if (concurrency.concurrency === 'queue' && concurrency.queueDepth > 0) {
     agentObj.queue_depth = concurrency.queueDepth
   }
+  // Carries `agent.preamble` (ADR-012) across; the form has no section for it.
+  agentObj = withPreserved(agentObj, srcAgent, MODELLED_AGENT)
 
-  const doc: Record<string, unknown> = {
+  let doc: Record<string, unknown> = {
     name: identity.name,
   }
   if (identity.description) doc.description = identity.description
@@ -349,10 +450,16 @@ export function formStateToYaml(state: FormState): string {
   // must not be serialized as an empty reference. Placed in the metadata
   // cluster (name / description / folder / audience) before model.
   if (audience.name) doc.audience = audience.name
-  doc.model = { provider: model.provider, name: model.model }
+  // Carries `model.options` (e.g. enable_prompt_caching) across.
+  doc.model = withPreserved(
+    { provider: model.provider, name: model.model },
+    src.model,
+    MODELLED_MODEL,
+  )
   doc.trigger = triggerObj
   doc.capabilities = capsObj
   doc.agent = agentObj
+  doc = withPreserved(doc, src, MODELLED_ROOT)
 
   return dump(doc, { lineWidth: -1 })
 }
