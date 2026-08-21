@@ -33,24 +33,23 @@ Your operating principles:
 3. Be transparent. Your reasoning is fully audited. Explain what you observed, what you concluded, and why you acted.`
 
 // RenderSystemPrompt produces the full system prompt for an agent run.
-// It combines the preamble (policy-supplied or default), the generated
-// capabilities block listing granted tools, and the task instructions.
-// The capabilities block is generated at run start and never persisted (ADR-012).
-// When a policy uses the default preamble and feedback is disabled, the feedback
-// paragraph is omitted from the preamble to avoid misleading the agent.
+// It combines the preamble, the generated capabilities block listing granted
+// tools, and the task instructions. The capabilities block is generated at run
+// start and never persisted (ADR-012). When feedback is disabled the feedback
+// paragraph is omitted to avoid misleading the agent.
+//
+// The preamble is Gleipnir's, not the policy's: `agent.preamble` was removed
+// because it let a policy replace this whole block — including the operating
+// principles — and nothing used it. Per-run instruction goes in `agent.task`,
+// which is appended below.
 func RenderSystemPrompt(p *model.ParsedPolicy, granted []model.GrantedTool, now time.Time) string {
 	var b strings.Builder
 
-	preamble := p.Agent.Preamble
-	if preamble == "" {
-		// Build the default preamble conditionally based on feedback config.
-		// Custom preambles are left as-is — the operator controls their content.
-		preamble = defaultPreambleBase
-		if p.Capabilities.Feedback.Enabled {
-			preamble += feedbackPreambleAddendum
-		}
-		preamble += defaultPreambleSuffix
+	preamble := defaultPreambleBase
+	if p.Capabilities.Feedback.Enabled {
+		preamble += feedbackPreambleAddendum
 	}
+	preamble += defaultPreambleSuffix
 	b.WriteString(preamble)
 	b.WriteString("\n\nThis run started at: " + now.Format(config.TimestampFormat))
 	b.WriteString("\n\n")

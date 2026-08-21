@@ -943,7 +943,15 @@ agent:
 	}
 }
 
-func TestParse_CustomPreamble(t *testing.T) {
+// TestParse_RemovedPreambleKeyIsIgnored pins the migration behaviour for
+// `agent.preamble`, which was removed as a policy field.
+//
+// Parse uses yaml.Unmarshal without KnownFields, so an unrecognised key is
+// skipped rather than rejected. That is what makes the removal safe for
+// policies already stored with a preamble: they keep parsing and simply get
+// Gleipnir's preamble from here on. If anyone ever turns on strict decoding,
+// this test fails and says why.
+func TestParse_RemovedPreambleKeyIsIgnored(t *testing.T) {
 	raw := `
 name: test
 trigger:
@@ -952,15 +960,15 @@ capabilities:
   tools:
     - tool: s.t
 agent:
-  preamble: Custom preamble text
+  preamble: Text from a policy stored before the field was removed
   task: do it
 `
 	p, err := Parse(raw, "anthropic", "claude-sonnet-4-6")
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("a stored policy carrying the removed preamble key must still parse: %v", err)
 	}
-	if p.Agent.Preamble != "Custom preamble text" {
-		t.Errorf("preamble = %q, want %q", p.Agent.Preamble, "Custom preamble text")
+	if p.Agent.Task != "do it" {
+		t.Errorf("task = %q, want %q", p.Agent.Task, "do it")
 	}
 }
 

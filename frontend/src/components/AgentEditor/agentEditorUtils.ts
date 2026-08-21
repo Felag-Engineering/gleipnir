@@ -37,10 +37,9 @@ export interface FormState {
 // ---------------------------------------------------------------------------
 //
 // The form models a subset of schemas/policy.yaml. Everything outside that
-// subset -- `agent.preamble`, `model.options`, `agent.limits.
-// max_elicitations_per_run`, and per-tool ADR-017 `params` -- used to be
-// destroyed on save, because formStateToYaml built its document from an empty
-// object. ADR-019 makes Form the only editing surface, so a field deleted that
+// subset -- `model.options`, `agent.limits.max_elicitations_per_run`, and
+// per-tool ADR-017 `params` -- used to be destroyed on save, because
+// formStateToYaml built its document from an empty object. ADR-019 makes Form the only editing surface, so a field deleted that
 // way had no route back, and for `params` the deletion silently widened the
 // schema the agent is given.
 //
@@ -53,15 +52,10 @@ export interface FormState {
 // that when a section starts editing it, and not before.
 const MODELLED_ROOT = ['name', 'description', 'folder', 'audience', 'model', 'trigger', 'capabilities', 'agent']
 const MODELLED_MODEL = ['provider', 'name']
-// `preamble` is listed as form-owned even though no section edits it, which
-// means a save deliberately DROPS it. That is pre-existing behaviour pinned by
-// "does not emit preamble" in agentEditorUtils.test.ts and left untouched here.
-// Note it disagrees with the rest of the system: internal/policy/
-// prompt_generator.go:44 still honours agent.preamble and only falls back to the
-// default when it is empty, and schemas/policy.yaml:322 still documents it as an
-// operator-editable ADR-012 field. Resolving that contradiction is out of scope
-// for #869 — see the open question on that issue. Move `preamble` out of this
-// list to start preserving it.
+// `preamble` is listed here so a save strips it from any policy stored before
+// the field was removed. It is not a form-owned field in the usual sense —
+// there is no such field any more. Dropping it keeps the stored YAML honest
+// rather than carrying a key the backend ignores.
 const MODELLED_AGENT = ['task', 'limits', 'concurrency', 'queue_depth', 'preamble']
 const MODELLED_LIMITS = ['max_tokens_per_run', 'max_tool_calls_per_run']
 const MODELLED_CAPABILITIES = ['tools', 'feedback']
@@ -438,7 +432,8 @@ export function formStateToYaml(state: FormState): string {
   if (concurrency.concurrency === 'queue' && concurrency.queueDepth > 0) {
     agentObj.queue_depth = concurrency.queueDepth
   }
-  // Carries `agent.preamble` (ADR-012) across; the form has no section for it.
+  // Carries across any agent key the form does not model. None today —
+  // `agent.preamble` was removed from the schema and is stripped, not kept.
   agentObj = withPreserved(agentObj, srcAgent, MODELLED_AGENT)
 
   let doc: Record<string, unknown> = {

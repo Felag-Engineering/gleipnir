@@ -287,10 +287,9 @@ func convertFeedback(node yaml.Node) model.FeedbackConfig {
 
 // convertAgent maps raw YAML agent config to typed AgentConfig.
 // The resolved ModelConfig is passed in from resolveModelConfig — this function
-// handles everything else (preamble, task, limits, concurrency).
+// handles everything else (task, limits, concurrency).
 func convertAgent(r rawAgent, mc model.ModelConfig) model.AgentConfig {
 	ac := model.AgentConfig{
-		Preamble:    strings.TrimSpace(r.Preamble),
 		Task:        strings.TrimSpace(r.Task),
 		ModelConfig: mc,
 	}
@@ -395,7 +394,6 @@ type rawTool struct {
 }
 
 type rawAgent struct {
-	Preamble    string    `yaml:"preamble"`
 	Task        string    `yaml:"task"`
 	Limits      rawLimits `yaml:"limits"`
 	Concurrency string    `yaml:"concurrency"`

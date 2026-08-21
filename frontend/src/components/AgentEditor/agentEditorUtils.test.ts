@@ -419,9 +419,10 @@ trigger:
     expect(output).toContain('2025-01-01T00:00:00Z')
   })
 
-  it('does not emit preamble — preamble is no longer a per-policy field', () => {
-    // Existing policies with preamble: in YAML are silently migrated on first save
-    // (preamble field is dropped). This is intentional per the issue.
+  it('does not emit preamble — the field was removed from the policy schema', () => {
+    // agent.preamble no longer exists: the backend ignores the key and the
+    // schema no longer documents it. A save strips it from a policy stored
+    // before the removal, so the YAML stops carrying a key nothing reads.
     const yaml = `name: p
 agent:
   preamble: "System context."
