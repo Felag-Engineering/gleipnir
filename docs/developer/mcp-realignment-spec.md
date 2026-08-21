@@ -1,8 +1,12 @@
 # MCP 2026 Realignment — Target Architecture Specification
 
 **Target release tag:** `v0.2.0-alpha`
-**Status:** Accepted 2026-07-30 (design consensus). The §10–§11 MCP-client half shipped in
-milestone #13; the plugin/container/HITL half is not started.
+**Status:** Accepted 2026-07-30 (design consensus). Shipped: the §10–§11 MCP-client half
+(milestone #13) and the §6 tool-initiated HITL half (milestone #14). Built but NOT LIVE: the
+§7 container substrate (milestone #15) — its packages are implemented and covered by a
+real-daemon CI lane (#820), but the reconciler is not started by `main.go`, so the v1.1 gRPC
+substrate is still what runs. Not started: §5 events (#16), §8 host endpoint (#17), §9 user
+scoping (#18), §12 Slack rewrite and cutover (#19, #22), §4.2 conformance suite (#20).
 **Amendment 1:** Accepted 2026-08-04 — see §0. Channel delivery, config-option lookup, and
 identity-code delivery move onto extension surfaces; events adopt CloudEvents envelopes;
 the host API is re-specified as a host-side MCP endpoint (gRPC and protobuf are removed
