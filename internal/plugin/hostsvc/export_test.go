@@ -1,6 +1,10 @@
 package hostsvc
 
-import "time"
+import (
+	"time"
+
+	"github.com/felag-engineering/gleipnir/internal/plugin/pluginmetrics"
+)
 
 // SetTimeNowForTest swaps the package-level timeNow clock for tests in the
 // hostsvc_test external package. It returns a restore function the caller
@@ -14,10 +18,13 @@ func SetTimeNowForTest(fn func() time.Time) (restore func()) {
 	return func() { timeNow = orig }
 }
 
-// Exported caps for use in external test package assertions.
+// Exported caps for use in external test package assertions. The values
+// moved to internal/plugin/pluginmetrics with the guard itself (#877); these
+// aliases keep this package's gRPC-level tests reading naturally until the
+// whole package is removed at the cutover (#883).
 const (
-	MetricNameCap      = metricNameCap
-	MaxMetricNameBytes = maxMetricNameBytes
-	MaxLabelKeyBytes   = maxLabelKeyBytes
-	MaxLabelValueBytes = maxLabelValueBytes
+	MetricNameCap      = pluginmetrics.MetricNameCap
+	MaxMetricNameBytes = pluginmetrics.MaxMetricNameBytes
+	MaxLabelKeyBytes   = pluginmetrics.MaxLabelKeyBytes
+	MaxLabelValueBytes = pluginmetrics.MaxLabelValueBytes
 )

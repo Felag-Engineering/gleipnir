@@ -1,4 +1,13 @@
-package hostsvc
+// Package pluginmetrics is the ADR-047 guard for plugin-emitted metrics:
+// force-prefixed names, auto-injected plugin/instance labels, hard
+// cardinality and name-count caps with loud rejection, and inconsistent
+// label-set rejection instead of a GaugeVec panic.
+//
+// Extracted from internal/plugin/hostsvc (#877) so the host endpoint's
+// host/emit_metric tool and the gRPC EmitMetric RPC share one guard while
+// both substrates are alive; hostsvc's copy of the behaviour dies with it at
+// the cutover (#883), this package does not.
+package pluginmetrics
 
 import (
 	"fmt"
@@ -11,26 +20,26 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/infra/metrics"
 )
 
-// cardinalityCap is the maximum number of distinct values allowed per label key
+// CardinalityCap is the maximum number of distinct values allowed per label key
 // per metric. Exceeding this limit on any label causes the emission to be
-// rejected with codes.ResourceExhausted (loud failure, per spec §8.1).
-const cardinalityCap = 100
+// rejected loudly (spec §8.1); callers map the returned code string onto their transport's error.
+const CardinalityCap = 100
 
-// metricNameCap is the maximum number of distinct metric names a single plugin
+// MetricNameCap is the maximum number of distinct metric names a single plugin
 // instance may register. A misbehaving plugin emitting unbounded distinct names
 // would grow the Prometheus registry without bound; this cap prevents that.
-const metricNameCap = 100
+const MetricNameCap = 100
 
-// maxMetricNameBytes is the maximum byte length of a user-supplied metric name
+// MaxMetricNameBytes is the maximum byte length of a user-supplied metric name
 // (before the gleipnir_plugin_ prefix is added). Prometheus itself enforces a
 // similar constraint; we reject early with a clear error.
-const maxMetricNameBytes = 128
+const MaxMetricNameBytes = 128
 
-// maxLabelKeyBytes is the maximum byte length of a user-supplied label key.
-const maxLabelKeyBytes = 64
+// MaxLabelKeyBytes is the maximum byte length of a user-supplied label key.
+const MaxLabelKeyBytes = 64
 
-// maxLabelValueBytes is the maximum byte length of a user-supplied label value.
-const maxLabelValueBytes = 256
+// MaxLabelValueBytes is the maximum byte length of a user-supplied label value.
+const MaxLabelValueBytes = 256
 
 // gaugeEntry pairs a registered GaugeVec with the sorted set of user-supplied
 // label keys it was registered with. This lets us detect inconsistent label
@@ -41,7 +50,7 @@ type gaugeEntry struct {
 	labelKeys map[string]struct{} // user-supplied keys only (excludes auto-injected plugin/instance)
 }
 
-// pluginMetrics manages Prometheus GaugeVecs for plugin-emitted metrics.
+// Metrics manages Prometheus GaugeVecs for plugin-emitted metrics.
 //
 // Design note: every plugin-emitted metric is registered as a GaugeVec because
 // the EmitMetric proto carries only (name, value, labels) with no type
@@ -49,7 +58,7 @@ type gaugeEntry struct {
 // that this RPC does not provide. Gauge is the safest universal choice; plugins
 // needing monotonic counters require a dedicated follow-up RPC with explicit
 // type support.
-type pluginMetrics struct {
+type Metrics struct {
 	mu sync.Mutex
 
 	// gauges maps the fully-qualified metric name (gleipnir_plugin_<name>) to
@@ -62,14 +71,14 @@ type pluginMetrics struct {
 	cardinality map[string]map[string]map[string]struct{} // metric → labelKey → valueSet
 
 	// namesByInstance tracks the set of distinct fully-qualified metric names
-	// registered by each instance (keyed by instanceID). The metricNameCap is
+	// registered by each instance (keyed by instanceID). The MetricNameCap is
 	// enforced per-instance so one misbehaving instance cannot exhaust the
 	// budget for every other instance on the host.
 	namesByInstance map[string]map[string]struct{} // instanceID → set of fullNames
 }
 
-func newPluginMetrics() *pluginMetrics {
-	return &pluginMetrics{
+func New() *Metrics {
+	return &Metrics{
 		gauges:          make(map[string]gaugeEntry),
 		cardinality:     make(map[string]map[string]map[string]struct{}),
 		namesByInstance: make(map[string]map[string]struct{}),
@@ -88,26 +97,26 @@ var reservedLabels = map[string]bool{metrics.LabelPlugin: true, metrics.LabelIns
 // userLabels must not contain "plugin" or "instance" (caller validates first).
 //
 // Returns an error envelope code string on failure, or "" on success.
-func (m *pluginMetrics) set(name string, value float64, userLabels map[string]string, pluginID, instanceID string) (errCode string, err error) {
+func (m *Metrics) Set(name string, value float64, userLabels map[string]string, pluginID, instanceID string) (errCode string, err error) {
 	if strings.HasPrefix(name, "gleipnir_plugin_") {
 		return "invalid_metric_name", fmt.Errorf("metric name must not include the gleipnir_plugin_ prefix (host adds it automatically)")
 	}
 	if name == "" {
 		return "invalid_metric_name", fmt.Errorf("metric name must not be empty")
 	}
-	if len(name) > maxMetricNameBytes {
-		return "invalid_metric_name", fmt.Errorf("metric name exceeds maximum length of %d bytes", maxMetricNameBytes)
+	if len(name) > MaxMetricNameBytes {
+		return "invalid_metric_name", fmt.Errorf("metric name exceeds maximum length of %d bytes", MaxMetricNameBytes)
 	}
 
 	for k, v := range userLabels {
 		if reservedLabels[k] {
 			return "reserved_label", fmt.Errorf("label key %q is reserved by the host (auto-injected)", k)
 		}
-		if len(k) > maxLabelKeyBytes {
-			return "invalid_label", fmt.Errorf("label key %q exceeds maximum length of %d bytes", k, maxLabelKeyBytes)
+		if len(k) > MaxLabelKeyBytes {
+			return "invalid_label", fmt.Errorf("label key %q exceeds maximum length of %d bytes", k, MaxLabelKeyBytes)
 		}
-		if len(v) > maxLabelValueBytes {
-			return "invalid_label", fmt.Errorf("label value for key %q exceeds maximum length of %d bytes", k, maxLabelValueBytes)
+		if len(v) > MaxLabelValueBytes {
+			return "invalid_label", fmt.Errorf("label value for key %q exceeds maximum length of %d bytes", k, MaxLabelValueBytes)
 		}
 	}
 
@@ -124,11 +133,11 @@ func (m *pluginMetrics) set(name string, value float64, userLabels map[string]st
 			break
 		}
 		ks := mc[k]
-		if len(ks) >= cardinalityCap {
+		if len(ks) >= CardinalityCap {
 			if _, seen := ks[v]; !seen {
 				return "cardinality_cap_exceeded", fmt.Errorf(
 					"label %q for metric %q has reached the %d-value cardinality cap",
-					k, fullName, cardinalityCap,
+					k, fullName, CardinalityCap,
 				)
 			}
 		}
@@ -140,10 +149,10 @@ func (m *pluginMetrics) set(name string, value float64, userLabels map[string]st
 		// would let one instance deny registration to every other instance on
 		// the host; the cap must be scoped to the calling instance instead.
 		instNames := m.namesByInstance[instanceID]
-		if _, alreadyOwned := instNames[fullName]; !alreadyOwned && len(instNames) >= metricNameCap {
+		if _, alreadyOwned := instNames[fullName]; !alreadyOwned && len(instNames) >= MetricNameCap {
 			return "metric_name_cap_exceeded", fmt.Errorf(
 				"plugin instance has reached the %d distinct metric name cap; metric %q rejected",
-				metricNameCap, fullName,
+				MetricNameCap, fullName,
 			)
 		}
 

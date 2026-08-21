@@ -11,6 +11,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	"github.com/felag-engineering/gleipnir/internal/plugin/dispatch"
+	"github.com/felag-engineering/gleipnir/internal/plugin/pluginmetrics"
 	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
 )
 
@@ -109,7 +110,7 @@ type Server struct {
 	resolver      CallContextResolver
 	binder        InstanceBinder
 	publisher     event.Publisher
-	metrics       *pluginMetrics
+	metrics       *pluginmetrics.Metrics
 	// channels is nil when the plugin substrate is disabled; WriteAuditStep
 	// treats nil as "resolver unwired" and collapses into the late-callback path.
 	channels ChannelResolver
@@ -191,7 +192,7 @@ func NewServer(
 		resolver:      resolver,
 		binder:        binder,
 		publisher:     publisher,
-		metrics:       newPluginMetrics(),
+		metrics:       pluginmetrics.New(),
 		channels:      channels,
 		eventLimiter:  newEventRateLimiter(),
 	}
