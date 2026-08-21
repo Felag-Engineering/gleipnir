@@ -958,7 +958,7 @@ func TestCallTool_ModernPath_MetaShape(t *testing.T) {
 			if meta == nil {
 				t.Fatal("params carries no _meta")
 			}
-			pv := metaString(meta, metaKeyProtocolVersion)
+			pv := metaString(meta, MetaKeyProtocolVersion)
 			if pv != ProtocolVersion20260728 {
 				t.Errorf("_meta.protocolVersion = %q, want %q", pv, ProtocolVersion20260728)
 			}
@@ -971,7 +971,7 @@ func TestCallTool_ModernPath_MetaShape(t *testing.T) {
 			if _, ok := meta[metaKeyClientInfo]; !ok {
 				t.Error("_meta missing clientInfo")
 			}
-			if got := string(meta[metaKeyClientCapabilities]); got != tc.wantCapsWire {
+			if got := string(meta[MetaKeyClientCapabilities]); got != tc.wantCapsWire {
 				t.Errorf("_meta.clientCapabilities = %s, want %s", got, tc.wantCapsWire)
 			}
 		})
@@ -1002,12 +1002,12 @@ func TestDiscoverTools_ModernPath_InjectsMeta(t *testing.T) {
 	if meta == nil {
 		t.Fatal("params carries no _meta")
 	}
-	for _, key := range []string{metaKeyProtocolVersion, metaKeyClientInfo, metaKeyClientCapabilities} {
+	for _, key := range []string{MetaKeyProtocolVersion, metaKeyClientInfo, MetaKeyClientCapabilities} {
 		if _, ok := meta[key]; !ok {
 			t.Errorf("_meta missing %q", key)
 		}
 	}
-	if got := string(meta[metaKeyClientCapabilities]); got != "{}" {
+	if got := string(meta[MetaKeyClientCapabilities]); got != "{}" {
 		t.Errorf("_meta.clientCapabilities = %s, want {}", got)
 	}
 }

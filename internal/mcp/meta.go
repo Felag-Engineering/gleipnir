@@ -9,10 +9,10 @@ import (
 // _meta reserved keys used on every 2026-07-28 request (basic/index.md
 // "Per-request protocol fields").
 const (
-	metaKeyProtocolVersion    = "io.modelcontextprotocol/protocolVersion"
+	MetaKeyProtocolVersion    = "io.modelcontextprotocol/protocolVersion"
 	metaKeyClientInfo         = "io.modelcontextprotocol/clientInfo"
-	metaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
-	metaKeyServerInfo         = "io.modelcontextprotocol/serverInfo"
+	MetaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
+	MetaKeyServerInfo         = "io.modelcontextprotocol/serverInfo"
 )
 
 // ClientCapabilities is the per-request capability declaration Gleipnir puts in
@@ -51,12 +51,12 @@ func (cc ClientCapabilities) wireObject() map[string]any {
 // #741 "no mutable aliases into a load-bearing global" precedent).
 func newRequestMeta(protocolVersion string, caps ClientCapabilities) map[string]any {
 	return map[string]any{
-		metaKeyProtocolVersion: protocolVersion,
+		MetaKeyProtocolVersion: protocolVersion,
 		metaKeyClientInfo: map[string]any{
 			"name":    "gleipnir",
 			"version": version.Version,
 		},
-		metaKeyClientCapabilities: caps.wireObject(),
+		MetaKeyClientCapabilities: caps.wireObject(),
 	}
 }
 
@@ -107,7 +107,7 @@ func parseServerInfo(rawMeta json.RawMessage) ServerInfo {
 	if err := json.Unmarshal(rawMeta, &meta); err != nil {
 		return ServerInfo{}
 	}
-	raw, ok := meta[metaKeyServerInfo]
+	raw, ok := meta[MetaKeyServerInfo]
 	if !ok {
 		return ServerInfo{}
 	}

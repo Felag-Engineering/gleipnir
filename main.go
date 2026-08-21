@@ -33,6 +33,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
 	"github.com/felag-engineering/gleipnir/internal/plugin/dispatch"
+	"github.com/felag-engineering/gleipnir/internal/plugin/hostendpoint"
 	"github.com/felag-engineering/gleipnir/internal/plugin/process"
 	"github.com/felag-engineering/gleipnir/internal/policy"
 	"github.com/felag-engineering/gleipnir/internal/settings"
@@ -173,6 +174,19 @@ func run(cfg config.Config) error {
 		return fmt.Errorf("start plugin runtime: %w", err)
 	}
 	runManager.WithPluginCanceller(rt.Pool)
+
+	// Host-plane invariant (mcp-realignment-spec.md §8, ADR-057): no
+	// host-endpoint tool name may sit in the shared tool namespace, because
+	// everything there is discoverable and grantable to an agent. The plugin
+	// runtime has made its reservations by this point; MCP-side reservations
+	// happen lazily later, but those come from the operator-registered server
+	// rows this same check re-runs against on the conformance suite
+	// (milestone #20). Refusing to start beats serving a policy gate that
+	// silently grants host tools — the #871 posture, applied to the
+	// capability boundary itself.
+	if err := hostendpoint.AssertHostPlane(arbiter); err != nil {
+		return err
+	}
 
 	// Registry construction is placed after encryption key parsing so
 	// WithEncryptionKey can be passed at construction time.

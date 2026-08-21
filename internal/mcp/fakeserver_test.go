@@ -19,8 +19,8 @@ func discoverBody(protocolVersion string) map[string]any {
 		"method":  "server/discover",
 		"params": map[string]any{
 			"_meta": map[string]any{
-				metaKeyProtocolVersion:    protocolVersion,
-				metaKeyClientCapabilities: map[string]any{},
+				MetaKeyProtocolVersion:    protocolVersion,
+				MetaKeyClientCapabilities: map[string]any{},
 			},
 		},
 	}
@@ -245,7 +245,7 @@ func TestFakeMCPServer_A4HeaderEnforcement(t *testing.T) {
 			"method":  "server/discover",
 			"params": map[string]any{
 				"_meta": map[string]any{
-					metaKeyProtocolVersion: "2026-07-28",
+					MetaKeyProtocolVersion: "2026-07-28",
 					// clientCapabilities deliberately omitted.
 				},
 			},
@@ -279,7 +279,7 @@ func TestFakeMCPServer_A4HeaderEnforcement(t *testing.T) {
 			"method":  "server/discover",
 			"params": map[string]any{
 				"_meta": map[string]any{
-					metaKeyClientCapabilities: map[string]any{},
+					MetaKeyClientCapabilities: map[string]any{},
 					// protocolVersion deliberately omitted; the header
 					// cannot then be compared against a body value, so the
 					// fake treats this as the body-regime failure.
@@ -344,8 +344,8 @@ func TestFakeMCPServer_A4HeaderEnforcement(t *testing.T) {
 // discoverBody's inner _meta shape.
 func toolMeta(protocolVersion string) map[string]any {
 	return map[string]any{
-		metaKeyProtocolVersion:    protocolVersion,
-		metaKeyClientCapabilities: map[string]any{},
+		MetaKeyProtocolVersion:    protocolVersion,
+		MetaKeyClientCapabilities: map[string]any{},
 	}
 }
 

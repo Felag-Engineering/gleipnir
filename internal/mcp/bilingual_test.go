@@ -95,10 +95,10 @@ func TestToolTraffic_ShapingByPinnedVersion(t *testing.T) {
 				if meta == nil {
 					t.Fatalf("params carry no _meta, want one on the modern path: %s", req.Params)
 				}
-				if got := metaString(meta, metaKeyProtocolVersion); got != req.ProtocolHeader {
+				if got := metaString(meta, MetaKeyProtocolVersion); got != req.ProtocolHeader {
 					t.Errorf("_meta.protocolVersion = %q, want header value %q", got, req.ProtocolHeader)
 				}
-				if got := string(meta[metaKeyClientCapabilities]); got != "{}" {
+				if got := string(meta[MetaKeyClientCapabilities]); got != "{}" {
 					t.Errorf("_meta.clientCapabilities = %s, want {}", got)
 				}
 			}
