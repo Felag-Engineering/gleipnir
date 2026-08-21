@@ -22,7 +22,10 @@ type InstanceManifestResolver interface {
 // block against the manifest's binding_schema.
 //
 // Validation is BLOCKING — a non-existent plugin reference can never produce a
-// run, so we reject at save time (422) rather than warning.
+// run, so we reject at save time rather than warning. The handler surfaces the
+// rejection as 400 (policy_handler.go:364 maps every validation issue the same
+// way); an earlier version of this comment said 422, which was never the code
+// returned.
 type SubscribedBindingValidator struct {
 	resolver InstanceManifestResolver
 	snap     *configvalidate.Snapshotter

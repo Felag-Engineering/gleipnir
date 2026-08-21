@@ -89,6 +89,13 @@ type BackgroundServices struct {
 	EncryptionKey    []byte                 // AES-256 key for MCP auth header encryption; nil when unset
 	Arbiter          *toolregistry.Registry // cross-source tool namespace arbiter; nil disables enforcement
 	Settings         *settings.Service      // system-wide runtime settings; required by manual-trigger and policy services
+	// SubscribedValidator performs ADR-048 binding validation on policy save.
+	// It is built in main.go because it needs the plugin runtime's manifest
+	// snapshot, which the router has no other route to. Leaving it nil skips
+	// binding validation entirely — see #870, where exactly that happened in
+	// production because the router built its own policy service and this
+	// collaborator only ever reached a different one.
+	SubscribedValidator *policy.SubscribedBindingValidator
 }
 
 // Metadata holds descriptive, read-only values about the running instance.
@@ -257,6 +264,11 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 			toolLookup = cfg.Services.Registry
 		}
 		policySvc := policy.NewService(cfg.Services.Store, toolLookup, cfg.Services.ProviderRegistry, cfg.Services.ProviderRegistry, cfg.Services.Settings)
+		// This service is what serves POST/PUT /api/v1/policies, so it is the
+		// one that has to carry the binding validator (#870).
+		if cfg.Services.SubscribedValidator != nil {
+			policySvc.WithSubscribedBindingValidator(cfg.Services.SubscribedValidator)
+		}
 		r.Mount("/api/v1", newAPISubRouter(cfg.Services.Store, policySvc, cfg.Services.Registry, cfg.Services.ModelLister, cfg.Services.ModelFilter, cfg.Handlers.PolicyWebhookHandler, cfg.Services.Poller, cfg.Services.Scheduler, cfg.Services.Cron, cfg.Services.EncryptionKey, cfg.Services.Arbiter, cfg.Services.ProviderRegistry))
 
 		// Plugin install and create-instance endpoints are registered outside the

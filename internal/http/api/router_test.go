@@ -104,6 +104,22 @@ func TestBuildRouter_AdminHandlerStub(t *testing.T) {
 // AdminHandler implementation (so tests can substitute a stub).
 func buildTestRouterWithStoreAndAdmin(t *testing.T, store *db.Store, adminHandler api.AdminHandler) http.Handler {
 	t.Helper()
+	return buildTestRouterWithAdminAndSubscribedValidator(t, store, adminHandler, nil)
+}
+
+// buildTestRouterWithSubscribedValidator builds the standard test router with an
+// ADR-048 binding validator attached, so a test can exercise the save path the
+// way production wires it (#870).
+func buildTestRouterWithSubscribedValidator(t *testing.T, store *db.Store, v *policy.SubscribedBindingValidator) http.Handler {
+	t.Helper()
+	adminQuerier := admin.NewQuerierAdapter(store.Queries())
+	systemSettings := settings.NewService(store.Queries())
+	adminHandler := admin.NewHandler(adminQuerier, systemSettings, nil, []string{"anthropic"}, nil, nil, nil)
+	return buildTestRouterWithAdminAndSubscribedValidator(t, store, adminHandler, v)
+}
+
+func buildTestRouterWithAdminAndSubscribedValidator(t *testing.T, store *db.Store, adminHandler api.AdminHandler, subscribedValidator *policy.SubscribedBindingValidator) http.Handler {
+	t.Helper()
 
 	broadcaster := sse.NewBroadcaster()
 	sseHandler := sse.NewHandler(broadcaster)
@@ -154,6 +170,9 @@ func buildTestRouterWithStoreAndAdmin(t *testing.T, store *db.Store, adminHandle
 			ModelLister:      providerRegistry,
 			ProviderRegistry: providerRegistry,
 			Settings:         systemSettings,
+			// Nil for most tests, which is the historical default. Tests that
+			// care about ADR-048 binding validation on save pass one in.
+			SubscribedValidator: subscribedValidator,
 			// ModelFilter, Poller, Scheduler, Cron, EncryptionKey intentionally
 			// left as zero values — tests don't require them.
 		},

@@ -300,9 +300,8 @@ func run(cfg config.Config) error {
 		policyService.WithWebhookSecretEncrypter(webhookEncrypter)
 	}
 	subscribedResolver := &pluginInstanceResolver{q: store.Queries()}
-	policyService.WithSubscribedBindingValidator(
-		policy.NewSubscribedBindingValidator(subscribedResolver, rt.ManifestSnap),
-	)
+	subscribedValidator := policy.NewSubscribedBindingValidator(subscribedResolver, rt.ManifestSnap)
+	policyService.WithSubscribedBindingValidator(subscribedValidator)
 	policyWebhookHandler := api.NewPolicyWebhookHandler(policyService)
 
 	scheduler := trigger.NewScheduler(store, launcher, systemSettings)
@@ -335,6 +334,10 @@ func run(cfg config.Config) error {
 		EncryptionKey:    encryptionKey,
 		Arbiter:          arbiter,
 		Settings:         systemSettings,
+		// The router builds its own policy.Service for the policy routes, so the
+		// validator has to be handed to it explicitly; setting it on the service
+		// above reaches only the webhook rotate/reveal handler (#870).
+		SubscribedValidator: subscribedValidator,
 	}
 
 	// Phase 2: HTTP handlers.
