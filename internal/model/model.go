@@ -388,7 +388,6 @@ const DefaultQueueDepth = 10
 // AgentConfig holds the prompt fields and runtime limits for an agent run.
 type AgentConfig struct {
 	ModelConfig ModelConfig `json:"model_config"`
-	Preamble    string
 	Task        string
 	Limits      RunLimits
 	Concurrency ConcurrencyPolicy

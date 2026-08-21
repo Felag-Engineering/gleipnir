@@ -176,10 +176,6 @@ A run in any active state can be cancelled by an operator from the UI. Cancellat
 
 The `task` field is the core instruction for the agent — what to do, what success looks like, any constraints. The trigger payload (webhook body, poll filter results) is delivered as the agent's first user message; reference it from the task as needed.
 
-### Preamble
-
-`preamble` is prepended to the system prompt before `task`. If omitted, Gleipnir uses its default BoundAgent preamble. Override it only if you need fundamentally different behavioral instructions. The runtime appends the capability list (tools and feedback status) after the preamble automatically — do not duplicate tool names in the preamble.
-
 ### Limits
 
 ```yaml
