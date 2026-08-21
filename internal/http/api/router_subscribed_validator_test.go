@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/felag-engineering/gleipnir/internal/http/api"
 	"github.com/felag-engineering/gleipnir/internal/policy"
 	"github.com/felag-engineering/gleipnir/internal/testutil"
 )
@@ -88,17 +89,27 @@ func TestPolicySaveRunsSubscribedBindingValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("without a validator the same policy saves, which is the defect this wiring closes", func(t *testing.T) {
-		// Pins the cost of a nil collaborator: it is not a degraded check, it is
-		// no check. Kept as an explicit statement of the contract rather than a
-		// note in a comment. #871 removes the ability to reach this state.
+	t.Run("a router cannot be built with a policy service that is missing the validator", func(t *testing.T) {
+		// Before #871 this state was not just reachable but shipped: a service
+		// with a nil validator served the policy routes and saved the policy
+		// above with a 201. BuildRouter now refuses it, so "binding validation
+		// is off" cannot be reached by forgetting something.
 		store := testutil.NewTestStore(t)
-		token := insertUserWithSession(t, store, "nil-validator-admin", "admin")
+		incomplete := policy.NewService(store, nil, nil, nil, nil)
 
-		w := post(t, buildTestRouterWithSubscribedValidator(t, store, nil), token)
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Fatal("BuildRouter accepted a policy service with missing collaborators; a save path that skips checks is reachable again")
+			}
+			msg, _ := r.(string)
+			if !strings.Contains(msg, "subscribedValidator") {
+				t.Errorf("panic does not name the missing collaborator, so the operator cannot tell what to wire: %v", r)
+			}
+		}()
 
-		if w.Code != http.StatusCreated {
-			t.Fatalf("status = %d, want %d (the policy is otherwise valid); body: %s", w.Code, http.StatusCreated, w.Body.String())
-		}
+		api.BuildRouter(api.RouterConfig{
+			Services: api.BackgroundServices{Store: store, PolicyService: incomplete},
+		})
 	})
 }

@@ -89,13 +89,18 @@ type BackgroundServices struct {
 	EncryptionKey    []byte                 // AES-256 key for MCP auth header encryption; nil when unset
 	Arbiter          *toolregistry.Registry // cross-source tool namespace arbiter; nil disables enforcement
 	Settings         *settings.Service      // system-wide runtime settings; required by manual-trigger and policy services
-	// SubscribedValidator performs ADR-048 binding validation on policy save.
-	// It is built in main.go because it needs the plugin runtime's manifest
-	// snapshot, which the router has no other route to. Leaving it nil skips
-	// binding validation entirely — see #870, where exactly that happened in
-	// production because the router built its own policy service and this
-	// collaborator only ever reached a different one.
-	SubscribedValidator *policy.SubscribedBindingValidator
+	// PolicyService serves the policy routes. It is built by the caller rather
+	// than here, because the router cannot see every collaborator it needs (the
+	// ADR-048 binding validator needs the plugin runtime's manifest snapshot)
+	// and a router-built service was therefore always a partial one — which is
+	// how binding validation came to run on no save path at all (#870).
+	//
+	// Required, and required to be COMPLETE: BuildRouter refuses a service with
+	// a missing collaborator, because a nil one does not fail a request, it
+	// silently skips a check. main.go calls RequireComplete itself and reports a
+	// clean startup error; the check here is the backstop that makes a
+	// half-wired policy gate unreachable through the router at all (#871).
+	PolicyService *policy.Service
 }
 
 // Metadata holds descriptive, read-only values about the running instance.
@@ -125,6 +130,16 @@ type RouterConfig struct {
 // Route registration order matters: more-specific paths are registered before
 // catch-alls, and the SPA handler is always last.
 func BuildRouter(cfg RouterConfig) chi.Router {
+	// Panic rather than return an error: both conditions are wiring mistakes
+	// fixed at compile-and-wire time, not runtime conditions a caller could
+	// handle, and the alternative to failing here is serving policy routes that
+	// quietly enforce less than they claim.
+	if cfg.Services.PolicyService == nil {
+		panic("api.BuildRouter: Services.PolicyService is nil — the policy routes have no service to call")
+	}
+	if err := cfg.Services.PolicyService.RequireComplete(); err != nil {
+		panic("api.BuildRouter: " + err.Error())
+	}
 	r := chi.NewRouter()
 	r.Use(httputil.SecurityHeaders)
 	r.Use(middleware.RequestID)
@@ -256,20 +271,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 		r.Get("/api/v1/config", cfg.Handlers.AdminHandler.GetPublicConfig)
 
 		// Policies, MCP, stats, models, and attention — mounted under /api/v1.
-		// *mcp.Registry satisfies policy.ToolLookup. Assign through a nil check: a
-		// typed-nil *mcp.Registry stored in the interface would make Service.lookup
-		// non-nil and panic on first use.
-		var toolLookup policy.ToolLookup
-		if cfg.Services.Registry != nil {
-			toolLookup = cfg.Services.Registry
-		}
-		policySvc := policy.NewService(cfg.Services.Store, toolLookup, cfg.Services.ProviderRegistry, cfg.Services.ProviderRegistry, cfg.Services.Settings)
-		// This service is what serves POST/PUT /api/v1/policies, so it is the
-		// one that has to carry the binding validator (#870).
-		if cfg.Services.SubscribedValidator != nil {
-			policySvc.WithSubscribedBindingValidator(cfg.Services.SubscribedValidator)
-		}
-		r.Mount("/api/v1", newAPISubRouter(cfg.Services.Store, policySvc, cfg.Services.Registry, cfg.Services.ModelLister, cfg.Services.ModelFilter, cfg.Handlers.PolicyWebhookHandler, cfg.Services.Poller, cfg.Services.Scheduler, cfg.Services.Cron, cfg.Services.EncryptionKey, cfg.Services.Arbiter, cfg.Services.ProviderRegistry))
+		r.Mount("/api/v1", newAPISubRouter(cfg.Services.Store, cfg.Services.PolicyService, cfg.Services.Registry, cfg.Services.ModelLister, cfg.Services.ModelFilter, cfg.Handlers.PolicyWebhookHandler, cfg.Services.Poller, cfg.Services.Scheduler, cfg.Services.Cron, cfg.Services.EncryptionKey, cfg.Services.Arbiter, cfg.Services.ProviderRegistry))
 
 		// Plugin install and create-instance endpoints are registered outside the
 		// /api/v1/admin route group so each can carry its own body-size limit.

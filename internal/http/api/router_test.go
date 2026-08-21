@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -148,7 +149,16 @@ func buildTestRouterWithAdminAndSubscribedValidator(t *testing.T, store *db.Stor
 	authHandler := auth.NewHandler(store.Queries(), store.DB())
 	settingsHandler := auth.NewSettingsHandler(store.Queries())
 
-	policyService := policy.NewService(store, nil, providerRegistry, providerRegistry, systemSettings)
+	// One service for both the policy routes and the webhook handler, mirroring
+	// main.go. BuildRouter requires a complete service, so the default is a
+	// working binding validator over an empty resolver rather than nil — a test
+	// router that skipped a check the real one runs would be testing something
+	// nobody deploys.
+	if subscribedValidator == nil {
+		subscribedValidator = policy.NewSubscribedBindingValidator(emptyInstanceResolver{}, nil)
+	}
+	policyService := policy.NewService(store, registry, providerRegistry, providerRegistry, systemSettings)
+	policyService.WithSubscribedBindingValidator(subscribedValidator)
 	policyWebhookHandler := api.NewPolicyWebhookHandler(policyService)
 
 	return api.BuildRouter(api.RouterConfig{
@@ -170,9 +180,7 @@ func buildTestRouterWithAdminAndSubscribedValidator(t *testing.T, store *db.Stor
 			ModelLister:      providerRegistry,
 			ProviderRegistry: providerRegistry,
 			Settings:         systemSettings,
-			// Nil for most tests, which is the historical default. Tests that
-			// care about ADR-048 binding validation on save pass one in.
-			SubscribedValidator: subscribedValidator,
+			PolicyService:    policyService,
 			// ModelFilter, Poller, Scheduler, Cron, EncryptionKey intentionally
 			// left as zero values — tests don't require them.
 		},
@@ -201,6 +209,14 @@ func buildTestRouterWithStore(t *testing.T, store *db.Store) http.Handler {
 func buildTestRouter(t *testing.T) http.Handler {
 	t.Helper()
 	return buildTestRouterWithStore(t, testutil.NewTestStore(t))
+}
+
+// emptyInstanceResolver resolves no plugin instance, which is the truthful
+// default for a test store that has none installed.
+type emptyInstanceResolver struct{}
+
+func (emptyInstanceResolver) ResolveInstanceByName(_ context.Context, name string) (string, error) {
+	return "", fmt.Errorf("no plugin instance named %q", name)
 }
 
 // noopConnectionTester satisfies admin.ConnectionTester without making network calls.

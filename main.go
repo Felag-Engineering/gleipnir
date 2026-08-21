@@ -294,14 +294,34 @@ func run(cfg config.Config) error {
 		}
 	}
 
-	// Wire the policy webhook handler for rotate/reveal endpoints.
-	policyService := policy.NewService(store, nil, providerRegistry, providerRegistry, systemSettings)
+	// The one policy.Service. It serves the policy routes AND the webhook
+	// rotate/reveal handler; there used to be a separate service per consumer,
+	// each holding a different subset of the collaborators, which is how ADR-017
+	// tool lookup (#788) and then ADR-048 binding validation (#870) each ended
+	// up wired to a service that nothing routed through. One construction site
+	// is what makes RequireComplete below able to speak for the whole system.
+	//
+	// *mcp.Registry satisfies policy.ToolLookup. Assign through a nil check: a
+	// typed-nil *mcp.Registry stored in the interface would make Service.lookup
+	// non-nil and panic on first use.
+	var toolLookup policy.ToolLookup
+	if registry != nil {
+		toolLookup = registry
+	}
+	subscribedResolver := &pluginInstanceResolver{q: store.Queries()}
+	policyService := policy.NewService(store, toolLookup, providerRegistry, providerRegistry, systemSettings)
+	policyService.WithSubscribedBindingValidator(
+		policy.NewSubscribedBindingValidator(subscribedResolver, rt.ManifestSnap),
+	)
 	if webhookEncrypter != nil {
 		policyService.WithWebhookSecretEncrypter(webhookEncrypter)
 	}
-	subscribedResolver := &pluginInstanceResolver{q: store.Queries()}
-	subscribedValidator := policy.NewSubscribedBindingValidator(subscribedResolver, rt.ManifestSnap)
-	policyService.WithSubscribedBindingValidator(subscribedValidator)
+	// Refuse to serve with a collaborator missing. A nil one does not fail —
+	// it makes its check quietly do nothing, which is exactly what nobody
+	// noticed twice (#871).
+	if err := policyService.RequireComplete(); err != nil {
+		return fmt.Errorf("wire policy service: %w", err)
+	}
 	policyWebhookHandler := api.NewPolicyWebhookHandler(policyService)
 
 	scheduler := trigger.NewScheduler(store, launcher, systemSettings)
@@ -334,10 +354,7 @@ func run(cfg config.Config) error {
 		EncryptionKey:    encryptionKey,
 		Arbiter:          arbiter,
 		Settings:         systemSettings,
-		// The router builds its own policy.Service for the policy routes, so the
-		// validator has to be handed to it explicitly; setting it on the service
-		// above reaches only the webhook rotate/reveal handler (#870).
-		SubscribedValidator: subscribedValidator,
+		PolicyService:    policyService,
 	}
 
 	// Phase 2: HTTP handlers.
