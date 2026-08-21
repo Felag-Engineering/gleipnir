@@ -525,6 +525,47 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
+      - name: Give the runner a systemd user session
+        run: |
+          set -euo pipefail
+          uid="$(id -u)"
+
+          # netavark hands aardvark-dns to `systemd-run --user --scope` whenever
+          # the host is systemd-booted, so on a DNS-enabled network every
+          # rootless container start needs a live *user* bus. An Actions job is
+          # not a login session, so logind has never created /run/user/$uid nor
+          # the bus inside it; enabling linger starts user@$uid.service, which
+          # creates both.
+          #
+          # This cost nothing until 2026-08-14, because an Internal network came
+          # up with DNS disabled and aardvark-dns was never spawned at all. The
+          # runtime on the runner image now keeps DNS enabled on internal
+          # networks, which turned the missing user bus from invisible into a
+          # hard failure: the reconciler's every `start` action returned
+          # `netavark: error while applying dns entries: aardvark-dns failed to
+          # start: Failed to connect to bus`, and the suite spent its 90s
+          # convergence budget retrying it.
+          if ! sudo loginctl enable-linger "$(id -un)"; then
+            echo "::warning::loginctl enable-linger failed; falling through to the session check"
+          fi
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus"
+          echo "DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS}" >> "$GITHUB_ENV"
+
+          # Probe with netavark's own invocation rather than waiting on the
+          # socket file. A bus that exists but refuses --scope would pass a file
+          # check and then fail the suite 12 minutes later as a convergence
+          # timeout that names neither systemd nor dbus.
+          for i in $(seq 1 30); do
+            if systemd-run --user -q --scope true 2>/dev/null; then
+              echo "systemd user session up after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::no usable systemd user session; netavark cannot start aardvark-dns"
+          systemd-run --user --scope true || true
+          exit 1
+
       - name: Start a rootless Podman socket
         run: |
           set -euo pipefail
@@ -533,6 +574,11 @@ jobs:
           # detection builds the podman socket path from this, so setting it is
           # also what makes DetectPosture resolve rootless-podman rather than
           # falling back to the Docker socket the runner also has.
+          #
+          # Ordering with the step above matters: netavark is exec'd by this
+          # service, so it inherits DBUS_SESSION_BUS_ADDRESS from here. Starting
+          # the service before the user session exists would leave it unset for
+          # the whole lane.
           export XDG_RUNTIME_DIR="${RUNNER_TEMP}/xdg"
           mkdir -p "${XDG_RUNTIME_DIR}/podman"
           podman system service --time=0 "unix://${XDG_RUNTIME_DIR}/podman/podman.sock" &
