@@ -103,6 +103,66 @@ func NewService(store *db.Store, lookup ToolLookup, modelValidator ModelValidato
 	}
 }
 
+// collaboratorsExemptFromCompleteness names Service fields that a correctly
+// wired deployment may legitimately leave nil, with the reason. Everything else
+// is required — see RequireComplete.
+//
+// Keep this in sync with the struct: the guard test in
+// service_completeness_test.go fails if a field is neither reported by
+// missingCollaborators nor listed here.
+var collaboratorsExemptFromCompleteness = map[string]string{
+	"encrypter": "absent when GLEIPNIR_ENCRYPTION_KEY is unset; main.go already warns loudly, and the affected endpoints return a clear error rather than silently skipping a check",
+}
+
+// missingCollaborators names the collaborators whose absence would silently
+// disable a check. The field name is returned rather than a prose description
+// so the guard test can compare it against the struct by reflection.
+func (s *Service) missingCollaborators() []string {
+	var missing []string
+	if s.store == nil {
+		missing = append(missing, "store")
+	}
+	if s.lookup == nil {
+		missing = append(missing, "lookup")
+	}
+	if s.modelValidator == nil {
+		missing = append(missing, "modelValidator")
+	}
+	if s.optionsValidator == nil {
+		missing = append(missing, "optionsValidator")
+	}
+	if s.settings == nil {
+		missing = append(missing, "settings")
+	}
+	if s.subscribedValidator == nil {
+		missing = append(missing, "subscribedValidator")
+	}
+	return missing
+}
+
+// RequireComplete returns an error naming every collaborator this Service is
+// missing.
+//
+// Each collaborator is optional at the type level, and a nil one makes its
+// check silently do nothing. That is deliberate for tests, which construct a
+// Service holding only what they exercise. It is also how ADR-017 tool lookup
+// (#788) and ADR-048 binding validation (#870) each spent months disabled in
+// production: nothing in the type system distinguishes "this deployment does
+// not need that check" from "somebody forgot to pass it", and both were found
+// by reading the wiring rather than by anything failing.
+//
+// So the wiring site states the difference out loud. main.go calls this after
+// construction and refuses to start when anything is missing, and
+// api.BuildRouter refuses to mount policy routes over an incomplete service —
+// which turns a forgotten collaborator from a silently weakened policy gate
+// into a boot failure naming the field.
+func (s *Service) RequireComplete() error {
+	if missing := s.missingCollaborators(); len(missing) > 0 {
+		return fmt.Errorf("policy service is missing required collaborators: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
 // Create parses and validates the YAML, checks tool references against the
 // MCP registry (non-blocking warnings), and stores the policy.
 func (s *Service) Create(ctx context.Context, rawYAML string) (*SaveResult, error) {

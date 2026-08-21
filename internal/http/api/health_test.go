@@ -49,7 +49,8 @@ func buildHealthTestRouter(t *testing.T, sigDisabled bool) http.Handler {
 	openaiCompatHandler := admin.NewOpenAICompatHandler(nil, nil, providerRegistry, noopConnectionTester)
 	authHandler := auth.NewHandler(store.Queries(), store.DB())
 	settingsHandler := auth.NewSettingsHandler(store.Queries())
-	policyService := policy.NewService(store, nil, providerRegistry, providerRegistry, systemSettings)
+	policyService := policy.NewService(store, registry, providerRegistry, providerRegistry, systemSettings)
+	policyService.WithSubscribedBindingValidator(policy.NewSubscribedBindingValidator(emptyInstanceResolver{}, nil))
 	policyWebhookHandler := api.NewPolicyWebhookHandler(policyService)
 
 	return api.BuildRouter(api.RouterConfig{
@@ -63,6 +64,7 @@ func buildHealthTestRouter(t *testing.T, sigDisabled bool) http.Handler {
 			Store: store, Broadcaster: broadcaster, Registry: registry,
 			RunManager: runManager, Launcher: launcher, ModelLister: providerRegistry,
 			ProviderRegistry: providerRegistry, Settings: systemSettings,
+			PolicyService: policyService,
 		},
 		Metadata: api.Metadata{
 			Version: "test", StartTime: time.Now(), DBPath: "",
