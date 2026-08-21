@@ -480,7 +480,7 @@ func TestProbeProtocolVersion_RequestShape(t *testing.T) {
 	if meta == nil {
 		t.Fatal("decoded _meta is nil")
 	}
-	if got := metaString(meta, metaKeyProtocolVersion); got != req.ProtocolHeader {
+	if got := metaString(meta, MetaKeyProtocolVersion); got != req.ProtocolHeader {
 		t.Errorf("_meta.protocolVersion = %q, want header value %q", got, req.ProtocolHeader)
 	}
 
@@ -501,7 +501,7 @@ func TestProbeProtocolVersion_RequestShape(t *testing.T) {
 		}
 	}
 
-	if raw, ok := meta[metaKeyClientCapabilities]; !ok {
+	if raw, ok := meta[MetaKeyClientCapabilities]; !ok {
 		t.Error("_meta missing clientCapabilities")
 	} else if string(raw) != "{}" {
 		t.Errorf("_meta.clientCapabilities = %s, want {}", raw)
@@ -562,7 +562,7 @@ func TestProbeProtocolVersion_ServerInfoIsBounded(t *testing.T) {
 			"result": map[string]any{
 				"supportedVersions": []string{ProtocolVersion20260728},
 				"_meta": map[string]any{
-					metaKeyServerInfo: map[string]any{
+					MetaKeyServerInfo: map[string]any{
 						"name":    huge,
 						"version": "1.0.0",
 					},

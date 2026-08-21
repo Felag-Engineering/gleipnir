@@ -28,12 +28,12 @@ const (
 	errCodeMCPReservedMin = -32099
 )
 
-// errCodeHeaderMismatch (-32020, HeaderMismatch) covers every required
+// ErrCodeHeaderMismatch (-32020, HeaderMismatch) covers every required
 // standard transport header failure per streamable-http.md §Server
 // Validation: a required standard header (MCP-Protocol-Version, Mcp-Method,
 // Mcp-Name) is missing, or a header value does not match the corresponding
 // request body value.
-const errCodeHeaderMismatch = -32020
+const ErrCodeHeaderMismatch = -32020
 
 // errCodeMissingRequiredClientCapability (-32021,
 // MissingRequiredClientCapability) is returned when processing a request
@@ -45,23 +45,32 @@ const errCodeHeaderMismatch = -32020
 // deliberately left undecoded.
 const errCodeMissingRequiredClientCapability = -32021
 
-// errCodeUnsupportedProtocolVersion (-32022, UnsupportedProtocolVersion) is
+// ErrCodeUnsupportedProtocolVersion (-32022, UnsupportedProtocolVersion) is
 // returned when a server shares no protocol version with the client's
 // request. Its `data.supported` lists the server's versions; decoded by
 // classifyDiscoverResponse into unsupportedVersionData.
-const errCodeUnsupportedProtocolVersion = -32022
+const ErrCodeUnsupportedProtocolVersion = -32022
 
-// errCodeInvalidParams (-32602, the standard JSON-RPC Invalid Params code)
+// ErrCodeInvalidParams (-32602, the standard JSON-RPC Invalid Params code)
 // covers ONLY a missing required `_meta` BODY field, per basic/index.md
 // "Per-request protocol fields". It is OUTSIDE the MCP-reserved range, so
 // classifyDiscoverResponse reads a -32602 responder as legacy — conflating
-// it with errCodeHeaderMismatch would silently misread a client compliance
+// it with ErrCodeHeaderMismatch would silently misread a client compliance
 // bug (a forgotten `_meta` field) as "this server is old".
-const errCodeInvalidParams = -32602
+const ErrCodeInvalidParams = -32602
+
+// ErrCodeMethodNotFound (-32601, the standard JSON-RPC Method Not Found
+// code). This package's CLIENT never needs it — the four methods it issues
+// all exist on any server worth talking to — but the host endpoint
+// (internal/plugin/hostendpoint) SERVES MCP and returns it for legacy
+// `initialize` and any other method it does not implement: the host
+// endpoint is modern-only by construction, and a legacy handshake against
+// it is a caller bug to surface, not a dialect to accommodate.
+const ErrCodeMethodNotFound = -32601
 
 // errCodeResourceNotFoundLegacy (-32002) is the pre-2026-07-28 code for a
 // `resources/read` "resource not found" error. The 2026-07-28 changelog
-// renumbers it to errCodeInvalidParams (-32602, Invalid Params), but the
+// renumbers it to ErrCodeInvalidParams (-32602, Invalid Params), but the
 // change is additive, not a replacement: server/resources.md §Error handling
 // says clients SHOULD still accept -32002 from older peers, so a bilingual
 // client accepts BOTH spellings.

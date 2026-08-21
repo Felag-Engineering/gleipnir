@@ -290,7 +290,7 @@ func classifyDiscoverResponse(status int, payload []byte) discoverClassification
 			return discoverClassification{Outcome: discoverLegacy}
 		}
 		cls := discoverClassification{Outcome: discoverModern, ModernErr: envelope.Error}
-		if code == errCodeUnsupportedProtocolVersion {
+		if code == ErrCodeUnsupportedProtocolVersion {
 			var data unsupportedVersionData
 			if err := json.Unmarshal(envelope.Error.Data, &data); err == nil {
 				cls.Advertised = data.Supported

@@ -59,7 +59,7 @@ func TestNewRequestMeta_Shape(t *testing.T) {
 	if len(meta) != 3 {
 		t.Fatalf("len(meta) = %d, want 3: %v", len(meta), meta)
 	}
-	if got := meta[metaKeyProtocolVersion]; got != "2026-07-28" {
+	if got := meta[MetaKeyProtocolVersion]; got != "2026-07-28" {
 		t.Errorf("protocolVersion = %v, want %q", got, "2026-07-28")
 	}
 
@@ -74,7 +74,7 @@ func TestNewRequestMeta_Shape(t *testing.T) {
 		t.Errorf("clientInfo.version = %v, want %q", clientInfo["version"], version.Version)
 	}
 
-	if _, ok := meta[metaKeyClientCapabilities]; !ok {
+	if _, ok := meta[MetaKeyClientCapabilities]; !ok {
 		t.Error("meta missing clientCapabilities")
 	}
 }

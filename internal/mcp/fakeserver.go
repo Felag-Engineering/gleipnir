@@ -338,7 +338,7 @@ func (f *FakeMCPServer) strictModern() bool {
 	return f.rejectLegacyHandshake
 }
 
-// errCodeHeaderMismatch and errCodeInvalidParams (errorcodes.go) are the two
+// ErrCodeHeaderMismatch and ErrCodeInvalidParams (errorcodes.go) are the two
 // JSON-RPC error regimes server/discover validation can produce. They are
 // DISTINCT and must not be conflated — see errorcodes.go for the full
 // rationale. Both regimes apply to tool traffic under strict mode —
@@ -354,7 +354,7 @@ func (f *FakeMCPServer) strictModern() bool {
 //     rejection, so it is recorded as a non-rejecting violation and
 //     enforceStandardHeaders still returns true.
 //   - expectedName != "" (tools/call): a missing Mcp-Name, or one that does
-//     not equal expectedName, is a rejecting violation — errCodeHeaderMismatch
+//     not equal expectedName, is a rejecting violation — ErrCodeHeaderMismatch
 //     / HTTP 400 — same as MCP-Protocol-Version and Mcp-Method.
 //
 // On a rejecting violation it writes the compliant-server response AND
@@ -362,12 +362,12 @@ func (f *FakeMCPServer) strictModern() bool {
 // caller does not also write a success response.
 func (f *FakeMCPServer) enforceStandardHeaders(w http.ResponseWriter, req FakeRequest, expectedName string) bool {
 	meta := decodeMeta(req.Params)
-	_, hasProtocolVersionField := meta[metaKeyProtocolVersion]
-	bodyProtocolVersion := metaString(meta, metaKeyProtocolVersion)
+	_, hasProtocolVersionField := meta[MetaKeyProtocolVersion]
+	bodyProtocolVersion := metaString(meta, MetaKeyProtocolVersion)
 
 	if req.ProtocolHeader == "" {
 		f.recordViolation("Header mismatch: MCP-Protocol-Version header is missing")
-		writeJSONRPCError(w, http.StatusBadRequest, errCodeHeaderMismatch, "Header mismatch: MCP-Protocol-Version header is missing", nil)
+		writeJSONRPCError(w, http.StatusBadRequest, ErrCodeHeaderMismatch, "Header mismatch: MCP-Protocol-Version header is missing", nil)
 		return false
 	}
 	// A missing _meta.protocolVersion BODY field cannot be compared against
@@ -378,18 +378,18 @@ func (f *FakeMCPServer) enforceStandardHeaders(w http.ResponseWriter, req FakeRe
 		msg := fmt.Sprintf("Header mismatch: MCP-Protocol-Version header value %q does not match body value %q",
 			req.ProtocolHeader, bodyProtocolVersion)
 		f.recordViolation(msg)
-		writeJSONRPCError(w, http.StatusBadRequest, errCodeHeaderMismatch, msg, nil)
+		writeJSONRPCError(w, http.StatusBadRequest, ErrCodeHeaderMismatch, msg, nil)
 		return false
 	}
 	if req.MethodHeader == "" {
 		f.recordViolation("Header mismatch: Mcp-Method header is missing")
-		writeJSONRPCError(w, http.StatusBadRequest, errCodeHeaderMismatch, "Header mismatch: Mcp-Method header is missing", nil)
+		writeJSONRPCError(w, http.StatusBadRequest, ErrCodeHeaderMismatch, "Header mismatch: Mcp-Method header is missing", nil)
 		return false
 	}
 	if req.MethodHeader != req.Method {
 		msg := fmt.Sprintf("Header mismatch: Mcp-Method header value %q does not match body value %q", req.MethodHeader, req.Method)
 		f.recordViolation(msg)
-		writeJSONRPCError(w, http.StatusBadRequest, errCodeHeaderMismatch, msg, nil)
+		writeJSONRPCError(w, http.StatusBadRequest, ErrCodeHeaderMismatch, msg, nil)
 		return false
 	}
 	if expectedName == "" {
@@ -404,7 +404,7 @@ func (f *FakeMCPServer) enforceStandardHeaders(w http.ResponseWriter, req FakeRe
 	if req.NameHeader != expectedName {
 		msg := fmt.Sprintf("Header mismatch: Mcp-Name header value %q does not match expected %q", req.NameHeader, expectedName)
 		f.recordViolation(msg)
-		writeJSONRPCError(w, http.StatusBadRequest, errCodeHeaderMismatch, msg, nil)
+		writeJSONRPCError(w, http.StatusBadRequest, ErrCodeHeaderMismatch, msg, nil)
 		return false
 	}
 	return true
@@ -416,19 +416,19 @@ func (f *FakeMCPServer) enforceStandardHeaders(w http.ResponseWriter, req FakeRe
 // server cannot trust the body until the headers that mirror it validate.
 func (f *FakeMCPServer) enforceMetaFields(w http.ResponseWriter, req FakeRequest) bool {
 	meta := decodeMeta(req.Params)
-	_, hasProtocolVersionField := meta[metaKeyProtocolVersion]
-	_, hasClientCapsField := meta[metaKeyClientCapabilities]
+	_, hasProtocolVersionField := meta[MetaKeyProtocolVersion]
+	_, hasClientCapsField := meta[MetaKeyClientCapabilities]
 
 	if !hasProtocolVersionField {
-		msg := "Invalid params: missing required _meta field " + metaKeyProtocolVersion
+		msg := "Invalid params: missing required _meta field " + MetaKeyProtocolVersion
 		f.recordViolation(msg)
-		writeJSONRPCError(w, http.StatusBadRequest, errCodeInvalidParams, msg, nil)
+		writeJSONRPCError(w, http.StatusBadRequest, ErrCodeInvalidParams, msg, nil)
 		return false
 	}
 	if !hasClientCapsField {
-		msg := "Invalid params: missing required _meta field " + metaKeyClientCapabilities
+		msg := "Invalid params: missing required _meta field " + MetaKeyClientCapabilities
 		f.recordViolation(msg)
-		writeJSONRPCError(w, http.StatusBadRequest, errCodeInvalidParams, msg, nil)
+		writeJSONRPCError(w, http.StatusBadRequest, ErrCodeInvalidParams, msg, nil)
 		return false
 	}
 
@@ -494,7 +494,7 @@ func (f *FakeMCPServer) handleDiscover(w http.ResponseWriter, req FakeRequest) {
 		if !f.enforceMetaFields(w, req) {
 			return
 		}
-		writeJSONRPCError(w, http.StatusBadRequest, errCodeUnsupportedProtocolVersion, "Unsupported protocol version",
+		writeJSONRPCError(w, http.StatusBadRequest, ErrCodeUnsupportedProtocolVersion, "Unsupported protocol version",
 			unsupportedVersionData{Supported: supported, Requested: ProtocolVersion20260728})
 
 	default: // FakeModern
@@ -516,7 +516,7 @@ func (f *FakeMCPServer) handleDiscover(w http.ResponseWriter, req FakeRequest) {
 		// empty strings.
 		if serverInfoName != "" || serverInfoVersion != "" {
 			result["_meta"] = map[string]any{
-				metaKeyServerInfo: map[string]any{
+				MetaKeyServerInfo: map[string]any{
 					"name":    serverInfoName,
 					"version": serverInfoVersion,
 				},

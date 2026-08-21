@@ -22,7 +22,7 @@ func TestMCPErrorCodeMapping(t *testing.T) {
 	}{
 		{
 			name:         "HeaderMismatch",
-			code:         errCodeHeaderMismatch,
+			code:         ErrCodeHeaderMismatch,
 			wantValue:    -32020,
 			wantReserved: true,
 			wantLabel:    metrics.ErrorTypeProtocol,
@@ -36,14 +36,21 @@ func TestMCPErrorCodeMapping(t *testing.T) {
 		},
 		{
 			name:         "UnsupportedProtocolVersion",
-			code:         errCodeUnsupportedProtocolVersion,
+			code:         ErrCodeUnsupportedProtocolVersion,
 			wantValue:    -32022,
 			wantReserved: true,
 			wantLabel:    metrics.ErrorTypeProtocol,
 		},
 		{
+			name:         "MethodNotFound",
+			code:         ErrCodeMethodNotFound,
+			wantValue:    -32601,
+			wantReserved: false,
+			wantLabel:    metrics.ErrorTypeProtocol,
+		},
+		{
 			name:         "InvalidParams",
-			code:         errCodeInvalidParams,
+			code:         ErrCodeInvalidParams,
 			wantValue:    -32602,
 			wantReserved: false,
 			wantLabel:    metrics.ErrorTypeProtocol,
