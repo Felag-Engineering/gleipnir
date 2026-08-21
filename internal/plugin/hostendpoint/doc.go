@@ -3,11 +3,14 @@
 // gRPC and protobuf leave the system; both directions speak MCP).
 //
 // It is the replacement for the gRPC host-RPC plane in internal/plugin/hostsvc,
-// which stays live until the cutover removes it (#883). This package currently
-// delivers the skeleton (#875): the server/discover surface, the per-instance
-// listener set, and the host-plane assertion. Method handlers, token-auth
-// middleware, and the SDK client land in the milestone's later issues
-// (#876–#882).
+// which stays live until the cutover removes it (#883). Delivered so far: the
+// skeleton (#875 — server/discover, the per-instance listener set, the
+// host-plane assertion) and the request middleware (#876 — the three gRPC
+// interceptors ported with semantics unchanged: bearer-token auth via a
+// TokenResolver, generation refcounting via generation.Controller, and
+// Gleipnir-Call-Id correlation; Chain composes them in the canonical
+// token → generation → call-id order). Method handlers and the SDK client
+// land in the milestone's later issues (#877–#882).
 //
 // # The host-plane invariant (normative, spec §8)
 //
