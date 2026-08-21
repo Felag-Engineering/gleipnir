@@ -321,6 +321,36 @@ func (r *Registry) SetCapability(instanceID string, e Entry) {
 	r.byInstance[instanceID][e.Capability] = e
 }
 
+// SelfReportCapability records a capability's health as reported by the
+// plugin itself, enforcing the §8.1 "plugin can only mark itself worse" merge
+// rule per capability — the same rule internal/plugin/state applies to the
+// v1.1 per-instance reports, resolved with the same severity ranking.
+//
+// A report that would improve or merely restate an existing entry is a no-op
+// (applied=false): recovery is the HOST's observation to make (the prober, or
+// ClearCapability), because a plugin that could self-clear a fault could mask
+// one — including a drift fault the prober recorded about it. A report for a
+// capability with no entry records, whatever its state: seeding healthy is
+// what the prober does too, and seeding a fault is the method's purpose.
+//
+// The check-and-set runs under the registry lock so two racing self-reports
+// cannot interleave into an improvement.
+func (r *Registry) SelfReportCapability(instanceID string, e Entry) (applied bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if entries, ok := r.byInstance[instanceID]; ok {
+		if prior, exists := entries[e.Capability]; exists &&
+			state.Severity(e.State) <= state.Severity(prior.State) {
+			return false
+		}
+	}
+	if r.byInstance[instanceID] == nil {
+		r.byInstance[instanceID] = make(map[Capability]Entry)
+	}
+	r.byInstance[instanceID][e.Capability] = e
+	return true
+}
+
 // ClearCapability removes an entry — used when a capability recovers and the
 // host would rather say nothing than assert healthiness it has not re-observed.
 func (r *Registry) ClearCapability(instanceID string, c Capability) {

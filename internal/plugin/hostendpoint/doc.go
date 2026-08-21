@@ -9,8 +9,12 @@
 // interceptors ported with semantics unchanged: bearer-token auth via a
 // TokenResolver, generation refcounting via generation.Controller, and
 // Gleipnir-Call-Id correlation; Chain composes them in the canonical
-// token → generation → call-id order). Method handlers and the SDK client
-// land in the milestone's later issues (#877–#882).
+// token → generation → call-id order) and the six kept Tier-1 methods as
+// tools behind that chain (#877 — tier1.go; EmitMetric's ADR-047 guard is
+// shared with the gRPC plane via internal/plugin/pluginmetrics, and
+// SetHealthState is per-capability via internal/plugin/caphealth).
+// Remaining: Tier-2 gating, the three new methods, and the SDK client
+// (#878–#882).
 //
 // # The host-plane invariant (normative, spec §8)
 //

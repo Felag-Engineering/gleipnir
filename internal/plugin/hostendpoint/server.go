@@ -28,11 +28,18 @@ const Version = "0.1.0"
 // method issues (#877–#881); until then tools/list reports an empty
 // inventory rather than method-not-found, because "no tools yet" is a true
 // answer and a modern client's first move after discover is tools/list.
-type Server struct{}
+type Server struct {
+	// tools is the registered host-tool set, mounted via Register at
+	// construction time and read-only afterwards — no lock, because a tool
+	// registered after the listeners start would be a tool the boot-time
+	// host-plane assertion never saw.
+	tools map[string]ToolDef
+}
 
-// NewServer returns the host-endpoint MCP server.
+// NewServer returns the host-endpoint MCP server. Mount tools with Register
+// before handing it to a ListenerSet.
 func NewServer() *Server {
-	return &Server{}
+	return &Server{tools: make(map[string]ToolDef)}
 }
 
 // jsonrpcRequest is the wire shape this server accepts. The transport is the
@@ -62,6 +69,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch req.Method {
 	case "server/discover":
 		s.handleDiscover(w, r, req)
+	case "tools/list":
+		s.handleToolsList(w, r, req)
+	case "tools/call":
+		s.handleToolsCall(w, r, req)
 	default:
 		// Includes legacy `initialize`: the host endpoint is modern-only by
 		// construction (see doc.go), so the legacy handshake is an

@@ -142,7 +142,7 @@ func (s *Server) EmitMetric(ctx context.Context, req *hostv1.EmitMetricRequest) 
 		return nil, err
 	}
 
-	errCode, metricErr := s.metrics.set(req.GetName(), req.GetValue(), req.GetLabels(), inst.PluginID, inst.ID)
+	errCode, metricErr := s.metrics.Set(req.GetName(), req.GetValue(), req.GetLabels(), inst.PluginID, inst.ID)
 	if metricErr != nil {
 		grpcCode := codes.InvalidArgument
 		if errCode == "cardinality_cap_exceeded" || errCode == "metric_name_cap_exceeded" {
