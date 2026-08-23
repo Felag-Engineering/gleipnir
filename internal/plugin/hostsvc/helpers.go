@@ -15,6 +15,11 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/db"
 )
 
+// maxPayloadJSONBytes is the per-RPC hard cap on the EmitEvent payload_json
+// field. 64 KiB is generous for an event payload; anything larger is a sign
+// of misuse or a bug in the plugin.
+const maxPayloadJSONBytes = 64 * 1024
+
 // resolveInstance resolves the calling plugin instance ID from the connection
 // context and fetches the corresponding DB row. Returns Unauthenticated when
 // the binder reports no identity, Internal on DB errors.

@@ -20,7 +20,7 @@ type detachedKey struct{}
 // and, if present and non-empty, propagates it in two ways:
 //
 //  1. It appends the value to the outgoing metadata so that host RPCs (Log,
-//     EmitMetric, WriteAuditStep, etc.) carry the same call ID back.
+//     EmitMetric, etc.) carry the same call ID back.
 //  2. It stores the value under an unexported context key so that background
 //     goroutines that inherit the context can retrieve it via CallIDFromContext.
 //

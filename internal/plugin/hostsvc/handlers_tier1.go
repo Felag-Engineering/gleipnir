@@ -159,9 +159,10 @@ func (s *Server) EmitMetric(ctx context.Context, req *hostv1.EmitMetricRequest) 
 //
 // Context handling note (spec §8.5): EmitEvent does NOT require a call_id.
 // Trigger streams are not scoped to a particular run; the interceptor chain
-// already accepts requests without gleipnir-call-id metadata, and only
-// WriteAuditStep calls RejectIfDetached. Host RPCs lacking a valid call_id
-// are accepted and logged with plugin/instance labels only.
+// already accepts requests without gleipnir-call-id metadata. Host RPCs
+// lacking a valid call_id are accepted and logged with plugin/instance labels
+// only. (WriteAuditStep, the RPC that used to call RejectIfDetached, left the
+// Tier-1 surface entirely — #880.)
 //
 // Identity is still enforced via UnaryInstanceTokenInterceptor and generation
 // drain semantics still apply via UnaryGenerationRefcountInterceptor.

@@ -43,18 +43,6 @@ func (f *FakeHost) Register(srv *grpc.Server) {
 	f.inner.Register(srv)
 }
 
-// AuditSteps returns all WriteAuditStep requests received, projected to local
-// AuditStep values. Only "feedback_response" steps reach this slice — others
-// are rejected by the host with codes.PermissionDenied.
-func (f *FakeHost) AuditSteps() []AuditStep {
-	raw := f.inner.AuditSteps()
-	out := make([]AuditStep, len(raw))
-	for i, r := range raw {
-		out[i] = fromProtoAudit(r)
-	}
-	return out
-}
-
 // Metrics returns all EmitMetric requests received, projected to local Metric
 // values.
 func (f *FakeHost) Metrics() []Metric {
@@ -112,9 +100,9 @@ func (f *FakeHost) UserDirectoryCalls() int {
 	return f.inner.UserDirectoryCalls()
 }
 
-// Reset clears all recorded calls (audit steps, metrics, events, logs, health
-// state, and Tier-2 call counts). The configured options (canned data,
-// callbacks, etc.) are unchanged.
+// Reset clears all recorded calls (metrics, events, logs, health state, and
+// Tier-2 call counts). The configured options (canned data, callbacks, etc.)
+// are unchanged.
 func (f *FakeHost) Reset() {
 	f.inner.Reset()
 }

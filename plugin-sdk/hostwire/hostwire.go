@@ -192,8 +192,8 @@ func (p *gleipnirPlugin) GRPCClient(ctx context.Context, broker *plugin.GRPCBrok
 	// in a goroutine because AcceptAndServe blocks until the listener is closed.
 	go broker.AcceptAndServe(id, func(opts []grpc.ServerOption) *grpc.Server {
 		// Bound incoming message size to 1 MiB (1 << 20). A single Host RPC
-		// payload (WriteAuditStep JSON, EmitEvent payload, Log message) should
-		// never legitimately exceed this; the per-RPC handler caps below are the
+		// payload (EmitEvent payload, Log message) should never legitimately
+		// exceed this; the per-RPC handler caps below are the
 		// first line of defence, but a network-level limit prevents a misbehaving
 		// plugin from exhausting host memory before any handler logic runs.
 		// Send size is capped at the same value to keep the contract symmetric.

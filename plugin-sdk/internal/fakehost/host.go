@@ -73,7 +73,6 @@ type Host struct {
 	opts Options
 	mu   sync.Mutex
 
-	auditSteps      []*hostv1.WriteAuditStepRequest
 	metrics         []*hostv1.EmitMetricRequest
 	events          []*hostv1.EmitEventRequest
 	logs            []*hostv1.LogRequest
@@ -114,15 +113,6 @@ func (h *Host) Register(srv *grpc.Server) {
 
 // ── Accessors ───────────────────────────────────────────────────────────────
 
-// AuditSteps returns a copy of all WriteAuditStep requests received.
-func (h *Host) AuditSteps() []*hostv1.WriteAuditStepRequest {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	out := make([]*hostv1.WriteAuditStepRequest, len(h.auditSteps))
-	copy(out, h.auditSteps)
-	return out
-}
-
 // Metrics returns a copy of all EmitMetric requests received.
 func (h *Host) Metrics() []*hostv1.EmitMetricRequest {
 	h.mu.Lock()
@@ -159,13 +149,11 @@ func (h *Host) HealthStates() *hostv1.SetHealthStateRequest {
 	return h.healthState
 }
 
-// Reset clears all recorded calls (audit steps, metrics, events, logs, health
-// state, and Tier-2 call counts). Options (including canned Tier-2 data) are
-// unchanged.
+// Reset clears all recorded calls (metrics, events, logs, health state, and
+// Tier-2 call counts). Options (including canned Tier-2 data) are unchanged.
 func (h *Host) Reset() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.auditSteps = nil
 	h.metrics = nil
 	h.events = nil
 	h.logs = nil
@@ -199,19 +187,6 @@ func (h *Host) GetRunContext(_ context.Context, _ *hostv1.GetRunContextRequest) 
 		StepIndex: rc.StepIndex,
 		StartedAt: rc.StartedAt.Format(time.RFC3339),
 	}, nil
-}
-
-// WriteAuditStep validates that step_type is "feedback_response". Any other
-// value is rejected with codes.PermissionDenied / detail
-// "unauthorized_step_type". Production hosts MUST mirror this contract.
-func (h *Host) WriteAuditStep(_ context.Context, req *hostv1.WriteAuditStepRequest) (*hostv1.WriteAuditStepResponse, error) {
-	if req.GetStepType() != "feedback_response" {
-		return nil, status.Error(codes.PermissionDenied, "unauthorized_step_type")
-	}
-	h.mu.Lock()
-	h.auditSteps = append(h.auditSteps, req)
-	h.mu.Unlock()
-	return &hostv1.WriteAuditStepResponse{Ok: true}, nil
 }
 
 // EmitMetric records the metric request under the mutex.

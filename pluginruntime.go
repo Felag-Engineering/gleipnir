@@ -249,12 +249,10 @@ func startPluginRuntime(
 
 	hostSvc := hostsvc.NewServer(
 		store.Queries(),
-		store.DB(),
 		encryptionKey,
 		pool,
 		hostsvc.NewContextBinder(),
 		broadcaster,
-		pluginDispatcher,
 	)
 
 	// Chain order: token MUST be first because UnaryGenerationRefcountInterceptor

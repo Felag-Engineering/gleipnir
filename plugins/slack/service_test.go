@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1417,9 +1418,12 @@ func TestChannelRequestRateLimitExceedsBudget(t *testing.T) {
 	}
 }
 
-// TestChannelRequestInteractiveCallback tests the full interactive round-trip:
-// Request → operator clicks button → WriteAuditStep(feedback_response) →
-// response_url POST with "Response recorded: approve".
+// TestChannelRequestInteractiveCallback tests the interactive round-trip:
+// Request → operator clicks button → handleInteractive attempts to settle via
+// WriteAuditStep. WriteAuditStep left the host surface (#880 option C), so
+// plugintest.FakeHost — like a real host — answers codes.Unimplemented; the
+// plugin must respond with an honest "unavailable" message on response_url
+// rather than a resolved state.
 func TestChannelRequestInteractiveCallback(t *testing.T) {
 	const (
 		channel   = "C01CHANNEL"
@@ -1437,7 +1441,7 @@ func TestChannelRequestInteractiveCallback(t *testing.T) {
 	defer responseURLSrv.Close()
 
 	runner := newChannelFakeRunner()
-	client, chanSvc, host, cleanup := setupChannelServiceWithRunner(t,
+	client, chanSvc, _, cleanup := setupChannelServiceWithRunner(t,
 		credJSON(token),
 		cfgWithToken("xapp-test-token"),
 		runner,
@@ -1465,31 +1469,9 @@ func TestChannelRequestInteractiveCallback(t *testing.T) {
 	responseURL := responseURLSrv.URL + "/response"
 	runner.Send(interactiveSocketEvent(requestID, "approve", "approve", responseURL))
 
-	// Step 3: Wait for WriteAuditStep.
-	if !pollUntil(t, 3*time.Second, func() bool { return len(host.AuditSteps()) > 0 }) {
-		t.Fatal("timed out waiting for WriteAuditStep")
-	}
-
-	steps := host.AuditSteps()
-	if len(steps) != 1 {
-		t.Fatalf("want 1 audit step, got %d", len(steps))
-	}
-	step := steps[0]
-	if step.StepType != "feedback_response" {
-		t.Errorf("step_type: want feedback_response, got %q", step.StepType)
-	}
-	if step.RequestID != requestID {
-		t.Errorf("request_id: want %q, got %q", requestID, step.RequestID)
-	}
-	var payload map[string]string
-	if err := json.Unmarshal([]byte(step.PayloadJSON), &payload); err != nil {
-		t.Fatalf("payload unmarshal: %v", err)
-	}
-	if payload["option_id"] != "approve" {
-		t.Errorf("option_id: want approve, got %q", payload["option_id"])
-	}
-
-	// Step 4: Wait for response_url POST.
+	// Step 3: Wait for the response_url POST — WriteAuditStep fails against the
+	// fake host, so handleInteractive posts an "unavailable" message instead of
+	// a resolved state.
 	if !pollUntil(t, 3*time.Second, func() bool {
 		v := respURLBody.Load()
 		return v != nil && v.(string) != ""
@@ -1498,8 +1480,14 @@ func TestChannelRequestInteractiveCallback(t *testing.T) {
 	}
 
 	body := respURLBody.Load().(string)
-	if !strings.Contains(body, "Response recorded") {
-		t.Errorf("response_url body: want 'Response recorded', got %q", body)
+	if !strings.Contains(body, "currently unavailable") {
+		t.Errorf("response_url body: want 'currently unavailable', got %q", body)
+	}
+
+	// The correlation must be restored so a retried click (once settlement is
+	// possible again) can still resolve the request.
+	if _, ok := chanSvc.correlations.take(requestID); !ok {
+		t.Error("correlation was not restored after settlement failure")
 	}
 }
 
@@ -1518,7 +1506,7 @@ func TestChannelRequestInteractiveCallbackLateRequest(t *testing.T) {
 	defer responseURLSrv.Close()
 
 	runner := newChannelFakeRunner()
-	_, chanSvc, host, cleanup := setupChannelServiceWithRunner(t,
+	_, chanSvc, _, cleanup := setupChannelServiceWithRunner(t,
 		credJSON(token),
 		cfgWithToken("xapp-test-token"),
 		runner,
@@ -1530,7 +1518,8 @@ func TestChannelRequestInteractiveCallbackLateRequest(t *testing.T) {
 
 	chanSvc.httpClient = responseURLSrv.Client()
 
-	// No prior Request call — correlation won't be found.
+	// No prior Request call — correlation won't be found, so handleInteractive
+	// returns before ever reaching WriteAuditStep.
 	responseURL := responseURLSrv.URL + "/response"
 	runner.Send(interactiveSocketEvent("unknown-req-id", "approve", "approve", responseURL))
 
@@ -1544,9 +1533,6 @@ func TestChannelRequestInteractiveCallbackLateRequest(t *testing.T) {
 	body := respURLBody.Load().(string)
 	if !strings.Contains(body, "expired") {
 		t.Errorf("response_url body: want 'expired', got %q", body)
-	}
-	if n := len(host.AuditSteps()); n != 0 {
-		t.Errorf("want 0 audit steps, got %d", n)
 	}
 }
 
@@ -1800,9 +1786,12 @@ func TestChannelRequestFeedbackMode(t *testing.T) {
 	}
 }
 
-// TestChannelRequestFeedbackThreadReply tests the full feedback round-trip:
-// Request (feedback mode) → operator sends threaded reply → handleThreadReply
-// calls WriteAuditStep(feedback_response).
+// TestChannelRequestFeedbackThreadReply tests the feedback round-trip: Request
+// (feedback mode) → operator sends threaded reply → handleThreadReply attempts
+// to settle it via WriteAuditStep. WriteAuditStep left the host surface (#880
+// option C), so the fake host — like a real host — answers
+// codes.Unimplemented; the plugin must respond with an honest "unavailable"
+// ephemeral rather than a resolved state.
 func TestChannelRequestFeedbackThreadReply(t *testing.T) {
 	const (
 		channel   = "C01FBTHREAD"
@@ -1810,15 +1799,29 @@ func TestChannelRequestFeedbackThreadReply(t *testing.T) {
 		replyTS   = "1700091000.000200"
 		requestID = "req-fb-thread"
 		token     = "xoxb-fb-thread"
+		replyUser = "U01OPERATOR"
 		replyText = "Please proceed with caution."
 	)
 
+	var ephemeralBody atomic.Value
+	mux := http.NewServeMux()
+	mux.HandleFunc("/chat.postMessage", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"ok":true,"channel":%q,"ts":%q}`, channel, ts)
+	})
+	mux.HandleFunc("/chat.postEphemeral", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		ephemeralBody.Store(string(body))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ok":true}`)
+	})
+
 	runner := newChannelFakeRunner()
-	_, chanSvc, host, cleanup := setupChannelServiceWithRunner(t,
+	_, chanSvc, _, cleanup := setupChannelServiceWithRunner(t,
 		credJSON(token),
 		cfgWithToken("xapp-test-token"),
 		runner,
-		slackPostMessageOK(channel, ts),
+		mux,
 	)
 	defer cleanup()
 
@@ -1845,35 +1848,38 @@ func TestChannelRequestFeedbackThreadReply(t *testing.T) {
 
 	// Step 2: Inject a threaded reply from an operator.
 	// The thread_ts of the reply must match the parent message ts stored in the correlation.
-	runner.Send(threadedMessageSocketEvent(channel, "U01OPERATOR", replyText, replyTS, ts, "T01TEAM"))
+	runner.Send(threadedMessageSocketEvent(channel, replyUser, replyText, replyTS, ts, "T01TEAM"))
 
-	// Step 3: Wait for WriteAuditStep.
-	if !pollUntil(t, 3*time.Second, func() bool { return len(host.AuditSteps()) > 0 }) {
-		t.Fatal("timed out waiting for WriteAuditStep from thread reply")
+	// Step 3: Wait for the "unavailable" ephemeral — WriteAuditStep fails
+	// against the fake host, so handleThreadReply notifies the replier instead
+	// of resolving the request.
+	if !pollUntil(t, 3*time.Second, func() bool {
+		v := ephemeralBody.Load()
+		return v != nil && v.(string) != ""
+	}) {
+		t.Fatal("timed out waiting for the unavailable ephemeral from thread reply")
 	}
 
-	steps := host.AuditSteps()
-	if len(steps) != 1 {
-		t.Fatalf("want 1 audit step, got %d", len(steps))
+	// PostEphemeralContext sends a form-encoded body (not JSON); decode it
+	// before checking the text field.
+	body := ephemeralBody.Load().(string)
+	values, err := url.ParseQuery(body)
+	if err != nil {
+		t.Fatalf("parse ephemeral form body: %v", err)
 	}
-	step := steps[0]
-	if step.StepType != "feedback_response" {
-		t.Errorf("step_type: want feedback_response, got %q", step.StepType)
+	if text := values.Get("text"); !strings.Contains(text, "currently unavailable") {
+		t.Errorf("ephemeral text: want 'currently unavailable', got %q", text)
 	}
-	if step.RequestID != requestID {
-		t.Errorf("request_id: want %q, got %q", requestID, step.RequestID)
-	}
-	var payload map[string]string
-	if err := json.Unmarshal([]byte(step.PayloadJSON), &payload); err != nil {
-		t.Fatalf("payload unmarshal: %v", err)
-	}
-	if payload["text"] != replyText {
-		t.Errorf("text: want %q, got %q", replyText, payload["text"])
+
+	// The correlation must be restored so a retried reply can still resolve it.
+	if _, _, ok := chanSvc.correlations.takeByThreadTS(channel, ts); !ok {
+		t.Error("correlation was not restored after settlement failure")
 	}
 }
 
 // TestChannelRequestFeedbackThreadReply_IgnoresNonThread asserts that a plain
-// (non-threaded) message event does not trigger WriteAuditStep.
+// (non-threaded) message event is ignored and never reaches settlement — the
+// correlation created by Request stays untouched.
 func TestChannelRequestFeedbackThreadReply_IgnoresNonThread(t *testing.T) {
 	const (
 		channel   = "C01FBNOTHREAD"
@@ -1883,7 +1889,7 @@ func TestChannelRequestFeedbackThreadReply_IgnoresNonThread(t *testing.T) {
 	)
 
 	runner := newChannelFakeRunner()
-	_, chanSvc, host, cleanup := setupChannelServiceWithRunner(t,
+	_, chanSvc, _, cleanup := setupChannelServiceWithRunner(t,
 		credJSON(token),
 		cfgWithToken("xapp-test-token"),
 		runner,
@@ -1914,16 +1920,18 @@ func TestChannelRequestFeedbackThreadReply_IgnoresNonThread(t *testing.T) {
 	// Send a plain (non-threaded) message — no ThreadTimeStamp.
 	runner.Send(eventsAPISocketEvent(channel, "channel", "U01USER", "just a comment", "1700092000.000200", "T01TEAM"))
 
-	// Give a short window; no audit step should appear.
+	// Give a short window, then verify the correlation is untouched — proof
+	// handleThreadReply's guard clause returned before ever attempting
+	// settlement.
 	time.Sleep(100 * time.Millisecond)
-	if n := len(host.AuditSteps()); n != 0 {
-		t.Errorf("want 0 audit steps for non-threaded message, got %d", n)
+	if _, _, ok := chanSvc.correlations.takeByThreadTS(channel, ts); !ok {
+		t.Error("correlation was consumed by a non-threaded message")
 	}
 }
 
 // TestChannelRequestFeedbackThreadReply_IgnoresApprovalThread asserts that a
-// threaded reply on an approval (button mode) message does not trigger
-// WriteAuditStep and does not consume the correlation.
+// threaded reply on an approval (button mode) message never reaches
+// settlement and does not consume the correlation.
 func TestChannelRequestFeedbackThreadReply_IgnoresApprovalThread(t *testing.T) {
 	const (
 		channel   = "C01APPROVAL"
@@ -1934,7 +1942,7 @@ func TestChannelRequestFeedbackThreadReply_IgnoresApprovalThread(t *testing.T) {
 	)
 
 	runner := newChannelFakeRunner()
-	_, chanSvc, host, cleanup := setupChannelServiceWithRunner(t,
+	_, chanSvc, _, cleanup := setupChannelServiceWithRunner(t,
 		credJSON(token),
 		cfgWithToken("xapp-test-token"),
 		runner,
@@ -1965,11 +1973,9 @@ func TestChannelRequestFeedbackThreadReply_IgnoresApprovalThread(t *testing.T) {
 	// Send a threaded reply to the approval message.
 	runner.Send(threadedMessageSocketEvent(channel, "U01OPERATOR", "FYI, I'm approving via buttons", replyTS, ts, "T01TEAM"))
 
-	// Short window — no audit step should appear (approval replies come via buttons).
+	// Short window, then verify the correlation is untouched (approval replies
+	// come via buttons, not threads).
 	time.Sleep(100 * time.Millisecond)
-	if n := len(host.AuditSteps()); n != 0 {
-		t.Errorf("want 0 audit steps for thread reply on approval message, got %d", n)
-	}
 
 	// The correlation must still be present (not consumed by handleThreadReply).
 	if _, ok := chanSvc.correlations.take(requestID); !ok {
@@ -2310,10 +2316,15 @@ func TestChannelService_Notify_DoesNotPerformAuthTest(t *testing.T) {
 }
 
 // TestChannelService_Request_HandleInteractiveTakesCorrelation verifies that
-// handleInteractive consumes the correlation entry created by Request. After
-// Request returns Acked=true, the entry must exist; once handleInteractive runs
-// (evidenced by a WriteAuditStep call), the entry must be gone — proving that
-// handleInteractive, not the test, consumed it via c.correlations.take.
+// handleInteractive consumes the correlation entry created by Request rather
+// than merely reading it — evidenced by the response_url body distinguishing
+// "found, settlement failed" ("currently unavailable", WriteAuditStep's real
+// failure mode since #880 option C — see the loud comment on that call site)
+// from "not found" ("expired", see
+// TestChannelRequestInteractiveCallbackLateRequest). Because settlement
+// failure restores the entry for a possible retry, the entry is present again
+// afterward — that restoration, not a bare presence check, is what this test
+// pins.
 func TestChannelService_Request_HandleInteractiveTakesCorrelation(t *testing.T) {
 	const (
 		channel   = "C01CORRELATION"
@@ -2324,7 +2335,10 @@ func TestChannelService_Request_HandleInteractiveTakesCorrelation(t *testing.T) 
 
 	// Serve both the Slack API and the response_url endpoint on one mux so
 	// handleInteractive can post its acknowledgment after consuming the entry.
-	responseURLSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	var respURLBody atomic.Value
+	responseURLSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		respURLBody.Store(string(body))
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer responseURLSrv.Close()
@@ -2336,7 +2350,7 @@ func TestChannelService_Request_HandleInteractiveTakesCorrelation(t *testing.T) 
 	})
 
 	runner := newChannelFakeRunner()
-	client, svc, host, cleanup := setupChannelServiceWithRunner(t,
+	client, svc, _, cleanup := setupChannelServiceWithRunner(t,
 		credJSON(token),
 		cfgWithToken("xapp-test-token"),
 		runner,
@@ -2360,22 +2374,27 @@ func TestChannelService_Request_HandleInteractiveTakesCorrelation(t *testing.T) 
 	}
 
 	// Inject the interactive event — handleInteractive will call take() and
-	// WriteAuditStep. Do NOT call take() here; we want handleInteractive to
-	// be the one that consumes the entry.
+	// attempt WriteAuditStep. Do NOT call take() here; we want handleInteractive
+	// to be the one that consumes the entry.
 	responseURL := responseURLSrv.URL + "/response"
 	runner.Send(interactiveSocketEvent(requestID, "approve", "approve", responseURL))
 
-	// Wait for handleInteractive to call WriteAuditStep (proof it ran and
-	// therefore called take() already).
-	if !pollUntil(t, 3*time.Second, func() bool { return len(host.AuditSteps()) > 0 }) {
-		t.Fatal("timed out waiting for WriteAuditStep — handleInteractive may not have run")
+	if !pollUntil(t, 3*time.Second, func() bool {
+		v := respURLBody.Load()
+		return v != nil && v.(string) != ""
+	}) {
+		t.Fatal("timed out waiting for response_url POST — handleInteractive may not have run")
 	}
 
-	// Now take() must return found=false: handleInteractive already consumed
-	// the entry. If this returns true, handleInteractive didn't call take().
-	_, stillPresent := svc.correlations.take(requestID)
-	if stillPresent {
-		t.Error("correlation entry still present after handleInteractive ran; handleInteractive must call take()")
+	// "currently unavailable" (not "expired") proves take() found the entry.
+	if body := respURLBody.Load().(string); !strings.Contains(body, "currently unavailable") {
+		t.Fatalf("response_url body: want 'currently unavailable' (proves the entry was found), got %q", body)
+	}
+
+	// The entry must be present again: handleInteractive restores it after a
+	// failed settlement attempt so a retry can still resolve the request.
+	if _, ok := svc.correlations.take(requestID); !ok {
+		t.Error("correlation entry missing after handleInteractive ran; settlement failure must restore it")
 	}
 }
 
@@ -2733,10 +2752,13 @@ func buildCaptureChannelService(t *testing.T, capAPI *captureWebAPI, credJSONStr
 	return svc, host
 }
 
-// TestHandleInteractive_UpdatesOnResolution verifies that after a button click:
-//   - WriteAuditStep is called (feedback_response).
-//   - UpdateMessageContext is called with resolved blocks (no action block).
-func TestHandleInteractive_UpdatesOnResolution(t *testing.T) {
+// TestHandleInteractive_SettlementUnavailable verifies that after a button
+// click, handleInteractive's attempt to settle via WriteAuditStep fails
+// against the fake host (Unimplemented, since #880 option C removed the RPC
+// from the host surface) and the plugin responds honestly:
+//   - UpdateMessageContext is NOT called (the request is never resolved).
+//   - The correlation is restored so a retry remains possible.
+func TestHandleInteractive_SettlementUnavailable(t *testing.T) {
 	const (
 		channel   = "C01INTR"
 		ts        = "1700200000.000100"
@@ -2746,7 +2768,7 @@ func TestHandleInteractive_UpdatesOnResolution(t *testing.T) {
 	)
 
 	capAPI := &captureWebAPI{}
-	svc, host := buildCaptureChannelService(t, capAPI, credJSON(token), cfgWithToken("xapp-test-token"))
+	svc, _ := buildCaptureChannelService(t, capAPI, credJSON(token), cfgWithToken("xapp-test-token"))
 	defer svc.correlations.Stop()
 
 	// Seed a correlation as if Request() had been called.
@@ -2773,39 +2795,32 @@ func TestHandleInteractive_UpdatesOnResolution(t *testing.T) {
 	evt := socketmode.Event{Type: socketmode.EventTypeInteractive, Data: cb}
 	svc.handleInteractive(evt, cb)
 
-	// WriteAuditStep must have been called once.
-	if !pollUntil(t, 3*time.Second, func() bool { return len(host.AuditSteps()) > 0 }) {
-		t.Fatal("timed out waiting for WriteAuditStep")
-	}
-	steps := host.AuditSteps()
-	if len(steps) != 1 || steps[0].StepType != "feedback_response" {
-		t.Fatalf("expected 1 feedback_response step, got %+v", steps)
-	}
-
-	// UpdateMessageContext must have been called with resolved blocks.
-	// Block composition (no action block, emoji/label) is verified separately
-	// in TestBuildResolvedBlocks; here we assert the call was made correctly.
+	// UpdateMessageContext must NOT have been called — settlement failed, so
+	// the message must not be shown as resolved.
 	capAPI.mu.Lock()
 	updCount := capAPI.updateCount
-	updCh := capAPI.updateChannel
-	updTS := capAPI.updateTS
 	capAPI.mu.Unlock()
+	if updCount != 0 {
+		t.Fatalf("UpdateMessageContext call count: want 0 (settlement unavailable), got %d", updCount)
+	}
 
-	if updCount != 1 {
-		t.Fatalf("UpdateMessageContext call count: want 1, got %d", updCount)
-	}
-	if updCh != channel {
-		t.Errorf("UpdateMessageContext channelID: want %q, got %q", channel, updCh)
-	}
-	if updTS != ts {
-		t.Errorf("UpdateMessageContext ts: want %q, got %q", ts, updTS)
+	// The correlation must be restored so a retry (once settlement is possible
+	// again) can still resolve the request.
+	if _, ok := svc.correlations.take(requestID); !ok {
+		t.Error("correlation was not restored after settlement failure")
 	}
 }
 
-// TestHandleThreadReply_UpdatesOnResolution verifies that after a thread reply
-// in feedback mode, UpdateMessageContext is called with an "Answered" resolved
-// state and no action block.
-func TestHandleThreadReply_UpdatesOnResolution(t *testing.T) {
+// TestHandleThreadReply_SettlementUnavailable verifies that after a thread
+// reply in feedback mode, handleThreadReply's attempt to settle via
+// WriteAuditStep fails against the fake host (Unimplemented, since #880
+// option C removed the RPC from the host surface) and the plugin responds
+// honestly:
+//   - UpdateMessageContext is NOT called (the request is never resolved).
+//   - PostEphemeralContext IS called, telling the replier the action is
+//     unavailable.
+//   - The correlation is restored so a retry remains possible.
+func TestHandleThreadReply_SettlementUnavailable(t *testing.T) {
 	const (
 		channel      = "C01FBUPD"
 		msgTS        = "1700210000.000100"
@@ -2817,7 +2832,7 @@ func TestHandleThreadReply_UpdatesOnResolution(t *testing.T) {
 	)
 
 	capAPI := &captureWebAPI{}
-	svc, host := buildCaptureChannelService(t, capAPI, credJSON(token), cfgWithToken("xapp-test-token"))
+	svc, _ := buildCaptureChannelService(t, capAPI, credJSON(token), cfgWithToken("xapp-test-token"))
 	defer svc.correlations.Stop()
 
 	// Seed a correlation in feedback mode as if Request() had been called.
@@ -2844,21 +2859,30 @@ func TestHandleThreadReply_UpdatesOnResolution(t *testing.T) {
 	evt := socketmode.Event{Type: socketmode.EventTypeEventsAPI, Data: outerEvt}
 	svc.handleThreadReply(evt)
 
-	// WriteAuditStep must have been called once.
-	if !pollUntil(t, 3*time.Second, func() bool { return len(host.AuditSteps()) > 0 }) {
-		t.Fatal("timed out waiting for WriteAuditStep")
-	}
-
-	// UpdateMessageContext must have been called once. Block composition
-	// (no action block) is verified separately in TestBuildResolvedBlocks.
+	// UpdateMessageContext must NOT have been called — settlement failed, so
+	// the message must not be shown as resolved. PostEphemeralContext MUST
+	// have been called, notifying the replier.
 	capAPI.mu.Lock()
 	updCount := capAPI.updateCount
+	ephCount := capAPI.ephemeralCount
+	ephUser := capAPI.ephemeralUser
 	capAPI.mu.Unlock()
 
-	if updCount != 1 {
-		t.Fatalf("UpdateMessageContext call count: want 1, got %d", updCount)
+	if updCount != 0 {
+		t.Fatalf("UpdateMessageContext call count: want 0 (settlement unavailable), got %d", updCount)
 	}
-	_ = host // AuditSteps already checked via pollUntil
+	if ephCount == 0 {
+		t.Error("PostEphemeralContext not called on settlement failure")
+	}
+	if ephUser != operatorUser {
+		t.Errorf("PostEphemeralContext user = %q, want %q", ephUser, operatorUser)
+	}
+
+	// The correlation must be restored so a retry (once settlement is possible
+	// again) can still resolve the request.
+	if _, _, ok := svc.correlations.takeByThreadTS(channel, msgTS); !ok {
+		t.Error("correlation was not restored after settlement failure")
+	}
 }
 
 // TestRequestTerminated_TimedOut verifies that RequestTerminated with
@@ -3198,64 +3222,16 @@ func TestHandleThreadReply_Unauthorized(t *testing.T) {
 	}
 }
 
-// TestHandleInteractive_AuthorizedSetsActorExternalId verifies that on the
-// authorized (ok=true) path:
-//   - ActorExternalId is set to cb.User.ID.
-//   - UpdateMessageContext IS called.
-//   - PostEphemeralContext is NOT called.
-func TestHandleInteractive_AuthorizedSetsActorExternalId(t *testing.T) {
-	const (
-		channel   = "C01AUTH"
-		ts        = "1700320000.000300"
-		requestID = "req-auth-interactive"
-		token     = "xoxb-auth"
-		prompt    = "Deploy?"
-		slackUser = "U-AUTHORIZED"
-	)
-
-	capAPI := &captureWebAPI{}
-	svc, host := buildCaptureChannelService(t, capAPI, credJSON(token), cfgWithToken("xapp-auth-token"))
-	defer svc.correlations.Stop()
-
-	svc.correlations.put(requestID, correlation{
-		channel: channel,
-		ts:      ts,
-		prompt:  prompt,
-		buttons: defaultResponseButtons(),
-		runID:   "run-auth-1",
-		addedAt: time.Now(),
-	})
-
-	cb := slack.InteractionCallback{
-		Type:        slack.InteractionTypeBlockActions,
-		ResponseURL: "",
-		User:        slack.User{ID: slackUser},
-		ActionCallback: slack.ActionCallbacks{
-			BlockActions: []*slack.BlockAction{
-				{ActionID: actionIDFor(requestID, "approve"), Value: "approve"},
-			},
-		},
-	}
-	svc.handleInteractive(socketmode.Event{Type: socketmode.EventTypeInteractive, Data: cb}, cb)
-
-	// WriteAuditStep must arrive with the actor's Slack id.
-	if !pollUntil(t, 3*time.Second, func() bool { return len(host.AuditSteps()) > 0 }) {
-		t.Fatal("timed out waiting for WriteAuditStep")
-	}
-
-	// PostEphemeralContext must NOT be called on the authorized path.
-	capAPI.mu.Lock()
-	ephCount := capAPI.ephemeralCount
-	updCount := capAPI.updateCount
-	capAPI.mu.Unlock()
-
-	if ephCount != 0 {
-		t.Errorf("PostEphemeralContext called %d times on authorized path, want 0", ephCount)
-	}
-	if updCount == 0 {
-		t.Error("UpdateMessageContext not called on authorized path, want 1")
-	}
-}
+// The former TestHandleInteractive_AuthorizedSetsActorExternalId exercised
+// the authorized (ok=true) settlement path against plugintest.FakeHost. That
+// path is permanently unreachable since #880 option C removed WriteAuditStep
+// from the host surface — plugintest.FakeHost, like a real host, now answers
+// codes.Unimplemented — so its assertions no longer hold and it duplicated
+// TestHandleInteractive_SettlementUnavailable once rewritten for the new
+// behavior. ActorExternalId propagation is covered by
+// TestHandleInteractive_Unauthorized and TestHandleThreadReply_Unauthorized,
+// which use local hostv1.HostServiceServer doubles that record the request
+// regardless of what the real host's WriteAuditStep implementation does.
 
 // ── Debug-log tests ───────────────────────────────────────────────────────────
 

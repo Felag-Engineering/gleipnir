@@ -2,7 +2,6 @@ package hostsvc
 
 import (
 	"context"
-	"database/sql"
 	"sync"
 	"time"
 
@@ -51,13 +50,8 @@ type Querier interface {
 	AuditQuerier
 	GetPluginInstanceByID(ctx context.Context, id string) (db.PluginInstance, error)
 	UpdatePluginInstanceHealth(ctx context.Context, arg db.UpdatePluginInstanceHealthParams) (int64, error)
-	CreateRunStep(ctx context.Context, arg db.CreateRunStepParams) (db.RunStep, error)
 	GetLatestRunStep(ctx context.Context, runID string) (db.RunStep, error)
-	GetFeedbackRequest(ctx context.Context, id string) (db.FeedbackRequest, error)
-	UpdateFeedbackRequestStatus(ctx context.Context, arg db.UpdateFeedbackRequestStatusParams) (int64, error)
 	GetRun(ctx context.Context, id string) (db.Run, error)
-	GetPolicy(ctx context.Context, id string) (db.Policy, error)
-	GetPluginPendingRequest(ctx context.Context, id string) (db.PluginPendingRequest, error)
 	// Tier-2 RPC support
 	GetPluginByID(ctx context.Context, id string) (db.Plugin, error)
 	ListPolicies(ctx context.Context) ([]db.Policy, error)
@@ -65,8 +59,6 @@ type Querier interface {
 	ListRunsByPolicies(ctx context.Context, arg db.ListRunsByPoliciesParams) ([]db.ListRunsByPoliciesRow, error)
 	ListAllActiveUsersWithRoles(ctx context.Context) ([]db.ListAllActiveUsersWithRolesRow, error)
 	ListActiveUsersByRole(ctx context.Context, role string) ([]db.ListActiveUsersByRoleRow, error)
-	// Authz support
-	GetUserBySlackUserID(ctx context.Context, slackUserID *string) ([]db.GetUserBySlackUserIDRow, error)
 }
 
 // CallContextResolver resolves (run_id, policy_id, instance_name) from a
@@ -91,29 +83,24 @@ type InstanceBinder interface {
 	InstanceIDFromContext(ctx context.Context) (instanceID string, ok bool)
 }
 
-// ChannelResolver delivers a plugin-substrate feedback response to the
-// in-flight Request waiter identified by requestID.  Satisfied by
-// *dispatch.Dispatcher.  nil is a valid value for NewServer (see docs there).
-type ChannelResolver interface {
-	Resolve(ctx context.Context, requestID, responseJSON string) (resolved bool, err error)
-}
-
 // Server implements hostv1.HostServiceServer for all Host RPCs. Tier-1 RPCs
 // are always available; Tier-2 RPCs (RunHistoryRead, UserDirectoryRead) require
 // a matching capability declaration in the plugin manifest (spec §8.2).
+//
+// WriteAuditStep — the only RPC that resolved a plugin-routed feedback_response
+// and the only reader of a ChannelResolver — left the Tier-1 surface entirely
+// (#880 option C); the gRPC method now answers codes.Unimplemented via the
+// embedded UnimplementedHostServiceServer. Slack-routed approvals are
+// non-functional until the milestone #19 ADR-055 task-based rewrite lands.
 type Server struct {
 	hostv1.UnimplementedHostServiceServer
 
 	q             Querier
-	sqlDB         *sql.DB // used to open transactions in WriteAuditStep (native path)
 	encryptionKey []byte
 	resolver      CallContextResolver
 	binder        InstanceBinder
 	publisher     event.Publisher
 	metrics       *pluginmetrics.Metrics
-	// channels is nil when the plugin substrate is disabled; WriteAuditStep
-	// treats nil as "resolver unwired" and collapses into the late-callback path.
-	channels ChannelResolver
 
 	// triggerSink is set via SetTriggerSink after RunLauncher is constructed.
 	// Protected by triggerSinkMu so the late-bind write from main.go and
@@ -162,38 +149,23 @@ func (s *Server) getTriggerSink() TriggerSink {
 // binder must be non-nil; pass a concrete implementation that resolves the
 // caller's plugin instance ID from the request context (production wiring uses
 // NewContextBinder paired with UnaryInstanceTokenInterceptor — see issue #202).
-//
-// sqlDB is the underlying *sql.DB used to open transactions in the native
-// feedback path of WriteAuditStep (fixes #348). Pass nil only in unit tests
-// that use a fake Querier and do not exercise concurrent writes — the
-// transactional path is skipped when sqlDB is nil.
-//
-// channels may be nil (e.g. in tests that only exercise the native
-// feedback_requests path). When nil and a plugin_pending_requests row is found
-// for a WriteAuditStep request_id, the call is treated as a late callback with
-// reason="resolver_unwired" and a warning is logged. Production wiring passes
-// the *dispatch.Dispatcher.
 func NewServer(
 	q Querier,
-	sqlDB *sql.DB,
 	encryptionKey []byte,
 	resolver CallContextResolver,
 	binder InstanceBinder,
 	publisher event.Publisher,
-	channels ChannelResolver,
 ) *Server {
 	if binder == nil {
 		panic("hostsvc.NewServer: binder must not be nil")
 	}
 	return &Server{
 		q:             q,
-		sqlDB:         sqlDB,
 		encryptionKey: encryptionKey,
 		resolver:      resolver,
 		binder:        binder,
 		publisher:     publisher,
 		metrics:       pluginmetrics.New(),
-		channels:      channels,
 		eventLimiter:  newEventRateLimiter(),
 	}
 }

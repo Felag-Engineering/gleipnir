@@ -755,8 +755,10 @@ type slackWebAPI interface {
 
 // ChannelService implements channelv1.ChannelServiceServer. It posts Slack
 // messages (Notify) and interactive Block Kit messages with response buttons
-// (Request), then handles button-click callbacks via Socket Mode and calls
-// WriteAuditStep(feedback_response) back to the host.
+// (Request), then handles button-click callbacks via Socket Mode and attempts
+// to settle them with WriteAuditStep(feedback_response) back to the host —
+// non-functional since #880 option C removed WriteAuditStep from the host
+// surface; settlement waits on the milestone #19 ADR-055 task-based rewrite.
 type ChannelService struct {
 	channelv1.UnimplementedChannelServiceServer
 	host          hostv1.HostServiceClient
@@ -997,7 +999,9 @@ func (s *ChannelService) Notify(ctx context.Context, req *channelv1.NotifyReques
 // Request posts a Block Kit message with response buttons to the configured
 // Slack channel. It synchronously acknowledges within the host-enforced 5-second
 // pre-ack deadline, then stores the request_id ↔ Slack message correlation.
-// When the operator clicks a button, handleInteractive calls WriteAuditStep.
+// When the operator clicks a button, handleInteractive attempts to settle the
+// request via WriteAuditStep — non-functional since #880 option C; see the
+// loud comment on that call site.
 func (s *ChannelService) Request(ctx context.Context, req *channelv1.RequestRequest) (*channelv1.RequestResponse, error) {
 	hostCtx := serve.WithCallContext(ctx)
 
@@ -1041,8 +1045,9 @@ func (s *ChannelService) Request(ctx context.Context, req *channelv1.RequestRequ
 
 	if cfg.Mode == "feedback" {
 		// Feedback mode: post a plain text message (no buttons) and watch for
-		// threaded replies.  The operator responds by replying in the thread;
-		// handleThreadReply picks up the reply and calls WriteAuditStep.
+		// threaded replies. The operator responds by replying in the thread;
+		// handleThreadReply picks up the reply and attempts to settle it via
+		// WriteAuditStep — non-functional since #880 option C.
 		prompt := req.GetPrompt()
 		if cfg.Mention != "" {
 			prompt = cfg.Mention + " " + prompt
@@ -1115,8 +1120,9 @@ func (s *ChannelService) Request(ctx context.Context, req *channelv1.RequestRequ
 
 // handleInteractive is called by the socketHub when an interactive (button-click)
 // event arrives from Slack. It looks up the correlation for the request_id,
-// calls WriteAuditStep(feedback_response), and POSTs to response_url to give
-// the operator visual confirmation.
+// attempts to settle it via WriteAuditStep(feedback_response) — non-functional
+// since #880 option C, see the loud comment on that call site — and POSTs to
+// response_url to give the operator visual confirmation.
 func (s *ChannelService) handleInteractive(evt socketmode.Event, cb slack.InteractionCallback) {
 	if cb.Type != slack.InteractionTypeBlockActions {
 		return
@@ -1151,6 +1157,14 @@ func (s *ChannelService) handleInteractive(evt socketmode.Event, cb slack.Intera
 		// No call_id needed: spec §8.5 request_id exemption — the host authorizes
 		// via plugin_pending_requests ownership. ActorExternalId carries the Slack
 		// user.id so the host can verify the role before accepting the resolution.
+		//
+		// APPROVAL SETTLEMENT REMOVED (#880 option C): WriteAuditStep left the
+		// host surface; Slack-routed approvals are non-functional until the
+		// milestone #19 rewrite lands the ADR-055 task-based flow. The call
+		// below now always errors against a real host (codes.Unimplemented) —
+		// left in place (rather than deleted) so the fake-host-backed tests in
+		// service_test.go keep exercising the surrounding Slack-side logic, and
+		// so a future host that re-adds settlement needs no plugin change.
 		resp, err := s.host.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
 			StepType:        "feedback_response",
 			RequestId:       requestID,
@@ -1159,6 +1173,8 @@ func (s *ChannelService) handleInteractive(evt socketmode.Event, cb slack.Intera
 		})
 		if err != nil {
 			log.Printf("slack: handleInteractive: WriteAuditStep: %v", err)
+			s.correlations.put(requestID, corr)
+			s.postResponseURL(cb.ResponseURL, "This action is currently unavailable. Please resolve the request in the Gleipnir UI.")
 			return
 		}
 
@@ -1282,6 +1298,11 @@ func (s *ChannelService) handleThreadReply(evt socketmode.Event) {
 	// No call_id needed: spec §8.5 request_id exemption — the host authorizes
 	// via plugin_pending_requests ownership (same pattern as handleInteractive).
 	// ActorExternalId carries msg.User so the host can verify the role.
+	//
+	// APPROVAL SETTLEMENT REMOVED (#880 option C): WriteAuditStep left the
+	// host surface; Slack-routed approvals are non-functional until the
+	// milestone #19 rewrite lands the ADR-055 task-based flow. See the
+	// matching comment in handleInteractive.
 	resp, err := s.host.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
 		StepType:        "feedback_response",
 		RequestId:       requestID,
@@ -1290,6 +1311,16 @@ func (s *ChannelService) handleThreadReply(evt socketmode.Event) {
 	})
 	if err != nil {
 		log.Printf("slack: handleThreadReply: WriteAuditStep: %v", err)
+		s.correlations.put(requestID, corr)
+		if sc, credErr := s.webClientFromCredentials(context.Background()); credErr == nil {
+			if _, ephErr := sc.PostEphemeralContext(context.Background(), msg.Channel, msg.User,
+				slack.MsgOptionText("This action is currently unavailable. Please resolve the request in the Gleipnir UI.", false),
+			); ephErr != nil {
+				log.Printf("slack: handleThreadReply: PostEphemeralContext: %v", ephErr)
+			}
+		} else {
+			log.Printf("slack: handleThreadReply: credentials for ephemeral: %v", credErr)
+		}
 		return
 	}
 
