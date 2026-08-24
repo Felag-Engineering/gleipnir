@@ -214,6 +214,12 @@ type ProbeResult struct {
 	// populate these — the extension requires the 2026-07-28 transport.
 	Channel         ChannelCapability
 	ChannelDeclared bool
+
+	// Events is the server's io.gleipnir/events declaration and whether it
+	// declared the extension at all (spec §5, ADR-054). Only a modern probe
+	// can populate these — the extension requires the 2026-07-28 transport.
+	Events         EventsCapability
+	EventsDeclared bool
 }
 
 // ErrNoCompatibleProtocolVersion reports a server that is definitively
@@ -248,6 +254,12 @@ type discoverClassification struct {
 	// channel plugin, and routing should say which.
 	Channel         ChannelCapability
 	ChannelDeclared bool
+
+	// Events is the server's io.gleipnir/events declaration, when it made one
+	// (spec §5, ADR-054). EventsDeclared draws the same distinction Channel
+	// does: "did not declare" vs. "declared and unreadable".
+	Events         EventsCapability
+	EventsDeclared bool
 }
 
 // discoverCapabilities is the subset of a server/discover result's
@@ -321,6 +333,10 @@ func classifyDiscoverResponse(status int, payload []byte) discoverClassification
 				if raw, ok := caps.Extensions[ExtensionChannel]; ok {
 					cls.Channel = parseChannelCapability(raw)
 					cls.ChannelDeclared = true
+				}
+				if raw, ok := caps.Extensions[ExtensionEvents]; ok {
+					cls.Events = parseEventsCapability(raw)
+					cls.EventsDeclared = true
 				}
 			}
 			return cls
@@ -426,10 +442,18 @@ func (c *Client) ProbeProtocolVersion(ctx context.Context) (ProbeResult, error) 
 					"server_name", c.serverName, "extension", ExtensionChannel, "trust_tier", string(c.TrustTier()))
 				channel, channelDeclared = ChannelCapability{}, false
 			}
+			events, eventsDeclared := cls.Events, cls.EventsDeclared
+			if eventsDeclared && !c.negotiatesGleipnirExtensions() {
+				slog.Warn("ignoring io.gleipnir extension declared by an external mcp server",
+					"server_name", c.serverName, "extension", ExtensionEvents, "trust_tier", string(c.TrustTier()))
+				events, eventsDeclared = EventsCapability{}, false
+			}
 
 			c.mu.Lock()
 			c.channelCap = channel
 			c.channelDeclared = channelDeclared
+			c.eventsCap = events
+			c.eventsDeclared = eventsDeclared
 			c.mu.Unlock()
 			return ProbeResult{
 				Version:         v,
@@ -438,6 +462,8 @@ func (c *Client) ProbeProtocolVersion(ctx context.Context) (ProbeResult, error) 
 				ServerInfo:      cls.ServerInfo,
 				Channel:         channel,
 				ChannelDeclared: channelDeclared,
+				Events:          events,
+				EventsDeclared:  eventsDeclared,
 			}, nil
 		}
 		// Confirmed modern, nothing in common. basic/versioning.md §Protocol

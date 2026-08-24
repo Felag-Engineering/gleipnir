@@ -277,6 +277,13 @@ type Client struct {
 	channelCap      ChannelCapability
 	channelDeclared bool
 
+	// eventsCap is the server's io.gleipnir/events declaration from the
+	// server/discover handshake (spec §5, ADR-054). Guarded by mu; zero-valued
+	// until the probe runs and for every server that does not declare the
+	// extension — which is most of them, and is not an error.
+	eventsCap      EventsCapability
+	eventsDeclared bool
+
 	// elicitationLimits and elicitationRate bound what one server can push at
 	// an operator through MRTR input_required (spec §6.2). Both are host
 	// self-protection with safe defaults, so a Client built without them
