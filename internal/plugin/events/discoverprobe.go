@@ -46,6 +46,7 @@
 // fault (server/discover, after all, is also how liveness is established) --
 // the same "can't tell drift from unreachable" reasoning that keeps this
 // probe from trying to distinguish the two itself.
+
 package events
 
 import (
