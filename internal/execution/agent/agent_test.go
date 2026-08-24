@@ -922,6 +922,90 @@ func TestHandleToolCall_SchemaValidation(t *testing.T) {
 	}
 }
 
+// TestHandleToolCall_BranchSchemaParamsScoping is the end-to-end proof for
+// #769: a tool whose canonical schema is a root-level oneOf with NO top-level
+// "properties" is still restricted by its policy params block.
+//
+// Before #769 this run SUCCEEDED. mcp.NarrowSchema returns such a schema
+// unchanged, so the key-allowlist gate derived its allowlist from a schema
+// that declared no properties and permitted everything; #744's ArgValidator
+// accepted "danger" as well, because "danger" is perfectly valid under the
+// tool's own second branch. The operator's scoping was ignored by both gates,
+// which is precisely the security gap #769 tracked.
+func TestHandleToolCall_BranchSchemaParamsScoping(t *testing.T) {
+	var serverCallCount int
+	fakeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCallCount++
+	}))
+	defer fakeSrv.Close()
+
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
+
+	branchSchema := json.RawMessage(`{
+		"oneOf": [
+			{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]},
+			{"type":"object","properties":{"danger":{"type":"string"}},"required":["danger"]}
+		]
+	}`)
+
+	scoped := mcp.ResolvedTool{
+		GrantedTool: model.GrantedTool{
+			ServerName: "my-server",
+			ToolName:   "branchy",
+			// The operator scoped this tool to "a" only.
+			Params: map[string]any{"a": map[string]any{}},
+		},
+		Client:      mcp.NewClient(fakeSrv.URL),
+		Description: "a tool whose schema narrowing cannot reach",
+		InputSchema: branchSchema,
+	}
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		LLMClient: testutil.NewFakeClientOnly(
+			testutil.MakeLLMToolCallResponse("tu-1", "my-server.branchy", map[string]any{"danger": "rm -rf"}, 10, 5),
+		),
+		Tools:        []mcp.ResolvedTool{scoped},
+		Policy:       minimalPolicy(),
+		Audit:        w,
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	runErr := ba.Run(context.Background(), "r1", "trigger")
+
+	if runErr == nil {
+		t.Fatal("scoped-out key on a root-oneOf tool did not fail the run: ADR-017 scoping is not being enforced (#769)")
+	}
+	if serverCallCount > 0 {
+		t.Errorf("MCP server called %d times; want 0 — a scoped-out argument must never reach the tool", serverCallCount)
+	}
+
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
+	if err != nil {
+		t.Fatalf("ListRunSteps: %v", err)
+	}
+	var schemaErrFound bool
+	for _, step := range steps {
+		if step.Type != string(model.StepTypeError) {
+			continue
+		}
+		var content map[string]string
+		if err := json.Unmarshal([]byte(step.Content), &content); err == nil {
+			if content["code"] == "schema_violation" {
+				schemaErrFound = true
+			}
+		}
+	}
+	if !schemaErrFound {
+		t.Error("expected an error step with code 'schema_violation' so the run lands in the operator attention queue")
+	}
+}
+
 func TestHandleToolCall_ApprovalRejected(t *testing.T) {
 	var serverCallCount int
 	fakeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

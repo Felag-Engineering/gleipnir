@@ -193,9 +193,20 @@ func TestValidateCall(t *testing.T) {
 
 	noPropsSchema := json.RawMessage(`{"type": "object"}`)
 
+	// The #769 shape: a root-level branch keyword with NO top-level
+	// "properties". NarrowSchema returns this unchanged, so before #769 the
+	// gate had nothing to filter against and permitted every key.
+	rootOneOfSchema := json.RawMessage(`{
+		"oneOf": [
+			{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]},
+			{"type":"object","properties":{"danger":{"type":"string"}},"required":["danger"]}
+		]
+	}`)
+
 	tests := []struct {
 		name        string
 		schema      json.RawMessage
+		params      map[string]any
 		input       map[string]any
 		wantErr     bool
 		errContains string
@@ -244,11 +255,71 @@ func TestValidateCall(t *testing.T) {
 			input:   map[string]any{"anything": "val"},
 			wantErr: false,
 		},
+
+		// ── #769: the params allowlist holds regardless of schema shape ──
+		{
+			// Before #769 this returned nil: NarrowSchema leaves a
+			// root-oneOf schema unchanged, so the properties check found
+			// nothing to filter and every key was permitted — and #744's
+			// ArgValidator accepts "danger" too, since it is valid under the
+			// tool's own second branch. The operator's scoping was ignored
+			// end to end.
+			name:        "root oneOf: scoped-out key is refused by the params allowlist",
+			schema:      rootOneOfSchema,
+			params:      map[string]any{"a": map[string]any{}},
+			input:       map[string]any{"danger": "rm -rf"},
+			wantErr:     true,
+			errContains: "params scoping",
+		},
+		{
+			name:    "root oneOf: a params-listed key is still permitted",
+			schema:  rootOneOfSchema,
+			params:  map[string]any{"a": map[string]any{}},
+			input:   map[string]any{"a": "ok"},
+			wantErr: false,
+		},
+		{
+			name:        "no top-level properties: scoped-out key is refused",
+			schema:      noPropsSchema,
+			params:      map[string]any{"a": map[string]any{}},
+			input:       map[string]any{"anything": "val"},
+			wantErr:     true,
+			errContains: "params scoping",
+		},
+		{
+			// No params block means no scoping was ever requested, so the
+			// allowlist check does not apply and legacy behavior stands.
+			name:    "root oneOf with no params is unchanged",
+			schema:  rootOneOfSchema,
+			input:   map[string]any{"danger": "rm -rf"},
+			wantErr: false,
+		},
+		{
+			// Check 2 is stricter than check 1 where it applies: "ghost" is
+			// in params but is not a property the tool declares, so the
+			// narrowed property set never contains it.
+			name:        "params-listed key absent from the schema still fails the properties check",
+			schema:      validSchema,
+			params:      map[string]any{"ghost": map[string]any{}},
+			input:       map[string]any{"ghost": "val"},
+			wantErr:     true,
+			errContains: "narrowed schema",
+		},
+		{
+			// Deterministic offender: keys are sorted, so the
+			// alphabetically-first disallowed key is always the one named.
+			name:        "multiple disallowed keys report the first alphabetically",
+			schema:      rootOneOfSchema,
+			params:      map[string]any{"a": map[string]any{}},
+			input:       map[string]any{"zeta": 1, "beta": 2, "danger": 3},
+			wantErr:     true,
+			errContains: `"beta"`,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateCall(tc.schema, tc.input)
+			err := ValidateCall(tc.schema, tc.params, tc.input)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("ValidateCall returned nil, want error containing %q", tc.errContains)

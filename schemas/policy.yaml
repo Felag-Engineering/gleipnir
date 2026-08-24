@@ -260,23 +260,26 @@ capabilities:
       #       key, the tool ends up accepting no arguments at all.
       #     - a tool whose canonical schema declares a top-level oneOf/anyOf/
       #       allOf/$ref/not/if WARNS. Narrowing reaches only top-level
-      #       properties: if the schema also declares them they are still
-      #       narrowed and enforced, and only branch-nested properties escape;
-      #       if it declares none, scoping does NOTHING and every argument key
-      #       is permitted.
+      #       properties, so the schema the agent is SHOWN still advertises
+      #       branch-nested properties. Those arguments are refused at
+      #       dispatch (the key allowlist is enforced from this block itself,
+      #       #769), so the cost is a failed run rather than an unscoped call.
       #     - a tool with a registered row but no stored canonical schema
       #       WARNS: scoping was not verified here, but is still applied at
       #       runtime against the tool's raw schema. Refresh the MCP server's
       #       tools to have it verified.
       #     - granting the tool WITHOUT a params block is always silent.
       #
-      #   IMPORTANT: because these warn rather than reject, the "structural
-      #   enforcement" promise above does NOT hold for a tool whose schema has
-      #   no top-level properties — the agent sees the full schema and may pass
-      #   any argument the tool accepts. Use approval gating where that matters.
-      #   Narrowing into branch keywords is deferred (#769). Note also that the
-      #   frontend does not currently render warnings, so this signal reaches
-      #   API/CLI clients only.
+      #   IMPORTANT — what the two halves of this promise cover (#769):
+      #   the ALLOWLIST half is structural for every schema shape: dispatch
+      #   refuses any argument name not listed here, derived from this block
+      #   directly rather than from the narrowed schema. The NARROWING half —
+      #   what the agent is shown — reaches only top-level properties, so for a
+      #   branch-keyword or property-less schema the agent may attempt a
+      #   property it was shown and have the call fail the run. Narrowing into
+      #   branch keywords is still deferred. Note also that the frontend does
+      #   not currently render warnings, so this signal reaches API/CLI clients
+      #   only.
       #
       #   A tool reference that is NOT currently found in the MCP registry is
       #   saved with its params block UNVALIDATED (only a warning is

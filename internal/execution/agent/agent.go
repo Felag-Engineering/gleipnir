@@ -550,11 +550,21 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 	// fatality — this asymmetry is a decided product behavior, not an
 	// oversight:
 	//  1. ADR-017 key-allowlist gate (ValidateCall) — the operator-authored
-	//     params boundary. The LLM is only ever handed a schema narrowed to
-	//     the permitted keys, so a call naming a scoped-out key is an
-	//     anomaly (model confusion, or injection-steered probing at the
-	//     capability boundary) rather than an ordinary mistake the model can
-	//     reason its way out of. It FAILS THE RUN, exactly as on main,
+	//     params boundary, enforced from entry.tool.Params directly so it
+	//     holds for every schema shape (#769; the params argument is what
+	//     makes a root-level oneOf/anyOf/$ref tool scopeable at all — see
+	//     ValidateCall's doc). Params is populated for BOTH sources here:
+	//     buildResolvedToolMap copies it from the MCP ResolvedTool and
+	//     buildPluginToolEntries sets it on the synthesized GrantedTool, so
+	//     this single call keeps enforcement source-agnostic. For a tool
+	//     whose schema narrowing CAN reach, the LLM is handed a schema
+	//     narrowed to the permitted keys, so a call naming a scoped-out key
+	//     is an anomaly (model confusion, or injection-steered probing at
+	//     the capability boundary) rather than an ordinary mistake the model
+	//     can reason its way out of; for a branch-keyword schema narrowing
+	//     cannot reach, the model may be shown a property this gate then
+	//     refuses (policy.branchPartialWarn says so at save time). It FAILS
+	//     THE RUN in both cases,
 	//     specifically so it lands in the operator attention queue —
 	//     ListAttentionItems (internal/http/api/attention_handler.go) is
 	//     built from runs with status "failed"; a correctable result here
@@ -572,7 +582,7 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 	//     uncompilable canonical schemas fall back to gate 1 alone.
 	// Both run BEFORE approval gating (ADR-008, immediately below) — a
 	// malformed call must never reach the approval queue.
-	if err := mcp.ValidateCall(entry.narrowedSchema, input); err != nil {
+	if err := mcp.ValidateCall(entry.narrowedSchema, entry.tool.Params, input); err != nil {
 		a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeSchemaViolation)
 		return "", false, fmt.Errorf("schema validation for %s: %w", toolName, err)
 	}

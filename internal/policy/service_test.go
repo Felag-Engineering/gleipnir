@@ -192,7 +192,7 @@ func TestService_Create_OneOfGovernedParamKeyWarnsAndSaves(t *testing.T) {
 	}
 	// Root oneOf with no top-level properties: scoping does nothing at all, so
 	// the warning has to say so outright rather than hedge.
-	assertWarns(t, result.Warnings, "capabilities.tools[0].params", "every argument key is permitted")
+	assertWarns(t, result.Warnings, "capabilities.tools[0].params", "restricted at dispatch")
 }
 
 func TestService_Create_MissingCanonicalSchemaWarnsAndSaves(t *testing.T) {
@@ -210,7 +210,7 @@ func TestService_Create_MissingCanonicalSchemaWarnsAndSaves(t *testing.T) {
 	// claim the tool is unrestricted.
 	assertWarns(t, result.Warnings, "capabilities.tools[0].params", "applied at runtime")
 	for _, w := range result.Warnings {
-		if strings.Contains(w, "every argument key is permitted") {
+		if strings.Contains(w, "restricted at dispatch") {
 			t.Errorf("missing canonical schema must not claim non-enforcement, got:\n  %s", w)
 		}
 	}
