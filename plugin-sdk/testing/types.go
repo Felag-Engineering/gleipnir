@@ -7,14 +7,6 @@ import (
 	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
 )
 
-// AuditStep is a projected record of a WriteAuditStep call received by the fake host.
-// Only "feedback_response" steps are accepted (all others are rejected by the host).
-type AuditStep struct {
-	StepType    string
-	PayloadJSON string
-	RequestID   string
-}
-
 // Metric is a projected record of an EmitMetric call received by the fake host.
 type Metric struct {
 	Name   string
@@ -80,14 +72,6 @@ const (
 )
 
 // ── package-private converters ───────────────────────────────────────────────
-
-func fromProtoAudit(req *hostv1.WriteAuditStepRequest) AuditStep {
-	return AuditStep{
-		StepType:    req.GetStepType(),
-		PayloadJSON: req.GetPayloadJson(),
-		RequestID:   req.GetRequestId(),
-	}
-}
 
 func fromProtoMetric(req *hostv1.EmitMetricRequest) Metric {
 	labels := make(map[string]string, len(req.GetLabels()))

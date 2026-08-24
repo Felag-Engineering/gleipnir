@@ -40,14 +40,10 @@ import (
 //
 // Modes:
 //   - "serve-and-block"           — used by process_token_integration_test.go
-//   - "serve-and-writeauditstep"  — used by end_to_end_integration_test.go
 func TestMain(m *testing.M) {
 	switch os.Getenv("GLEIPNIR_TEST_FIXTURE") {
 	case "serve-and-block":
 		runHostsvcFixtureServePlugin()
-		os.Exit(0)
-	case "serve-and-writeauditstep":
-		runHostsvcFixtureWriteAuditStep()
 		os.Exit(0)
 	}
 	os.Exit(m.Run())

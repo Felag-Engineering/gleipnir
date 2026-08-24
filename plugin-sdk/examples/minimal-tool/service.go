@@ -57,8 +57,8 @@ func (s *ToolService) Call(ctx context.Context, toolName string, input []byte) (
 	}
 
 	// Propagate the host-injected call ID to all outgoing host RPCs so the host
-	// can correlate Log, EmitMetric, and WriteAuditStep calls back to this run
-	// and step. See serve.WithCallContext and plugin-system-spec.md §8.5.
+	// can correlate Log and EmitMetric calls back to this run and step. See
+	// serve.WithCallContext and plugin-system-spec.md §8.5.
 	hostCtx := serve.WithCallContext(ctx)
 
 	// 1. GetInstanceConfig — exercises host connectivity.

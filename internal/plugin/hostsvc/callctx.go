@@ -1,6 +1,7 @@
 // Package hostsvc provides building blocks for the gRPC host service server
 // that plugins call into. It handles call-ID propagation (spec §8.5) and the
-// audit guard that rejects WriteAuditStep calls made outside a valid call scope.
+// audit guard (RejectIfDetached) reserved for RPCs that require call-scope
+// binding.
 //
 // This package is a leaf: it imports internal/db and the plugin-sdk proto, but
 // nothing from internal/execution or internal/mcp.
@@ -41,8 +42,8 @@ func CallIDFromContext(ctx context.Context) (string, bool) {
 // is found, attaches it to the request context for downstream handlers.
 //
 // The interceptor never rejects calls on its own — a missing or ambiguous call
-// ID simply means handlers will see ("", false) from CallIDFromContext. The
-// WriteAuditStep handler is responsible for enforcing the call-scope requirement
+// ID simply means handlers will see ("", false) from CallIDFromContext. Any
+// future RPC that requires call-scope binding is responsible for enforcing it
 // via RejectIfDetached.
 //
 // Spec reference: plugin-system-spec.md §8.5.

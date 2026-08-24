@@ -69,18 +69,6 @@ func (f *FakeHost) AssertLogContains(tb TB, level slog.Level, substr string) {
 	tb.Fatalf("AssertLogContains: no log at level %v containing %q; got: %v", level, substr, f.Logs())
 }
 
-// AssertAuditStep fails the test unless at least one recorded audit step has
-// the given step type and request ID.
-func (f *FakeHost) AssertAuditStep(tb TB, stepType, requestID string) {
-	tb.Helper()
-	for _, s := range f.AuditSteps() {
-		if s.StepType == stepType && s.RequestID == requestID {
-			return
-		}
-	}
-	tb.Fatalf("AssertAuditStep: no audit step with stepType=%q requestID=%q; got: %v", stepType, requestID, f.AuditSteps())
-}
-
 // AssertHealth fails the test unless the most recently reported health state
 // equals want.
 func (f *FakeHost) AssertHealth(tb TB, want HealthState) {

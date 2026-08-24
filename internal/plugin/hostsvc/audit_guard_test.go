@@ -62,7 +62,7 @@ func TestRejectIfDetached(t *testing.T) {
 	t.Parallel()
 
 	const instanceID = "inst-001"
-	const rpcMethod = "/gleipnir.plugin.host.v1.HostService/WriteAuditStep"
+	const rpcMethod = "/gleipnir.plugin.host.v1.HostService/SomeRPC"
 
 	t.Run("ctx with call ID — returns nil, no audit row", func(t *testing.T) {
 		q := &fakeAuditQuerier{}

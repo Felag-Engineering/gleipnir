@@ -43,8 +43,8 @@
 // # No hostv1 import required
 //
 // Plugin authors never need to import gen/.../hostv1. All public types
-// (AuditStep, Metric, Event, LogLine, RunContext, RunSummary, UserEntry,
-// HealthState) are plain Go structs defined in this package.
+// (Metric, Event, LogLine, RunContext, RunSummary, UserEntry, HealthState)
+// are plain Go structs defined in this package.
 //
 // # Known fake-vs-real divergences
 //

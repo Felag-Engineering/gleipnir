@@ -42,7 +42,6 @@ import (
 //     - assert_host:
 //         min_events: 0
 //         min_metrics: 0
-//         min_audit_steps: 0
 
 // scenario is the top-level structure of a scenario YAML file.
 type scenario struct {
@@ -69,10 +68,9 @@ type scenarioStep struct {
 
 // assertHost holds assertions against fake host recorder state.
 type assertHost struct {
-	MinEvents     int `yaml:"min_events"`
-	MinMetrics    int `yaml:"min_metrics"`
-	MinAuditSteps int `yaml:"min_audit_steps"`
-	MinLogs       int `yaml:"min_logs"`
+	MinEvents  int `yaml:"min_events"`
+	MinMetrics int `yaml:"min_metrics"`
+	MinLogs    int `yaml:"min_logs"`
 }
 
 // loadScenario reads and parses a scenario YAML file. KnownFields(true) is
@@ -275,9 +273,6 @@ func evalAssertHost(a *assertHost, h *fakehost.Host) error {
 	}
 	if n := len(h.Metrics()); n < a.MinMetrics {
 		return fmt.Errorf("min_metrics: got %d, want at least %d", n, a.MinMetrics)
-	}
-	if n := len(h.AuditSteps()); n < a.MinAuditSteps {
-		return fmt.Errorf("min_audit_steps: got %d, want at least %d", n, a.MinAuditSteps)
 	}
 	if n := len(h.Logs()); n < a.MinLogs {
 		return fmt.Errorf("min_logs: got %d, want at least %d", n, a.MinLogs)

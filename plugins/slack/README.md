@@ -541,7 +541,7 @@ hub-registry, and correlation-map tests are omitted here for brevity — run
 | `TestChannelNotifyWithMention` | Non-empty cfg.Mention → posted text is prefixed with `<mention> <body>` |
 | `TestChannelNotifyMissingCredentials` | Empty credentials JSON → ok=false, ErrorCode PERMISSION, SetHealthState called with detail=auth_missing |
 | `TestChannelService_Notify_DoesNotPerformAuthTest` | ChannelService.Notify never calls auth.test (direct contract; counter stays at 0 after two Notify calls) |
-| `TestChannelService_Request_HandleInteractiveTakesCorrelation` | handleInteractive consumes the correlation entry via take(); after WriteAuditStep fires, take() returns found=false |
+| `TestChannelService_Request_HandleInteractiveTakesCorrelation` | handleInteractive consumes the correlation entry via take() (proved by response_url returning "currently unavailable" rather than "expired") and restores it after WriteAuditStep fails — non-functional since #880 option C removed the RPC from the host surface |
 
 ## Manifest
 

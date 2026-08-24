@@ -42,8 +42,8 @@ func InstanceIDFromTokenContext(ctx context.Context) (string, bool) {
 // and the handler is not invoked. No audit event is written here because the
 // instance identity is unknown at this stage — writing an audit row would
 // require a NULL plugin_instance_id, which is not useful. The
-// unauthorized_request_id audit event (spec §8.4) is written by the
-// WriteAuditStep handler when request_id ownership fails.
+// unauthorized_request_id audit event (spec §8.4) is written by
+// GetRunContext when a foreign call_id is resolved.
 func UnaryInstanceTokenInterceptor(reg *identity.Registry) grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
