@@ -559,6 +559,30 @@ func (s *Supervisor) streamLoop(ctx context.Context, instanceID string, doneCh c
 			Cursor: cursor,
 		})
 		if err != nil {
+			// A cursor-unknown refusal (doc §7.2, mcp.ErrEventsCursorUnknown)
+			// is not a failure of the SERVER — it is the server honestly
+			// reporting its buffer cannot bridge the gap our stored cursor
+			// names (a restarted in-memory buffer being the ordinary cause).
+			// The recovery the contract prescribes is: reset the stored
+			// cursor and reconnect from empty, paying the redelivery cost
+			// plugin_event_dedup absorbs. Retrying the SAME cursor on a
+			// backoff loop would never converge, and counting it toward
+			// UnhealthyAfter would mark a healthy plugin unhealthy for the
+			// host's own stale cursor.
+			if errors.Is(err, mcp.ErrEventsCursorUnknown) {
+				log.WarnContext(ctx, "events supervisor: server cannot satisfy stored cursor; resetting and reconnecting from empty",
+					"cursor", cursor, "err", err)
+				if resetErr := s.cursor.Reset(ctx, instanceID); resetErr != nil {
+					log.WarnContext(ctx, "events supervisor: cursor reset failed; will retry",
+						"err", resetErr)
+					if !s.sleep(ctx, s.backoff(consecutive)) {
+						return
+					}
+					consecutive++
+					continue
+				}
+				continue
+			}
 			log.WarnContext(ctx, "events supervisor: failed to open events/listen stream; will retry",
 				"err", err, "consecutive", consecutive)
 			if !s.sleep(ctx, s.backoff(consecutive)) {
