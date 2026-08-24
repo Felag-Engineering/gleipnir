@@ -84,7 +84,7 @@ func Validate(m *Manifest) error {
 	validateEgress(m.Gleipnir.Egress, add)
 	validateResources(m.Gleipnir.Resources, add)
 	validateTools(m.Gleipnir.Tools, add)
-	validateEventKinds(m.Gleipnir.EventKinds, add)
+	validateEventKinds(m.Gleipnir.EventKinds, m.Gleipnir.Profiles.EventSource, add)
 
 	if len(issues) > 0 {
 		return &ValidationError{Issues: issues}
@@ -214,7 +214,38 @@ func validateTools(tools []ToolDecl, add func(string, string, ...any)) {
 	}
 }
 
-func validateEventKinds(kinds []EventKindDecl, add func(string, string, ...any)) {
+// allowedBindingOperators is the closed ADR-052 operator-name set an
+// event_kinds[].operators entry may name. Mirrors internal/plugin/binding's
+// Operator enum (equals, contains, regex, mention_only) — "glob" stays
+// reserved there (ErrUnsupportedOperator) and is rejected here too. Kept as a
+// local constant rather than imported: plugin-sdk cannot depend on
+// internal/* (it is a separate Go module meant to also serve third-party
+// plugin authors).
+var allowedBindingOperators = map[string]bool{
+	"equals":       true,
+	"contains":     true,
+	"regex":        true,
+	"mention_only": true,
+}
+
+// allowedBindingOperatorNames renders allowedBindingOperators as a stable,
+// sorted, comma-separated list for error messages.
+func allowedBindingOperatorNames() string {
+	names := make([]string, 0, len(allowedBindingOperators))
+	for name := range allowedBindingOperators {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
+func validateEventKinds(kinds []EventKindDecl, eventSource *EventSourceProfile, add func(string, string, ...any)) {
+	if len(kinds) > 0 && eventSource == nil {
+		// A manifest attesting event kinds without declaring the profile that
+		// emits them is disagreeing with itself.
+		add("gleipnir.event_kinds", "requires profiles.event_source to be declared")
+	}
+
 	seen := make(map[string]bool, len(kinds))
 	for i, k := range kinds {
 		if strings.TrimSpace(k.Kind) == "" {
@@ -225,7 +256,69 @@ func validateEventKinds(kinds []EventKindDecl, add func(string, string, ...any))
 			add(fmt.Sprintf("gleipnir.event_kinds[%d].kind", i), "is declared more than once: %q", k.Kind)
 		}
 		seen[k.Kind] = true
+
+		validateEventKindOperators(i, k, add)
 	}
+}
+
+// validateEventKindOperators checks that every field named under operators is
+// actually declared in the kind's binding_schema, and that every operator
+// named for a field is from the closed ADR-052 set. An operator set for a
+// field nobody can bind is an attestation about nothing; an operator outside
+// the set is one the runtime evaluator (internal/plugin/binding) cannot
+// enforce.
+func validateEventKindOperators(i int, k EventKindDecl, add func(string, string, ...any)) {
+	if len(k.Operators) == 0 {
+		return
+	}
+	fields := bindingSchemaFieldNames(k.BindingSchema)
+
+	names := make([]string, 0, len(k.Operators))
+	for field := range k.Operators {
+		names = append(names, field)
+	}
+	sort.Strings(names)
+
+	field := fmt.Sprintf("gleipnir.event_kinds[%d].operators", i)
+	for _, name := range names {
+		if !fields[name] {
+			add(field, "names field %q, which is not declared in binding_schema", name)
+		}
+		for _, op := range k.Operators[name] {
+			if !allowedBindingOperators[op] {
+				add(field, "field %q names unknown operator %q; must be one of: %s", name, op, allowedBindingOperatorNames())
+			}
+		}
+	}
+}
+
+// bindingSchemaFieldNames returns the set of property names declared in a
+// binding_schema's top-level "properties" map. A nil schema or one with no
+// (or a non-mapping) "properties" key yields an empty set.
+func bindingSchemaFieldNames(schema *yaml.Node) map[string]bool {
+	fields := map[string]bool{}
+	props := mappingValue(schema, "properties")
+	if props == nil || props.Kind != yaml.MappingNode {
+		return fields
+	}
+	for i := 0; i+1 < len(props.Content); i += 2 {
+		fields[props.Content[i].Value] = true
+	}
+	return fields
+}
+
+// mappingValue returns the value node for key in a YAML mapping node, or nil
+// when node is not a mapping or key is absent.
+func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
+		}
+	}
+	return nil
 }
 
 // Marshal serializes m into canonical YAML: mapping keys sorted at every level,

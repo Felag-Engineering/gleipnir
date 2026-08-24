@@ -1,6 +1,10 @@
 // Package manifest provides material-vs-cosmetic diff logic for plugin manifests.
-// It operates on parsed *manifest.Manifest values from plugin-sdk/manifest and
-// depends only on that package and the Go standard library.
+// Diff operates on parsed *manifest.Manifest values from plugin-sdk/manifest
+// (the v1.1 gRPC substrate); DiffV2 (diff_v2.go) operates on
+// plugin-sdk/manifestv2 (the ADR-053 realignment target). The two are
+// separate entry points, not one generic function, because the underlying
+// types describe different substrates and only DiffV2's slice of v2's surface
+// has a hot-reload consumer today.
 //
 // Pubkey-claim diffing (spec §5.4 bullet 1) is intentionally absent here;
 // key-mismatch detection is owned by issue #188 (internal/plugin/loader install.go,
