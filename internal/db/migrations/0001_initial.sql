@@ -541,6 +541,42 @@ CREATE TABLE plugin_event_dedup (
 CREATE INDEX idx_plugin_event_dedup_created_at_ms ON plugin_event_dedup(created_at_ms);
 
 -- ---------------------------------------------------------------------------
+-- Plugin event listen cursors (ADR-054, mcp-realignment-spec.md §5)
+--
+-- events/listen has no in-band ack (extension doc §7.3): the ack IS the
+-- cursor sent on the next (re)connect's cursor param. This table is that
+-- entire acknowledgement mechanism, so it is written AFTER the dispatcher has
+-- consumed an event, never on receipt — advancing on receipt would silently
+-- convert the extension's at-least-once delivery into at-most-once across a
+-- restart, which is the exact failure mode plugin_event_dedup exists to
+-- absorb, not create.
+--
+-- One row per plugin instance: a listener holds exactly one open
+-- events/listen stream at a time.
+--
+-- scope_hash is a hash of (kinds, scope) the cursor was earned under. A
+-- cursor is only meaningful under the subscription that produced it — a
+-- resume token from a listen call for kinds={A,B} does not mean the same
+-- thing once scope changes to kinds={A}. A helpful server that "resumed" a
+-- stale-scope cursor would hand back a filtered replay that looks correct
+-- and silently misses everything the new scope added. On a scope change the
+-- host resets to an empty cursor and pays the redelivery cost, which
+-- plugin_event_dedup absorbs.
+--
+-- sequence is the last consumed gleipnirseq, kept for diagnostics and the
+-- monotonicity check — it never travels on the wire itself; the opaque
+-- cursor string is what events/listen's cursor param carries.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE plugin_event_cursors (
+    plugin_instance_id TEXT    PRIMARY KEY REFERENCES plugin_instances(id) ON DELETE CASCADE,
+    cursor             TEXT    NOT NULL,  -- opaque server-issued resume token
+    sequence           INTEGER NOT NULL,  -- last consumed gleipnirseq; diagnostics + monotonicity check
+    scope_hash         TEXT    NOT NULL,  -- hash of (kinds, scope) the cursor was earned under
+    updated_at         TEXT    NOT NULL   -- ISO 8601 UTC
+);
+
+-- ---------------------------------------------------------------------------
 -- Tool-initiated HITL and MCP task handles (ADR-055, mcp-realignment-spec.md §6)
 --
 -- tool_input_requests persists a tool-initiated human-in-the-loop wait: an MCP

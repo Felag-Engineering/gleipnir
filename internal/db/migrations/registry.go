@@ -44,5 +44,6 @@ func All() []Migration {
 		&MCPTasksInternalServer{},
 		&AddPluginAuditRunID{},
 		&AddMCPServerPluginInstance{},
+		&AddPluginEventCursors{},
 	}
 }
