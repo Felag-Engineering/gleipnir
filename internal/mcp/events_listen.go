@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,23 @@ const (
 // package's other single-purpose method ids: ChannelNotify/ChannelRequest
 // use 3, DiscoverEventKinds uses 4) is sufficient.
 const eventsListenRequestID = 5
+
+// FormatEventsCursor renders a delivered CloudEvent's Sequence as the
+// opaque cursor string the events/listen `cursor` param carries (doc §7.2:
+// "the sequence value to resume after, echoing a prior gleipnirseq"). The
+// decimal rendering is the contract's wire shape, but callers should treat
+// the result as opaque — store it, echo it, never do arithmetic on it.
+func FormatEventsCursor(seq uint64) string {
+	return strconv.FormatUint(seq, 10)
+}
+
+// errCodeEventsCursorUnknown is the JSON-RPC error code a server answers an
+// events/listen request with when the resume cursor cannot be satisfied
+// gap-free (doc §7.2). It sits in JSON-RPC 2.0 §5.1's reserved server-error
+// range. Deliberately a local constant rather than an entry in
+// errorcodes.go: that registry holds the core 2026-07-28 transport codes,
+// and this one belongs to the io.gleipnir/events extension contract.
+const errCodeEventsCursorUnknown = -32001
 
 // EventsListenParams is the events/listen request body (doc §7.2).
 type EventsListenParams struct {
@@ -104,6 +122,17 @@ var (
 	// wrapping this sentinel, which carries the reason and the resume
 	// cursor.
 	ErrEventsStreamClosed = errors.New("mcp: events/listen stream closed cleanly by the server")
+
+	// ErrEventsCursorUnknown reports that the server refused to OPEN the
+	// stream because the supplied resume cursor is one its buffer cannot
+	// satisfy gap-free (doc §7.2: JSON-RPC error code -32001, sent instead
+	// of a stream — a server that opened the stream anyway and replayed
+	// "from now" would be hiding exactly the gap the cursor exists to
+	// close). Unlike the three terminal sentinels below, this one is
+	// returned by ListenEvents itself: no stream ever existed. The caller
+	// (the supervisor, #902) treats it as "reset the stored cursor and
+	// reconnect from empty, accepting the redelivery dedup absorbs".
+	ErrEventsCursorUnknown = errors.New("mcp: events/listen resume cursor unknown to the server")
 
 	// ErrEventsTransportError reports that the stream ended for a reason
 	// other than a clean close or heartbeat starvation: a read error, a bare
@@ -187,6 +216,32 @@ func (c *Client) ListenEvents(ctx context.Context, p EventsListenParams) (*Event
 		drainResponseBody(resp.Body)
 		return nil, fmt.Errorf("post %s: %w", methodEventsListen,
 			&HTTPStatusError{StatusCode: resp.StatusCode, Body: errBody})
+	}
+
+	// A server that refuses to open the stream answers with an ordinary
+	// JSON-RPC error body (application/json), not an event stream (doc
+	// §7.2's cursor-unknown case is the one the contract defines). Without
+	// this check the refusal would be fed to the SSE reader and surface as
+	// a shapeless transport error — the cross-module contract test
+	// (sdkevents_integration_test.go) is what caught that.
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		defer drainResponseBody(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+		var env struct {
+			Error *struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(body, &env); err == nil && env.Error != nil {
+			if env.Error.Code == errCodeEventsCursorUnknown {
+				return nil, fmt.Errorf("%w: %s", ErrEventsCursorUnknown, env.Error.Message)
+			}
+			return nil, fmt.Errorf("post %s: server refused the stream: jsonrpc error %d: %s",
+				methodEventsListen, env.Error.Code, env.Error.Message)
+		}
+		return nil, fmt.Errorf("post %s: expected text/event-stream response, got %q",
+			methodEventsListen, ct)
 	}
 
 	return newEventStream(resp, c.eventsHeartbeatInterval()), nil
