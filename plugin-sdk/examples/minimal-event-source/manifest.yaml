@@ -1,0 +1,17 @@
+description: Demonstration plugin emitting a single event kind via io.gleipnir/events.
+gleipnir:
+  event_kinds:
+    - description: A demonstration event.
+      guidance: Fires once per publish, on this example's own ticker loop.
+      kind: example.ping
+  profiles:
+    event_source: {}
+name: io.github.example/minimal-event-source
+package:
+  identifier: ghcr.io/example/minimal-event-source@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  registry_type: oci
+  transport:
+    port: 8080
+    type: streamable-http
+schema_version: "2"
+version: 0.1.0
