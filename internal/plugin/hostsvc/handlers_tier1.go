@@ -11,12 +11,14 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
 	"github.com/felag-engineering/gleipnir/internal/infra/logctx"
 	"github.com/felag-engineering/gleipnir/internal/infra/metrics"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	pluginstate "github.com/felag-engineering/gleipnir/internal/plugin/state"
 	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
+	manifestv2 "github.com/felag-engineering/gleipnir/plugin-sdk/manifestv2"
 )
 
 // maxLogMsgBytes is the per-RPC hard cap on the Log msg field. 4 KiB covers
@@ -154,6 +156,11 @@ func (s *Server) EmitMetric(ctx context.Context, req *hostv1.EmitMetricRequest) 
 	return &hostv1.EmitMetricResponse{Ok: true}, nil
 }
 
+// emitEventRetiredMessage is the stable, greppable FailedPrecondition detail
+// EmitEvent returns to a v2 event-source instance (issue #906). Keep this
+// string stable — it is the contract a migrating plugin author greps for.
+const emitEventRetiredMessage = "emit_event retired for v2 event-source plugins: this instance's events ride io.gleipnir/events (events/listen)"
+
 // EmitEvent validates and publishes a plugin substrate event to the host's
 // internal pub/sub bus and forwards it to the trigger dispatcher.
 //
@@ -166,10 +173,36 @@ func (s *Server) EmitMetric(ctx context.Context, req *hostv1.EmitMetricRequest) 
 //
 // Identity is still enforced via UnaryInstanceTokenInterceptor and generation
 // drain semantics still apply via UnaryGenerationRefcountInterceptor.
+//
+// v2 event-source refusal (issue #906, spec §8): this RPC is EmitEvent's
+// live ingestion path for every currently-installed v1 plugin, and the
+// deletion of that path is deliberately deferred to milestone #22 — until
+// then a v1 plugin's calls here are unchanged, byte for byte. What changes
+// is that a caller whose plugin manifest is v2 (manifestv2.IsV2) AND parses
+// AND declares profiles.event_source is refused before any other work: that
+// plugin's events are supposed to ride io.gleipnir/events (events/listen)
+// instead, and letting it also call EmitEvent would double-ingest the same
+// event through two paths with two different dedup windows. The check is
+// deliberately narrow — a v1 manifest, an unparseable manifest, or a v2
+// manifest that never declares event_source all fall through unchanged; see
+// isV2EventSourceCaller for why each of those fails open.
 func (s *Server) EmitEvent(ctx context.Context, req *hostv1.EmitEventRequest) (*hostv1.EmitEventResponse, error) {
 	inst, err := s.resolveInstance(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	if s.isV2EventSourceCaller(ctx, inst) {
+		if flush, count := s.emitEventRetired.Note(inst.ID); flush {
+			s.writeAuditEvent(ctx, inst.ID, EventTypeEmitEventRetiredProfile, "high", map[string]string{
+				"plugin_id":   inst.PluginID,
+				"event_id":    req.GetEventId(),
+				"event_kind":  req.GetEventKind(),
+				"drop_count":  strconv.FormatUint(count, 10),
+				"window_secs": strconv.FormatFloat(auditFlushInterval.Seconds(), 'f', 0, 64),
+			})
+		}
+		return nil, status.Error(codes.FailedPrecondition, emitEventRetiredMessage)
 	}
 
 	if req.GetEventId() == "" {
@@ -253,6 +286,49 @@ func (s *Server) EmitEvent(ctx context.Context, req *hostv1.EmitEventRequest) (*
 	)
 
 	return &hostv1.EmitEventResponse{Ok: true}, nil
+}
+
+// isV2EventSourceCaller reports whether inst's plugin carries a v2 manifest
+// (manifestv2.IsV2) that parses successfully and declares
+// profiles.event_source. Only such callers are refused by EmitEvent.
+//
+// Every failure mode here fails OPEN to v1 behavior:
+//   - GetPluginByID error: a transient DB fault on this lookup must not turn
+//     every EmitEvent call from a healthy v1 plugin into a failure just
+//     because the refusal check couldn't complete.
+//   - manifestv2.IsV2 false: a v1 manifest is untouched by this issue.
+//   - Parse error: a manifest that doesn't parse already has a larger
+//     problem the loader owns (a plugin can't have installed with an
+//     unparseable manifest in the first place); the refusal here exists
+//     only to stop a WORKING v2 event-source plugin from double-ingesting,
+//     not to second-guess the loader's own validation.
+func (s *Server) isV2EventSourceCaller(ctx context.Context, inst db.PluginInstance) bool {
+	plugin, err := s.q.GetPluginByID(ctx, inst.PluginID)
+	if err != nil {
+		logctx.Logger(ctx).WarnContext(ctx, "EmitEvent: fetch plugin for v2 profile check failed; falling open to v1 behavior",
+			"plugin", inst.PluginID,
+			"instance", inst.ID,
+			"err", err,
+		)
+		return false
+	}
+
+	raw := []byte(plugin.ManifestSnapshot)
+	if !manifestv2.IsV2(raw) {
+		return false
+	}
+
+	m, parseErr := manifestv2.Parse(raw)
+	if parseErr != nil {
+		logctx.Logger(ctx).WarnContext(ctx, "EmitEvent: v2 manifest failed to parse; falling open to v1 behavior",
+			"plugin", inst.PluginID,
+			"instance", inst.ID,
+			"err", parseErr,
+		)
+		return false
+	}
+
+	return m.Gleipnir.Profiles.EventSource != nil
 }
 
 // timeNow is a package-level variable so tests can substitute a fixed clock.

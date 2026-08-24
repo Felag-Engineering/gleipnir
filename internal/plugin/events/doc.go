@@ -52,6 +52,17 @@
 // injection, but the live system is still the v1.1 substrate until the
 // ADR-053 cutover. Starting it is future work, not this issue's.
 //
+// # Rate-limit columns are the other path's problem, not this one's
+//
+// The v1.1 EmitEvent push path is host self-protection against a plugin that
+// pushes too fast: plugin_instances.host_event_rate_per_sec/host_event_burst
+// (issue #577) throttle the caller. This package's pull model has no
+// equivalent columns because there is nothing to throttle the same way — the
+// host is the one calling events/listen, so it paces the stream itself by
+// choosing when to read. Those columns and their admin endpoint
+// (PUT .../event-rate-limit) are on the milestone #22 deletion list, removed
+// together with hostsvc.EmitEvent once the cutover lands (issue #906).
+//
 // # A note on this package's name
 //
 // This package is named "events" (plural) and imports

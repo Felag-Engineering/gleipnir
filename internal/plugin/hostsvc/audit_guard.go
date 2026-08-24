@@ -36,6 +36,17 @@ const EventTypeUnauthorizedRequestID = "unauthorized_request_id"
 // Severity is "warning".
 const EventTypeEventRateLimited = "event_rate_limited"
 
+// EventTypeEmitEventRetiredProfile is the plugin_audit_events.event_type
+// value written when EmitEvent refuses a call from an instance whose plugin
+// carries a v2 manifest declaring profiles.event_source (issue #906): that
+// plugin's events are supposed to ride io.gleipnir/events (events/listen),
+// so a call here means its contract and its behavior disagree. Severity is
+// always "high" — mirrors EventTypeUnauthorizedTier2Call's "a plugin doing
+// something its manifest says it shouldn't is a record, not a log line"
+// precedent. Coalesced at most once per auditFlushInterval per instance, the
+// same rationale and window as EventTypeEventRateLimited.
+const EventTypeEmitEventRetiredProfile = "emit_event_retired_profile"
+
 // AuditQuerier is the narrow DB interface this package needs. A *db.Queries
 // value satisfies it; the narrow interface makes tests cheaper to write.
 type AuditQuerier interface {

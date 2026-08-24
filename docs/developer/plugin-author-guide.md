@@ -150,6 +150,8 @@ The `emit` callback routes events through `HostService.EmitEvent` (spec §4.3). 
 
 Register with `serve.WithTriggerHandler`. See `plugins/slack/service.go` for the full Socket Mode example.
 
+**Looking ahead (ADR-053, issue #906).** This `emit(trigger.Event)` → `HostService.EmitEvent` path is v1.1-only. In the containerized realignment, a plugin's events profile serves `events/listen` itself (spec §5) — the SDK equivalent is `plugin-sdk/events`, and the host pulls from that stream instead of the plugin pushing to `EmitEvent`. That cutover has not happened; this SDK and this callback are still how a trigger plugin ships today, and `EmitEvent`'s deletion is deferred to milestone #22 for exactly that reason. The one thing that already changed: a plugin whose v2 manifest declares `profiles.event_source` is refused if it calls `EmitEvent` (`internal/plugin/hostsvc`, `codes.FailedPrecondition`), so a migrated plugin cannot double-ingest the same event through both paths at once.
+
 ## 5. The manifest
 
 The manifest (`manifest.yaml`) is the install-time authority for everything the host needs before running the plugin: declared services, credential strategy, tool declarations, event kinds, config schemas, and the optional SBOM path.
