@@ -3,6 +3,7 @@ go 1.25.14
 use (
 	.
 	./plugin-sdk
+	./plugin-sdk/examples/host-client
 	./plugin-sdk/examples/minimal-tool
 	./plugins/ntfy
 	./plugins/slack

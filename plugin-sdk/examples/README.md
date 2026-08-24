@@ -9,6 +9,7 @@ For the planned structure of each example see
 | Directory | What it shows |
 |-----------|---------------|
 | [`minimal-tool/`](minimal-tool/README.md) | Smallest possible `ToolService` plugin: one `echo` tool, one host RPC each of `GetInstanceConfig` / `EmitMetric` / `Log`. Start here. |
+| [`host-client/`](host-client/main.go) | Compile-only example of `plugin-sdk/hostclient`, the typed, zero-protobuf client for the MCP realignment host endpoint (#882): constructing a `Client` and calling a couple of typed methods, plus matching on `*hostclient.HostError` vs `*hostclient.JSONRPCError`. |
 
 ## Planned (tracked in follow-up issues)
 

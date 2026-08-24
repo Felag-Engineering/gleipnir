@@ -21,6 +21,12 @@ plugin-sdk/
   trigger/        — trigger.Service ergonomic interface (event emit callback)
   credentials/    — typed accessors for the credential strategies
   pluginerr/      — error codes + ErrorEnvelope helpers for plugin handlers
+  hostclient/     — typed Go client for the MCP realignment host endpoint (ADR-057 as
+                    amended, spec §8); zero-protobuf, stdlib-only (ADR-060 Amendment 1).
+                    Reads GLEIPNIR_HOST_ENDPOINT_URL / GLEIPNIR_INSTANCE_TOKEN from the
+                    environment by default. Not yet the live path — the v1.1 gRPC plane
+                    (hostwire/ + serve/'s TokenInterceptorFromEnv) is what plugins call
+                    today, until the #883 cutover.
   hostwire/       — go-plugin handshake config and gRPC wiring shared by serve/
   signing/        — bundled Minisign sign/verify library (ADR-043)
   testing/        — fake host for unit tests (NewFakeHost)
