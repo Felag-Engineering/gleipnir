@@ -442,3 +442,26 @@ func difference(a, b []string) []string {
 	sort.Strings(out)
 	return out
 }
+
+// intersect returns the sorted members present in both a and b.
+//
+// Used alongside difference to give a kind present on BOTH sides an explicit
+// healthy per-kind entry when the profile as a whole has drifted (see
+// applyEventDrift): without it, Serves for that kind would fall back to the
+// profile-wide entry and read unhealthy even though nothing is actually wrong
+// with it, which is the same "one broken thing takes everything down with it"
+// defect this package exists to fix, just recreated one layer down.
+func intersect(a, b []string) []string {
+	have := make(map[string]struct{}, len(b))
+	for _, s := range b {
+		have[s] = struct{}{}
+	}
+	var out []string
+	for _, s := range a {
+		if _, ok := have[s]; ok {
+			out = append(out, s)
+		}
+	}
+	sort.Strings(out)
+	return out
+}

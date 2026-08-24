@@ -288,7 +288,7 @@ func TestProbeOnce_EventDriftIsCapabilityScoped(t *testing.T) {
 		AttestedEventKinds: []string{"message", "reaction"},
 		Profiles:           []Profile{ProfileToolProvider, ProfileEventSource},
 	}})
-	f.discover.set(DiscoverResult{EventKinds: []string{"message", "rogue"}}, nil)
+	f.discover.set(DiscoverResult{ExtensionDeclared: true, EventKinds: []string{"message", "rogue"}}, nil)
 
 	result, err := f.prober.ProbeOnce(ctx)
 	if err != nil {
@@ -320,6 +320,131 @@ func TestProbeOnce_EventDriftIsCapabilityScoped(t *testing.T) {
 	}
 }
 
+// The DriftDetail two-direction comparison also produces PER-KIND entries, so
+// Serves can answer "is THIS kind healthy" for a subscribed-trigger binding,
+// not just "is the whole profile healthy" -- and a per-kind fault must not
+// take tool_provider down with it (the one-scope-marks-all-unhealthy defect
+// caphealth exists to fix).
+func TestProbeOnce_EventDriftIsPerKind(t *testing.T) {
+	ctx := context.Background()
+	f := newProberFixture(t, []Target{{
+		InstanceID:         "i1",
+		ContainerID:        "c1",
+		AttestedEventKinds: []string{"message", "reaction"},
+		Profiles:           []Profile{ProfileToolProvider, ProfileEventSource},
+	}})
+	f.discover.set(DiscoverResult{ExtensionDeclared: true, EventKinds: []string{"reaction", "rogue"}}, nil)
+
+	if _, err := f.prober.ProbeOnce(ctx); err != nil {
+		t.Fatalf("ProbeOnce: %v", err)
+	}
+
+	h := f.registry.Get("i1")
+	if h.Serves(Capability{Profile: ProfileEventSource, Name: "message"}) {
+		t.Error("an attested-but-not-discovered kind is still serving")
+	}
+	if !h.Serves(Capability{Profile: ProfileEventSource, Name: "reaction"}) {
+		t.Error("a kind present on both sides was marked unhealthy")
+	}
+	if h.Serves(Capability{Profile: ProfileEventSource, Name: "rogue"}) {
+		t.Error("a discovered-but-not-attested kind is still serving")
+	}
+	if !h.Serves(Capability{Profile: ProfileToolProvider}) {
+		t.Error("a per-kind event fault took tool_provider down with it")
+	}
+}
+
+// A manifest attesting the event_source profile while the runtime declares no
+// io.gleipnir/events extension at all is a distinct fault from a kind-set
+// mismatch: the runtime doesn't implement what was consented to, not merely
+// got some kinds wrong.
+func TestProbeOnce_EventExtensionNotDeclaredIsADistinctFault(t *testing.T) {
+	ctx := context.Background()
+	f := newProberFixture(t, []Target{{
+		InstanceID:         "i1",
+		ContainerID:        "c1",
+		AttestedEventKinds: []string{"message"},
+		Profiles:           []Profile{ProfileEventSource},
+	}})
+	// discover default (zero-value DiscoverResult): the runtime declared no
+	// io.gleipnir/events extension at all.
+
+	if _, err := f.prober.ProbeOnce(ctx); err != nil {
+		t.Fatalf("ProbeOnce: %v", err)
+	}
+
+	h := f.registry.Get("i1")
+	if h.Serves(Capability{Profile: ProfileEventSource}) {
+		t.Fatal("event source is serving despite the runtime declaring no extension")
+	}
+	detail := h.RollupDetail()
+	if !contains(detail, "no io.gleipnir/events extension") {
+		t.Errorf("detail = %q, want it to name the missing extension", detail)
+	}
+	if contains(detail, "attested but not discovered") {
+		t.Errorf("detail = %q, read as a kind-set mismatch instead of a missing extension", detail)
+	}
+}
+
+// A declared io.gleipnir/events major version this host cannot read is
+// refused, not guessed at, and the fault names the version rather than
+// reading as a kind-set mismatch.
+func TestProbeOnce_EventExtensionVersionRefusedIsADistinctFault(t *testing.T) {
+	ctx := context.Background()
+	f := newProberFixture(t, []Target{{
+		InstanceID:         "i1",
+		ContainerID:        "c1",
+		AttestedEventKinds: []string{"message"},
+		Profiles:           []Profile{ProfileEventSource},
+	}})
+	f.discover.set(DiscoverResult{
+		ExtensionDeclared: true,
+		VersionRefused:    true,
+		DeclaredVersion:   "99.0.0",
+	}, nil)
+
+	if _, err := f.prober.ProbeOnce(ctx); err != nil {
+		t.Fatalf("ProbeOnce: %v", err)
+	}
+
+	h := f.registry.Get("i1")
+	if h.Serves(Capability{Profile: ProfileEventSource}) {
+		t.Fatal("event source is serving despite an unreadable major version")
+	}
+	detail := h.RollupDetail()
+	if !contains(detail, "99.0.0") {
+		t.Errorf("detail = %q, want it to name the refused version", detail)
+	}
+	if contains(detail, "attested but not discovered") {
+		t.Errorf("detail = %q, read as a kind-set mismatch instead of a refused version", detail)
+	}
+}
+
+// Neither an attested profile nor a declared extension means there is
+// nothing to compare -- silence is not a fault, and nothing is seeded either.
+func TestProbeOnce_UndeclaredProfileAndExtensionSeedsAndFaultsNothing(t *testing.T) {
+	ctx := context.Background()
+	f := newProberFixture(t, []Target{{
+		InstanceID: "i1", ContainerID: "c1",
+		Profiles: []Profile{ProfileToolProvider},
+	}})
+	// discover default: extension undeclared, no kinds.
+
+	if _, err := f.prober.ProbeOnce(ctx); err != nil {
+		t.Fatalf("ProbeOnce: %v", err)
+	}
+
+	h := f.registry.Get("i1")
+	for _, e := range h.Entries {
+		if e.Capability.Profile == ProfileEventSource {
+			t.Errorf("an event_source entry was created for a plugin that attests neither the profile nor the extension: %+v", e)
+		}
+	}
+	if got := h.Rollup(); got != model.PluginHealthStateHealthy {
+		t.Errorf("rollup = %q, want healthy", got)
+	}
+}
+
 // Agreement clears the fault.
 func TestProbeOnce_EventDriftRecovers(t *testing.T) {
 	ctx := context.Background()
@@ -330,7 +455,7 @@ func TestProbeOnce_EventDriftRecovers(t *testing.T) {
 		Profiles:           []Profile{ProfileEventSource},
 	}})
 
-	f.discover.set(DiscoverResult{EventKinds: nil}, nil)
+	f.discover.set(DiscoverResult{ExtensionDeclared: true, EventKinds: nil}, nil)
 	if _, err := f.prober.ProbeOnce(ctx); err != nil {
 		t.Fatalf("ProbeOnce: %v", err)
 	}
@@ -338,7 +463,7 @@ func TestProbeOnce_EventDriftRecovers(t *testing.T) {
 		t.Fatal("a drifted event source is serving")
 	}
 
-	f.discover.set(DiscoverResult{EventKinds: []string{"message"}}, nil)
+	f.discover.set(DiscoverResult{ExtensionDeclared: true, EventKinds: []string{"message"}}, nil)
 	if _, err := f.prober.ProbeOnce(ctx); err != nil {
 		t.Fatalf("ProbeOnce: %v", err)
 	}
@@ -357,7 +482,7 @@ func TestProbeOnce_NoEventSourceProfileGetsNoEventEntry(t *testing.T) {
 		Profiles: []Profile{ProfileToolProvider},
 	}})
 	// Discovery reports kinds anyway; the plugin declared no event source.
-	f.discover.set(DiscoverResult{EventKinds: []string{"surprise"}}, nil)
+	f.discover.set(DiscoverResult{ExtensionDeclared: true, EventKinds: []string{"surprise"}}, nil)
 
 	if _, err := f.prober.ProbeOnce(ctx); err != nil {
 		t.Fatalf("ProbeOnce: %v", err)
@@ -446,13 +571,16 @@ func TestProbeOnce_UnreachableKeepsLastKnownCapabilityDetail(t *testing.T) {
 		Profiles:           []Profile{ProfileEventSource},
 	}})
 
-	f.discover.set(DiscoverResult{EventKinds: []string{"rogue"}}, nil)
+	f.discover.set(DiscoverResult{ExtensionDeclared: true, EventKinds: []string{"rogue"}}, nil)
 	if _, err := f.prober.ProbeOnce(ctx); err != nil {
 		t.Fatalf("ProbeOnce: %v", err)
 	}
 	before := f.registry.Get("i1").Entries
-	if len(before) != 1 {
-		t.Fatalf("%d entries, want 1", len(before))
+	// The profile-wide entry plus one per-kind entry for each direction of
+	// the mismatch ("message" attested-not-discovered, "rogue"
+	// discovered-not-attested).
+	if len(before) != 3 {
+		t.Fatalf("%d entries, want 3", len(before))
 	}
 
 	// The instance goes away.
@@ -462,8 +590,13 @@ func TestProbeOnce_UnreachableKeepsLastKnownCapabilityDetail(t *testing.T) {
 	}
 
 	after := f.registry.Get("i1")
-	if len(after.Entries) != 1 || after.Entries[0].Detail != before[0].Detail {
-		t.Errorf("capability detail was blanked when the instance went unreachable: %+v", after.Entries)
+	if len(after.Entries) != len(before) {
+		t.Fatalf("capability entries changed when the instance went unreachable: before %d, after %d", len(before), len(after.Entries))
+	}
+	for i := range before {
+		if after.Entries[i] != before[i] {
+			t.Errorf("capability detail was blanked when the instance went unreachable: before %+v, after %+v", before[i], after.Entries[i])
+		}
 	}
 	if got := after.Rollup(); got != model.PluginHealthStateUnhealthy {
 		t.Errorf("rollup = %q, want unhealthy", got)

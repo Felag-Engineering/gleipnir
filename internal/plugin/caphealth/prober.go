@@ -50,21 +50,47 @@ type ContainerHealthProbe interface {
 	ContainerHealthy(ctx context.Context, containerID string) (bool, string, error)
 }
 
-// DiscoverProbe asks an instance's MCP endpoint to answer `server/discover`,
-// and reports the event kinds it advertises.
+// DiscoverProbe asks an instance's MCP endpoint whether and how it
+// implements `io.gleipnir/events`, and reports the event kinds it advertises.
 //
-// The kinds come back from the same call that establishes liveness because
-// they are the same round trip: a separate discovery call would double the
-// traffic and open a window where liveness and drift disagree about what the
-// server said.
+// The whole probe is ONE method call: establishing liveness via
+// `server/discover` and, when the extension is declared at a version this
+// host can read, listing kinds via `events/discover`. Liveness and the drift
+// comparison must always be derived from the same moment, so an
+// implementation must not split this into two calls a caller could interleave
+// with something else and end up with liveness and drift disagreeing about
+// what the server said.
 type DiscoverProbe interface {
 	Discover(ctx context.Context, instanceID string) (DiscoverResult, error)
 }
 
-// DiscoverResult is what one `server/discover` probe learned.
+// DiscoverResult is what one probe learned about an instance's
+// `io.gleipnir/events` implementation.
 type DiscoverResult struct {
-	// EventKinds the server advertises. Nil when it declares no event source.
+	// ExtensionDeclared reports whether `server/discover` carried an
+	// `io.gleipnir/events` capability entry at all. False on its own is not a
+	// fault -- most plugins have nothing to say about events, and silence is
+	// not a fault (see seedDeclaredProfiles) -- but applyEventDrift turns it
+	// into one when the manifest attested the event_source profile: that is a
+	// different claim breaking than a kind-set mismatch, because the runtime
+	// does not implement what was consented to at all.
+	ExtensionDeclared bool
+
+	// EventKinds the server advertises. Nil when it declares no event source,
+	// or when VersionRefused is true -- a kind list read against a contract
+	// shape this host cannot establish is not safely usable.
 	EventKinds []string
+
+	// VersionRefused reports that the server declared `io.gleipnir/events` at
+	// a major version this host cannot read, so `events/discover` was refused
+	// rather than attempted -- mirrors internal/plugin/hitl's
+	// majorVersionSupported gate for `io.gleipnir/channel`.
+	VersionRefused bool
+
+	// DeclaredVersion is the server's raw declared `io.gleipnir/events`
+	// version string, carried so a VersionRefused fault's detail can name
+	// what was actually declared. Empty when ExtensionDeclared is false.
+	DeclaredVersion string
 }
 
 // TargetLister supplies the instances to probe on each pass. It is re-read
@@ -282,26 +308,134 @@ func (p *Prober) seedDeclaredProfiles(target Target) {
 	}
 }
 
-// applyEventDrift turns manifest-vs-discovery disagreement into a
-// capability-level fault on the event-source profile.
+// eventExtensionMissingDetail explains the fault when a manifest attests the
+// event_source profile but the runtime's server/discover declares no
+// io.gleipnir/events extension at all.
+//
+// This is a different claim breaking than DriftDetail's kind-set mismatch --
+// the runtime does not implement what was consented to, not merely got some
+// kinds wrong -- so it gets its own detail string rather than being folded
+// into a DriftDetail(attested, nil) comparison an operator would misread as
+// "every attested kind went missing".
+const eventExtensionMissingDetail = "manifest attests the event_source profile, but the runtime declares no io.gleipnir/events extension"
+
+// eventVersionRefusedDetail explains the fault when the runtime declares
+// io.gleipnir/events at a major version this host cannot read. Mirrors
+// internal/plugin/hitl's majorVersionSupported refusal for io.gleipnir/channel:
+// a declared version this host cannot parse is refused, not guessed at.
+func eventVersionRefusedDetail(declared string) string {
+	if declared == "" {
+		return "io.gleipnir/events version is missing or unreadable"
+	}
+	return fmt.Sprintf("io.gleipnir/events version %q is not one this host can read", declared)
+}
+
+// clearEventKindFaults removes any per-kind event-source fault entries a
+// prior pass recorded for instanceID, so a pass that finds fresh agreement
+// does not leave a stale per-kind fault behind.
+//
+// This clear-and-rewrite makes the drift pass AUTHORITATIVE for event-source
+// entries each pass — the same posture the profile-wide entry already had
+// (applyEventDrift has always overwritten it to healthy on kind-set
+// agreement). It is NOT true that only applyEventDrift writes named
+// event-source entries: the host endpoint's set_health_state
+// (caphealth.SelfReportCapability, #877) can record a per-kind fault too,
+// and this pass will clear it even though a kind-set match says nothing
+// about that kind's FUNCTIONAL health. That tension is inherited from the
+// profile-wide precedent, not introduced here; reconciling self-reported
+// faults with prober authority is tracked as a follow-up.
+func (p *Prober) clearEventKindFaults(instanceID string) {
+	for _, e := range p.registry.Get(instanceID).Entries {
+		if e.Capability.Profile == ProfileEventSource && e.Capability.Name != "" {
+			p.registry.ClearCapability(instanceID, e.Capability)
+		}
+	}
+}
+
+// applyEventDrift turns manifest-vs-discovery disagreement into
+// capability-level faults on the event-source profile.
+//
+// Three distinct claims can each break, and each gets its own detail string
+// because "which claim broke" is the difference between an operator checking
+// one binding and an operator checking whether the plugin still speaks the
+// extension at all:
+//
+//   - the manifest attests event_source but the runtime declares no
+//     io.gleipnir/events extension -- eventExtensionMissingDetail;
+//   - the runtime declares the extension at a major version this host cannot
+//     read -- eventVersionRefusedDetail, refused rather than guessed at;
+//   - the runtime speaks a readable version but its kind SET disagrees with
+//     what was attested -- DriftDetail's two-direction comparison.
+//
+// The third case also produces PER-KIND entries (Capability{Profile:
+// ProfileEventSource, Name: kind}) in addition to the profile-wide one, so
+// Serves can answer "is THIS kind healthy" -- what a subscribed-trigger
+// binding actually needs -- rather than only "is the whole profile healthy".
+// Every attested-or-discovered kind gets one: a mismatched kind gets an
+// unhealthy entry naming which direction it broke, and a kind present on
+// BOTH sides gets an explicit HEALTHY entry, so it does not fall back to the
+// now-unhealthy profile-wide entry and read as broken when nothing about it
+// is. The named-entry -> profile-wide fallback in Serves is what makes all of
+// this additive rather than a second source of truth.
 func (p *Prober) applyEventDrift(target Target, discovered DiscoverResult) {
 	if !hasProfile(target.Profiles, ProfileEventSource) {
 		return
 	}
 	capability := Capability{Profile: ProfileEventSource}
+	p.clearEventKindFaults(target.InstanceID)
 
-	if detail := DriftDetail(target.AttestedEventKinds, discovered.EventKinds); detail != "" {
+	if !discovered.ExtensionDeclared {
 		p.registry.SetCapability(target.InstanceID, Entry{
 			Capability: capability,
 			State:      model.PluginHealthStateUnhealthy,
-			Detail:     detail,
+			Detail:     eventExtensionMissingDetail,
 		})
 		return
 	}
+
+	if discovered.VersionRefused {
+		p.registry.SetCapability(target.InstanceID, Entry{
+			Capability: capability,
+			State:      model.PluginHealthStateUnhealthy,
+			Detail:     eventVersionRefusedDetail(discovered.DeclaredVersion),
+		})
+		return
+	}
+
+	detail := DriftDetail(target.AttestedEventKinds, discovered.EventKinds)
+	if detail == "" {
+		p.registry.SetCapability(target.InstanceID, Entry{
+			Capability: capability,
+			State:      model.PluginHealthStateHealthy,
+		})
+		return
+	}
+
 	p.registry.SetCapability(target.InstanceID, Entry{
 		Capability: capability,
-		State:      model.PluginHealthStateHealthy,
+		State:      model.PluginHealthStateUnhealthy,
+		Detail:     detail,
 	})
+	for _, kind := range difference(target.AttestedEventKinds, discovered.EventKinds) {
+		p.registry.SetCapability(target.InstanceID, Entry{
+			Capability: Capability{Profile: ProfileEventSource, Name: kind},
+			State:      model.PluginHealthStateUnhealthy,
+			Detail:     "attested but not discovered",
+		})
+	}
+	for _, kind := range difference(discovered.EventKinds, target.AttestedEventKinds) {
+		p.registry.SetCapability(target.InstanceID, Entry{
+			Capability: Capability{Profile: ProfileEventSource, Name: kind},
+			State:      model.PluginHealthStateUnhealthy,
+			Detail:     "discovered but not attested",
+		})
+	}
+	for _, kind := range intersect(target.AttestedEventKinds, discovered.EventKinds) {
+		p.registry.SetCapability(target.InstanceID, Entry{
+			Capability: Capability{Profile: ProfileEventSource, Name: kind},
+			State:      model.PluginHealthStateHealthy,
+		})
+	}
 }
 
 func hasProfile(profiles []Profile, want Profile) bool {
