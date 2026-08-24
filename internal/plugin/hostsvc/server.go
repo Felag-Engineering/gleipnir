@@ -113,6 +113,11 @@ type Server struct {
 	// eventLimiter enforces the per-instance token-bucket rate limit on incoming
 	// plugin events and coalesces "event_rate_limited" audit rows.
 	eventLimiter *eventRateLimiter
+
+	// emitEventRetired coalesces "emit_event_retired_profile" audit rows for
+	// v2 event-source instances that keep calling the retired EmitEvent RPC
+	// (issue #906).
+	emitEventRetired *emitEventRetiredCoalescer
 }
 
 // Register implements hostwire.HostServer by registering *Server as the
@@ -160,12 +165,13 @@ func NewServer(
 		panic("hostsvc.NewServer: binder must not be nil")
 	}
 	return &Server{
-		q:             q,
-		encryptionKey: encryptionKey,
-		resolver:      resolver,
-		binder:        binder,
-		publisher:     publisher,
-		metrics:       pluginmetrics.New(),
-		eventLimiter:  newEventRateLimiter(),
+		q:                q,
+		encryptionKey:    encryptionKey,
+		resolver:         resolver,
+		binder:           binder,
+		publisher:        publisher,
+		metrics:          pluginmetrics.New(),
+		eventLimiter:     newEventRateLimiter(),
+		emitEventRetired: newEmitEventRetiredCoalescer(),
 	}
 }

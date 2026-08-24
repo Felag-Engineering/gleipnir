@@ -265,9 +265,13 @@ never holds a connection open.
 `feedback_response` audit path `WriteAuditStep` carried is subsumed by task
 completion (§7's `AuthorizeActor` replaces the piece of it that mattered for
 authorization), and `EmitEvent` is subsumed by `events/listen`. Both names are
-absent from `ToolNames()` on purpose — their retirement sequencing against the
-still-live v1.1 Slack plugin is #880's open decision, tracked separately from
-this contract.
+absent from `ToolNames()` on purpose. Their retirement sequencing against the
+still-live v1.1 Slack plugin was #880's open decision, split in two: the
+`WriteAuditStep` half landed in #894, and #906 landed the structural half of
+the `EmitEvent` side — `hostsvc.EmitEvent` refuses a v2 event-source caller
+today, but the gRPC method itself is not deleted until milestone #22, once
+the Slack plugin is rewritten against `events/listen` (#19) and this host
+endpoint is actually reachable.
 
 ### `host/get_instance_config`
 
