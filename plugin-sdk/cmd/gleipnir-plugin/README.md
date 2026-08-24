@@ -261,7 +261,6 @@ steps:
   - assert_host:
       min_events: 1
       min_metrics: 0
-      min_audit_steps: 0
       min_logs: 0
 ```
 

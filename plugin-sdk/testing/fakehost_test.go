@@ -448,31 +448,6 @@ func TestAssertLogContains_Fail(t *testing.T) {
 	})
 }
 
-// ── AssertAuditStep ───────────────────────────────────────────────────────────
-
-func TestAssertAuditStep_Pass(t *testing.T) {
-	fh := plugintest.NewFakeHost()
-	addr, stop := startFakeServer(t, fh)
-	defer stop()
-	client, close := dialFakeHost(t, addr)
-	defer close()
-
-	_, _ = client.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
-		StepType:  "feedback_response",
-		RequestId: "req-1",
-	})
-	fh.AssertAuditStep(t, "feedback_response", "req-1")
-}
-
-func TestAssertAuditStep_Fail(t *testing.T) {
-	fh := plugintest.NewFakeHost()
-	rtb := &recordingTB{t: t}
-	fh.AssertAuditStep(rtb, "feedback_response", "nonexistent")
-	if rtb.fatal == "" {
-		t.Fatal("expected Fatalf to be called")
-	}
-}
-
 // ── AssertHealth ──────────────────────────────────────────────────────────────
 
 func TestAssertHealth_RoundTrip(t *testing.T) {

@@ -13,9 +13,10 @@ import (
 )
 
 // EventTypeUnauthorizedCallContext is the plugin_audit_events.event_type value
-// written when a plugin calls WriteAuditStep from outside a valid call scope
-// (i.e. from a background goroutine or after the call context was detached).
-// It slots into the same event taxonomy as "plugin_tool_namespace_conflict".
+// written when a plugin calls a call-scoped Host RPC from outside a valid call
+// scope (i.e. from a background goroutine or after the call context was
+// detached). It slots into the same event taxonomy as
+// "plugin_tool_namespace_conflict".
 const EventTypeUnauthorizedCallContext = "unauthorized_call_context"
 
 // EventTypeUnauthorizedTier2Call is the plugin_audit_events.event_type value
@@ -24,16 +25,9 @@ const EventTypeUnauthorizedCallContext = "unauthorized_call_context"
 const EventTypeUnauthorizedTier2Call = "unauthorized_tier2_call"
 
 // EventTypeUnauthorizedRequestID is the plugin_audit_events.event_type value
-// written when a plugin calls WriteAuditStep(feedback_response) with a
-// request_id that was not routed to the calling instance (spec §8.4).
-// Severity is always "high".
+// written when a plugin resolves a call_id that was not routed to the calling
+// instance (spec §8.4), e.g. GetRunContext. Severity is always "high".
 const EventTypeUnauthorizedRequestID = "unauthorized_request_id"
-
-// EventTypeFeedbackResponseLate is the plugin_audit_events.event_type value
-// written when a plugin delivers a feedback_response for a request that has
-// already been resolved or timed out (spec §4.2 late-callback paragraph).
-// Severity is "warning". Run state is not mutated.
-const EventTypeFeedbackResponseLate = "feedback_response_late"
 
 // EventTypeEventRateLimited is the plugin_audit_events.event_type value
 // written (at most once per minute per instance) when the host-side EmitEvent
@@ -41,13 +35,6 @@ const EventTypeFeedbackResponseLate = "feedback_response_late"
 // "drop_count" and "window_secs" so operators can assess misbehavior severity.
 // Severity is "warning".
 const EventTypeEventRateLimited = "event_rate_limited"
-
-// EventTypeUnauthorizedApproval is the plugin_audit_events.event_type value
-// written when a WriteAuditStep(feedback_response) is rejected because the
-// actor_external_id does not resolve to a Gleipnir user with an authorized
-// role (approver/operator/admin). Severity is always "high". The request
-// stays open; no state mutation occurs.
-const EventTypeUnauthorizedApproval = "unauthorized_approval_attempt"
 
 // AuditQuerier is the narrow DB interface this package needs. A *db.Queries
 // value satisfies it; the narrow interface makes tests cheaper to write.
@@ -72,10 +59,11 @@ type AuditQuerier interface {
 // the plugin instance's database ID and the gRPC method name (e.g.
 // "/gleipnir.plugin.host.v1.HostService/SomeRPC").
 //
-// Note: WriteAuditStep authenticates via request-ownership instead (spec §8.5
-// exemption); this helper is reserved for future RPCs that require call-scope
-// binding. As of this PR it has zero callers in the codebase but is
-// intentionally preserved.
+// Note: this helper is reserved for future RPCs that require call-scope
+// binding (its former caller, WriteAuditStep, authenticated via
+// request-ownership instead and left the Tier-1 surface entirely — #880). As
+// of this PR it has zero callers in the codebase but is intentionally
+// preserved.
 //
 // Spec reference: plugin-system-spec.md §8.5.
 func RejectIfDetached(ctx context.Context, q AuditQuerier, instanceID, rpcMethod string) error {

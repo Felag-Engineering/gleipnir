@@ -14,7 +14,6 @@ import (
 
 	io_prometheus_client "github.com/prometheus/client_model/go"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
@@ -22,9 +21,7 @@ import (
 	inframetrics "github.com/felag-engineering/gleipnir/internal/infra/metrics"
 	"github.com/felag-engineering/gleipnir/internal/plugin/dispatch"
 	"github.com/felag-engineering/gleipnir/internal/plugin/hostsvc"
-	"github.com/felag-engineering/gleipnir/internal/plugin/identity"
 	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
-	sdkproto "github.com/felag-engineering/gleipnir/plugin-sdk/proto"
 )
 
 // testEncryptionKey is a 32-byte AES-256 key used in tests. Declared locally
@@ -45,25 +42,11 @@ type fakeQuerier struct {
 	latestStep    db.RunStep
 	latestStepErr error
 
-	feedbackRequest db.FeedbackRequest
-	feedbackErr     error
-
-	updateFeedbackStatusRows int64
-	updateFeedbackStatusErr  error
-
-	createRunStepResult db.RunStep
-	createRunStepErr    error
-	createRunStepCalls  int
-
 	run    db.Run
 	runErr error
 
 	updateHealthRows int64
 	updateHealthErr  error
-
-	// policy is returned by GetPolicy; used for request_id scope verification.
-	policy    db.Policy
-	policyErr error
 
 	// Tier-2 RPC support
 	plugin    db.Plugin
@@ -87,17 +70,6 @@ type fakeQuerier struct {
 	usersByRole    []db.ListActiveUsersByRoleRow
 	usersByRoleErr error
 
-	// pluginPendingRequest is returned by GetPluginPendingRequest.
-	// When pluginPendingRequestErr is sql.ErrNoRows, GetPluginPendingRequest
-	// returns (zero, sql.ErrNoRows) to trigger the native fall-through path.
-	pluginPendingRequest    db.PluginPendingRequest
-	pluginPendingRequestErr error
-
-	// userBySlackUserID is returned by GetUserBySlackUserID.
-	// Empty slice = unknown Slack id (no authorized user found).
-	userBySlackUserID    []db.GetUserBySlackUserIDRow
-	userBySlackUserIDErr error
-
 	mu sync.Mutex
 }
 
@@ -116,25 +88,8 @@ func (f *fakeQuerier) GetLatestRunStep(_ context.Context, _ string) (db.RunStep,
 	return f.latestStep, f.latestStepErr
 }
 
-func (f *fakeQuerier) GetFeedbackRequest(_ context.Context, _ string) (db.FeedbackRequest, error) {
-	return f.feedbackRequest, f.feedbackErr
-}
-
-func (f *fakeQuerier) UpdateFeedbackRequestStatus(_ context.Context, _ db.UpdateFeedbackRequestStatusParams) (int64, error) {
-	return f.updateFeedbackStatusRows, f.updateFeedbackStatusErr
-}
-
-func (f *fakeQuerier) CreateRunStep(_ context.Context, _ db.CreateRunStepParams) (db.RunStep, error) {
-	f.createRunStepCalls++
-	return f.createRunStepResult, f.createRunStepErr
-}
-
 func (f *fakeQuerier) GetRun(_ context.Context, _ string) (db.Run, error) {
 	return f.run, f.runErr
-}
-
-func (f *fakeQuerier) GetPolicy(_ context.Context, _ string) (db.Policy, error) {
-	return f.policy, f.policyErr
 }
 
 func (f *fakeQuerier) GetPluginByID(_ context.Context, _ string) (db.Plugin, error) {
@@ -168,14 +123,6 @@ func (f *fakeQuerier) ListActiveUsersByRole(_ context.Context, _ string) ([]db.L
 	return f.usersByRole, f.usersByRoleErr
 }
 
-func (f *fakeQuerier) GetPluginPendingRequest(_ context.Context, _ string) (db.PluginPendingRequest, error) {
-	return f.pluginPendingRequest, f.pluginPendingRequestErr
-}
-
-func (f *fakeQuerier) GetUserBySlackUserID(_ context.Context, _ *string) ([]db.GetUserBySlackUserIDRow, error) {
-	return f.userBySlackUserID, f.userBySlackUserIDErr
-}
-
 func (f *fakeQuerier) ListRunsByPolicies(_ context.Context, arg db.ListRunsByPoliciesParams) ([]db.ListRunsByPoliciesRow, error) {
 	f.mu.Lock()
 	f.runsByPoliciesCalls++
@@ -193,16 +140,6 @@ func (f *fakeQuerier) ListRunsByPolicies(_ context.Context, arg db.ListRunsByPol
 
 // compile-time check
 var _ hostsvc.Querier = (*fakeQuerier)(nil)
-
-// fakeChannelResolver satisfies hostsvc.ChannelResolver with configurable returns.
-type fakeChannelResolver struct {
-	resolved bool
-	err      error
-}
-
-func (f *fakeChannelResolver) Resolve(_ context.Context, _, _ string) (bool, error) {
-	return f.resolved, f.err
-}
 
 // fakeResolver satisfies hostsvc.CallContextResolver.
 type fakeResolver struct {
@@ -275,7 +212,7 @@ func (h *testSlogHandler) all() []slog.Record {
 func newTestServer(t *testing.T, q *fakeQuerier, resolver hostsvc.CallContextResolver, pub *fakePublisher) *hostsvc.Server {
 	t.Helper()
 	binder := &fakeInstanceBinder{id: "iid-test", ok: true}
-	return hostsvc.NewServer(q, nil, testEncryptionKey, resolver, binder, pub, nil)
+	return hostsvc.NewServer(q, testEncryptionKey, resolver, binder, pub)
 }
 
 func ctxWithCallID(callID string) context.Context {
@@ -506,7 +443,7 @@ func TestGetRunContext_RejectsCallBelongingToOtherInstance(t *testing.T) {
 	}
 	binder := &fakeInstanceBinder{id: "iid-a", ok: true}
 	pub := &fakePublisher{}
-	srv := hostsvc.NewServer(q, nil, testEncryptionKey, resolver, binder, pub, nil)
+	srv := hostsvc.NewServer(q, testEncryptionKey, resolver, binder, pub)
 
 	ctx := ctxWithCallID("call-foreign")
 	_, err := srv.GetRunContext(ctx, &hostv1.GetRunContextRequest{})
@@ -558,7 +495,7 @@ func TestGetRunContext_SucceedsForOwningInstance(t *testing.T) {
 		ok:   true,
 	}
 	binder := &fakeInstanceBinder{id: "iid-own", ok: true}
-	srv := hostsvc.NewServer(q, nil, testEncryptionKey, resolver, binder, &fakePublisher{}, nil)
+	srv := hostsvc.NewServer(q, testEncryptionKey, resolver, binder, &fakePublisher{})
 
 	ctx := ctxWithCallID("call-own")
 	resp, err := srv.GetRunContext(ctx, &hostv1.GetRunContextRequest{})
@@ -580,856 +517,6 @@ func TestGetRunContext_SucceedsForOwningInstance(t *testing.T) {
 	}
 }
 
-// --- tests: WriteAuditStep ---
-
-func TestWriteAuditStep_RejectsNonFeedbackResponse(t *testing.T) {
-	t.Parallel()
-
-	q := &fakeQuerier{
-		instance: db.PluginInstance{ID: "iid-1", PluginID: "plug-1"},
-	}
-	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
-
-	ctx := ctxWithCallID("call-xyz")
-	_, err := srv.WriteAuditStep(ctx, &hostv1.WriteAuditStepRequest{
-		StepType: "thought",
-	})
-	st, ok := status.FromError(err)
-	if !ok || st.Code() != codes.PermissionDenied {
-		t.Errorf("expected PermissionDenied, got %v", err)
-	}
-
-	events := q.all()
-	if len(events) != 1 {
-		t.Fatalf("audit event count = %d, want 1", len(events))
-	}
-	if events[0].EventType != "unauthorized_step_type" {
-		t.Errorf("event_type = %q, want unauthorized_step_type", events[0].EventType)
-	}
-	if events[0].Severity != "high" {
-		t.Errorf("severity = %q, want high", events[0].Severity)
-	}
-}
-
-func TestWriteAuditStep_RejectsMissingRequestID(t *testing.T) {
-	t.Parallel()
-
-	q := &fakeQuerier{
-		instance: db.PluginInstance{ID: "iid-1", PluginID: "plug-1"},
-	}
-	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
-
-	// feedback_response with empty request_id must be rejected with InvalidArgument.
-	_, err := srv.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
-		StepType:  "feedback_response",
-		RequestId: "",
-	})
-	st, ok := status.FromError(err)
-	if !ok || st.Code() != codes.InvalidArgument {
-		t.Errorf("expected InvalidArgument for missing request_id, got %v", err)
-	}
-	if !strings.Contains(st.Message(), "request_id must be set") {
-		t.Errorf("message = %q, want to contain \"request_id must be set\"", st.Message())
-	}
-}
-
-// TestWriteAuditStep_NoCallID_SubstratePath verifies that a substrate-initiated
-// feedback_response (no call_id in context) is accepted when the plugin instance
-// owns the plugin_pending_requests row. Exercises the §8.5 exemption directly.
-func TestWriteAuditStep_NoCallID_SubstratePath(t *testing.T) {
-	t.Parallel()
-
-	q := &fakeQuerier{
-		instance:             db.PluginInstance{ID: "iid-caller", PluginID: "plug-caller"},
-		pluginPendingRequest: pendingRequest("iid-caller", "pending"),
-	}
-	ch := &fakeChannelResolver{resolved: true}
-	binder := &fakeInstanceBinder{id: "iid-caller", ok: true}
-	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, ch)
-
-	// context.Background() — no call_id. Must succeed via request-ownership.
-	resp, err := srv.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
-		StepType:    "feedback_response",
-		RequestId:   "req-plugin-1",
-		PayloadJson: `{"answer":"yes"}`,
-	})
-	if err != nil {
-		t.Fatalf("unexpected gRPC error: %v", err)
-	}
-	if !resp.GetOk() {
-		t.Error("ok = false, want true on substrate path without call_id")
-	}
-
-	// No unauthorized_call_context event should have been emitted.
-	for _, e := range q.all() {
-		if e.EventType == hostsvc.EventTypeUnauthorizedCallContext {
-			t.Errorf("unexpected %s audit event written", hostsvc.EventTypeUnauthorizedCallContext)
-		}
-	}
-}
-
-// TestWriteAuditStep_NoCallID_NativePath verifies that a substrate-initiated
-// feedback_response (no call_id) succeeds via the native feedback_requests path
-// when the policy's tool grants reference the calling instance.
-func TestWriteAuditStep_NoCallID_NativePath(t *testing.T) {
-	t.Parallel()
-
-	q := &fakeQuerier{
-		instance:                 db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
-		pluginPendingRequestErr:  sql.ErrNoRows, // substrate path misses; fall through to native
-		feedbackRequest:          db.FeedbackRequest{ID: "fr-ok", RunID: "run-ok", Status: "pending"},
-		feedbackErr:              nil,
-		run:                      db.Run{ID: "run-ok", PolicyID: "pol-ok"},
-		policy:                   db.Policy{ID: "pol-ok", Yaml: policyYAMLWithTool("myplugin.do_thing")},
-		latestStep:               db.RunStep{StepNumber: 2},
-		updateFeedbackStatusRows: 1,
-	}
-	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
-
-	// context.Background() — no call_id. Native path authorizes by policy YAML.
-	resp, err := srv.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
-		StepType:    "feedback_response",
-		RequestId:   "fr-ok",
-		PayloadJson: `{"body":"yes please"}`,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !resp.GetOk() {
-		t.Error("ok = false, want true on native path without call_id")
-	}
-}
-
-// TestWriteAuditStep_NoCallID_CrossInstanceEscalation is the load-bearing
-// security test for the §8.5 cross-instance escalation attack. A plugin calling
-// WriteAuditStep (no call_id) for a request_id owned by a different instance
-// must be rejected with PermissionDenied + an unauthorized_request_id audit
-// event (severity high).
-func TestWriteAuditStep_NoCallID_CrossInstanceEscalation(t *testing.T) {
-	t.Parallel()
-
-	q := &fakeQuerier{
-		instance: db.PluginInstance{ID: "iid-caller", PluginID: "plug-caller"},
-		// Row belongs to a different instance — escalation attempt.
-		pluginPendingRequest: pendingRequest("iid-other", "pending"),
-	}
-	binder := &fakeInstanceBinder{id: "iid-caller", ok: true}
-	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, nil)
-
-	_, err := srv.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
-		StepType:  "feedback_response",
-		RequestId: "req-plugin-1",
-	})
-	st, ok := status.FromError(err)
-	if !ok || st.Code() != codes.PermissionDenied {
-		t.Fatalf("expected PermissionDenied on cross-instance escalation, got %v", err)
-	}
-	if st.Message() != "unauthorized_request_id" {
-		t.Errorf("message = %q, want unauthorized_request_id", st.Message())
-	}
-
-	events := q.all()
-	var found bool
-	for _, e := range events {
-		if e.EventType == hostsvc.EventTypeUnauthorizedRequestID {
-			found = true
-			if e.Severity != "high" {
-				t.Errorf("severity = %q, want high", e.Severity)
-			}
-		}
-	}
-	if !found {
-		t.Errorf("expected %s audit event (severity high), got: %v", hostsvc.EventTypeUnauthorizedRequestID, events)
-	}
-}
-
-// TestWriteAuditStep_NoCallID_UnknownRequestID_NativeMiss verifies that when
-// neither the substrate (plugin_pending_requests) nor the native (feedback_requests)
-// row exists, the handler returns codes.PermissionDenied — oracle-closed: an
-// unknown id is indistinguishable from a foreign id so both return the same error.
-func TestWriteAuditStep_NoCallID_UnknownRequestID_NativeMiss(t *testing.T) {
-	t.Parallel()
-
-	q := &fakeQuerier{
-		instance:                db.PluginInstance{ID: "iid-1", PluginID: "plug-1"},
-		pluginPendingRequestErr: sql.ErrNoRows,
-		feedbackErr:             sql.ErrNoRows,
-	}
-	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
-
-	_, err := srv.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
-		StepType:  "feedback_response",
-		RequestId: "req-unknown",
-	})
-	st, ok := status.FromError(err)
-	if !ok || st.Code() != codes.PermissionDenied {
-		t.Errorf("expected codes.PermissionDenied for unknown request_id, got %v", err)
-	}
-	if st.Message() != "unauthorized_request_id" {
-		t.Errorf("message = %q, want unauthorized_request_id", st.Message())
-	}
-}
-
-// TestWriteAuditStep_Native_OwnershipOracleClosed verifies that the native
-// feedback path returns an identical codes.PermissionDenied/"unauthorized_request_id"
-// for all three non-owner scenarios, closing the request_id probing oracle:
-//
-//   - nonexistent: the request_id does not exist in either table.
-//   - foreign-pending: the request exists but belongs to a different policy.
-//   - foreign-resolved: same as foreign-pending but with Status="responded" —
-//     CRITICAL: must return PermissionDenied, not the late ok=false envelope,
-//     proving ownership is checked before the status branch.
-func TestWriteAuditStep_Native_OwnershipOracleClosed(t *testing.T) {
-	t.Parallel()
-
-	// foreignPolicy grants "otherplugin.*" but the caller is "myplugin".
-	foreignPolicyYAML := policyYAMLWithTool("otherplugin.do_thing")
-
-	tests := []struct {
-		name        string
-		feedbackReq db.FeedbackRequest
-		feedbackErr error
-		run         db.Run
-		policy      db.Policy
-	}{
-		{
-			name:        "nonexistent",
-			feedbackErr: sql.ErrNoRows,
-		},
-		{
-			name:        "foreign-pending",
-			feedbackReq: db.FeedbackRequest{ID: "fr-foreign", RunID: "run-foreign", Status: "pending"},
-			run:         db.Run{ID: "run-foreign", PolicyID: "pol-other"},
-			policy:      db.Policy{ID: "pol-other", Yaml: foreignPolicyYAML},
-		},
-		{
-			// This is the critical guard: a resolved request must still return
-			// PermissionDenied — the status branch must not precede ownership.
-			name:        "foreign-resolved",
-			feedbackReq: db.FeedbackRequest{ID: "fr-foreign", RunID: "run-foreign", Status: "responded"},
-			run:         db.Run{ID: "run-foreign", PolicyID: "pol-other"},
-			policy:      db.Policy{ID: "pol-other", Yaml: foreignPolicyYAML},
-		},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			q := &fakeQuerier{
-				instance:                db.PluginInstance{ID: "iid-probe", PluginID: "plug-probe", InstanceName: "myplugin"},
-				feedbackRequest:         tt.feedbackReq,
-				feedbackErr:             tt.feedbackErr,
-				run:                     tt.run,
-				policy:                  tt.policy,
-				pluginPendingRequestErr: sql.ErrNoRows, // native path
-			}
-			srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
-
-			_, err := srv.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
-				StepType:  "feedback_response",
-				RequestId: "fr-foreign",
-			})
-			st, ok := status.FromError(err)
-			if !ok || st.Code() != codes.PermissionDenied {
-				t.Errorf("[%s] expected codes.PermissionDenied, got %v", tt.name, err)
-			}
-			if st.Message() != "unauthorized_request_id" {
-				t.Errorf("[%s] message = %q, want unauthorized_request_id", tt.name, st.Message())
-			}
-		})
-	}
-}
-
-func TestWriteAuditStep_LateFeedback(t *testing.T) {
-	t.Parallel()
-
-	// The caller must be an owner of the request so the ownership check passes
-	// and the late-feedback branch is reached. Without the owner fixture the
-	// restructured handler would return PermissionDenied before the status check.
-	q := &fakeQuerier{
-		instance:                db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
-		feedbackRequest:         db.FeedbackRequest{ID: "fr-1", RunID: "run-1", Status: "responded"},
-		run:                     db.Run{ID: "run-1", PolicyID: "pol-1"},
-		policy:                  db.Policy{ID: "pol-1", Yaml: policyYAMLWithTool("myplugin.do_thing")},
-		pluginPendingRequestErr: sql.ErrNoRows, // native path
-		// updateFeedbackStatusRows is intentionally unset: the late-feedback path
-		// returns ok=false before reaching writeFeedbackResponseStep.
-	}
-	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
-
-	ctx := ctxWithCallID("call-late")
-	resp, err := srv.WriteAuditStep(ctx, &hostv1.WriteAuditStepRequest{
-		StepType:  "feedback_response",
-		RequestId: "fr-1",
-	})
-	if err != nil {
-		t.Fatalf("unexpected gRPC error: %v", err)
-	}
-	if resp.GetOk() {
-		t.Error("ok = true, want false for late feedback")
-	}
-	if resp.GetError().GetMessage() != "feedback_response_late" {
-		t.Errorf("error.message = %q, want feedback_response_late", resp.GetError().GetMessage())
-	}
-
-	// A feedback_response_late audit event must have been inserted with severity "warning".
-	events := q.all()
-	found := false
-	for _, e := range events {
-		if e.EventType == hostsvc.EventTypeFeedbackResponseLate {
-			found = true
-			if e.Severity != "warning" {
-				t.Errorf("severity = %q, want warning", e.Severity)
-			}
-		}
-	}
-	if !found {
-		t.Error("expected feedback_response_late audit event, found none")
-	}
-}
-
-func TestWriteAuditStep_HappyPath(t *testing.T) {
-	t.Parallel()
-
-	q := &fakeQuerier{
-		// instance_name must match the prefix in the policy YAML tool grant.
-		instance:                 db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
-		feedbackRequest:          db.FeedbackRequest{ID: "fr-ok", RunID: "run-ok", Status: "pending"},
-		latestStep:               db.RunStep{StepNumber: 2},
-		updateFeedbackStatusRows: 1,
-		run:                      db.Run{ID: "run-ok", PolicyID: "pol-ok"},
-		policy:                   db.Policy{ID: "pol-ok", Yaml: policyYAMLWithTool("myplugin.do_thing")},
-		pluginPendingRequestErr:  sql.ErrNoRows, // native path
-	}
-	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
-
-	ctx := ctxWithCallID("call-ok")
-	resp, err := srv.WriteAuditStep(ctx, &hostv1.WriteAuditStepRequest{
-		StepType:    "feedback_response",
-		RequestId:   "fr-ok",
-		PayloadJson: `{"body":"yes please"}`,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !resp.GetOk() {
-		t.Error("ok = false, want true")
-	}
-}
-
-// ctxWithCallIDAndToken builds a context with both a gleipnir-call-id and a
-// gleipnir-instance-token in incoming metadata and runs UnaryCallIDInterceptor
-// to attach the call ID as a context value. The instance token remains in the
-// incoming metadata for callWriteAuditStep to process via
-// UnaryInstanceTokenInterceptor.
-func ctxWithCallIDAndToken(callID, token string) context.Context {
-	md := metadata.Pairs(
-		sdkproto.CallIDMetadataKey, callID,
-		sdkproto.InstanceTokenMetadataKey, token,
-	)
-	ctx := metadata.NewIncomingContext(context.Background(), md)
-
-	// Run UnaryCallIDInterceptor so CallIDFromContext works.
-	callIDInterceptor := hostsvc.UnaryCallIDInterceptor()
-	var afterCallID context.Context
-	_, _ = callIDInterceptor(ctx, nil, nil, func(c context.Context, _ any) (any, error) {
-		afterCallID = c
-		return nil, nil
-	})
-	return afterCallID
-}
-
-// newTestServerWithContextBinder builds a Server using the production
-// contextBinder, which resolves the instance ID from the value
-// UnaryInstanceTokenInterceptor attaches to the request context.
-// callWriteAuditStep applies that interceptor before invoking the handler.
-func newTestServerWithContextBinder(
-	t *testing.T,
-	q *fakeQuerier,
-	resolver hostsvc.CallContextResolver,
-	pub *fakePublisher,
-) *hostsvc.Server {
-	t.Helper()
-	return hostsvc.NewServer(q, nil, testEncryptionKey, resolver, hostsvc.NewContextBinder(), pub, nil)
-}
-
-// callWriteAuditStep runs UnaryInstanceTokenInterceptor then calls
-// srv.WriteAuditStep with the resulting context. This simulates the production
-// path where the interceptor chain runs before the handler.
-func callWriteAuditStep(
-	reg *identity.Registry,
-	srv *hostsvc.Server,
-	baseCtx context.Context,
-	req *hostv1.WriteAuditStepRequest,
-) (*hostv1.WriteAuditStepResponse, error) {
-	interceptor := hostsvc.UnaryInstanceTokenInterceptor(reg)
-	var resp *hostv1.WriteAuditStepResponse
-	var handlerErr error
-	_, interceptorErr := interceptor(baseCtx, req, nil, func(ctx context.Context, r any) (any, error) {
-		resp, handlerErr = srv.WriteAuditStep(ctx, r.(*hostv1.WriteAuditStepRequest))
-		return resp, handlerErr
-	})
-	if interceptorErr != nil {
-		return nil, interceptorErr
-	}
-	return resp, handlerErr
-}
-
-func TestWriteAuditStep_RequestIDOutOfScope(t *testing.T) {
-	t.Parallel()
-
-	// The policy YAML does NOT grant any tool prefixed "myplugin.".
-	q := &fakeQuerier{
-		instance:                db.PluginInstance{ID: "iid-oos", PluginID: "plug-oos", InstanceName: "myplugin"},
-		feedbackRequest:         db.FeedbackRequest{ID: "fr-oos", RunID: "run-oos", Status: "pending"},
-		run:                     db.Run{ID: "run-oos", PolicyID: "pol-other"},
-		policy:                  db.Policy{ID: "pol-other", Yaml: policyYAMLWithTool("otherplugin.do_thing")},
-		pluginPendingRequestErr: sql.ErrNoRows, // native path
-	}
-	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
-
-	ctx := ctxWithCallID("call-oos")
-	_, err := srv.WriteAuditStep(ctx, &hostv1.WriteAuditStepRequest{
-		StepType:  "feedback_response",
-		RequestId: "fr-oos",
-	})
-
-	st, ok := status.FromError(err)
-	if !ok || st.Code() != codes.PermissionDenied {
-		t.Fatalf("expected PermissionDenied, got %v", err)
-	}
-	if st.Message() != "unauthorized_request_id" {
-		t.Errorf("message = %q, want unauthorized_request_id", st.Message())
-	}
-
-	// Verify the audit event was written with the expected fields.
-	events := q.all()
-	var found bool
-	for _, e := range events {
-		if e.EventType != hostsvc.EventTypeUnauthorizedRequestID {
-			continue
-		}
-		found = true
-		if e.Severity != "high" {
-			t.Errorf("severity = %q, want high", e.Severity)
-		}
-		var payload map[string]string
-		if err := json.Unmarshal([]byte(e.PayloadJson), &payload); err != nil {
-			t.Fatalf("payload json parse: %v", err)
-		}
-		if payload["request_id"] != "fr-oos" {
-			t.Errorf("payload.request_id = %q, want fr-oos", payload["request_id"])
-		}
-		if payload["run_id"] != "run-oos" {
-			t.Errorf("payload.run_id = %q, want run-oos", payload["run_id"])
-		}
-		if payload["rpc_method"] == "" {
-			t.Error("payload.rpc_method is empty")
-		}
-	}
-	if !found {
-		t.Errorf("expected %s audit event, got: %v", hostsvc.EventTypeUnauthorizedRequestID, events)
-	}
-}
-
-func TestWriteAuditStep_RequestIDInScope_Success(t *testing.T) {
-	t.Parallel()
-
-	// Policy YAML grants "myplugin.do_thing" — instance is in scope.
-	q := &fakeQuerier{
-		instance:                 db.PluginInstance{ID: "iid-inscope", PluginID: "plug-inscope", InstanceName: "myplugin"},
-		feedbackRequest:          db.FeedbackRequest{ID: "fr-inscope", RunID: "run-inscope", Status: "pending"},
-		latestStep:               db.RunStep{StepNumber: 0},
-		updateFeedbackStatusRows: 1,
-		run:                      db.Run{ID: "run-inscope", PolicyID: "pol-inscope"},
-		policy:                   db.Policy{ID: "pol-inscope", Yaml: policyYAMLWithTool("myplugin.do_thing")},
-		pluginPendingRequestErr:  sql.ErrNoRows, // native path
-	}
-	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
-
-	ctx := ctxWithCallID("call-inscope")
-	resp, err := srv.WriteAuditStep(ctx, &hostv1.WriteAuditStepRequest{
-		StepType:  "feedback_response",
-		RequestId: "fr-inscope",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !resp.GetOk() {
-		t.Error("ok = false, want true")
-	}
-}
-
-// TestWriteAuditStep_RequestIDInScopeAcrossGenerations exercises the end-to-end
-// path from identity.Registry token verification through the contextBinder to
-// the request_id scope check, simulating a hot-reload mid-request:
-//
-//  1. Token T1 is issued for instance I (generation 1).
-//  2. Token T2 is issued for the same instance I (generation 2), auto-revoking T1.
-//  3. A WriteAuditStep call arrives carrying T2 and a request_id originally
-//     routed to I. The policy YAML grants I.<tool>.
-//  4. The call must succeed — verifying that request_id is instance-scoped,
-//     not generation-scoped, even though T1 is now invalid.
-//
-// NOTE: This test covers tool-grant ownership only. Audience-based scoping
-// (audiences.plugin_instance per spec §4.2/§6) is a follow-up (#158-adjacent);
-// a feedback_request routed to an instance purely via an audience entry would
-// be falsely rejected today.
-func TestWriteAuditStep_RequestIDInScopeAcrossGenerations(t *testing.T) {
-	t.Parallel()
-
-	reg := identity.New()
-
-	// Generation 1: issue T1.
-	_, err := reg.Issue("inst-crossgen")
-	if err != nil {
-		t.Fatalf("Issue T1: %v", err)
-	}
-
-	// Generation 2: issue T2, which auto-revokes T1.
-	t2, err := reg.Issue("inst-crossgen")
-	if err != nil {
-		t.Fatalf("Issue T2: %v", err)
-	}
-
-	q := &fakeQuerier{
-		instance:                 db.PluginInstance{ID: "inst-crossgen", PluginID: "plug-crossgen", InstanceName: "crossgen"},
-		feedbackRequest:          db.FeedbackRequest{ID: "fr-crossgen", RunID: "run-crossgen", Status: "pending"},
-		latestStep:               db.RunStep{StepNumber: 0},
-		updateFeedbackStatusRows: 1,
-		run:                      db.Run{ID: "run-crossgen", PolicyID: "pol-crossgen"},
-		policy:                   db.Policy{ID: "pol-crossgen", Yaml: policyYAMLWithTool("crossgen.action")},
-		pluginPendingRequestErr:  sql.ErrNoRows, // native path
-	}
-
-	pub := &fakePublisher{}
-	srv := newTestServerWithContextBinder(t, q, &fakeResolver{}, pub)
-
-	// Call arrives under T2 (the new generation's token) with the same request_id.
-	baseCtx := ctxWithCallIDAndToken("call-crossgen", t2)
-
-	resp, err := callWriteAuditStep(reg, srv, baseCtx, &hostv1.WriteAuditStepRequest{
-		StepType:  "feedback_response",
-		RequestId: "fr-crossgen",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !resp.GetOk() {
-		t.Error("ok = false, want true")
-	}
-}
-
-// --- tests: WriteAuditStep (plugin substrate) ---
-
-// pendingRequest returns a db.PluginPendingRequest for testing with the given
-// instanceID as PluginInstanceID and the given status.
-func pendingRequest(instanceID, status string) db.PluginPendingRequest {
-	return db.PluginPendingRequest{
-		ID:               "req-plugin-1",
-		PluginInstanceID: instanceID,
-		RunID:            "run-plugin-1",
-		ToolName:         "ask",
-		Status:           status,
-	}
-}
-
-// TestPluginSubstrate_HappyPath verifies that a pending plugin request is
-// resolved and returns ok=true with no run_step written by this handler.
-func TestPluginSubstrate_HappyPath(t *testing.T) {
-	t.Parallel()
-
-	q := &fakeQuerier{
-		instance:             db.PluginInstance{ID: "iid-ps", PluginID: "plug-ps"},
-		pluginPendingRequest: pendingRequest("iid-ps", "pending"),
-	}
-	ch := &fakeChannelResolver{resolved: true, err: nil}
-	pub := &fakePublisher{}
-	binder := &fakeInstanceBinder{id: "iid-ps", ok: true}
-	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, pub, ch)
-
-	ctx := ctxWithCallID("call-ps-happy")
-	resp, err := srv.WriteAuditStep(ctx, &hostv1.WriteAuditStepRequest{
-		StepType:    "feedback_response",
-		RequestId:   "req-plugin-1",
-		PayloadJson: `{"answer":"yes"}`,
-	})
-	if err != nil {
-		t.Fatalf("unexpected gRPC error: %v", err)
-	}
-	if !resp.GetOk() {
-		t.Errorf("ok = false, want true")
-	}
-
-	// No run_step should be inserted — agent loop's Wait writes its own step.
-	if q.createRunStepCalls != 0 {
-		t.Errorf("CreateRunStep called %d times on plugin substrate happy path; want 0", q.createRunStepCalls)
-	}
-
-	// SSE event must be published.
-	evts := pub.all()
-	found := false
-	for _, ev := range evts {
-		if ev == "plugin.feedback_response_written" {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("expected plugin.feedback_response_written event, got %v", evts)
-	}
-}
-
-// TestPluginSubstrate_LateAlreadyResolved verifies that when Resolve returns
-// (false, nil) for an already-resolved row, the handler returns ok=false with
-// a feedback_response_late event.
-func TestPluginSubstrate_LateAlreadyResolved(t *testing.T) {
-	t.Parallel()
-
-	q := &fakeQuerier{
-		instance:             db.PluginInstance{ID: "iid-late", PluginID: "plug-late"},
-		pluginPendingRequest: pendingRequest("iid-late", "resolved"),
-	}
-	ch := &fakeChannelResolver{resolved: false, err: nil}
-	binder := &fakeInstanceBinder{id: "iid-late", ok: true}
-	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, ch)
-
-	ctx := ctxWithCallID("call-ps-late")
-	resp, err := srv.WriteAuditStep(ctx, &hostv1.WriteAuditStepRequest{
-		StepType:  "feedback_response",
-		RequestId: "req-plugin-1",
-	})
-	if err != nil {
-		t.Fatalf("unexpected gRPC error: %v", err)
-	}
-	if resp.GetOk() {
-		t.Error("ok = true, want false for late callback")
-	}
-	if resp.GetError().GetMessage() != hostsvc.EventTypeFeedbackResponseLate {
-		t.Errorf("error.message = %q, want %q", resp.GetError().GetMessage(), hostsvc.EventTypeFeedbackResponseLate)
-	}
-
-	events := q.all()
-	var found bool
-	for _, e := range events {
-		if e.EventType == hostsvc.EventTypeFeedbackResponseLate {
-			found = true
-			if e.Severity != "warning" {
-				t.Errorf("severity = %q, want warning", e.Severity)
-			}
-			var payload map[string]string
-			if err := json.Unmarshal([]byte(e.PayloadJson), &payload); err == nil {
-				if payload["reason"] != "late" {
-					t.Errorf("reason = %q, want late", payload["reason"])
-				}
-			}
-		}
-	}
-	if !found {
-		t.Error("expected feedback_response_late audit event, found none")
-	}
-}
-
-// TestPluginSubstrate_LateAlreadyTimedOut verifies that a timed_out row also
-// collapses into the late-callback path with reason="late".
-func TestPluginSubstrate_LateAlreadyTimedOut(t *testing.T) {
-	t.Parallel()
-
-	q := &fakeQuerier{
-		instance:             db.PluginInstance{ID: "iid-to", PluginID: "plug-to"},
-		pluginPendingRequest: pendingRequest("iid-to", "timed_out"),
-	}
-	ch := &fakeChannelResolver{resolved: false, err: nil}
-	binder := &fakeInstanceBinder{id: "iid-to", ok: true}
-	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, ch)
-
-	ctx := ctxWithCallID("call-ps-timedout")
-	resp, err := srv.WriteAuditStep(ctx, &hostv1.WriteAuditStepRequest{
-		StepType:  "feedback_response",
-		RequestId: "req-plugin-1",
-	})
-	if err != nil {
-		t.Fatalf("unexpected gRPC error: %v", err)
-	}
-	if resp.GetOk() {
-		t.Error("ok = true, want false for timed_out callback")
-	}
-
-	events := q.all()
-	var found bool
-	for _, e := range events {
-		if e.EventType == hostsvc.EventTypeFeedbackResponseLate {
-			found = true
-			if e.Severity != "warning" {
-				t.Errorf("severity = %q, want warning", e.Severity)
-			}
-		}
-	}
-	if !found {
-		t.Error("expected feedback_response_late audit event, found none")
-	}
-}
-
-// TestPluginSubstrate_EvictedWaiter verifies (false, ErrUnknownRequestID) from
-// Resolve collapses into the late-callback path with reason="evicted_waiter".
-func TestPluginSubstrate_EvictedWaiter(t *testing.T) {
-	t.Parallel()
-
-	q := &fakeQuerier{
-		instance:             db.PluginInstance{ID: "iid-ev", PluginID: "plug-ev"},
-		pluginPendingRequest: pendingRequest("iid-ev", "pending"),
-	}
-	ch := &fakeChannelResolver{resolved: false, err: dispatch.ErrUnknownRequestID}
-	binder := &fakeInstanceBinder{id: "iid-ev", ok: true}
-	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, ch)
-
-	ctx := ctxWithCallID("call-ps-evicted")
-	resp, err := srv.WriteAuditStep(ctx, &hostv1.WriteAuditStepRequest{
-		StepType:  "feedback_response",
-		RequestId: "req-plugin-1",
-	})
-	if err != nil {
-		t.Fatalf("unexpected gRPC error: %v", err)
-	}
-	if resp.GetOk() {
-		t.Error("ok = true, want false for evicted waiter")
-	}
-
-	events := q.all()
-	var found bool
-	for _, e := range events {
-		if e.EventType == hostsvc.EventTypeFeedbackResponseLate {
-			found = true
-			var payload map[string]string
-			if err := json.Unmarshal([]byte(e.PayloadJson), &payload); err == nil {
-				if payload["reason"] != "evicted_waiter" {
-					t.Errorf("reason = %q, want evicted_waiter", payload["reason"])
-				}
-			}
-		}
-	}
-	if !found {
-		t.Error("expected feedback_response_late audit event, found none")
-	}
-}
-
-// TestPluginSubstrate_NilResolver verifies that s.channels == nil with a found
-// row produces a feedback_response_late event with reason="resolver_unwired".
-func TestPluginSubstrate_NilResolver(t *testing.T) {
-	t.Parallel()
-
-	q := &fakeQuerier{
-		instance:             db.PluginInstance{ID: "iid-nil", PluginID: "plug-nil"},
-		pluginPendingRequest: pendingRequest("iid-nil", "pending"),
-	}
-	// channels=nil
-	binder := &fakeInstanceBinder{id: "iid-nil", ok: true}
-	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, nil)
-
-	ctx := ctxWithCallID("call-ps-nil")
-	resp, err := srv.WriteAuditStep(ctx, &hostv1.WriteAuditStepRequest{
-		StepType:  "feedback_response",
-		RequestId: "req-plugin-1",
-	})
-	if err != nil {
-		t.Fatalf("unexpected gRPC error: %v", err)
-	}
-	if resp.GetOk() {
-		t.Error("ok = true, want false when resolver unwired")
-	}
-
-	events := q.all()
-	var found bool
-	for _, e := range events {
-		if e.EventType == hostsvc.EventTypeFeedbackResponseLate {
-			found = true
-			var payload map[string]string
-			if err := json.Unmarshal([]byte(e.PayloadJson), &payload); err == nil {
-				if payload["reason"] != "resolver_unwired" {
-					t.Errorf("reason = %q, want resolver_unwired", payload["reason"])
-				}
-			}
-		}
-	}
-	if !found {
-		t.Error("expected feedback_response_late audit event, found none")
-	}
-}
-
-// TestPluginSubstrate_UnauthorizedInstance verifies that a request_id routed
-// to a different instance is rejected with unauthorized_request_id (high severity).
-func TestPluginSubstrate_UnauthorizedInstance(t *testing.T) {
-	t.Parallel()
-
-	q := &fakeQuerier{
-		instance: db.PluginInstance{ID: "iid-caller", PluginID: "plug-caller"},
-		// Row belongs to a different instance.
-		pluginPendingRequest: pendingRequest("iid-other", "pending"),
-	}
-	binder := &fakeInstanceBinder{id: "iid-caller", ok: true}
-	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, nil)
-
-	ctx := ctxWithCallID("call-ps-unauth")
-	_, err := srv.WriteAuditStep(ctx, &hostv1.WriteAuditStepRequest{
-		StepType:  "feedback_response",
-		RequestId: "req-plugin-1",
-	})
-	st, ok := status.FromError(err)
-	if !ok || st.Code() != codes.PermissionDenied {
-		t.Fatalf("expected PermissionDenied, got %v", err)
-	}
-	if st.Message() != "unauthorized_request_id" {
-		t.Errorf("message = %q, want unauthorized_request_id", st.Message())
-	}
-
-	events := q.all()
-	var found bool
-	for _, e := range events {
-		if e.EventType == hostsvc.EventTypeUnauthorizedRequestID {
-			found = true
-			if e.Severity != "high" {
-				t.Errorf("severity = %q, want high", e.Severity)
-			}
-		}
-	}
-	if !found {
-		t.Error("expected unauthorized_request_id audit event, found none")
-	}
-}
-
-// TestPluginSubstrate_FallThroughToFeedbackRequests verifies that when
-// GetPluginPendingRequest returns sql.ErrNoRows, the handler falls through to
-// the native feedback_requests path.
-func TestPluginSubstrate_FallThroughToFeedbackRequests(t *testing.T) {
-	t.Parallel()
-
-	q := &fakeQuerier{
-		instance:                 db.PluginInstance{ID: "iid-ft", PluginID: "plug-ft", InstanceName: "myplugin"},
-		pluginPendingRequestErr:  sql.ErrNoRows,
-		feedbackRequest:          db.FeedbackRequest{ID: "fr-native", RunID: "run-native", Status: "pending"},
-		latestStep:               db.RunStep{StepNumber: 0},
-		updateFeedbackStatusRows: 1,
-		run:                      db.Run{ID: "run-native", PolicyID: "pol-native"},
-		policy:                   db.Policy{ID: "pol-native", Yaml: policyYAMLWithTool("myplugin.do_thing")},
-	}
-	pub := &fakePublisher{}
-	binder := &fakeInstanceBinder{id: "iid-ft", ok: true}
-	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, pub, nil)
-
-	ctx := ctxWithCallID("call-ft")
-	resp, err := srv.WriteAuditStep(ctx, &hostv1.WriteAuditStepRequest{
-		StepType:  "feedback_response",
-		RequestId: "fr-native",
-	})
-	if err != nil {
-		t.Fatalf("unexpected gRPC error: %v", err)
-	}
-	if !resp.GetOk() {
-		t.Error("ok = false, want true on native fall-through path")
-	}
-}
-
 // --- tests: EmitMetric ---
 
 func TestEmitMetric_ForcePrefix(t *testing.T) {
@@ -1438,7 +525,7 @@ func TestEmitMetric_ForcePrefix(t *testing.T) {
 	q := &fakeQuerier{
 		instance: db.PluginInstance{ID: "iid-prefix", PluginID: "plug-prefix"},
 	}
-	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, &fakeInstanceBinder{id: "iid-prefix", ok: true}, &fakePublisher{}, nil)
+	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, &fakeInstanceBinder{id: "iid-prefix", ok: true}, &fakePublisher{})
 
 	_, err := srv.EmitMetric(context.Background(), &hostv1.EmitMetricRequest{
 		Name:  "prefix_test_metric",
@@ -1453,7 +540,7 @@ func TestEmitMetric_AutoInjectLabels(t *testing.T) {
 	q := &fakeQuerier{
 		instance: db.PluginInstance{ID: "inst-auto-label", PluginID: "plug-auto-label"},
 	}
-	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, &fakeInstanceBinder{id: "inst-auto-label", ok: true}, &fakePublisher{}, nil)
+	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, &fakeInstanceBinder{id: "inst-auto-label", ok: true}, &fakePublisher{})
 
 	_, err := srv.EmitMetric(context.Background(), &hostv1.EmitMetricRequest{
 		Name:  "auto_label_verify_metric",
@@ -1503,7 +590,7 @@ func TestEmitMetric_RejectsInconsistentLabelKeys(t *testing.T) {
 		instance: db.PluginInstance{ID: "iid-incons", PluginID: "plug-incons"},
 	}
 	binder := &fakeInstanceBinder{id: "iid-incons", ok: true}
-	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, nil)
+	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{})
 
 	// First emission: registers the metric with label key "a".
 	_, err := srv.EmitMetric(context.Background(), &hostv1.EmitMetricRequest{
@@ -1558,7 +645,7 @@ func TestEmitMetric_CardinalityCap(t *testing.T) {
 		instance: db.PluginInstance{ID: "iid-cap", PluginID: "plug-cap"},
 	}
 	binder := &fakeInstanceBinder{id: "iid-cap", ok: true}
-	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, nil)
+	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{})
 
 	// Emit 100 distinct values for label "env" — all must succeed.
 	for i := 0; i < 100; i++ {
@@ -1592,7 +679,7 @@ func TestEmitMetric_CardinalityCap_Concurrent(t *testing.T) {
 		instance: db.PluginInstance{ID: "iid-conc", PluginID: "plug-conc"},
 	}
 	binder := &fakeInstanceBinder{id: "iid-conc", ok: true}
-	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, nil)
+	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{})
 
 	const total = 200
 	var successes, exhausted atomic.Int64
@@ -1715,7 +802,7 @@ func TestEmitEvent_ForwardsToTriggerSink(t *testing.T) {
 		instance: db.PluginInstance{ID: "iid-sink", PluginID: "plug-sink"},
 	}
 	pub := &fakePublisher{}
-	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, &fakeInstanceBinder{id: "iid-sink", ok: true}, pub, nil)
+	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, &fakeInstanceBinder{id: "iid-sink", ok: true}, pub)
 
 	sink := &fakeTriggerSink{}
 	srv.SetTriggerSink(sink)
@@ -1783,7 +870,7 @@ func TestServer_SetTriggerSink_LateBinding(t *testing.T) {
 		instance: db.PluginInstance{ID: "iid-late", PluginID: "plug-late"},
 	}
 	pub := &fakePublisher{}
-	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, &fakeInstanceBinder{id: "iid-late", ok: true}, pub, nil)
+	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, &fakeInstanceBinder{id: "iid-late", ok: true}, pub)
 
 	// First call before SetTriggerSink: SSE-only.
 	_, err := srv.EmitEvent(context.Background(), &hostv1.EmitEventRequest{
@@ -2072,7 +1159,7 @@ func TestNewServer_NilBinderPanics(t *testing.T) {
 	}()
 
 	q := &fakeQuerier{}
-	hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, nil, &fakePublisher{}, nil)
+	hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, nil, &fakePublisher{})
 }
 
 // ── test helpers: Tier-2 manifest snapshots ───────────────────────────────────
@@ -2653,131 +1740,6 @@ func TestUserDirectoryRead_UnknownRole(t *testing.T) {
 	}
 }
 
-// TestPolicyGrantsInstanceEdgeCases verifies that policyGrantsInstance correctly
-// rejects empty instanceName and does not match prefix-overlapping instance names
-// (issue #357).
-//
-// policyGrantsInstance is unexported; it is exercised through WriteAuditStep's
-// scope check on the native feedback_response path. The querier is configured so
-// the plugin-substrate path falls through (sql.ErrNoRows on GetPluginPendingRequest)
-// and the test reaches the policyGrantsInstance guard.
-func TestPolicyGrantsInstanceEdgeCases(t *testing.T) {
-	t.Parallel()
-
-	policyWithTools := func(tools ...string) string {
-		var sb strings.Builder
-		sb.WriteString("capabilities:\n  tools:\n")
-		for _, tool := range tools {
-			sb.WriteString("  - tool: " + tool + "\n")
-		}
-		return sb.String()
-	}
-
-	cases := []struct {
-		name         string
-		policyYAML   string
-		instanceName string
-		wantGranted  bool
-	}{
-		{
-			name:         "empty instanceName never matches",
-			policyYAML:   policyWithTools("foo.tool1"),
-			instanceName: "",
-			wantGranted:  false,
-		},
-		{
-			name:         "exact first segment matches",
-			policyYAML:   policyWithTools("foo.tool1"),
-			instanceName: "foo",
-			wantGranted:  true,
-		},
-		{
-			// "foo.bar" is a dotted instanceName; strings.Cut on "foo.bar.tool1"
-			// yields first segment "foo" ≠ "foo.bar", so the grant must be rejected.
-			// Old HasPrefix("foo.bar.tool1", "foo.bar.") would match; Cut fixes it.
-			name:         "dotted instanceName 'foo.bar' must not match tool 'foo.bar.tool1'",
-			policyYAML:   policyWithTools("foo.bar.tool1"),
-			instanceName: "foo.bar",
-			wantGranted:  false,
-		},
-		{
-			// instance "foo" correctly owns tool "foo.bar.tool1" (first segment = "foo").
-			name:         "instance 'foo' owns multi-part tool 'foo.bar.tool1'",
-			policyYAML:   policyWithTools("foo.bar.tool1"),
-			instanceName: "foo",
-			wantGranted:  true,
-		},
-		{
-			name:         "tool with no dot never matches any instance",
-			policyYAML:   policyWithTools("toolnodot"),
-			instanceName: "toolnodot",
-			wantGranted:  false,
-		},
-		{
-			name:         "empty policy YAML returns false",
-			policyYAML:   "",
-			instanceName: "foo",
-			wantGranted:  false,
-		},
-		{
-			name:         "unparseable YAML returns false",
-			policyYAML:   "{{not: valid: yaml:::",
-			instanceName: "foo",
-			wantGranted:  false,
-		},
-	}
-
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			q := &fakeQuerier{
-				instance: db.PluginInstance{
-					ID:           "iid-1",
-					PluginID:     "plug-1",
-					InstanceName: tc.instanceName,
-				},
-				// plugin-substrate path must fall through to native path.
-				pluginPendingRequestErr: sql.ErrNoRows,
-				// native path: feedback request is pending.
-				feedbackRequest: db.FeedbackRequest{
-					ID:     "req-1",
-					RunID:  "run-1",
-					Status: "pending",
-				},
-				run: db.Run{
-					ID:       "run-1",
-					PolicyID: "pol-1",
-					Status:   "running",
-				},
-				policy: db.Policy{
-					ID:   "pol-1",
-					Yaml: tc.policyYAML,
-				},
-			}
-			srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
-
-			_, err := srv.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
-				StepType:  "feedback_response",
-				RequestId: "req-1",
-			})
-			if tc.wantGranted {
-				// The scope check passed. Any subsequent error (e.g. writeFeedbackResponseStep
-				// needing a real DB) is fine — we only care the guard did not fire PermissionDenied.
-				if st, ok := status.FromError(err); ok && st.Code() == codes.PermissionDenied {
-					t.Errorf("expected scope check to pass, got PermissionDenied")
-				}
-			} else {
-				st, ok := status.FromError(err)
-				if !ok || st.Code() != codes.PermissionDenied {
-					t.Errorf("expected PermissionDenied from scope check, got %v", err)
-				}
-			}
-		})
-	}
-}
-
 // --- tests: EmitEvent rate limiting ---
 
 // TestEmitEvent_RateLimit_Integration fires 250 EmitEvent calls against a Server
@@ -2811,7 +1773,7 @@ func TestEmitEvent_RateLimit_Integration(t *testing.T) {
 	sink := &fakeTriggerSink{}
 
 	binder := &fakeInstanceBinder{id: instanceID, ok: true}
-	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, pub, nil)
+	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, binder, pub)
 	srv.SetTriggerSink(sink)
 
 	const (
@@ -2906,65 +1868,6 @@ func oversized(n int) string {
 		b[i] = 'x'
 	}
 	return string(b)
-}
-
-func TestWriteAuditStep_PayloadJSONTooLarge(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		payloadSize int
-		wantCode    codes.Code
-	}{
-		{
-			name:        "exactly at cap: accepted",
-			payloadSize: 64 * 1024,
-			wantCode:    codes.OK,
-		},
-		{
-			name:        "one byte over cap: rejected",
-			payloadSize: 64*1024 + 1,
-			wantCode:    codes.InvalidArgument,
-		},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			q := &fakeQuerier{
-				instance:                 db.PluginInstance{ID: "iid-size", PluginID: "plug-size", InstanceName: "myplugin"},
-				pluginPendingRequestErr:  sql.ErrNoRows,
-				feedbackRequest:          db.FeedbackRequest{ID: "fr-size", RunID: "run-size", Status: "pending"},
-				latestStep:               db.RunStep{StepNumber: 0},
-				updateFeedbackStatusRows: 1,
-				run:                      db.Run{ID: "run-size", PolicyID: "pol-size"},
-				policy:                   db.Policy{ID: "pol-size", Yaml: policyYAMLWithTool("myplugin.act")},
-			}
-			srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
-
-			_, err := srv.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
-				StepType:    "feedback_response",
-				RequestId:   "fr-size",
-				PayloadJson: oversized(tt.payloadSize),
-			})
-
-			if tt.wantCode == codes.OK {
-				if err != nil {
-					t.Errorf("expected no error for payload at cap, got: %v", err)
-				}
-			} else {
-				st, ok := status.FromError(err)
-				if !ok || st.Code() != tt.wantCode {
-					t.Errorf("expected %v, got %v", tt.wantCode, err)
-				}
-				if !strings.Contains(st.Message(), "payload_json exceeds") {
-					t.Errorf("message = %q, want to contain \"payload_json exceeds\"", st.Message())
-				}
-			}
-		})
-	}
 }
 
 func TestEmitEvent_PayloadJSONTooLarge(t *testing.T) {

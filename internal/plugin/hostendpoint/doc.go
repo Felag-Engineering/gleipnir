@@ -19,8 +19,14 @@
 // the spec §6.4 poll-now hint (#879 — authorize.go); and SubmitIdentityProof
 // plus GetUserConfig as thin entry points over the two #18 seams (#881 —
 // userlink.go). With that, every method in the §8 inventory that this
-// milestone keeps is served. Remaining: the SDK client (#882), gRPC removal
-// (#883), and the contract doc (#884).
+// milestone keeps is served. plugin-sdk/hostclient (#882) is the typed,
+// zero-protobuf client for this exact contract — the cross-module
+// integration test in sdkclient_integration_test.go stands up a real Server
+// behind the real Chain and drives it with that client, so a wire-shape
+// mismatch between the two sides fails a test rather than shipping. What
+// remains: gRPC removal (#883, deliberately not part of this port — the
+// live v1.1 Slack/ntfy plugins still run on that path) and the contract doc
+// (#884).
 //
 // # The host-plane invariant (normative, spec §8)
 //

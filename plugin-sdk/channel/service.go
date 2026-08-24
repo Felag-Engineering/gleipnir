@@ -25,7 +25,9 @@ type Notification struct {
 type FeedbackRequest struct {
 	// RequestID is a host-generated token that is instance-scoped (not
 	// generation-scoped) so callbacks can be matched across hot-reloads.
-	// Echo this in WriteAuditStep when the human replies.
+	// WriteAuditStep — the RPC that used to settle a Request with this token —
+	// left the host surface (#880); there is no host-side settlement path
+	// until the milestone #19 ADR-055 task-based rewrite lands.
 	RequestID string
 	// Prompt is the message to display to the human operator.
 	Prompt string
@@ -104,9 +106,11 @@ type Service interface {
 	Notify(ctx context.Context, n Notification) error
 
 	// Request opens a request/response feedback channel. The plugin must
-	// synchronously ack (return nil) within 5s and later call the host's
-	// WriteAuditStep Host RPC with a feedback_response step when the human
-	// replies (spec §4.2).
+	// synchronously ack (return nil) within 5s and, per spec §4.2, later
+	// settle the request with a feedback_response step when the human
+	// replies. That settlement rode the host's WriteAuditStep Host RPC,
+	// which left the host surface (#880) — settlement is non-functional
+	// until the milestone #19 ADR-055 task-based rewrite lands.
 	//
 	// Notify-only plugins SHOULD return pluginerr.Unimplemented("Request not
 	// supported"). This produces an application-level UNIMPLEMENTED envelope,
