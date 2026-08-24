@@ -15,6 +15,13 @@ plugin-sdk/
   proto/          — .proto source files for all plugin services
   gen/            — generated Go stubs (committed; regenerate with `make proto`)
   manifest/       — manifest builder types (code-first manifest authoring)
+  manifestv2/     — manifest format for containerized plugins (ADR-053/ADR-056); separate
+                    from manifest/, not a revision of it — see the package doc
+  events/         — io.gleipnir/events server helper (ADR-054, #904): Kind + Handler
+                    (server/discover, events/discover, events/listen — SSE framing,
+                    heartbeat, resumable cursor) and Buffer (bounded in-memory ring by
+                    default, or a Store-backed durable buffer) for plugin authors
+                    implementing the event_source profile
   serve/          — plugin entry point: serve.Serve() + WithXHandler / WithXService options
   tool/           — tool.Service ergonomic interface (plain-Go tool handlers)
   channel/        — channel.Service ergonomic interface (Notify / Request handlers)

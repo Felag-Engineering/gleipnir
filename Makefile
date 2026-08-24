@@ -233,6 +233,7 @@ ci-local-sdk: ci-local-drift
 	cd plugin-sdk && GOWORK=off go build -p $(CI_LOCAL_TEST_P) ./... && GOWORK=off go test -p $(CI_LOCAL_TEST_P) ./...
 	go test ./plugin-sdk/examples/minimal-tool/...
 	go build -o /dev/null ./plugin-sdk/examples/host-client
+	go build -o /dev/null ./plugin-sdk/examples/minimal-event-source
 	@for dir in $(CI_LOCAL_PLUGIN_DIRS); do \
 		echo "go test $$dir..."; \
 		(cd "$$dir" && go test ./...) || exit 1; \
