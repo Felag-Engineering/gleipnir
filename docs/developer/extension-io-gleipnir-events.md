@@ -226,6 +226,19 @@ subscription.
 | `scope` | Reserved for future narrowing (e.g. a workspace or repository scope); opaque to this contract version. |
 | `cursor` | The sequence value to resume after, echoing a prior `gleipnirseq` (§7.3). Absent on a first connection. |
 
+**Cursor-unknown refusal.** A server whose buffer cannot satisfy a supplied
+`cursor` gap-free (a restarted in-memory buffer, an evicted range) MUST refuse
+to open the stream: it answers the `events/listen` request with an ordinary
+JSON-RPC **error** (`Content-Type: application/json`), code `-32001`
+(JSON-RPC 2.0 §5.1 reserved server-error range), message
+`"cursor unknown, replaying from now"` — never a stream that silently replays
+from a different point than the cursor named. The client resets its stored
+cursor and reconnects with none, accepting the redelivery its dedup layer
+absorbs. A malformed (non-integer) cursor is refused the same way. This is
+the one case in this contract where an `events/listen` request is answered
+with a plain JSON-RPC body instead of a stream, which is why a client MUST
+check the response `Content-Type` before handing the body to an SSE reader.
+
 ### 7.3 CloudEvents envelope and cursor semantics
 
 Every delivered event is a CloudEvents 1.0 envelope:
@@ -381,6 +394,7 @@ Anchors CI for the events profile and pre-packages the WG submission (§4.2's
 - [ ] A clean close sends a JSON-RPC response to the original request id carrying `{reason, cursor}`.
 - [ ] An SSE comment heartbeat is emitted at (or better than) the declared `heartbeatMs`.
 - [ ] Reconnecting with a prior `cursor` resumes after that `gleipnirseq`, not before it.
+- [ ] An unsatisfiable or malformed `cursor` is refused with a plain JSON-RPC error, code `-32001` — the stream never opens.
 - [ ] The server never assumes at-most-once delivery is required of it — redelivery is expected and is the client's problem to dedup.
 
 ### Discipline
