@@ -1121,3 +1121,99 @@ func TestAddToolInputDeadlineSourceSkipsOnFreshSchema(t *testing.T) {
 		t.Fatal("ShouldSkip returned false on a fresh initial schema — did 0001_initial.sql forget deadline_source?")
 	}
 }
+
+// TestAddPluginEventCursors verifies that migration 0051 creates
+// plugin_event_cursors on the existing-database upgrade path, that a row
+// referencing the pre-seeded instance round-trips, that ON DELETE CASCADE
+// holds, and that the migration is idempotent.
+func TestAddPluginEventCursors(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+
+	// Build the pre-0051 schema by hand — reuses the same plugins +
+	// plugin_instances baseline 0045's test seeds, since neither table
+	// changes shape between the two migrations and 0001_initial.sql already
+	// ships plugin_event_cursors (see seedPreContainerSubstrateBaseline's
+	// doc comment for why hand-crafting is the only way to make Up() run).
+	seedPreContainerSubstrateBaseline(t, db)
+
+	m := &migrations.AddPluginEventCursors{}
+
+	skip, err := m.ShouldSkip(ctx, db)
+	if err != nil {
+		t.Fatalf("ShouldSkip: %v", err)
+	}
+	if skip {
+		t.Fatal("ShouldSkip returned true against the pre-target baseline — the hand-crafted DDL must omit plugin_event_cursors")
+	}
+
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO plugins(id, name, plugin_version, manifest_snapshot, trusted_pubkey, status, created_at, updated_at)
+		 VALUES ('pl1', 'slack', '1.0.0', '{}', 'pubkey', 'active', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("seed plugin: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO plugin_instances(id, plugin_id, instance_name, health_state, created_at, updated_at)
+		 VALUES ('inst1', 'pl1', 'prod', 'healthy', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("seed plugin instance: %v", err)
+	}
+
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	var tableCount int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='plugin_event_cursors'`,
+	).Scan(&tableCount); err != nil {
+		t.Fatalf("query sqlite_master: %v", err)
+	}
+	if tableCount != 1 {
+		t.Fatalf("table count = %d, want 1", tableCount)
+	}
+
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO plugin_event_cursors (plugin_instance_id, cursor, sequence, scope_hash, updated_at)
+		 VALUES ('inst1', 'resume-token', 42, 'scopehash', '2024-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("insert plugin_event_cursors row: %v", err)
+	}
+
+	// ON DELETE CASCADE must hold on the upgrade path, not just fresh
+	// installs: deleting the instance must remove its cursor row.
+	if _, err := db.ExecContext(ctx, `DELETE FROM plugin_instances WHERE id = 'inst1'`); err != nil {
+		t.Fatalf("delete plugin_instances row: %v", err)
+	}
+	var cursorCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM plugin_event_cursors`).Scan(&cursorCount); err != nil {
+		t.Fatalf("count plugin_event_cursors: %v", err)
+	}
+	if cursorCount != 0 {
+		t.Errorf("plugin_event_cursors row count after instance delete = %d, want 0 (ON DELETE CASCADE)", cursorCount)
+	}
+
+	// Second Apply must be a no-op — proves ShouldSkip flips to true after Up.
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("second Apply (idempotency): %v", err)
+	}
+}
+
+// TestAddPluginEventCursorsSkipsOnFreshSchema is the regression gate for
+// forgetting to hand-sync 0001_initial.sql: sqlc.yaml reads only that file,
+// so a Go migration added without editing it would leave sqlc unable to see
+// the table at all.
+func TestAddPluginEventCursorsSkipsOnFreshSchema(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	applyInitialSchema(t, db)
+
+	skip, err := (&migrations.AddPluginEventCursors{}).ShouldSkip(ctx, db)
+	if err != nil {
+		t.Fatalf("ShouldSkip: %v", err)
+	}
+	if !skip {
+		t.Fatal("ShouldSkip returned false on a fresh initial schema — did 0001_initial.sql forget plugin_event_cursors?")
+	}
+}

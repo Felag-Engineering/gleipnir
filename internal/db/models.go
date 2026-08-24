@@ -174,6 +174,14 @@ type PluginContainerSubnet struct {
 	AllocatedAt      string `json:"allocated_at"`
 }
 
+type PluginEventCursor struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+	Cursor           string `json:"cursor"`
+	Sequence         int64  `json:"sequence"`
+	ScopeHash        string `json:"scope_hash"`
+	UpdatedAt        string `json:"updated_at"`
+}
+
 type PluginEventDedup struct {
 	PluginInstanceID string `json:"plugin_instance_id"`
 	EventKind        string `json:"event_kind"`
