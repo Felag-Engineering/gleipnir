@@ -126,12 +126,7 @@ func (f *FakeEventsServer) handleEventsDiscover(w http.ResponseWriter, id json.R
 
 	wireKinds := make([]eventKindWire, len(kinds))
 	for i, k := range kinds {
-		wireKinds[i] = eventKindWire{
-			Kind:          k.Kind,
-			Guidance:      k.Guidance,
-			BindingSchema: k.BindingSchema,
-			Operators:     k.Operators,
-		}
+		wireKinds[i] = eventKindWire(k)
 	}
 	f.writeResult(w, id, eventsDiscoverResult{Kinds: wireKinds})
 }
