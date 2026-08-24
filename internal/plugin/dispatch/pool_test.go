@@ -806,9 +806,18 @@ func TestPool_QueueFull(t *testing.T) {
 	})
 	defer cleanup()
 
-	// Launch concurrent=1 in-flight + queue=1 waiting.
+	// Launch concurrent=1 in-flight + queue=1 waiting — SEQUENCED, not
+	// concurrent. Launching both unordered was a race in the test itself
+	// (#914): call 2 could reach the queue while call 1 still held the sole
+	// queue slot (claimed but not yet admitted to the semaphore), get
+	// ErrQueueFull immediately, and silently return — after which claim #2
+	// could never fire and the test sat out its full deadline. The losing
+	// schedule needs only a slow call-1 admission, which a race-instrumented,
+	// CPU-starved CI runner supplies readily (three identical 30s timeouts on
+	// 2026-08-24, on PRs that never touched this package). So: prove call 1
+	// is admitted — its queue slot provably released — before call 2 exists.
 	var wg sync.WaitGroup
-	for i := 0; i < 2; i++ {
+	launch := func() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -816,26 +825,30 @@ func TestPool_QueueFull(t *testing.T) {
 		}()
 	}
 
-	// Wait for both queue-slot claims (see the claimed comment above): after
-	// the second claim the semaphore and the queue are both provably full, so
-	// a third call must be rejected with ErrQueueFull. The deadlines exist
-	// only to fail loudly if a checkpoint never arrives — a passing run never
-	// waits on them — so they are sized for a CPU-starved CI runner, where 5s
-	// was observed to be too tight (#767).
-	for i := 0; i < 2; i++ {
-		select {
-		case <-claimed:
-		case <-time.After(30 * time.Second):
-			t.Fatalf("queue-slot claim %d not observed", i+1)
-		}
+	// The deadlines below exist only to fail loudly if a checkpoint never
+	// arrives — a passing run never waits on them — so they are sized for a
+	// CPU-starved CI runner, where 5s was observed to be too tight (#767).
+	launch()
+	select {
+	case <-claimed:
+	case <-time.After(30 * time.Second):
+		t.Fatal("queue-slot claim 1 not observed")
 	}
-	// Sanity: the admitted call reached the server hook (it holds the
-	// semaphore either way; this just anchors the test to real execution).
+	// Call 1 admitted: it holds the semaphore and has released the queue slot.
 	select {
 	case <-arrived:
 	case <-time.After(30 * time.Second):
 		t.Fatal("in-flight call did not arrive at server")
 	}
+
+	launch()
+	select {
+	case <-claimed:
+	case <-time.After(30 * time.Second):
+		t.Fatal("queue-slot claim 2 not observed")
+	}
+	// Semaphore and queue are now both provably full: call 1 is parked in the
+	// server hook, call 2 holds the sole queue slot.
 
 	_, _, err := pool.Call(context.Background(), "run-qf", "pol-1", "inst", "tool", `{}`)
 	if !errors.Is(err, dispatch.ErrQueueFull) {
