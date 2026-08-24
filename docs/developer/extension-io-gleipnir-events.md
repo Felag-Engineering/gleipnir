@@ -1,6 +1,6 @@
 # `io.gleipnir/events` — MCP extension contract
 
-**Version:** 1.0.0 · **Status:** implemented (negotiation + `events/discover` host client; `events/listen` is normative but unimplemented — see §7) · **Spec:** `mcp-realignment-spec.md` §4, §5 · **ADR:** ADR-054
+**Version:** 1.0.0 · **Status:** implemented in full — negotiation, `events/discover`, and `events/listen` on both sides (host client `internal/mcp`, server helper `plugin-sdk/events`), cross-pinned by `internal/mcp/sdkevents_integration_test.go`; the listen supervisor is not started by `main.go` until the substrate cutover · **Spec:** `mcp-realignment-spec.md` §4, §5 · **ADR:** ADR-054
 
 This document is the normative contract. Per spec §4.2 discipline, no vendor
 appears in normative text; concrete event sources appear only in the
