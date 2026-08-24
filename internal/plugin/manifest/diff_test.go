@@ -6,6 +6,7 @@ import (
 
 	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
 	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/manifestv2"
 	"gopkg.in/yaml.v3"
 )
 
@@ -18,6 +19,21 @@ func baseManifest() *sdkmanifest.Manifest {
 		Description:   "A plugin",
 		Services:      sdkmanifest.Services{Tool: "v1"},
 		Auth:          sdkmanifest.AuthDecl{Mode: "instance_credentials", Strategy: "none"},
+	}
+}
+
+// baseManifestV2 returns a minimal v2 manifest declaring the event_source
+// profile, to use as the baseline for DiffV2 tests.
+func baseManifestV2() *manifestv2.Manifest {
+	return &manifestv2.Manifest{
+		SchemaVersion: manifestv2.SchemaVersion,
+		Name:          "test-plugin",
+		Version:       "1.0.0",
+		Gleipnir: manifestv2.Gleipnir{
+			Profiles: manifestv2.Profiles{
+				EventSource: &manifestv2.EventSourceProfile{},
+			},
+		},
 	}
 }
 
@@ -229,6 +245,159 @@ func TestDiff_MaterialEventKindBindingSchemaChanged(t *testing.T) {
 		}
 	}
 	t.Errorf("expected change for event_kinds.message.binding_schema, got %v", changes)
+}
+
+func TestDiffV2_MaterialEventKindBindingSchemaChanged(t *testing.T) {
+	schemaA := parseNode(t, `{"type":"object","properties":{"channel":{"type":"string"}}}`)
+	schemaB := parseNode(t, `{"type":"object","properties":{"channel":{"type":"string"},"topic":{"type":"string"}}}`)
+
+	old := baseManifestV2()
+	old.Gleipnir.EventKinds = []manifestv2.EventKindDecl{{Kind: "message", BindingSchema: schemaA}}
+
+	new := baseManifestV2()
+	new.Gleipnir.EventKinds = []manifestv2.EventKindDecl{{Kind: "message", BindingSchema: schemaB}}
+
+	changes := pluginmanifest.DiffV2(old, new)
+	if !pluginmanifest.HasMaterial(changes) {
+		t.Error("expected material change when v2 event_kind binding_schema changes")
+	}
+	for _, c := range changes {
+		if c.Field == "event_kinds.message.binding_schema" && c.Material {
+			return
+		}
+	}
+	t.Errorf("expected change for event_kinds.message.binding_schema, got %v", changes)
+}
+
+// guidance is help text rendered in the subscribed-trigger dialog — it does
+// not change what a policy binding may express, so it must be cosmetic.
+func TestDiffV2_CosmeticEventKindGuidanceChanged(t *testing.T) {
+	old := baseManifestV2()
+	old.Gleipnir.EventKinds = []manifestv2.EventKindDecl{{Kind: "message", Guidance: "Fires on every post."}}
+
+	new := baseManifestV2()
+	new.Gleipnir.EventKinds = []manifestv2.EventKindDecl{{Kind: "message", Guidance: "Fires once per post, batched."}}
+
+	changes := pluginmanifest.DiffV2(old, new)
+	if pluginmanifest.HasMaterial(changes) {
+		t.Errorf("expected no material changes for guidance-only diff, got %v", pluginmanifest.MaterialFields(changes))
+	}
+	found := false
+	for _, c := range changes {
+		if c.Field == "event_kinds.message.guidance" {
+			found = true
+			if c.Material {
+				t.Errorf("event_kinds.message.guidance change must not be material, got %+v", c)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected a change for event_kinds.message.guidance, got %v", changes)
+	}
+}
+
+// operators widens or narrows what a policy binding may express — exactly
+// what the material-change hot-reload block exists to catch (ADR-052).
+func TestDiffV2_MaterialEventKindOperatorsChanged(t *testing.T) {
+	old := baseManifestV2()
+	old.Gleipnir.EventKinds = []manifestv2.EventKindDecl{{
+		Kind:      "message",
+		Operators: map[string][]string{"channel": {"equals"}},
+	}}
+
+	new := baseManifestV2()
+	new.Gleipnir.EventKinds = []manifestv2.EventKindDecl{{
+		Kind:      "message",
+		Operators: map[string][]string{"channel": {"equals", "contains"}},
+	}}
+
+	changes := pluginmanifest.DiffV2(old, new)
+	if !pluginmanifest.HasMaterial(changes) {
+		t.Error("expected material change when event_kind operators widens")
+	}
+	for _, c := range changes {
+		if c.Field == "event_kinds.message.operators" && c.Material {
+			return
+		}
+	}
+	t.Errorf("expected change for event_kinds.message.operators, got %v", changes)
+}
+
+// Operator list order within a field carries no meaning — it is a set — so
+// reordering the same operators must not produce any change.
+func TestDiffV2_EventKindOperatorsReordered_NoDiff(t *testing.T) {
+	old := baseManifestV2()
+	old.Gleipnir.EventKinds = []manifestv2.EventKindDecl{{
+		Kind:      "message",
+		Operators: map[string][]string{"channel": {"equals", "contains"}},
+	}}
+
+	new := baseManifestV2()
+	new.Gleipnir.EventKinds = []manifestv2.EventKindDecl{{
+		Kind:      "message",
+		Operators: map[string][]string{"channel": {"contains", "equals"}},
+	}}
+
+	changes := pluginmanifest.DiffV2(old, new)
+	for _, c := range changes {
+		if c.Field == "event_kinds.message.operators" {
+			t.Errorf("unexpected change for reordered operators: %+v", c)
+		}
+	}
+}
+
+// subscription_schema lives on the event_source profile, not on a kind — it
+// is the scope events/listen validates an operator's watch scope against, and
+// a shape change is material for the same reason config_schema shape changes
+// are: stored subscription_scope_json might no longer validate.
+func TestDiffV2_MaterialEventSourceSubscriptionSchemaChanged(t *testing.T) {
+	schemaA := parseNode(t, `{"type":"object","properties":{"channels":{"type":"array"}}}`)
+	schemaB := parseNode(t, `{"type":"object","properties":{"channels":{"type":"array"},"topics":{"type":"array"}}}`)
+
+	old := baseManifestV2()
+	old.Gleipnir.Profiles.EventSource.SubscriptionSchema = schemaA
+
+	new := baseManifestV2()
+	new.Gleipnir.Profiles.EventSource.SubscriptionSchema = schemaB
+
+	changes := pluginmanifest.DiffV2(old, new)
+	if !pluginmanifest.HasMaterial(changes) {
+		t.Error("expected material change when profile subscription_schema gains a property")
+	}
+	for _, c := range changes {
+		if c.Field == "profiles.event_source.subscription_schema" && c.Material {
+			return
+		}
+	}
+	t.Errorf("expected change for profiles.event_source.subscription_schema, got %v", changes)
+}
+
+// The same cosmetic-key stripping applied to config_schema applies here:
+// description/default changes inside the schema must not block a hot-reload.
+func TestDiffV2_EventSourceSubscriptionSchemaCosmeticOnly_NoMaterial(t *testing.T) {
+	schemaA := parseNode(t, `{"type":"object","properties":{"channels":{"type":"array","description":"old"}}}`)
+	schemaB := parseNode(t, `{"type":"object","properties":{"channels":{"type":"array","description":"new"}}}`)
+
+	old := baseManifestV2()
+	old.Gleipnir.Profiles.EventSource.SubscriptionSchema = schemaA
+
+	new := baseManifestV2()
+	new.Gleipnir.Profiles.EventSource.SubscriptionSchema = schemaB
+
+	changes := pluginmanifest.DiffV2(old, new)
+	for _, c := range changes {
+		if c.Field == "profiles.event_source.subscription_schema" && c.Material {
+			t.Errorf("subscription_schema description-only change must not be material, got %+v", c)
+		}
+	}
+}
+
+func TestDiffV2_NoChange_Empty(t *testing.T) {
+	m := baseManifestV2()
+	changes := pluginmanifest.DiffV2(m, m)
+	if len(changes) != 0 {
+		t.Errorf("expected no changes for identical v2 manifests, got %v", changes)
+	}
 }
 
 func TestDiff_MaterialEventKindAdded(t *testing.T) {

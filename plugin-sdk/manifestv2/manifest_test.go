@@ -47,7 +47,14 @@ package:
 gleipnir:
   profiles:
     tool_provider: {}
-    event_source: {}
+    event_source:
+      subscription_schema:
+        type: object
+        properties:
+          channels:
+            type: array
+            items:
+              type: string
     human_channel:
       assurance: authenticated
     identity_provider:
@@ -67,11 +74,14 @@ gleipnir:
   event_kinds:
     - kind: message.posted
       description: A message was posted.
+      guidance: Fires once per message posted to a channel this instance watches.
       binding_schema:
         type: object
         properties:
           channel:
             type: string
+      operators:
+        channel: [equals, contains]
   config_schema:
     type: object
     properties:
@@ -136,6 +146,17 @@ func TestParse_Full(t *testing.T) {
 	}
 	if len(m.Gleipnir.EventKinds) != 1 || m.Gleipnir.EventKinds[0].BindingSchema == nil {
 		t.Errorf("event_kinds = %+v, want one kind with a binding schema", m.Gleipnir.EventKinds)
+	}
+	ek := m.Gleipnir.EventKinds[0]
+	if ek.Guidance == "" {
+		t.Error("event_kinds[0].guidance is empty")
+	}
+	if want := []string{"equals", "contains"}; len(ek.Operators["channel"]) != 2 ||
+		ek.Operators["channel"][0] != want[0] || ek.Operators["channel"][1] != want[1] {
+		t.Errorf("event_kinds[0].operators[channel] = %v, want %v", ek.Operators["channel"], want)
+	}
+	if m.Gleipnir.Profiles.EventSource == nil || m.Gleipnir.Profiles.EventSource.SubscriptionSchema == nil {
+		t.Error("profiles.event_source.subscription_schema is nil")
 	}
 }
 
@@ -322,6 +343,35 @@ func TestParse_Rejections(t *testing.T) {
 			},
 			wantField: "gleipnir.profiles.identity_provider.link_methods",
 		},
+		{
+			// event_kinds attests what the (absent) event_source profile emits —
+			// the manifest disagreeing with itself.
+			name: "event_kinds without an event_source profile",
+			mutate: func(s string) string {
+				return s + "  event_kinds:\n    - kind: message.posted\n"
+			},
+			wantField: "gleipnir.event_kinds",
+		},
+		{
+			name: "operators naming a field absent from binding_schema",
+			mutate: func(s string) string {
+				return strings.Replace(s, "    tool_provider: {}\n", "    tool_provider: {}\n    event_source: {}\n", 1) +
+					"  event_kinds:\n    - kind: message.posted\n" +
+					"      binding_schema:\n        type: object\n        properties:\n          channel:\n            type: string\n" +
+					"      operators:\n        topic: [equals]\n"
+			},
+			wantField: "gleipnir.event_kinds[0].operators",
+		},
+		{
+			name: "operators naming an unknown operator",
+			mutate: func(s string) string {
+				return strings.Replace(s, "    tool_provider: {}\n", "    tool_provider: {}\n    event_source: {}\n", 1) +
+					"  event_kinds:\n    - kind: message.posted\n" +
+					"      binding_schema:\n        type: object\n        properties:\n          channel:\n            type: string\n" +
+					"      operators:\n        channel: [glob]\n"
+			},
+			wantField: "gleipnir.event_kinds[0].operators",
+		},
 	}
 
 	for _, tc := range tests {
@@ -375,6 +425,13 @@ func TestParse_UnknownFieldsAreRejected(t *testing.T) {
 				return strings.Replace(s, "  registry_type: oci", "  registry_type: oci\n  runtime_hint: docker", 1)
 			},
 		},
+		{
+			name: "unknown key under event_source",
+			mutate: func(s string) string {
+				return strings.Replace(s, "    tool_provider: {}\n",
+					"    tool_provider: {}\n    event_source:\n      bogus_field: true\n", 1)
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -383,6 +440,41 @@ func TestParse_UnknownFieldsAreRejected(t *testing.T) {
 				t.Fatal("Parse accepted an unknown field, want an error")
 			}
 		})
+	}
+}
+
+// The unknown-key rejection must carry assertKnownKeys' specific shape
+// ("line N: field X not found in type Y"), not just any error — that shape is
+// what points a plugin author at the offending line rather than a generic
+// decode failure.
+func TestParse_EventSourceUnknownKeyErrorShape(t *testing.T) {
+	src := strings.Replace(minimalManifest, "    tool_provider: {}\n",
+		"    tool_provider: {}\n    event_source:\n      bogus_field: true\n", 1)
+	_, err := Parse([]byte(src))
+	if err == nil {
+		t.Fatal("Parse accepted an unknown event_source key, want an error")
+	}
+	if !strings.Contains(err.Error(), "field bogus_field not found in type event_source") {
+		t.Errorf("error = %q, want the assertKnownKeys shape naming event_source", err)
+	}
+}
+
+// An unknown operator's error must list the accepted set so an author can fix
+// it without cross-referencing the binding evaluator's source.
+func TestParse_UnknownOperatorErrorListsAcceptedSet(t *testing.T) {
+	src := strings.Replace(minimalManifest, "    tool_provider: {}\n", "    tool_provider: {}\n    event_source: {}\n", 1) +
+		"  event_kinds:\n    - kind: message.posted\n" +
+		"      binding_schema:\n        type: object\n        properties:\n          channel:\n            type: string\n" +
+		"      operators:\n        channel: [glob]\n"
+
+	_, err := Parse([]byte(src))
+	if err == nil {
+		t.Fatal("Parse accepted an unknown operator, want an error")
+	}
+	for _, want := range []string{"equals", "contains", "regex", "mention_only"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to list accepted operator %q", err, want)
+		}
 	}
 }
 

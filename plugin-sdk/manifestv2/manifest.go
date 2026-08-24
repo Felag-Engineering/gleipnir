@@ -229,7 +229,16 @@ func (p Profiles) Declared() []string {
 type ToolProviderProfile struct{}
 
 // EventSourceProfile declares the io.gleipnir/events implementation.
-type EventSourceProfile struct{}
+type EventSourceProfile struct {
+	// SubscriptionSchema is the JSON Schema for the instance-level coarse
+	// subscription scope events/listen takes (spec §5), held as a raw node so
+	// field order and structure survive round-tripping. Lives on the profile
+	// rather than on Gleipnir: a scope schema is meaningless for a plugin that
+	// declares no event source, and Profiles-as-struct already encodes
+	// "details belong to the profile that owns them". nil means no scope
+	// config is needed; the plugin receives an empty scope.
+	SubscriptionSchema *yaml.Node `yaml:"subscription_schema,omitempty"`
+}
 
 // HumanChannelProfile declares the io.gleipnir/channel implementation.
 type HumanChannelProfile struct {
@@ -291,9 +300,22 @@ type EventKindDecl struct {
 	// Description is shown when an operator binds a policy to this kind.
 	Description string `yaml:"description,omitempty"`
 
+	// Guidance is a longer "how it fires" help string rendered in the
+	// subscribed-trigger dialog (spec §5, "per-kind guidance text").
+	// Distinct from Description (which stays the short picker label).
+	Guidance string `yaml:"guidance,omitempty"`
+
 	// BindingSchema is the JSON Schema for the typed binding filters a policy
 	// may set on this kind (ADR-048). Held as a raw node.
 	BindingSchema *yaml.Node `yaml:"binding_schema,omitempty"`
+
+	// Operators attests the ADR-052 allowed-operator set per binding-field
+	// name: which operators (from the closed set "equals", "contains",
+	// "regex", "mention_only" — "glob" reserved) a discovery response may
+	// advertise for that field. A field with no entry here is not
+	// attested — this is what a manifest is willing to say a policy may
+	// express, not the field list itself (that is BindingSchema's job).
+	Operators map[string][]string `yaml:"operators,omitempty"`
 }
 
 // assertKnownKeys rejects any mapping key outside allowed.
@@ -384,13 +406,16 @@ func (g *Gleipnir) UnmarshalYAML(value *yaml.Node) error {
 
 // UnmarshalYAML decodes EventKindDecl, populating BindingSchema.
 func (e *EventKindDecl) UnmarshalYAML(value *yaml.Node) error {
-	if err := assertKnownKeys(value, "event_kind", "kind", "description", "binding_schema"); err != nil {
+	if err := assertKnownKeys(value, "event_kind",
+		"kind", "description", "guidance", "binding_schema", "operators"); err != nil {
 		return err
 	}
 	type plain struct {
-		Kind          string    `yaml:"kind"`
-		Description   string    `yaml:"description,omitempty"`
-		BindingSchema yaml.Node `yaml:"binding_schema,omitempty"`
+		Kind          string              `yaml:"kind"`
+		Description   string              `yaml:"description,omitempty"`
+		Guidance      string              `yaml:"guidance,omitempty"`
+		BindingSchema yaml.Node           `yaml:"binding_schema,omitempty"`
+		Operators     map[string][]string `yaml:"operators,omitempty"`
 	}
 	var p plain
 	if err := value.Decode(&p); err != nil {
@@ -398,7 +423,25 @@ func (e *EventKindDecl) UnmarshalYAML(value *yaml.Node) error {
 	}
 	e.Kind = p.Kind
 	e.Description = p.Description
+	e.Guidance = p.Guidance
 	e.BindingSchema = nodeOrNil(p.BindingSchema)
+	e.Operators = p.Operators
+	return nil
+}
+
+// UnmarshalYAML decodes EventSourceProfile, populating SubscriptionSchema.
+func (p *EventSourceProfile) UnmarshalYAML(value *yaml.Node) error {
+	if err := assertKnownKeys(value, "event_source", "subscription_schema"); err != nil {
+		return err
+	}
+	type plain struct {
+		SubscriptionSchema yaml.Node `yaml:"subscription_schema,omitempty"`
+	}
+	var q plain
+	if err := value.Decode(&q); err != nil {
+		return err
+	}
+	p.SubscriptionSchema = nodeOrNil(q.SubscriptionSchema)
 	return nil
 }
 
