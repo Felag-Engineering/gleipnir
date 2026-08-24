@@ -334,10 +334,16 @@ func eventVersionRefusedDetail(declared string) string {
 // prior pass recorded for instanceID, so a pass that finds fresh agreement
 // does not leave a stale per-kind fault behind.
 //
-// Safe to do unconditionally, unlike the profile-wide entry
-// seedDeclaredProfiles protects: these per-kind entries are established ONLY
-// by applyEventDrift, so there is no foreign (e.g. plugin self-reported)
-// writer here whose fault this could clobber.
+// This clear-and-rewrite makes the drift pass AUTHORITATIVE for event-source
+// entries each pass — the same posture the profile-wide entry already had
+// (applyEventDrift has always overwritten it to healthy on kind-set
+// agreement). It is NOT true that only applyEventDrift writes named
+// event-source entries: the host endpoint's set_health_state
+// (caphealth.SelfReportCapability, #877) can record a per-kind fault too,
+// and this pass will clear it even though a kind-set match says nothing
+// about that kind's FUNCTIONAL health. That tension is inherited from the
+// profile-wide precedent, not introduced here; reconciling self-reported
+// faults with prober authority is tracked as a follow-up.
 func (p *Prober) clearEventKindFaults(instanceID string) {
 	for _, e := range p.registry.Get(instanceID).Entries {
 		if e.Capability.Profile == ProfileEventSource && e.Capability.Name != "" {
