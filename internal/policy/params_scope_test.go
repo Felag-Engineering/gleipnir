@@ -6,19 +6,29 @@ import (
 	"testing"
 )
 
-// validateParamsScope emits warnings, never blocking issues (#769 option 3).
+// validateParamsScope emits warnings, never blocking issues.
 //
-// These assertions deliberately pin the *semantic claim* each warning makes —
-// "every argument key is permitted", "applied at runtime" — rather than the
-// full prose. Two reasons: the messages are long enough that exact-match
-// assertions become a copy-paste ritual nobody re-reads, and the claim is the
-// part that must not silently change. Rewording a warning is fine; a warning
-// that stops telling the operator their tool is unrestricted is a regression.
+// These assertions deliberately pin the *semantic claim* each warning makes
+// rather than the full prose. Two reasons: the messages are long enough that
+// exact-match assertions become a copy-paste ritual nobody re-reads, and the
+// claim is the part that must not silently change. Rewording a warning is
+// fine; a warning that stops telling the operator what will actually happen
+// at runtime is a regression.
+//
+// The claim for the unnarrowable shapes CHANGED with #769. It used to be
+// "every argument key is permitted" — a real security hole, since scoping was
+// enforced from the narrowed schema and these shapes narrow to nothing.
+// mcp.ValidateCall now enforces the allowlist from the params block itself, so
+// the tool IS restricted; what remains is that the agent is shown a schema
+// nobody could narrow, so it may spend a run attempting a property that is
+// then refused. That wasted run is the consequence an operator must still be
+// told about.
 const (
-	claimUnrestricted = "every argument key is permitted"
-	claimRuntime      = "applied at runtime"
-	claimNarrowsNone  = "narrows nothing"
-	claimPartial      = "does not reach properties nested inside"
+	claimShownUnnarrowed = "have the call fail the run"
+	claimStillRestricted = "restricted at dispatch"
+	claimRuntime         = "applied at runtime"
+	claimNarrowsNone     = "narrows nothing"
+	claimPartial         = "does not reach properties nested inside"
 )
 
 func TestValidateParamsScope(t *testing.T) {
@@ -86,22 +96,22 @@ func TestValidateParamsScope(t *testing.T) {
 			wantClaim: "not a JSON object",
 		},
 		{
-			// The real #769 hole: NarrowSchema no-ops and ValidateCall permits
-			// every key.
-			name:      "no top-level properties -> unrestricted",
+			// Narrowing no-ops for this shape, so the agent sees the whole
+			// schema; the params allowlist still bounds dispatch (#769).
+			name:      "no top-level properties -> unnarrowable",
 			params:    map[string]any{"a": 1},
 			canonical: json.RawMessage(`{"type":"object"}`),
 			wantCount: 1,
 			wantPaths: []string{"capabilities.tools[0].params"},
-			wantClaim: claimUnrestricted,
+			wantClaim: claimShownUnnarrowed,
 		},
 		{
-			name:      "root oneOf without properties -> unrestricted",
+			name:      "root oneOf without properties -> unnarrowable",
 			params:    map[string]any{"a": 1},
 			canonical: json.RawMessage(`{"oneOf":[{"properties":{"a":{}}}]}`),
 			wantCount: 1,
 			wantPaths: []string{"capabilities.tools[0].params"},
-			wantClaim: claimUnrestricted,
+			wantClaim: claimShownUnnarrowed,
 		},
 		{
 			// Root properties ARE narrowed and enforced here; only
@@ -120,7 +130,7 @@ func TestValidateParamsScope(t *testing.T) {
 			canonical: json.RawMessage(`{"allOf":[{"properties":{"a":{}}}]}`),
 			wantCount: 1,
 			wantPaths: []string{"capabilities.tools[0].params"},
-			wantClaim: claimUnrestricted,
+			wantClaim: claimShownUnnarrowed,
 		},
 		{
 			name:      "root $ref without properties -> unrestricted",
@@ -128,7 +138,7 @@ func TestValidateParamsScope(t *testing.T) {
 			canonical: json.RawMessage(`{"$ref":"#/$defs/X"}`),
 			wantCount: 1,
 			wantPaths: []string{"capabilities.tools[0].params"},
-			wantClaim: claimUnrestricted,
+			wantClaim: claimShownUnnarrowed,
 		},
 		{
 			name:      "all keys are known properties -> silent",
@@ -165,7 +175,7 @@ func TestValidateParamsScope(t *testing.T) {
 			canonical: json.RawMessage(`{"type":"object"}`),
 			wantCount: 1,
 			wantPaths: []string{"capabilities.tools[7].params"},
-			wantClaim: claimUnrestricted,
+			wantClaim: claimShownUnnarrowed,
 		},
 	}
 
@@ -211,13 +221,14 @@ func TestValidateParamsScope_UnenforceableCasesSaySo(t *testing.T) {
 				t.Fatalf("want exactly 1 warning, got %d: %#v", len(got), got)
 			}
 			w := got[0]
-			if !strings.Contains(w, claimUnrestricted) {
-				t.Errorf("warning must state the tool is unrestricted, got:\n  %s", w)
+			if !strings.Contains(w, claimShownUnnarrowed) {
+				t.Errorf("warning must state the run-failing consequence, got:\n  %s", w)
 			}
-			// Capitalised "NOT" is the cue an operator scanning a warning list
-			// will actually catch.
-			if !strings.Contains(w, "does NOT restrict") {
-				t.Errorf("warning must be emphatic about non-enforcement, got:\n  %s", w)
+			// The operator must also be told scoping still holds — a warning
+			// that only described the downside would read as "unenforced" and
+			// push them toward a workaround they no longer need.
+			if !strings.Contains(w, claimStillRestricted) {
+				t.Errorf("warning must state that dispatch is still restricted, got:\n  %s", w)
 			}
 		})
 	}

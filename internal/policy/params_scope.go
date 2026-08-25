@@ -37,16 +37,18 @@ const (
 	// so this surfaces loudly at runtime rather than degrading scoping.
 	notObjectWarn = "%s: tool %q has a canonical schema that is not a JSON object, so its parameter scoping could not be verified at save time and tool calls are likely to fail at runtime. Refresh the MCP server's tools."
 
-	// The genuine #769 hole: mcp.NarrowSchema returns the schema unchanged and
-	// mcp.ValidateCall permits every key.
-	noPropertiesWarn = "%s: tool %q declares no top-level properties, so parameter scoping does NOT restrict this tool — the agent sees the full schema and every argument key is permitted. Use approval gating if this tool needs constraining."
+	// Since #769 the params allowlist is enforced at dispatch from the params
+	// block itself, so scoping DOES restrict this tool. What narrowing still
+	// cannot do is shape the schema the agent is shown.
+	noPropertiesWarn = "%s: tool %q declares no top-level properties, so the schema shown to the agent cannot be narrowed. Arguments are still restricted at dispatch to the keys listed here, but the agent may attempt a property it is shown and have the call fail the run."
 
 	// Root branch keyword WITH top-level properties: the root properties are
 	// narrowed and enforced; only branch-nested properties escape.
 	branchPartialWarn = "%s: tool %q declares a top-level %q. Scoping narrows and enforces its top-level properties, but does not reach properties nested inside the %q branches — the agent may be shown branch-nested properties that dispatch then rejects."
 
-	// Root branch keyword with NO top-level properties: nothing to narrow.
-	branchNoScopeWarn = "%s: tool %q declares a top-level %q and no top-level properties, so parameter scoping does NOT restrict this tool — the agent sees the full schema and every argument key is permitted. Use approval gating if this tool needs constraining."
+	// Root branch keyword with NO top-level properties: nothing to narrow, but
+	// the dispatch-time allowlist still applies (#769).
+	branchNoScopeWarn = "%s: tool %q declares a top-level %q and no top-level properties, so the schema shown to the agent cannot be narrowed at all. Arguments are still restricted at dispatch to the keys listed here, but the agent may attempt a property it is shown and have the call fail the run."
 
 	unknownKeyWarn = "%s: %q is not a top-level property of tool %q, so it narrows nothing. If it is the only key in this params block, the tool will accept no arguments at all."
 )
@@ -61,14 +63,13 @@ const (
 //     top-level "properties" and silently leaves the schema unchanged.
 //   - "allOf": schemanorm deliberately does not flatten allOf; a branch may
 //     declare properties that root-level narrowing never touches.
-//   - "anyOf": narrowing does not narrow into anyOf variants — rejected even
-//     when the root ALSO has top-level "properties". The key-presence gate
-//     still fires in that case, but narrowing itself only ever touches the
-//     root, so the schema shown to the agent still advertises variant-nested
-//     properties from inside the branches — properties dispatch-time
-//     validation (mcp.ValidateCall) then rejects. Showing the agent a
-//     property it can never actually send is the exact defect this file
-//     closes (#769).
+//   - "anyOf": narrowing does not narrow into anyOf variants — reported even
+//     when the root ALSO has top-level "properties". Since #769 the
+//     dispatch-time allowlist refuses variant-nested properties regardless,
+//     but narrowing itself only ever touches the root, so the schema shown to
+//     the agent still advertises them. Showing the agent a property it can
+//     never actually send is the residual defect these warnings exist to
+//     surface.
 //   - "if": "then"/"else" can introduce properties root-level narrowing
 //     never touches.
 //   - "not": narrowing does not compose under negation.
@@ -96,13 +97,22 @@ var topLevelBranchKeywords = []string{"$ref", "allOf", "anyOf", "if", "not", "on
 // is #769's option 3: accept the gap, surface it, and revisit real narrowing
 // later.
 //
-// This is a conscious security trade. ADR-017's promise — that scoping is
-// structural rather than prompt-based — does NOT hold for the noProperties and
-// branchNoScope cases below: mcp.NarrowSchema returns the schema unchanged and
-// mcp.ValidateCall permits every key, so an agent can pass any argument the
-// tool accepts. The warning is the only signal an operator gets, which is why
-// each message states the runtime consequence explicitly instead of a generic
-// "could not validate".
+// What these warnings mean changed with #769. They used to report a genuine
+// security hole: for the noProperties and branchNoScope cases, mcp.NarrowSchema
+// returned the schema unchanged and mcp.ValidateCall then permitted EVERY key,
+// so an agent could pass any argument the tool accepted and the operator's
+// scoping did nothing. mcp.ValidateCall now derives its allowlist from the
+// params block directly rather than from the narrowed schema, so ADR-017's
+// promise — that scoping is structural rather than prompt-based — holds for
+// every schema shape.
+//
+// What survives is a PRESENTATION gap, not an enforcement one: narrowing still
+// only reaches a root-level "properties" map, so for these shapes the agent is
+// shown the unnarrowed schema and may attempt a property the dispatch gate then
+// refuses. That refusal fails the run (agent.go documents why gate 1 is fatal),
+// so the cost is a wasted run rather than an unscoped tool call. Each message
+// therefore states its own runtime consequence rather than a generic "could not
+// validate" — the consequences still differ per case.
 //
 // # Runtime behavior per case
 //
@@ -110,14 +120,17 @@ var topLevelBranchKeywords = []string{"$ref", "allOf", "anyOf", "if", "not", "on
 // schema when canonical is absent, and mcp.NarrowSchema no-ops only when the
 // schema it is handed has no usable top-level "properties" map:
 //
-//	no canonical schema   narrows the RAW schema — usually still enforced,
-//	                      merely unverified here
+//	no canonical schema   narrows the RAW schema — enforced, merely unverified
+//	                      here
 //	canonical not JSON    mcp.NarrowSchema also fails to unmarshal and returns
 //	                      an error — loud at runtime, not a silent downgrade
-//	branch + properties   root properties narrowed and enforced; only
-//	                      branch-nested properties escape
-//	branch, no properties NOT enforced — every key permitted
-//	no properties         NOT enforced — every key permitted
+//	branch + properties   root properties narrowed and enforced; branch-nested
+//	                      properties are shown to the agent but refused at
+//	                      dispatch
+//	branch, no properties enforced at dispatch by the params allowlist (#769);
+//	                      the agent is shown the unnarrowed schema
+//	no properties         enforced at dispatch by the params allowlist (#769);
+//	                      the agent is shown the unnarrowed schema
 //	unknown key           narrows nothing; if it is the only key, the narrowed
 //	                      property set is empty and the tool accepts nothing
 //
