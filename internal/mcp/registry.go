@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"crypto/x509"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -364,6 +365,20 @@ func (r *Registry) newClientForServer(srv db.McpServer) *Client {
 		opts = append(opts, WithProtocolVersion(*srv.ProtocolVersion))
 	}
 
+	if srv.CaCertPem != nil && strings.TrimSpace(*srv.CaCertPem) != "" {
+		_, pool, err := ParseCACertBundle(*srv.CaCertPem)
+		if err != nil {
+			// Fail closed with an empty pool rather than falling back to
+			// system trust: a stored PEM that no longer parses (e.g. it was
+			// corrupted at rest) must never silently widen this server's
+			// trust back to "anything the OS trusts".
+			slog.Warn("stored mcp server CA certificate does not parse; refusing all TLS for this server",
+				"server_id", srv.ID, "server_name", srv.Name, "err", err)
+			pool = x509.NewCertPool()
+		}
+		opts = append(opts, WithRootCAs(pool))
+	}
+
 	cl := NewClient(srv.Url, opts...)
 	cl.serverName = srv.Name
 	return cl
@@ -415,6 +430,10 @@ func splitToolName(dotName string) (serverName, toolName string, err error) {
 // fail-fast check at run start.
 func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) ([]ResolvedTool, error) {
 	var result []ResolvedTool
+	// Keyed by server ID, not URL: mcp_servers.url is not unique (two rows can
+	// point at the same address), and a shared client would silently bypass a
+	// CA pin on one of them and leak the other's ADR-039 auth headers across
+	// server identities that happen to collide on URL (#928 security review).
 	clients := make(map[string]*Client)
 
 	for _, t := range p.Capabilities.Tools {
@@ -451,10 +470,10 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 			}
 		}
 
-		cl, ok := clients[srv.Url]
+		cl, ok := clients[srv.ID]
 		if !ok {
 			cl = r.newClientForServer(srv)
-			clients[srv.Url] = cl
+			clients[srv.ID] = cl
 		}
 
 		var canonical json.RawMessage
@@ -573,14 +592,17 @@ func (r *Registry) LookupTool(ctx context.Context, serverName, toolName string) 
 //
 // The returned tools are canonicalized (see canonicalizeDiscovered) so the
 // caller can persist both the raw and canonical schema forms.
-func (r *Registry) ProbeTools(ctx context.Context, name, urlStr string, encryptedAuthHeaders *string) ([]DiscoveredTool, error) {
+func (r *Registry) ProbeTools(ctx context.Context, name, urlStr string, encryptedAuthHeaders *string, caCertPEM *string) ([]DiscoveredTool, error) {
 	synthetic := db.McpServer{
 		ID:                   "<probe>",
 		Name:                 name,
 		Url:                  urlStr,
 		AuthHeadersEncrypted: encryptedAuthHeaders,
+		CaCertPem:            caCertPEM,
 	}
-	tools, err := r.newClientForServer(synthetic).DiscoverTools(ctx)
+	cl := r.newClientForServer(synthetic)
+	defer cl.Close()
+	tools, err := cl.DiscoverTools(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("probe tools for %q: %w", name, err)
 	}
@@ -590,14 +612,17 @@ func (r *Registry) ProbeTools(ctx context.Context, name, urlStr string, encrypte
 // ProbeProtocol performs a one-shot protocol-era probe against the MCP
 // server at urlStr without writing any DB rows. Mirrors ProbeTools; used by
 // MCPHandler.Create before the server row exists.
-func (r *Registry) ProbeProtocol(ctx context.Context, name, urlStr string, encryptedAuthHeaders *string) (ProbeResult, error) {
+func (r *Registry) ProbeProtocol(ctx context.Context, name, urlStr string, encryptedAuthHeaders *string, caCertPEM *string) (ProbeResult, error) {
 	synthetic := db.McpServer{
 		ID:                   "<probe>",
 		Name:                 name,
 		Url:                  urlStr,
 		AuthHeadersEncrypted: encryptedAuthHeaders,
+		CaCertPem:            caCertPEM,
 	}
-	res, err := r.newClientForServer(synthetic).ProbeProtocolVersion(ctx)
+	cl := r.newClientForServer(synthetic)
+	defer cl.Close()
+	res, err := cl.ProbeProtocolVersion(ctx)
 	if err != nil {
 		return ProbeResult{}, fmt.Errorf("probe protocol for %q: %w", name, err)
 	}
@@ -635,7 +660,9 @@ func (r *Registry) ProbeProtocol(ctx context.Context, name, urlStr string, encry
 // WHERE clause, evaluated by SQLite against the row's LIVE state inside the
 // UPDATE itself, so it cannot be raced by a stale application-level read.
 func (r *Registry) refreshProtocolVersion(ctx context.Context, srv *db.McpServer) {
-	res, err := r.newClientForServer(*srv).ProbeProtocolVersion(ctx)
+	cl := r.newClientForServer(*srv)
+	defer cl.Close()
+	res, err := cl.ProbeProtocolVersion(ctx)
 	if err != nil {
 		slog.Warn("mcp protocol probe failed; keeping existing pin",
 			"server_id", srv.ID, "server_name", srv.Name, "err", err)

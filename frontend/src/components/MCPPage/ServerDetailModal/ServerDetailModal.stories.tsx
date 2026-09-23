@@ -110,6 +110,25 @@ export const WithDisabledTool: Story = {
   },
 }
 
+export const WithCACert: Story = {
+  args: {
+    ...Healthy.args,
+    server: {
+      ...server,
+      url: 'https://mcp-test-server:9443/mcp',
+      ca_cert_pem: '-----BEGIN CERTIFICATE-----\nMIIBfake\n-----END CERTIFICATE-----',
+      ca_certificates: [
+        {
+          subject: 'CN=relay-ca,O=Homelab',
+          sha256_fingerprint:
+            'a1b2c3d4e5f60718293a4b5c6d7e8f90112233445566778899aabbccddeeff',
+          not_after: new Date(Date.now() + 365 * 86_400_000).toISOString(),
+        },
+      ],
+    },
+  },
+}
+
 export const ArcadeGateway: Story = {
   args: {
     ...Healthy.args,

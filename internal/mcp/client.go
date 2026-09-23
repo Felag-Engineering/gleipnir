@@ -6,6 +6,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -304,6 +306,12 @@ type Client struct {
 	// queue waiting for a slot. nil means unbounded, which is what a Client
 	// constructed directly (tests, probes) gets.
 	callGate *serverGate
+
+	// pinnedCA reports whether WithRootCAs configured this client with an
+	// operator-pinned CA certificate pool. Read by post's TLS-error wrapping
+	// (wrapTLSVerificationError) to choose the more specific "wrong CA" vs.
+	// "unknown authority" diagnosis (issue #928).
+	pinnedCA bool
 }
 
 // ClientOption configures a Client. Options are applied sequentially after
@@ -366,6 +374,26 @@ func WithElicitationRateLimit(ratePerSec float64, burst int) ClientOption {
 	}
 }
 
+// WithRootCAs configures this client to verify the server's certificate
+// against pool ALONE — never the system trust store. A server pinned to a
+// specific CA (issue #928) must be verified against that CA; quietly also
+// accepting any public CA would make the pin meaningless.
+//
+// InsecureSkipVerify is never set here, and must never be added to this
+// option under any flag: "trust this specific CA" is a configuration,
+// "trust anything" is a vulnerability with a checkbox.
+//
+// Independent of WithTimeout's ordering concern (see its doc): this option
+// touches cl.httpClient.Transport, not the client's Timeout field.
+func WithRootCAs(pool *x509.CertPool) ClientOption {
+	return func(cl *Client) {
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+		cl.httpClient.Transport = tr
+		cl.pinnedCA = true
+	}
+}
+
 // allowElicitation reports whether one more input_required result from this
 // server is within its rate limit, building the bucket on first use.
 func (c *Client) allowElicitation() bool {
@@ -400,6 +428,31 @@ func NewClient(serverURL string, opts ...ClientOption) *Client {
 		opt(c)
 	}
 	return c
+}
+
+// Close releases resources this Client exclusively owns. It is a no-op
+// unless the Client is CA-pinned (WithRootCAs): an unpinned Client's
+// Transport is nil, which means it shares the process-wide
+// http.DefaultTransport connection pool (see cache.go's "nothing to close"
+// discussion), and calling CloseIdleConnections there would incorrectly
+// close idle sockets belonging to every OTHER unrelated Client in the
+// process. A CA-pinned Client is different: WithRootCAs gives it its own
+// cloned *http.Transport, so this Client is the sole owner of whatever
+// connections it opened, and Close is exactly the right place to release
+// them promptly rather than leaving them open for the transport's 90s
+// IdleConnTimeout.
+//
+// Callers that build a THROWAWAY Client for a single call — a create-time
+// probe, TestConnection, or a Discover/RefreshTools round trip — must defer
+// Close() once they are done with it (issue #928 security review, finding
+// 3). A Client the registry cache hands out (clientForServer) or that a run
+// holds for its own duration (ResolveForPolicy) must NEVER be closed here:
+// both are shared by design and outlive the call that resolved them.
+func (c *Client) Close() {
+	if !c.pinnedCA {
+		return
+	}
+	c.httpClient.CloseIdleConnections()
 }
 
 // initializeResult is the subset of the legacy initialize response body we
@@ -967,7 +1020,7 @@ func (c *Client) post(ctx context.Context, body []byte, o postOptions) (*http.Re
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("http do: %w", err)
+		return nil, fmt.Errorf("http do: %w", wrapTLSVerificationError(req.URL.Host, c.pinnedCA, err))
 	}
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {

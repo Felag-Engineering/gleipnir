@@ -2,12 +2,15 @@ package mcp
 
 import (
 	"context"
+	"errors"
+	"net"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/testutil"
 )
 
 func TestResolveForPolicy_AllToolsFound(t *testing.T) {
@@ -360,5 +363,171 @@ func TestResolveToolByName_DisabledTool(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "disabled") {
 		t.Errorf("error %q should contain the word 'disabled'", err.Error())
+	}
+}
+
+// TestResolveForPolicy_SameURLServersGetSeparateClientsAndHeaders is the
+// regression test for the #928 security review finding: mcp_servers.url is
+// not unique, so two distinct server rows can share one url. Before this
+// fix, ResolveForPolicy's per-call client cache was keyed by srv.Url, so a
+// pinned server and an unpinned server on the same url would share one
+// *Client — silently bypassing the pinned server's CA and leaking one
+// server's ADR-039 auth headers onto the other's requests. The map is now
+// keyed by srv.ID.
+//
+// The policy grants the UNPINNED server's tool first, matching the order
+// that actually triggered the bug: the first resolve populates the (bogus,
+// url-keyed) cache entry, and the second resolve for the pinned server would
+// have incorrectly reused it.
+func TestResolveForPolicy_SameURLServersGetSeparateClientsAndHeaders(t *testing.T) {
+	testKey := mustTestKey(t)
+	reg, store := newTestRegistryWithKey(t, testKey)
+
+	caA := testutil.NewTestCA(t)
+	leafA := caA.IssueServerCert(t, nil, []net.IP{net.ParseIP("127.0.0.1")})
+	srv := testutil.StartTLSServer(t, legacyToolHandler("shared-tool"), leafA)
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	unpinnedHeaders := mustEncryptHeaders(t, testKey, []AuthHeader{{Name: "X-Api-Key", Value: "unpinned-secret"}})
+	unpinnedID := model.NewULID()
+	if _, err := store.Queries().CreateMCPServer(context.Background(), db.CreateMCPServerParams{
+		ID:                   unpinnedID,
+		Name:                 "server-unpinned",
+		Url:                  srv.URL,
+		CreatedAt:            now,
+		AuthHeadersEncrypted: unpinnedHeaders,
+	}); err != nil {
+		t.Fatalf("CreateMCPServer (unpinned): %v", err)
+	}
+	if _, err := store.Queries().UpsertMCPTool(context.Background(), db.UpsertMCPToolParams{
+		ID: model.NewULID(), ServerID: unpinnedID, Name: "shared-tool", Description: "d",
+		InputSchema: `{"type":"object"}`, CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("UpsertMCPTool (unpinned): %v", err)
+	}
+
+	pinnedHeaders := mustEncryptHeaders(t, testKey, []AuthHeader{{Name: "X-Api-Key", Value: "pinned-secret"}})
+	pinnedID := model.NewULID()
+	if _, err := store.Queries().CreateMCPServer(context.Background(), db.CreateMCPServerParams{
+		ID:                   pinnedID,
+		Name:                 "server-pinned",
+		Url:                  srv.URL, // same url as the unpinned row, deliberately
+		CreatedAt:            now,
+		AuthHeadersEncrypted: pinnedHeaders,
+		CaCertPem:            &caA.PEM,
+	}); err != nil {
+		t.Fatalf("CreateMCPServer (pinned): %v", err)
+	}
+	if _, err := store.Queries().UpsertMCPTool(context.Background(), db.UpsertMCPToolParams{
+		ID: model.NewULID(), ServerID: pinnedID, Name: "shared-tool", Description: "d",
+		InputSchema: `{"type":"object"}`, CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("UpsertMCPTool (pinned): %v", err)
+	}
+
+	p := &model.ParsedPolicy{
+		Capabilities: model.CapabilitiesConfig{
+			Tools: []model.ToolCapability{
+				// Unpinned first: this is the order that triggered the bug.
+				{Tool: "server-unpinned.shared-tool", Approval: model.ApprovalModeNone},
+				{Tool: "server-pinned.shared-tool", Approval: model.ApprovalModeNone},
+			},
+		},
+	}
+
+	result, err := reg.ResolveForPolicy(context.Background(), p)
+	if err != nil {
+		t.Fatalf("ResolveForPolicy: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("len(result) = %d, want 2", len(result))
+	}
+
+	unpinnedClient := result[0].Client
+	pinnedClient := result[1].Client
+
+	if unpinnedClient == pinnedClient {
+		t.Fatal("server-unpinned and server-pinned share one *Client despite being distinct rows — " +
+			"mcp_servers.url is not unique, and sharing a client bypasses the pinned server's CA and " +
+			"leaks its auth headers onto the unpinned server's requests (issue #928 security review)")
+	}
+	if !pinnedClient.pinnedCA {
+		t.Error("server-pinned's client is not marked pinnedCA")
+	}
+	if unpinnedClient.pinnedCA {
+		t.Error("server-unpinned's client must not be pinned")
+	}
+
+	// Headers must not cross between the two servers. Checked directly on
+	// the unexported field (in-package test) rather than by capturing a live
+	// request, because the whole point being guarded against is exactly this
+	// kind of cross-contamination at the Client level.
+	if len(unpinnedClient.authHeaders) != 1 || unpinnedClient.authHeaders[0].Value != "unpinned-secret" {
+		t.Errorf("server-unpinned's client authHeaders = %+v, want [{X-Api-Key unpinned-secret}]", unpinnedClient.authHeaders)
+	}
+	if len(pinnedClient.authHeaders) != 1 || pinnedClient.authHeaders[0].Value != "pinned-secret" {
+		t.Errorf("server-pinned's client authHeaders = %+v, want [{X-Api-Key pinned-secret}]", pinnedClient.authHeaders)
+	}
+
+	// The pinned client's pin must actually be enforced, not merely recorded:
+	// the real backend's certificate IS signed by CA-A, so the call succeeds.
+	if _, err := pinnedClient.CallTool(context.Background(), "shared-tool", nil, CallOptions{}); err != nil {
+		t.Fatalf("pinned CallTool against its own CA: %v", err)
+	}
+}
+
+// TestResolveForPolicy_PinRefusesADifferentCA is the companion direction:
+// a server pinned to CA-A must refuse a real backend whose certificate is
+// signed by a different CA, even though the pin itself is well-formed.
+func TestResolveForPolicy_PinRefusesADifferentCA(t *testing.T) {
+	reg, store := newTestRegistry(t)
+
+	caA := testutil.NewTestCA(t)
+	caB := testutil.NewTestCA(t)
+	leafB := caB.IssueServerCert(t, nil, []net.IP{net.ParseIP("127.0.0.1")})
+	srv := testutil.StartTLSServer(t, legacyToolHandler("shared-tool"), leafB)
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	serverID := model.NewULID()
+	if _, err := store.Queries().CreateMCPServer(context.Background(), db.CreateMCPServerParams{
+		ID:        serverID,
+		Name:      "server-wrong-ca",
+		Url:       srv.URL,
+		CreatedAt: now,
+		CaCertPem: &caA.PEM, // pinned to CA-A, but the backend's leaf is signed by CA-B
+	}); err != nil {
+		t.Fatalf("CreateMCPServer: %v", err)
+	}
+	if _, err := store.Queries().UpsertMCPTool(context.Background(), db.UpsertMCPToolParams{
+		ID: model.NewULID(), ServerID: serverID, Name: "shared-tool", Description: "d",
+		InputSchema: `{"type":"object"}`, CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("UpsertMCPTool: %v", err)
+	}
+
+	p := &model.ParsedPolicy{
+		Capabilities: model.CapabilitiesConfig{
+			Tools: []model.ToolCapability{
+				{Tool: "server-wrong-ca.shared-tool", Approval: model.ApprovalModeNone},
+			},
+		},
+	}
+
+	result, err := reg.ResolveForPolicy(context.Background(), p)
+	if err != nil {
+		t.Fatalf("ResolveForPolicy: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1", len(result))
+	}
+
+	_, err = result[0].Client.CallTool(context.Background(), "shared-tool", nil, CallOptions{})
+	if err == nil {
+		t.Fatal("expected CallTool to fail: the pinned CA does not sign this server's certificate")
+	}
+	var tlsErr *TLSVerificationError
+	if !errors.As(err, &tlsErr) {
+		t.Errorf("CallTool error = %v (%T), want *TLSVerificationError", err, err)
 	}
 }

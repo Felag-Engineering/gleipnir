@@ -49,7 +49,11 @@ CREATE TABLE mcp_servers (
     -- two facts that must agree are two facts that can disagree. CASCADE, not
     -- SET NULL -- this row is a route TO an instance, not a record OF one, and
     -- a route to a deleted instance is a dangling endpoint, not history.
-    plugin_instance_id      TEXT REFERENCES plugin_instances(id) ON DELETE CASCADE
+    plugin_instance_id      TEXT REFERENCES plugin_instances(id) ON DELETE CASCADE,
+    -- Nullable; PEM CA bundle pinned as this server's sole TLS trust root; public,
+    -- read back in full (issue #928) -- unlike auth_headers_encrypted above, this
+    -- is not a secret and must be verifiable, so it stays plaintext.
+    ca_cert_pem             TEXT
 );
 -- Partial: every external row's NULL stays out of the index entirely. The row
 -- is per INSTANCE, not per generation -- a rotation updates url in place.

@@ -3,6 +3,8 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -11,6 +13,8 @@ import (
 	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/testutil"
 )
 
 // freezeClock swaps package mcp's shared timeNow to a fake clock starting at
@@ -114,6 +118,7 @@ func TestParseCacheHint(t *testing.T) {
 func TestClientForServer_ReusesUntilConfigChanges(t *testing.T) {
 	protoA := "2026-07-28"
 	authA := "ciphertext-a"
+	caPEM := testutil.NewTestCA(t).PEM
 
 	tests := []struct {
 		name   string
@@ -123,6 +128,7 @@ func TestClientForServer_ReusesUntilConfigChanges(t *testing.T) {
 		{"url", func(s db.McpServer) db.McpServer { s.Url = "http://example.invalid/b"; return s }},
 		{"protocol_version", func(s db.McpServer) db.McpServer { s.ProtocolVersion = &protoA; return s }},
 		{"auth_headers_encrypted", func(s db.McpServer) db.McpServer { s.AuthHeadersEncrypted = &authA; return s }},
+		{"ca_cert_pem", func(s db.McpServer) db.McpServer { s.CaCertPem = &caPEM; return s }},
 	}
 
 	for _, tc := range tests {
@@ -339,6 +345,78 @@ func TestResolveToolByName_ConfigChangeRebuildsClient(t *testing.T) {
 		}
 		if client2 == client1 {
 			t.Error("expected a rebuilt *Client after auth_headers_encrypted changed")
+		}
+	})
+
+	// TestClientForServer_ReusesUntilConfigChanges/ca_cert_pem above proves the
+	// cache key includes ca_cert_pem in isolation; this subtest is the
+	// end-to-end proof issue #928 asks for: editing the pin actually changes
+	// what a resolved *Client will and will not trust, with no restart.
+	t.Run("ca cert change rebuilds the client", func(t *testing.T) {
+		correctCA := testutil.NewTestCA(t)
+		otherCA := testutil.NewTestCA(t)
+		leaf := correctCA.IssueServerCert(t, nil, []net.IP{net.ParseIP("127.0.0.1")})
+		srv := testutil.StartTLSServer(t, legacyToolHandler("my-tool"), leaf)
+
+		reg, store := newTestRegistry(t)
+		rawDB := store.DB()
+
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		serverID := model.NewULID()
+		if _, err := store.Queries().CreateMCPServer(context.Background(), db.CreateMCPServerParams{
+			ID:        serverID,
+			Name:      "my-server",
+			Url:       srv.URL,
+			CreatedAt: now,
+			CaCertPem: &correctCA.PEM,
+		}); err != nil {
+			t.Fatalf("CreateMCPServer: %v", err)
+		}
+		if _, err := reg.RefreshTools(context.Background(), serverID); err != nil {
+			t.Fatalf("RefreshTools: %v", err)
+		}
+
+		client1, toolName, err := reg.ResolveToolByName(context.Background(), "my-server.my-tool")
+		if err != nil {
+			t.Fatalf("ResolveToolByName (correct CA): %v", err)
+		}
+		if _, err := client1.CallTool(context.Background(), toolName, nil, CallOptions{}); err != nil {
+			t.Fatalf("CallTool with correct CA: %v", err)
+		}
+
+		if _, err := rawDB.Exec(`UPDATE mcp_servers SET ca_cert_pem = ? WHERE id = ?`, otherCA.PEM, serverID); err != nil {
+			t.Fatalf("update ca_cert_pem: %v", err)
+		}
+
+		client2, toolName, err := reg.ResolveToolByName(context.Background(), "my-server.my-tool")
+		if err != nil {
+			t.Fatalf("ResolveToolByName (wrong CA): %v", err)
+		}
+		if client2 == client1 {
+			t.Error("expected a rebuilt *Client after ca_cert_pem changed")
+		}
+		if _, err := client2.CallTool(context.Background(), toolName, nil, CallOptions{}); err == nil {
+			t.Error("expected CallTool to fail: the pinned CA no longer signs the server's certificate")
+		} else {
+			var tlsErr *TLSVerificationError
+			if !errors.As(err, &tlsErr) {
+				t.Errorf("CallTool error = %v (%T), want *TLSVerificationError", err, err)
+			}
+		}
+
+		if _, err := rawDB.Exec(`UPDATE mcp_servers SET ca_cert_pem = ? WHERE id = ?`, correctCA.PEM, serverID); err != nil {
+			t.Fatalf("revert ca_cert_pem: %v", err)
+		}
+
+		client3, toolName, err := reg.ResolveToolByName(context.Background(), "my-server.my-tool")
+		if err != nil {
+			t.Fatalf("ResolveToolByName (reverted): %v", err)
+		}
+		if client3 == client2 {
+			t.Error("expected a rebuilt *Client after ca_cert_pem changed back")
+		}
+		if _, err := client3.CallTool(context.Background(), toolName, nil, CallOptions{}); err != nil {
+			t.Fatalf("CallTool after reverting to the correct CA: %v", err)
 		}
 	})
 }
