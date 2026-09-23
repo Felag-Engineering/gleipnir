@@ -41,6 +41,23 @@
   font-weight: 400;
 }
 
+/* CA certificate PEM textarea — monospaced like .input, sized for pasting a
+   multi-line certificate block. */
+.caCertInput {
+  composes: input from '@/styles/forms.module.css';
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  min-height: 96px;
+  resize: vertical;
+}
+
+/* Explanatory copy under a field, e.g. the CA certificate hint. */
+.fieldHint {
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
 /* Auth header editor rows: key input + value input + remove button */
 .headerRow {
   display: flex;

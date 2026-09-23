@@ -16,7 +16,7 @@ interface HeaderRow {
 
 interface Props {
   onClose: () => void
-  onSubmit: (name: string, url: string, headers: HeaderRow[]) => void
+  onSubmit: (name: string, url: string, headers: HeaderRow[], caCertPem: string) => void
   isPending: boolean
   error: ApiError | null
   discoveryWarning?: string | null
@@ -26,6 +26,7 @@ export function AddServerModal({ onClose, onSubmit, isPending, error, discoveryW
   const [name, setName] = useState('')
   const [url, setUrl] = useState('')
   const [headers, setHeaders] = useState<HeaderRow[]>([])
+  const [caCertPem, setCaCertPem] = useState('')
   const testMutation = useTestMcpConnection()
 
   function handleSubmit(e: FormEvent) {
@@ -33,7 +34,7 @@ export function AddServerModal({ onClose, onSubmit, isPending, error, discoveryW
     if (name.trim() && url.trim()) {
       // Filter out rows where both key and value are empty.
       const nonEmpty = headers.filter((h) => h.key.trim() || h.value.trim())
-      onSubmit(name.trim(), url.trim(), nonEmpty)
+      onSubmit(name.trim(), url.trim(), nonEmpty, caCertPem.trim())
     }
   }
 
@@ -45,12 +46,20 @@ export function AddServerModal({ onClose, onSubmit, isPending, error, discoveryW
     }
   }
 
+  function handleCaCertPemChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
+    setCaCertPem(e.target.value)
+    if (testMutation.data || testMutation.isError) {
+      testMutation.reset()
+    }
+  }
+
   function handleTestConnection() {
     if (url.trim()) {
       const nonEmpty = headers.filter((h) => h.key.trim() || h.value.trim())
       testMutation.mutate({
         url: url.trim(),
         auth_headers: nonEmpty.length > 0 ? nonEmpty : undefined,
+        ca_cert_pem: caCertPem.trim() || undefined,
       })
     }
   }
@@ -146,6 +155,24 @@ export function AddServerModal({ onClose, onSubmit, isPending, error, discoveryW
               )}
             </div>
           )}
+        </div>
+
+        <div className={formStyles.field}>
+          <label htmlFor="server-ca-cert" className={formStyles.labelMono}>
+            CA certificate (PEM) <span className={styles.optionalLabel}>(optional)</span>
+          </label>
+          <textarea
+            id="server-ca-cert"
+            className={styles.caCertInput}
+            placeholder="-----BEGIN CERTIFICATE-----"
+            value={caCertPem}
+            onChange={handleCaCertPemChange}
+            spellCheck={false}
+          />
+          <p className={styles.fieldHint}>
+            For HTTPS servers behind a private CA. Paste the CA certificate (not the server
+            certificate); only this CA will be trusted for this server.
+          </p>
         </div>
 
         <div className={formStyles.field}>

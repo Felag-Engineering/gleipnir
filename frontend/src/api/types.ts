@@ -127,6 +127,15 @@ export interface ApiPolicySaveResponse extends ApiPolicyDetail {
   warnings: string[]
 }
 
+// Matches mcp_handler.go → caCertificateResponse: a parsed summary of one
+// certificate from ca_cert_pem, surfaced so the operator can confirm they
+// pinned the CA they intended to.
+export interface ApiCaCertificate {
+  subject: string
+  sha256_fingerprint: string // lowercase hex SHA-256 of the DER, no colons
+  not_after: string // RFC3339 UTC
+}
+
 // Matches mcp_handler.go → mcpServerResponse (GET /api/v1/mcp/servers)
 export interface ApiMcpServer {
   id: string
@@ -138,6 +147,13 @@ export interface ApiMcpServer {
   auth_header_keys?: string[] // sorted header names; values are never returned
   is_arcade_gateway: boolean
   protocol_version: string | null // pinned MCP revision; null = never probed
+
+  // ca_cert_pem is the full, unredacted PEM (nil when no CA is pinned) —
+  // public, unlike auth_header_keys above, so it is read back in full rather
+  // than redacted. ca_certificates is its parsed summary, always present
+  // (empty when no CA is pinned).
+  ca_cert_pem?: string | null
+  ca_certificates?: ApiCaCertificate[]
 
   // 'managed' when this entry is a plugin instance's MCP endpoint, 'external'
   // for an operator-registered server. Derived server-side from
@@ -366,13 +382,16 @@ export interface AddMcpServerRequest {
   name: string
   url: string
   auth_headers?: { key: string; value: string }[]
+  ca_cert_pem?: string
 }
 
 // Matches api/mcp_handler.go → Update body (PUT /api/v1/mcp/servers/:id)
 // Auth headers are NOT included — use SetMcpServerHeaderRequest instead.
+// ca_cert_pem: absent = unchanged, "" = remove, any other value replaces it.
 export interface UpdateMcpServerRequest {
   name: string
   url: string
+  ca_cert_pem?: string
 }
 
 // Matches api/mcp_handler.go → SetAuthHeader body (PUT /api/v1/mcp/servers/:id/headers/:name)
@@ -382,6 +401,7 @@ export type SetMcpServerHeaderRequest = { value: string }
 export interface TestMcpConnectionRequest {
   url: string
   auth_headers?: { key: string; value: string }[]
+  ca_cert_pem?: string
 }
 
 // ok=true means the handshake succeeded; ok=false means the server was unreachable

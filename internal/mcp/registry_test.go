@@ -1210,7 +1210,7 @@ func TestProbeTools_NoDBWrites(t *testing.T) {
 	}
 	srv := makeMCPServer(t, tools)
 
-	discovered, err := reg.ProbeTools(context.Background(), "probe-server", srv.URL, nil)
+	discovered, err := reg.ProbeTools(context.Background(), "probe-server", srv.URL, nil, nil)
 	if err != nil {
 		t.Fatalf("ProbeTools: %v", err)
 	}

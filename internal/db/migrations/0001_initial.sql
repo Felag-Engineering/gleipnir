@@ -44,7 +44,12 @@ CREATE TABLE mcp_servers (
     -- Set when this entry IS a managed plugin instance's MCP endpoint (ADR-053,
     -- spec §3). NULL means an ordinary operator-registered external server; the
     -- trust tier is derived from this column, never stored beside it.
-    plugin_instance_id      TEXT REFERENCES plugin_instances(id) ON DELETE CASCADE
+    plugin_instance_id      TEXT REFERENCES plugin_instances(id) ON DELETE CASCADE,
+    -- Nullable; PEM CA bundle pinned as this server's sole TLS trust root; public,
+    -- read back in full (issue #928; unlike auth_headers_encrypted above, this
+    -- value is not a secret and must be verifiable, so it is stored and returned
+    -- as plaintext).
+    ca_cert_pem             TEXT
 );
 CREATE UNIQUE INDEX idx_mcp_servers_plugin_instance
     ON mcp_servers(plugin_instance_id) WHERE plugin_instance_id IS NOT NULL;

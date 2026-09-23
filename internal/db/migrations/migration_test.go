@@ -1217,3 +1217,135 @@ func TestAddPluginEventCursorsSkipsOnFreshSchema(t *testing.T) {
 		t.Fatal("ShouldSkip returned false on a fresh initial schema — did 0001_initial.sql forget plugin_event_cursors?")
 	}
 }
+
+// seedPreCACertMCPServers hand-creates the end-of-0051 mcp_servers shape:
+// every column through plugin_instance_id, but OMITTING ca_cert_pem, so
+// AddMCPServerCACert's ShouldSkip returns false and Up() actually runs.
+func seedPreCACertMCPServers(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	stmts := []string{
+		`CREATE TABLE schema_migrations (
+			version     INTEGER PRIMARY KEY,
+			applied_at  TEXT    NOT NULL
+		)`,
+		`INSERT INTO schema_migrations(version, applied_at) VALUES (1, '2024-01-01T00:00:00Z')`,
+
+		`CREATE TABLE mcp_servers (
+			id                      TEXT    PRIMARY KEY,
+			name                    TEXT    NOT NULL UNIQUE,
+			url                     TEXT    NOT NULL,
+			last_discovered_at      TEXT,
+			has_drift               INTEGER NOT NULL DEFAULT 0,
+			created_at              TEXT    NOT NULL,
+			auth_headers_encrypted  TEXT,
+			protocol_version        TEXT,
+			plugin_instance_id      TEXT
+		)`,
+	}
+
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seedPreCACertMCPServers: %v\nstatement: %s", err, stmt)
+		}
+	}
+}
+
+// TestAddMCPServerCACert verifies that migration 0052 adds ca_cert_pem to
+// mcp_servers on the existing-database upgrade path, leaves pre-existing
+// rows NULL ("no CA pinned"), and round-trips values.
+func TestAddMCPServerCACert(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+
+	// Build the pre-0052 schema by hand — do NOT call applyInitialSchema.
+	seedPreCACertMCPServers(t, db)
+
+	// Confirm ShouldSkip is false so the test fails loudly if a future schema
+	// change makes the migration skip again (which would make the rest of this
+	// test a vacuous pass).
+	m := &migrations.AddMCPServerCACert{}
+	skip, err := m.ShouldSkip(ctx, db)
+	if err != nil {
+		t.Fatalf("ShouldSkip: %v", err)
+	}
+	if skip {
+		t.Fatal("ShouldSkip returned true against the pre-target baseline — the hand-crafted DDL must omit ca_cert_pem")
+	}
+
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO mcp_servers(id, name, url, created_at) VALUES ('s1', 'srv', 'https://localhost:9443', '2024-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("seed mcp_servers row: %v", err)
+	}
+
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	var count int64
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('mcp_servers') WHERE name = 'ca_cert_pem'`,
+	).Scan(&count); err != nil {
+		t.Fatalf("query pragma_table_info: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("ca_cert_pem column count = %d, want 1", count)
+	}
+
+	// The pre-existing row must backfill to NULL, not some default.
+	var pem sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT ca_cert_pem FROM mcp_servers WHERE id = 's1'`).Scan(&pem); err != nil {
+		t.Fatalf("read ca_cert_pem: %v", err)
+	}
+	if pem.Valid {
+		t.Errorf("ca_cert_pem = %q after migration, want NULL", pem.String)
+	}
+
+	// Round-trip: set, read back, clear, read back.
+	const fakePEM = "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n"
+	if _, err := db.ExecContext(ctx, `UPDATE mcp_servers SET ca_cert_pem = ? WHERE id = 's1'`, fakePEM); err != nil {
+		t.Fatalf("set ca_cert_pem: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT ca_cert_pem FROM mcp_servers WHERE id = 's1'`).Scan(&pem); err != nil {
+		t.Fatalf("read ca_cert_pem after set: %v", err)
+	}
+	if !pem.Valid || pem.String != fakePEM {
+		t.Errorf("ca_cert_pem = %v after set, want %q", pem, fakePEM)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE mcp_servers SET ca_cert_pem = NULL WHERE id = 's1'`); err != nil {
+		t.Fatalf("clear ca_cert_pem: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT ca_cert_pem FROM mcp_servers WHERE id = 's1'`).Scan(&pem); err != nil {
+		t.Fatalf("read ca_cert_pem after clear: %v", err)
+	}
+	if pem.Valid {
+		t.Errorf("ca_cert_pem = %q after clear, want NULL", pem.String)
+	}
+
+	// Second Apply must be a no-op — proves ShouldSkip flips to true after Up,
+	// not just on a fresh schema.
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("second Apply (idempotency): %v", err)
+	}
+}
+
+// TestAddMCPServerCACertSkipsOnFreshSchema is the regression gate for
+// forgetting to hand-sync 0001_initial.sql: on a fresh database built from
+// the initial schema, ca_cert_pem must already exist, so ShouldSkip must
+// return true. If someone adds the Go migration without editing
+// 0001_initial.sql, this test fails (and sqlc would silently not see the
+// column, since sqlc.yaml only reads 0001_initial.sql).
+func TestAddMCPServerCACertSkipsOnFreshSchema(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	applyInitialSchema(t, db)
+
+	skip, err := (&migrations.AddMCPServerCACert{}).ShouldSkip(ctx, db)
+	if err != nil {
+		t.Fatalf("ShouldSkip: %v", err)
+	}
+	if !skip {
+		t.Fatal("ShouldSkip returned false on a fresh initial schema — did 0001_initial.sql forget the ca_cert_pem column?")
+	}
+}

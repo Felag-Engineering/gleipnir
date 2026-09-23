@@ -39,6 +39,15 @@ func ClassifyMCPErrorType(err error) string {
 		errors.Is(err, context.Canceled) {
 		return metrics.ErrorTypeTimeout
 	}
+	var tlsErr *TLSVerificationError
+	if errors.As(err, &tlsErr) {
+		// Checked before net.OpError/net.DNSError below: a TLS verification
+		// failure often wraps a *net.OpError internally, and this more
+		// specific classification must win so a misconfigured CA is visible
+		// in metrics as its own category, not folded into generic
+		// "connection" failures (issue #928).
+		return metrics.ErrorTypeTLSVerification
+	}
 	var httpErr *HTTPStatusError
 	if errors.As(err, &httpErr) {
 		switch {

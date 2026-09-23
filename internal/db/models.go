@@ -50,6 +50,7 @@ type McpServer struct {
 	AuthHeadersEncrypted *string `json:"auth_headers_encrypted"`
 	ProtocolVersion      *string `json:"protocol_version"`
 	PluginInstanceID     *string `json:"plugin_instance_id"`
+	CaCertPem            *string `json:"ca_cert_pem"`
 }
 
 type McpTask struct {

@@ -6,13 +6,13 @@ import { ToolAccordionRow } from '@/components/MCPPage/ToolAccordionRow'
 import { SkeletonBlock } from '@/components/SkeletonBlock'
 import { formatTimeAgo } from '@/utils/format'
 import {
-  useUpdateMcpServer,
   useSetMcpServerHeader,
   useDeleteMcpServerHeader,
   useSetMcpToolEnabled,
 } from '@/hooks/mutations/servers'
 import { useToast } from '@/components/Toast'
 import { ArcadeAuthSection } from './ArcadeAuthSection'
+import { CaCertificateSection } from './CaCertificateSection'
 import styles from './ServerDetailModal.module.css'
 
 // A row in the header editor.
@@ -75,11 +75,11 @@ export function ServerDetailModal({
   const [expandedToolId, setExpandedToolId] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
   const [showHeaderEditor, setShowHeaderEditor] = useState(false)
+  const [showCaCertSection, setShowCaCertSection] = useState(false)
   const [headerRows, setHeaderRows] = useState<HeaderRow[]>([])
   const [isSaving, setIsSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
 
-  const updateMutation = useUpdateMcpServer()
   const setHeaderMutation = useSetMcpServerHeader()
   const deleteHeaderMutation = useDeleteMcpServerHeader()
 
@@ -208,6 +208,7 @@ export function ServerDetailModal({
 
   const showFilter = !toolsLoading && toolCount > 5
   const existingKeyCount = server.auth_header_keys?.length ?? 0
+  const caCertCount = server.ca_certificates?.length ?? 0
 
   return (
     <FocusTrap focusTrapOptions={{ initialFocus: false, allowOutsideClick: true, returnFocusOnDeactivate: true, fallbackFocus: '[role="dialog"]', escapeDeactivates: false }}>
@@ -271,13 +272,22 @@ export function ServerDetailModal({
                     Managed by the plugin lifecycle
                   </span>
                 ) : (
-                  <button
-                    type="button"
-                    className={styles.authHeadersBtn}
-                    onClick={openHeaderEditor}
-                  >
-                    {existingKeyCount > 0 ? `Auth (${existingKeyCount})` : 'Auth headers'}
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      className={styles.authHeadersBtn}
+                      onClick={openHeaderEditor}
+                    >
+                      {existingKeyCount > 0 ? `Auth (${existingKeyCount})` : 'Auth headers'}
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.authHeadersBtn}
+                      onClick={() => setShowCaCertSection((v) => !v)}
+                    >
+                      {caCertCount > 0 ? `CA cert (${caCertCount})` : 'CA certificate'}
+                    </button>
+                  </>
                 )}
                 <button
                   type="button"
@@ -369,6 +379,10 @@ export function ServerDetailModal({
                 </button>
               </div>
             </div>
+          )}
+
+          {(showCaCertSection || caCertCount > 0) && (
+            <CaCertificateSection server={server} />
           )}
 
           {server.is_arcade_gateway && tools && (

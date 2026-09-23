@@ -186,19 +186,19 @@ func parseCacheHint(modern bool, rawTTLMs, rawScope json.RawMessage) cacheHint {
 	return cacheHint{Present: true, TTL: time.Duration(ttlMs) * time.Millisecond, Scope: parsedScope}
 }
 
-// serverConfig is the comparable snapshot of exactly the four db.McpServer
+// serverConfig is the comparable snapshot of exactly the five db.McpServer
 // columns newClientForServer reads (registry.go): name, url, protocol
-// version, and the encrypted auth headers. It is the cache's invalidation
-// mechanism — a serverConfig read fresh from the DB on every resolve/refresh
-// (via GetMCPServer) that no longer equals the cached entry's serverConfig
-// means the cached *Client or tool catalog was built from stale
-// configuration and must be rebuilt — chosen over explicit Invalidate(id)
-// calls threaded through every mutating handler (Update, SetAuthHeader,
-// DeleteAuthHeader) because mcp_servers has no updated_at or version column
-// (verified: schemas/sql_schemas.sql), so there is no cheaper "did this row
-// change" signal to key off, and an explicit-call scheme can silently rot
-// the day a future mutation path forgets to call it. Comparable via plain
-// `==`, not a SHA-256 fingerprint: it needs no new imports, is directly
+// version, the encrypted auth headers, and the CA certificate PEM. It is the
+// cache's invalidation mechanism — a serverConfig read fresh from the DB on
+// every resolve/refresh (via GetMCPServer) that no longer equals the cached
+// entry's serverConfig means the cached *Client or tool catalog was built
+// from stale configuration and must be rebuilt — chosen over explicit
+// Invalidate(id) calls threaded through every mutating handler (Update,
+// SetAuthHeader, DeleteAuthHeader) because mcp_servers has no updated_at or
+// version column (verified: schemas/sql_schemas.sql), so there is no cheaper
+// "did this row change" signal to key off, and an explicit-call scheme can
+// silently rot the day a future mutation path forgets to call it. Comparable
+// via plain `==`, not a SHA-256 fingerprint: it needs no new imports, is directly
 // readable in a debugger, and cannot be misread as a security token.
 //
 //   - name is included because it is the Prometheus "server" label
@@ -218,12 +218,24 @@ func parseCacheHint(modern bool, rawTTLMs, rawScope json.RawMessage) cacheHint {
 //     cache can be wrong in the direction of "rebuilds one extra time", never
 //     in the direction of "serves traffic under a header an operator already
 //     rotated away from".
+//   - caCertPEM collapses NULL and "" to "" like protocol. It must be part of
+//     this key, not merely a value newClientForServer reads, because a CA
+//     pin is a correction an operator needs to take effect immediately: a
+//     Client already built against a stale (missing, wrong, or since-revoked)
+//     CA must never be handed out again once the row changes, and there is no
+//     restart in this cache's design to fall back on (issue #928). This only
+//     ever affects the NEXT resolve, exactly like an auth-header rotation
+//     above: a run already in flight keeps whatever *Client it was handed at
+//     resolve time (ResolveForPolicy is not cache-backed, see its own doc)
+//     and finishes the run under the CA pin (or lack of one) that was live
+//     when it started.
 type serverConfig struct {
 	name        string
 	url         string
 	protocol    string
 	authHeaders string
 	hasAuth     bool
+	caCertPEM   string
 }
 
 // serverConfigOf extracts srv's serverConfig. See serverConfig's doc for the
@@ -236,6 +248,9 @@ func serverConfigOf(srv db.McpServer) serverConfig {
 	if srv.AuthHeadersEncrypted != nil {
 		cfg.hasAuth = true
 		cfg.authHeaders = *srv.AuthHeadersEncrypted
+	}
+	if srv.CaCertPem != nil {
+		cfg.caCertPEM = *srv.CaCertPem
 	}
 	return cfg
 }
@@ -291,11 +306,19 @@ func newRegistryCache() *registryCache {
 // mutated afterward — that is what makes cross-goroutine reuse legal here,
 // not something this cache adds.
 //
-// There is nothing to close on a discarded build (a cache miss whose result
-// loses the race below, or a rebuild that replaces a stale entry): NewClient
-// (client.go) leaves http.Client.Transport nil, so every Client shares
-// http.DefaultTransport's connection pool — a dropped Client releases no
-// sockets, just one small struct.
+// There is nothing to close IMMEDIATELY on a discarded build (a cache miss
+// whose result loses the race below, or a rebuild that replaces a stale
+// entry) in the common case: NewClient (client.go) leaves
+// http.Client.Transport nil, so every Client shares http.DefaultTransport's
+// connection pool — a dropped Client releases no sockets, just one small
+// struct. A CA-pinned Client (WithRootCAs, issue #928) is the one exception:
+// it owns its own cloned *http.Transport, so a discarded or replaced such
+// Client's idle connections are released on that transport's own
+// IdleConnTimeout (90s, inherited from http.DefaultTransport) rather than
+// immediately — bounded and harmless, not a leak. This cache deliberately
+// does NOT call CloseIdleConnections on replacement: a run already in
+// flight may still hold the old *Client, and forcing its connections closed
+// out from under it would be worse than a 90-second idle socket.
 //
 // newClientForServer runs OUTSIDE r.cache.mu, deliberately. An earlier
 // version of this method held the lock across the whole miss path on the
@@ -316,7 +339,7 @@ func newRegistryCache() *registryCache {
 //
 // Deliberately NOT used by ResolveForPolicy, ProbeTools, ProbeProtocol, or
 // refreshProtocolVersion:
-//   - ResolveForPolicy already dedups clients per call (by server URL), and
+//   - ResolveForPolicy already dedups clients per call (by server ID), and
 //     sharing a client ACROSS runs is a materially wider behavioral change
 //     than this issue asks for — a 401-driven resetSession triggered by one
 //     run would become silently visible to a different, unrelated run.
@@ -365,7 +388,9 @@ func (r *Registry) clientForServer(srv db.McpServer) *Client {
 // clientForServer, so RefreshTools's documented "probe client separate from
 // discovery client" property (registry.go) is unaffected by this cache —
 // this method only ever affects whether the tools/list ROUND TRIP happens,
-// never which client makes it.
+// never which client makes it. Closed via Client.Close before returning, so
+// a CA-pinned throwaway client's transport does not hold idle sockets for
+// its 90s IdleConnTimeout (security review finding, #928).
 //
 // On a discovery error, the cache is left completely untouched (no entry
 // written, no existing entry evicted) and the error is returned as-is: a
@@ -408,7 +433,9 @@ func (r *Registry) discoverToolsCached(ctx context.Context, srv db.McpServer) ([
 		return slices.Clone(entry.tools), true, nil
 	}
 
-	fresh, hint, err := r.newClientForServer(srv).discoverToolsWithHint(ctx)
+	throwaway := r.newClientForServer(srv)
+	defer throwaway.Close()
+	fresh, hint, err := throwaway.discoverToolsWithHint(ctx)
 	if err != nil {
 		return nil, false, err
 	}

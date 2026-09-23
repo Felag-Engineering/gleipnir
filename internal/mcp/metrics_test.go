@@ -85,6 +85,20 @@ func TestClassifyMCPErrorType(t *testing.T) {
 			want: "protocol",
 		},
 		{
+			name: "TLSVerificationError → tls_verification",
+			err:  &mcp.TLSVerificationError{Host: "example.com", Reason: "the server's certificate is signed by an unknown authority"},
+			want: "tls_verification",
+		},
+		{
+			name: "TLSVerificationError wrapping a net.OpError still classifies as tls_verification",
+			err: &mcp.TLSVerificationError{
+				Host:   "example.com",
+				Reason: "the server's certificate is signed by an unknown authority",
+				Err:    &net.OpError{Op: "remote error", Err: fmt.Errorf("tls: unknown certificate authority")},
+			},
+			want: "tls_verification",
+		},
+		{
 			name: "unknown error → connection",
 			err:  fmt.Errorf("something completely unknown"),
 			want: "connection",

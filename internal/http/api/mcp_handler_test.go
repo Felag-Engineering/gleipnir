@@ -3,15 +3,22 @@ package api_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/tls"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -187,6 +194,51 @@ func insertTestMCPServer(t *testing.T, s *db.Store, name, url string) string {
 	return id
 }
 
+// insertTestMCPServerWithCACert is insertTestMCPServer's sibling for tests
+// that need a pre-existing ca_cert_pem — a signature change to
+// insertTestMCPServer would touch every one of its many existing call sites.
+func insertTestMCPServerWithCACert(t *testing.T, s *db.Store, name, url string, caCertPEM *string) string {
+	t.Helper()
+	id := model.NewULID()
+	_, err := s.CreateMCPServer(context.Background(), db.CreateMCPServerParams{
+		ID:        id,
+		Name:      name,
+		Url:       url,
+		CreatedAt: "2024-01-01T00:00:00Z",
+		CaCertPem: caCertPEM,
+	})
+	if err != nil {
+		t.Fatalf("insertTestMCPServerWithCACert %s: %v", name, err)
+	}
+	return id
+}
+
+// makeFakeMCPTLSServer is makeFakeMCPServer's HTTPS sibling: a real TLS
+// listener presenting cert, so CA-pin tests can drive real certificate-chain
+// verification. Never sets InsecureSkipVerify anywhere (issue #928) — a test
+// proves trust the same way an operator does, by pinning the issuing CA's
+// PEM.
+func makeFakeMCPTLSServer(t *testing.T, toolNames []string, cert tls.Certificate) *httptest.Server {
+	t.Helper()
+	tools := make([]map[string]any, 0, len(toolNames))
+	for _, name := range toolNames {
+		tools = append(tools, map[string]any{
+			"name":        name,
+			"description": name + " description",
+			"inputSchema": map[string]any{"type": "object"},
+		})
+	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  map[string]any{"tools": tools},
+		})
+	})
+	return testutil.StartTLSServer(t, handler, cert)
+}
+
 func TestMCPServerListHandler(t *testing.T) {
 	t.Run("empty list returns [] not null", func(t *testing.T) {
 		store := testutil.NewTestStore(t)
@@ -305,6 +357,64 @@ func TestMCPServerListHandler(t *testing.T) {
 				if string(raw) != "null" {
 					t.Errorf("unpinned protocol_version = %s, want null", raw)
 				}
+			}
+		}
+	})
+
+	t.Run("list returns the full PEM and parsed ca_certificates", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		ca := testutil.NewTestCA(t)
+
+		insertTestMCPServerWithCACert(t, store, "with-ca", "https://mcp.example.internal", &ca.PEM)
+		insertTestMCPServer(t, store, "without-ca", "http://localhost:9998")
+
+		srv := httptest.NewServer(newMCPRouter(store, registry))
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Get(srv.URL + "/servers")
+		if err != nil {
+			t.Fatalf("GET /servers: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var envelope struct {
+			Data []mcpServerResponseForTest `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if len(envelope.Data) != 2 {
+			t.Fatalf("len(data) = %d, want 2", len(envelope.Data))
+		}
+
+		for _, row := range envelope.Data {
+			switch row.Name {
+			case "with-ca":
+				if row.CACertPEM == nil || *row.CACertPEM != ca.PEM {
+					t.Errorf("with-ca: ca_cert_pem = %v, want the full PEM read back", row.CACertPEM)
+				}
+				if len(row.CACertificates) != 1 {
+					t.Fatalf("with-ca: ca_certificates length = %d, want 1", len(row.CACertificates))
+				}
+				wantFingerprint := sha256Hex(ca.Cert.Raw)
+				if row.CACertificates[0].SHA256Fingerprint != wantFingerprint {
+					t.Errorf("with-ca: ca_certificates[0].sha256_fingerprint = %q, want %q",
+						row.CACertificates[0].SHA256Fingerprint, wantFingerprint)
+				}
+				if row.CACertificates[0].Subject != ca.Cert.Subject.String() {
+					t.Errorf("with-ca: ca_certificates[0].subject = %q, want %q",
+						row.CACertificates[0].Subject, ca.Cert.Subject.String())
+				}
+			case "without-ca":
+				if row.CACertPEM != nil {
+					t.Errorf("without-ca: ca_cert_pem = %q, want nil", *row.CACertPEM)
+				}
+				if len(row.CACertificates) != 0 {
+					t.Errorf("without-ca: ca_certificates = %v, want empty", row.CACertificates)
+				}
+			default:
+				t.Fatalf("unexpected server name %q", row.Name)
 			}
 		}
 	})
@@ -1172,6 +1282,69 @@ func TestMCPServerTestConnectionHandler(t *testing.T) {
 
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400", resp.StatusCode)
+		}
+	})
+
+	t.Run("https server with the matching CA pinned returns ok", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		ca := testutil.NewTestCA(t)
+		leaf := ca.IssueServerCert(t, nil, []net.IP{net.ParseIP("127.0.0.1")})
+		fakeMCP := makeFakeMCPTLSServer(t, []string{"tool-a"}, leaf)
+		srv := httptest.NewServer(newMCPRouter(store, registry))
+		t.Cleanup(srv.Close)
+
+		body, _ := json.Marshal(map[string]string{"url": fakeMCP.URL, "ca_cert_pem": ca.PEM})
+		resp, err := http.Post(srv.URL+"/servers/test", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST /servers/test: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		var envelope struct {
+			Data testResult `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if !envelope.Data.OK {
+			t.Errorf("ok = false, want true; error = %q", envelope.Data.Error)
+		}
+	})
+
+	t.Run("https server without a pinned CA returns ok=false naming TLS verification", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		ca := testutil.NewTestCA(t)
+		leaf := ca.IssueServerCert(t, nil, []net.IP{net.ParseIP("127.0.0.1")})
+		fakeMCP := makeFakeMCPTLSServer(t, []string{"tool-a"}, leaf)
+		srv := httptest.NewServer(newMCPRouter(store, registry))
+		t.Cleanup(srv.Close)
+
+		body, _ := json.Marshal(map[string]string{"url": fakeMCP.URL})
+		resp, err := http.Post(srv.URL+"/servers/test", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST /servers/test: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		var envelope struct {
+			Data testResult `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if envelope.Data.OK {
+			t.Error("ok = true, want false — the server's certificate is not trusted without a pinned CA")
+		}
+		if !strings.Contains(envelope.Data.Error, "TLS certificate verification failed") {
+			t.Errorf("error = %q, want it to contain %q", envelope.Data.Error, "TLS certificate verification failed")
 		}
 	})
 }
@@ -3025,5 +3198,330 @@ func TestMCPHandler_ManagedEntryDisappearsWithItsInstance(t *testing.T) {
 	}
 	if len(resp.Data) != 0 {
 		t.Errorf("the managed entry outlived its instance: %+v", resp.Data)
+	}
+}
+
+// mcpServerResponseForTest mirrors mcp_handler.go's mcpServerResponse for the
+// CA-cert-specific fields these tests assert on.
+type mcpServerResponseForTest struct {
+	ID             string  `json:"id"`
+	Name           string  `json:"name"`
+	URL            string  `json:"url"`
+	CACertPEM      *string `json:"ca_cert_pem"`
+	CACertificates []struct {
+		Subject           string `json:"subject"`
+		SHA256Fingerprint string `json:"sha256_fingerprint"`
+		NotAfter          string `json:"not_after"`
+	} `json:"ca_certificates"`
+	DiscoveryError *string `json:"discovery_error"`
+}
+
+// TestMCPServerCACert_Create covers issue #928's write-path validation on
+// POST /servers: a valid PEM against a real matching TLS server succeeds and
+// is echoed back with a correct parsed summary; every other case is a 400
+// before any network call is made.
+func TestMCPServerCACert_Create(t *testing.T) {
+	expiredCA := testutil.NewTestCA(t, testutil.WithValidity(
+		time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC),
+	))
+
+	tests := []struct {
+		name       string
+		url        string
+		caCertPEM  string
+		wantStatus int
+		wantErrSub string
+	}{
+		{
+			name:       "malformed PEM",
+			url:        "https://example.invalid",
+			caCertPEM:  "not a certificate",
+			wantStatus: http.StatusBadRequest,
+			wantErrSub: "invalid ca_cert_pem",
+		},
+		{
+			name:       "PEM with no certificate block",
+			url:        "https://example.invalid",
+			caCertPEM:  "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n",
+			wantStatus: http.StatusBadRequest,
+			wantErrSub: "invalid ca_cert_pem",
+		},
+		{
+			name:       "expired certificate",
+			url:        "https://example.invalid",
+			caCertPEM:  expiredCA.PEM,
+			wantStatus: http.StatusBadRequest,
+			wantErrSub: "invalid ca_cert_pem",
+		},
+		{
+			name:       "http url with a CA is rejected",
+			url:        "http://example.invalid",
+			caCertPEM:  testutil.NewTestCA(t).PEM,
+			wantStatus: http.StatusBadRequest,
+			wantErrSub: "ca_cert_pem requires an https url",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := testutil.NewTestStore(t)
+			registry := mcp.NewRegistry(store.Queries())
+			srv := httptest.NewServer(newMCPRouter(store, registry))
+			t.Cleanup(srv.Close)
+
+			body, _ := json.Marshal(map[string]string{
+				"name":        "srv-" + tc.name,
+				"url":         tc.url,
+				"ca_cert_pem": tc.caCertPEM,
+			})
+			resp, err := http.Post(srv.URL+"/servers", "application/json", bytes.NewReader(body))
+			if err != nil {
+				t.Fatalf("POST /servers: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, tc.wantStatus)
+			}
+			var envelope struct {
+				Error  string `json:"error"`
+				Detail string `json:"detail"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if envelope.Error != tc.wantErrSub {
+				t.Errorf("error = %q, want %q", envelope.Error, tc.wantErrSub)
+			}
+
+			// No row must have been created for a rejected request.
+			rows, err := store.ListMCPServers(context.Background())
+			if err != nil {
+				t.Fatalf("ListMCPServers: %v", err)
+			}
+			if len(rows) != 0 {
+				t.Errorf("expected no MCP server rows after a rejected create, got %d", len(rows))
+			}
+		})
+	}
+
+	t.Run("valid PEM against a matching server succeeds and is echoed back", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		ca := testutil.NewTestCA(t)
+		leaf := ca.IssueServerCert(t, nil, []net.IP{net.ParseIP("127.0.0.1")})
+		fakeMCP := makeFakeMCPTLSServer(t, []string{"tool-a"}, leaf)
+		srv := httptest.NewServer(newMCPRouter(store, registry))
+		t.Cleanup(srv.Close)
+
+		body, _ := json.Marshal(map[string]string{
+			"name":        "ca-server",
+			"url":         fakeMCP.URL,
+			"ca_cert_pem": ca.PEM,
+		})
+		resp, err := http.Post(srv.URL+"/servers", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST /servers: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusCreated {
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("status = %d, want 201; body = %s", resp.StatusCode, body)
+		}
+
+		var envelope struct {
+			Data mcpServerResponseForTest `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if envelope.Data.DiscoveryError != nil {
+			t.Fatalf("discovery_error = %q, want nil", *envelope.Data.DiscoveryError)
+		}
+		// validateCACertField stores the CANONICAL re-encoding (security
+		// review finding, #928), not the operator's original bytes. For a
+		// single certificate built by testutil.NewTestCA, the canonical
+		// re-encoding is byte-identical to ca.PEM (both are
+		// pem.EncodeToMemory of the same raw DER), so the comparison is
+		// exact, not trimmed.
+		if envelope.Data.CACertPEM == nil || *envelope.Data.CACertPEM != ca.PEM {
+			t.Errorf("ca_cert_pem = %v, want the canonical PEM read back", envelope.Data.CACertPEM)
+		}
+		if len(envelope.Data.CACertificates) != 1 {
+			t.Fatalf("ca_certificates length = %d, want 1", len(envelope.Data.CACertificates))
+		}
+		wantFingerprint := sha256Hex(ca.Cert.Raw)
+		if envelope.Data.CACertificates[0].SHA256Fingerprint != wantFingerprint {
+			t.Errorf("ca_certificates[0].sha256_fingerprint = %q, want %q",
+				envelope.Data.CACertificates[0].SHA256Fingerprint, wantFingerprint)
+		}
+	})
+}
+
+// sha256Hex is the same fingerprint format mcp.CACertInfo.SHA256Fingerprint
+// uses: lowercase hex SHA-256, no colons.
+func sha256Hex(der []byte) string {
+	sum := sha256.Sum256(der)
+	return hex.EncodeToString(sum[:])
+}
+
+// TestMCPServerCACert_Update covers issue #928's PUT /servers/:id
+// absent/""/value semantics.
+func TestMCPServerCACert_Update(t *testing.T) {
+	t.Run("absent preserves the existing pin", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		ca := testutil.NewTestCA(t)
+		serverID := insertTestMCPServerWithCACert(t, store, "srv1", "https://example.invalid", &ca.PEM)
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()))
+
+		body := `{"name":"srv1-renamed","url":"https://example.invalid"}`
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/servers/"+serverID, strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), serverID)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if after.CaCertPem == nil || *after.CaCertPem != ca.PEM {
+			t.Errorf("ca_cert_pem = %v, want it preserved across an update that omits the field", after.CaCertPem)
+		}
+	})
+
+	t.Run(`"" clears the pin`, func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		ca := testutil.NewTestCA(t)
+		serverID := insertTestMCPServerWithCACert(t, store, "srv1", "https://example.invalid", &ca.PEM)
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()))
+
+		body := `{"name":"srv1","url":"https://example.invalid","ca_cert_pem":""}`
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/servers/"+serverID, strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		}
+
+		var envelope struct {
+			Data mcpServerResponseForTest `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if envelope.Data.CACertPEM != nil {
+			t.Errorf("ca_cert_pem = %q, want nil after clearing", *envelope.Data.CACertPEM)
+		}
+		if len(envelope.Data.CACertificates) != 0 {
+			t.Errorf("ca_certificates = %v, want empty after clearing", envelope.Data.CACertificates)
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), serverID)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if after.CaCertPem != nil {
+			t.Errorf("stored ca_cert_pem = %q, want NULL after clearing", *after.CaCertPem)
+		}
+	})
+
+	t.Run("a new PEM replaces the old one", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		oldCA := testutil.NewTestCA(t)
+		newCA := testutil.NewTestCA(t)
+		serverID := insertTestMCPServerWithCACert(t, store, "srv1", "https://example.invalid", &oldCA.PEM)
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()))
+
+		body, _ := json.Marshal(map[string]string{
+			"name":        "srv1",
+			"url":         "https://example.invalid",
+			"ca_cert_pem": newCA.PEM,
+		})
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/servers/"+serverID, bytes.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), serverID)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if after.CaCertPem == nil || *after.CaCertPem != newCA.PEM {
+			t.Errorf("ca_cert_pem = %v, want the new canonical PEM", after.CaCertPem)
+		}
+	})
+
+	t.Run("an invalid PEM is a 400 and leaves the row unchanged", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		ca := testutil.NewTestCA(t)
+		serverID := insertTestMCPServerWithCACert(t, store, "srv1", "https://example.invalid", &ca.PEM)
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()))
+
+		body, _ := json.Marshal(map[string]string{
+			"name":        "srv1",
+			"url":         "https://example.invalid",
+			"ca_cert_pem": "not a certificate",
+		})
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/servers/"+serverID, bytes.NewReader(body)))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), serverID)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if after.CaCertPem == nil || *after.CaCertPem != ca.PEM {
+			t.Errorf("ca_cert_pem = %v, want it unchanged after a rejected update", after.CaCertPem)
+		}
+	})
+
+	t.Run("a managed row refuses with 409 even when ca_cert_pem is set", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		seedManagedServer(t, store)
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()))
+
+		body, _ := json.Marshal(map[string]string{
+			"name":        "slack-main",
+			"url":         "https://elsewhere.example.com/mcp",
+			"ca_cert_pem": testutil.NewTestCA(t).PEM,
+		})
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, withAdminUser(httptest.NewRequest(http.MethodPut, "/servers/srv-managed", bytes.NewReader(body))))
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("status = %d, want 409; body = %s", rec.Code, rec.Body.String())
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), "srv-managed")
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if after.CaCertPem != nil {
+			t.Error("a ca_cert_pem was written to a managed endpoint")
+		}
+	})
+}
+
+// TestHumanizeMCPError_TLS verifies that a *mcp.TLSVerificationError wrapped
+// inside a *url.Error (the shape net/http actually produces) is diagnosed by
+// its own message, not flattened to the generic "Could not reach server" the
+// *url.Error branch would otherwise produce.
+func TestHumanizeMCPError_TLS(t *testing.T) {
+	tlsErr := &mcp.TLSVerificationError{
+		Host:   "example.com:443",
+		Reason: "the server's certificate is signed by an unknown authority — if this server uses a private CA, add its CA certificate (PEM) to this MCP server",
+	}
+	wrapped := &url.Error{Op: "Post", URL: "https://example.com/mcp", Err: tlsErr}
+
+	got := api.HumanizeMCPError(wrapped)
+	if got != tlsErr.Error() {
+		t.Errorf("HumanizeMCPError(wrapped TLSVerificationError) = %q, want %q", got, tlsErr.Error())
+	}
+	if strings.Contains(got, "Could not reach server") {
+		t.Error("TLS verification failure must not flatten to the generic unreachable-server message")
 	}
 }

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/x509"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -91,6 +92,15 @@ func (p authHeaderPayload) toAuthHeader() mcp.AuthHeader {
 	return mcp.AuthHeader{Name: p.Key, Value: p.Value}
 }
 
+// caCertificateResponse summarizes one certificate parsed from a stored
+// ca_cert_pem, so the operator can confirm they pinned the CA they intended
+// to without having to eyeball raw PEM bytes (issue #928).
+type caCertificateResponse struct {
+	Subject           string `json:"subject"`
+	SHA256Fingerprint string `json:"sha256_fingerprint"`
+	NotAfter          string `json:"not_after"` // RFC3339 UTC
+}
+
 type mcpServerResponse struct {
 	ID               string   `json:"id"`
 	Name             string   `json:"name"`
@@ -101,6 +111,15 @@ type mcpServerResponse struct {
 	AuthHeaderKeys   []string `json:"auth_header_keys"` // sorted header names; never includes values
 	IsArcadeGateway  bool     `json:"is_arcade_gateway"`
 	ProtocolVersion  *string  `json:"protocol_version"` // negotiated MCP revision pinned at probe time; null = never probed
+
+	// CACertPEM is the full, unredacted PEM (nil when no CA is pinned). Unlike
+	// AuthHeaderKeys above, this is not a secret — it is a public certificate
+	// an operator must be able to read back in full to verify what they
+	// pinned (issue #928; deliberately not the ADR-039 write-only shape).
+	CACertPEM *string `json:"ca_cert_pem"`
+	// CACertificates is the parsed summary of CACertPEM, always non-nil (an
+	// empty slice when no CA is pinned or the stored PEM fails to parse).
+	CACertificates []caCertificateResponse `json:"ca_certificates"`
 
 	// TrustTier is "managed" for a plugin instance's endpoint and "external"
 	// for an operator-registered server (ADR-053, #819). It is derived from
@@ -166,6 +185,23 @@ func (h *MCPHandler) serverToResponse(s db.McpServer) mcpServerResponse {
 		}
 	}
 
+	certs := make([]caCertificateResponse, 0)
+	if s.CaCertPem != nil && strings.TrimSpace(*s.CaCertPem) != "" {
+		infos, _, err := mcp.ParseCACertBundle(*s.CaCertPem)
+		if err != nil {
+			slog.Warn("failed to parse stored mcp server CA certificate for response",
+				"server_id", s.ID, "err", err)
+		} else {
+			for _, info := range infos {
+				certs = append(certs, caCertificateResponse{
+					Subject:           info.Subject,
+					SHA256Fingerprint: info.SHA256Fingerprint,
+					NotAfter:          info.NotAfter.Format(time.RFC3339),
+				})
+			}
+		}
+	}
+
 	return mcpServerResponse{
 		ID:               s.ID,
 		Name:             s.Name,
@@ -176,6 +212,8 @@ func (h *MCPHandler) serverToResponse(s db.McpServer) mcpServerResponse {
 		AuthHeaderKeys:   keys,
 		IsArcadeGateway:  arcade.IsArcadeGateway(s.Url, keys),
 		ProtocolVersion:  s.ProtocolVersion,
+		CACertPEM:        s.CaCertPem,
+		CACertificates:   certs,
 		TrustTier:        string(mcp.TrustTierOf(s)),
 		PluginInstanceID: s.PluginInstanceID,
 		Editable:         !mcp.IsManaged(s),
@@ -246,6 +284,7 @@ func (h *MCPHandler) TestConnection(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		URL         string              `json:"url"`
 		AuthHeaders []authHeaderPayload `json:"auth_headers"`
+		CACertPEM   *string             `json:"ca_cert_pem"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
@@ -263,9 +302,14 @@ func (h *MCPHandler) TestConnection(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, status, msg, "")
 		return
 	}
+	_, caPool, status, msg, detail := validateCACertField(body.URL, body.CACertPEM)
+	if status != 0 {
+		httputil.WriteError(w, status, msg, detail)
+		return
+	}
 
 	// Build throwaway client — never stored in h.registry or h.store.
-	clientOpts := make([]mcp.ClientOption, 0, 1)
+	clientOpts := make([]mcp.ClientOption, 0, 2)
 	if len(body.AuthHeaders) > 0 {
 		headers := make([]mcp.AuthHeader, len(body.AuthHeaders))
 		for i, p := range body.AuthHeaders {
@@ -273,7 +317,11 @@ func (h *MCPHandler) TestConnection(w http.ResponseWriter, r *http.Request) {
 		}
 		clientOpts = append(clientOpts, mcp.WithAuthHeaders(headers))
 	}
+	if caPool != nil {
+		clientOpts = append(clientOpts, mcp.WithRootCAs(caPool))
+	}
 	client := mcp.NewClient(body.URL, clientOpts...)
+	defer client.Close()
 
 	// 5-second deadline governs the entire handshake; no separate client timeout needed.
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -342,6 +390,7 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Name        string              `json:"name"`
 		URL         string              `json:"url"`
 		AuthHeaders []authHeaderPayload `json:"auth_headers"`
+		CACertPEM   *string             `json:"ca_cert_pem"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
@@ -354,6 +403,11 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := mcp.ValidateServerURL(r.Context(), body.URL); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid url", err.Error())
+		return
+	}
+	normalizedCACertPEM, _, status, msg, detail := validateCACertField(body.URL, body.CACertPEM)
+	if status != 0 {
+		httputil.WriteError(w, status, msg, detail)
 		return
 	}
 
@@ -397,7 +451,7 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// protocol-probe failure must NOT populate discoveryError — that field
 	// is about tools and is surfaced in the 201 body.
 	var pinnedVersion *string
-	if res, err := h.registry.ProbeProtocol(probeCtx, body.Name, body.URL, ciphertext); err != nil {
+	if res, err := h.registry.ProbeProtocol(probeCtx, body.Name, body.URL, ciphertext, normalizedCACertPEM); err != nil {
 		slog.Warn("MCP protocol probe failed on server create", "server_name", body.Name, "err", err)
 	} else {
 		v := res.Version
@@ -411,7 +465,7 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 		probedTools    []mcp.DiscoveredTool
 		discoveryError *string
 	)
-	probed, probeErr := h.registry.ProbeTools(probeCtx, body.Name, body.URL, ciphertext)
+	probed, probeErr := h.registry.ProbeTools(probeCtx, body.Name, body.URL, ciphertext, normalizedCACertPEM)
 	if probeErr != nil {
 		slog.Warn("MCP pre-flight probe failed on server create", "server_name", body.Name, "err", probeErr)
 		errStr := probeErr.Error()
@@ -453,6 +507,7 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Url:                  body.URL,
 		CreatedAt:            now,
 		AuthHeadersEncrypted: ciphertext,
+		CaCertPem:            normalizedCACertPEM,
 	})
 	if err != nil {
 		if h.arbiter != nil {
@@ -590,8 +645,16 @@ func (h *MCPHandler) Delete(w http.ResponseWriter, r *http.Request) {
 }
 
 // Update handles PUT /api/v1/mcp/servers/{id}.
-// Updates the server's name and url only. Auth headers are managed separately
-// via PUT/DELETE /api/v1/mcp/servers/:id/headers/:name (ADR-039).
+// Updates the server's name, url, and optional ca_cert_pem. Auth headers are
+// managed separately via PUT/DELETE /api/v1/mcp/servers/:id/headers/:name
+// (ADR-039).
+//
+// ca_cert_pem is pointer-typed with absent/""/value semantics (issue #928):
+// absent leaves the existing pin unchanged (current clients send only
+// {name,url} and must not wipe it), "" clears it, and any other value
+// replaces it after full validation (structural parse + expiry). Unlike the
+// ADR-039 auth headers, this value is public and is returned in full on every
+// read — never write-only/redacted.
 //
 // Rename refreshes the cross-source tool-namespace arbiter (#578). A server's
 // tool dot-names are prefixed with its name ("<name>.<tool>"), so renaming
@@ -605,6 +668,11 @@ func (h *MCPHandler) Update(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name string `json:"name"`
 		URL  string `json:"url"`
+		// CACertPEM is pointer-typed so absent/""/value are distinguishable:
+		// absent keeps the existing pin unchanged, "" clears it, and any
+		// other value replaces it after validation. See the resolution logic
+		// below for why absent does not even re-validate the inherited value.
+		CACertPEM *string `json:"ca_cert_pem"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
@@ -633,6 +701,43 @@ func (h *MCPHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	if refuseManaged(w, existing, "edit") {
 		return
+	}
+
+	// Resolve ca_cert_pem's absent/""/value semantics. Current clients send
+	// only {name,url} and must never wipe an existing pin, which is why the
+	// absent case inherits existing.CaCertPem VERBATIM — no re-parse, no
+	// expiry re-check. Re-validating an inherited value on every unrelated
+	// edit (e.g. a rename) would mean a pin an operator configured while
+	// valid silently starts 400ing their next edit once its CA's NotAfter
+	// passes, even though nothing about the pin itself changed.
+	var resolvedCACertPEM *string
+	switch {
+	case body.CACertPEM == nil:
+		resolvedCACertPEM = existing.CaCertPem
+	case strings.TrimSpace(*body.CACertPEM) == "":
+		resolvedCACertPEM = nil
+	default:
+		trimmed := strings.TrimSpace(*body.CACertPEM)
+		canonical, _, err := mcp.ValidateCACertPEM(trimmed)
+		if err != nil {
+			httputil.WriteError(w, http.StatusBadRequest, "invalid ca_cert_pem", err.Error())
+			return
+		}
+		// Store the canonical re-encoding, not the operator's original
+		// bytes — see mcp.ValidateCACertPEM's doc (security review finding,
+		// #928).
+		resolvedCACertPEM = &canonical
+	}
+	// Scheme compatibility is checked against the RESOLVED value, not just a
+	// freshly-supplied one: switching url to http while a CA pin (inherited
+	// or new) is still set is a misconfiguration worth a 400, the same as on
+	// Create.
+	if resolvedCACertPEM != nil && strings.TrimSpace(*resolvedCACertPEM) != "" {
+		u, err := url.Parse(body.URL)
+		if err != nil || !strings.EqualFold(u.Scheme, "https") {
+			httputil.WriteError(w, http.StatusBadRequest, "ca_cert_pem requires an https url", "")
+			return
+		}
 	}
 
 	renamed := h.arbiter != nil && body.Name != existing.Name
@@ -698,9 +803,10 @@ func (h *MCPHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updated, err := h.store.UpdateMCPServer(r.Context(), db.UpdateMCPServerParams{
-		Name: body.Name,
-		Url:  body.URL,
-		ID:   id,
+		Name:      body.Name,
+		Url:       body.URL,
+		CaCertPem: resolvedCACertPEM,
+		ID:        id,
 	})
 	if err != nil {
 		// The DB write failed, so the name did not change. Release the new-name
@@ -815,6 +921,53 @@ func validateHeaderPayloadNames(payloads []authHeaderPayload) (status int, messa
 		}
 	}
 	return 0, ""
+}
+
+// validateCACertField runs the full write-path CA validation for a
+// caller-supplied ca_cert_pem value: structural parse plus expiry check
+// (mcp.ValidateCACertPEM), and scheme compatibility against urlStr (a
+// non-empty CA on a non-https URL is a pin that does nothing, which is a
+// misconfiguration worth naming rather than silently ignoring).
+//
+// pemField nil, or non-nil but empty/whitespace-only after trimming,
+// normalizes to a nil result with no validation performed — the caller is
+// responsible for treating that as "clear" vs. "leave unchanged" as
+// appropriate for the endpoint (Create has no "unchanged" state; Update
+// does, and resolves that distinction before ever calling this function —
+// see MCPHandler.Update).
+//
+// normalized is the CANONICAL re-encoding mcp.ValidateCACertPEM returns, not
+// the operator's original bytes — see that function's doc for why storing
+// anything else would let bytes that merely survived parsing travel to disk
+// and back out to an auditor unchanged (security review finding, #928).
+//
+// pool is returned alongside normalized so Create and TestConnection do not
+// need a second mcp.ParseCACertBundle call just to build the client option;
+// it is nil whenever normalized is nil, and nil on any validation failure.
+func validateCACertField(urlStr string, pemField *string) (normalized *string, pool *x509.CertPool, status int, msg, detail string) {
+	if pemField == nil {
+		return nil, nil, 0, "", ""
+	}
+	trimmed := strings.TrimSpace(*pemField)
+	if trimmed == "" {
+		return nil, nil, 0, "", ""
+	}
+
+	u, err := url.Parse(urlStr)
+	if err != nil || !strings.EqualFold(u.Scheme, "https") {
+		return nil, nil, http.StatusBadRequest, "ca_cert_pem requires an https url", ""
+	}
+
+	canonical, _, err := mcp.ValidateCACertPEM(trimmed)
+	if err != nil {
+		return nil, nil, http.StatusBadRequest, "invalid ca_cert_pem", err.Error()
+	}
+	_, builtPool, err := mcp.ParseCACertBundle(canonical)
+	if err != nil {
+		return nil, nil, http.StatusBadRequest, "invalid ca_cert_pem", err.Error()
+	}
+
+	return &canonical, builtPool, 0, "", ""
 }
 
 // withMutatedHeaders decrypts the stored auth headers for serverID, applies
@@ -1260,6 +1413,15 @@ func humanizeMCPError(err error) string {
 	}
 	if errors.Is(err, context.Canceled) {
 		return "Connection canceled"
+	}
+
+	// Checked before *net.OpError/*url.Error below: a TLS verification
+	// failure often wraps one of those, and this more specific diagnosis
+	// must win so a misconfigured CA names itself as the cause rather than
+	// flattening to "Could not reach server" (issue #928).
+	var tlsErr *mcp.TLSVerificationError
+	if errors.As(err, &tlsErr) {
+		return tlsErr.Error()
 	}
 
 	var opErr *net.OpError

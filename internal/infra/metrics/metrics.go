@@ -91,12 +91,13 @@ const (
 // Gleipnir metrics. The set is fixed by the metrics spec to keep cardinality
 // bounded — do not add values without updating the spec.
 const (
-	ErrorTypeTimeout     = "timeout"
-	ErrorTypeConnection  = "connection"
-	ErrorTypeRateLimit   = "rate_limit"
-	ErrorTypeAuth        = "auth"
-	ErrorTypeServerError = "server_error"
-	ErrorTypeProtocol    = "protocol"
+	ErrorTypeTimeout         = "timeout"
+	ErrorTypeConnection      = "connection"
+	ErrorTypeRateLimit       = "rate_limit"
+	ErrorTypeAuth            = "auth"
+	ErrorTypeServerError     = "server_error"
+	ErrorTypeProtocol        = "protocol"
+	ErrorTypeTLSVerification = "tls_verification"
 )
 
 // reason label values enumerate the categories of drop/reject reasons used

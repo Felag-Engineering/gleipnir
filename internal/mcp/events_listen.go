@@ -209,7 +209,7 @@ func (c *Client) ListenEvents(ctx context.Context, p EventsListenParams) (*Event
 
 	resp, err := c.streamHTTPClient().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("post %s: %w", methodEventsListen, err)
+		return nil, fmt.Errorf("post %s: %w", methodEventsListen, wrapTLSVerificationError(req.URL.Host, c.pinnedCA, err))
 	}
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
