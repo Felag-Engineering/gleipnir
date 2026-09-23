@@ -144,6 +144,10 @@
   grid-template-columns: 1fr;
 }
 
+.panesStacked {
+  grid-template-columns: 1fr;
+}
+
 .pane {
   padding: var(--space-3) var(--space-4);
   min-width: 0;
@@ -169,6 +173,37 @@
 
 .paneOutput {
   border-left: 1px solid var(--border-subtle);
+}
+
+.paneOutputStacked {
+  border-left: none;
+  border-top: 1px solid var(--border-subtle);
+  max-height: none;
+}
+
+.paneLabelRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-2);
+}
+
+.paneLabelRow .paneLabel {
+  margin-bottom: 0;
+}
+
+.rawToggle {
+  background: none;
+  border: none;
+  padding: var(--space-1) var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.rawToggle:hover {
+  text-decoration: underline;
 }
 
 .paneError {

@@ -1,6 +1,11 @@
+import { useState } from 'react'
 import { Check, X } from 'lucide-react'
 import { CollapsibleJSON } from '@/components/CollapsibleJSON'
+import { formatDurationMs } from '@/utils/format'
 import { ApprovalActions } from './ApprovalActions'
+import { FanOutResultView } from './FanOutResultView'
+import { parseFanOutResult } from './fanOutResult'
+import type { FanOutResult } from './fanOutResult'
 import { parseToolOutput } from './toolOutput'
 import type { ToolBlockData } from './types'
 import styles from './ToolBlock.module.css'
@@ -9,12 +14,6 @@ interface Props {
   block: ToolBlockData
   runId: string
   runStatus: string
-}
-
-function fmtDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
-  return `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`
 }
 
 type BlockStatus = 'success' | 'error' | 'approval_pending' | 'denied' | 'pending'
@@ -32,8 +31,42 @@ function deriveStatus(block: ToolBlockData, runStatus: string): BlockStatus {
   return 'pending'
 }
 
+function renderRawOutput(value: unknown) {
+  return typeof value === 'string'
+    ? <pre className={styles.outputText}>{value}</pre>
+    : <CollapsibleJSON value={value} />
+}
+
+// renderOutputBody is shared by the success and error output panes: the label
+// row (with a raw/table toggle when a fan-out result was recognized) plus the
+// body itself. Both panes decide their own wrapping div and any pane-specific
+// classes/comments; only this label+body pairing is common between them.
+function renderOutputBody(
+  fanOut: FanOutResult | null,
+  outputValue: unknown,
+  showRaw: boolean,
+  onToggleRaw: () => void,
+) {
+  return (
+    <>
+      {fanOut ? (
+        <div className={styles.paneLabelRow}>
+          <span className={styles.paneLabel}>Output</span>
+          <button type="button" className={styles.rawToggle} onClick={onToggleRaw}>
+            {showRaw ? 'Show table' : 'Show raw output'}
+          </button>
+        </div>
+      ) : (
+        <div className={styles.paneLabel}>Output</div>
+      )}
+      {fanOut && !showRaw ? <FanOutResultView result={fanOut} /> : renderRawOutput(outputValue)}
+    </>
+  )
+}
+
 export function ToolBlock({ block, runId, runStatus }: Props) {
   const status = deriveStatus(block, runStatus)
+  const [showRaw, setShowRaw] = useState(false)
 
   const toolName = block.call?.content.tool_name ?? block.approval?.content.tool ?? 'unknown'
   const serverId = block.call?.content.server_id
@@ -45,7 +78,7 @@ export function ToolBlock({ block, runId, runStatus }: Props) {
     const resultTime = new Date(block.result.raw.created_at).getTime()
     const ms = resultTime - callTime
     if (!isNaN(ms) && ms >= 0) {
-      duration = fmtDuration(ms)
+      duration = formatDurationMs(ms)
     }
   }
 
@@ -57,6 +90,7 @@ export function ToolBlock({ block, runId, runStatus }: Props) {
   const outputValue: unknown = block.result
     ? parseToolOutput(block.result.content.output)
     : null
+  const fanOut = outputValue === null ? null : parseFanOutResult(outputValue)
 
   const dotClass = {
     success: styles.dotSuccess,
@@ -76,6 +110,14 @@ export function ToolBlock({ block, runId, runStatus }: Props) {
     .join(' ')
 
   const hasOutputPane = status !== 'pending'
+
+  const panesClass = [
+    styles.panes,
+    hasOutputPane ? '' : styles.panesSingle,
+    fanOut ? styles.panesStacked : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
 
   return (
     <div className={blockClass}>
@@ -100,7 +142,7 @@ export function ToolBlock({ block, runId, runStatus }: Props) {
         </div>
       </div>
 
-      <div className={`${styles.panes} ${hasOutputPane ? '' : styles.panesSingle}`}>
+      <div className={panesClass}>
         {/* Left pane: INPUT */}
         <div className={styles.pane}>
           <div className={styles.paneLabel}>Input</div>
@@ -112,20 +154,16 @@ export function ToolBlock({ block, runId, runStatus }: Props) {
 
         {/* Right pane: OUTPUT (conditional on status) */}
         {status === 'success' && (
-          <div className={`${styles.pane} ${styles.paneOutput}`}>
-            <div className={styles.paneLabel}>Output</div>
-            {typeof outputValue === 'string'
-              ? <pre className={styles.outputText}>{outputValue}</pre>
-              : <CollapsibleJSON value={outputValue} />}
+          <div className={`${styles.pane} ${styles.paneOutput} ${fanOut ? styles.paneOutputStacked : ''}`}>
+            {renderOutputBody(fanOut, outputValue, showRaw, () => setShowRaw((v) => !v))}
           </div>
         )}
 
         {status === 'error' && (
-          <div className={`${styles.pane} ${styles.paneOutput} ${styles.paneError}`}>
-            <div className={styles.paneLabel}>Output</div>
-            {typeof outputValue === 'string'
-              ? <pre className={styles.outputText}>{outputValue}</pre>
-              : <CollapsibleJSON value={outputValue} />}
+          <div className={`${styles.pane} ${styles.paneOutput} ${styles.paneError} ${fanOut ? styles.paneOutputStacked : ''}`}>
+            {/* Defensive: Relay renders fan-out results as successful tool_result
+                steps, so this branch should be unreachable in practice. */}
+            {renderOutputBody(fanOut, outputValue, showRaw, () => setShowRaw((v) => !v))}
           </div>
         )}
 
