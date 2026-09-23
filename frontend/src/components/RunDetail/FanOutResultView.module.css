@@ -1,0 +1,145 @@
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  font-size: var(--text-base);
+}
+
+.total {
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.chip {
+  composes: badgePill from '../../styles/badges.module.css';
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.jobId {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.table th,
+.table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  text-align: left;
+}
+
+.table th {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+
+.node {
+  font-family: var(--font-mono);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-md);
+}
+
+.toneOk {
+  color: var(--color-green);
+  background: color-mix(in srgb, var(--color-green) 12%, transparent);
+}
+
+.toneFailed {
+  color: var(--color-red);
+  background: color-mix(in srgb, var(--color-red) 12%, transparent);
+}
+
+.toneNotRun {
+  color: var(--color-amber);
+  background: color-mix(in srgb, var(--color-amber) 12%, transparent);
+}
+
+.toneUnknown {
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+}
+
+/* denied_by_policy is not a failure — it is the system working — so it gets
+   the one unused high-contrast hue (--color-info) and an outline rather than
+   red or amber, which are already spoken for by failed/not-run. */
+.tonePolicy {
+  color: var(--color-info);
+  background: color-mix(in srgb, var(--color-info) 14%, transparent);
+  border: 1px solid var(--color-info);
+  font-weight: var(--weight-semibold);
+}
+
+.rowPolicy td:first-child {
+  box-shadow: inset 4px 0 0 var(--color-info);
+}
+
+.expandBtn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-second);
+}
+
+.preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.detailRow td {
+  background: var(--bg-elevated);
+  padding: var(--space-3) var(--space-4);
+}
+
+.stream {
+  margin: 0 0 var(--space-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  max-height: 240px;
+  overflow: auto;
+}
+
+.streamLabel {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.truncNote {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.empty {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  font-style: italic;
+}

@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import '@/tokens.css'
 import type { ApiRunStep } from '@/api/types'
 import { queryKeys } from '@/hooks/queryKeys'
+import { asToolOutput, MIXED_24 } from './fanOutFixtures'
 import { parseStep } from './types'
 import type { ToolBlockData } from './types'
 import { ToolBlock } from './ToolBlock'
@@ -244,6 +245,35 @@ export const OutputPlainText: Story = {
         content: JSON.stringify({
           tool_name: 'get_weather',
           output: 'Weather in London: Sunny, 22°C',
+          is_error: false,
+        }),
+      })) as ToolBlockData['result'],
+    } satisfies ToolBlockData,
+    runId: 'run-1',
+    runStatus: 'complete',
+  },
+}
+
+export const FanOutResult: Story = {
+  name: 'Output: fan-out result (Relay run_operation)',
+  args: {
+    block: {
+      approval: null,
+      call: parseStep(makeRaw({
+        id: 'step-call',
+        type: 'tool_call',
+        content: JSON.stringify({
+          tool_name: 'relay.run_operation',
+          server_id: 'relay-server',
+          input: { operation: 'restart_service', target: 'all-nodes' },
+        }),
+      })) as ToolBlockData['call'],
+      result: parseStep(makeRaw({
+        id: 'step-result',
+        type: 'tool_result',
+        content: JSON.stringify({
+          tool_name: 'relay.run_operation',
+          output: asToolOutput(MIXED_24),
           is_error: false,
         }),
       })) as ToolBlockData['result'],
