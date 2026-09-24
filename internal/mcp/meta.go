@@ -27,10 +27,16 @@ const (
 // hard-invariant violation, not a feature (TestClientCapabilities_HasNoSamplingKnob
 // fails if a second field is ever added).
 type ClientCapabilities struct {
-	// Elicitation declares the MCP `elicitation` client capability. Set only where
-	// the policy grants it; the HITL milestone (ADR-055) is what will flip it. The
-	// form/url mode sub-fields of the capability object are deliberately not
-	// modeled yet — see Key decisions.
+	// Elicitation declares the MCP `elicitation` client capability. Declared
+	// unconditionally on every server pinned to 2026-07-28 -- registry.go's
+	// ResolveForPolicy sets it on every ResolvedTool it builds, with no
+	// per-policy opt-in (ADR-061): a policy author cannot predict which
+	// granted tool might someday pause on an MRTR input_required, and
+	// declaring the capability costs nothing on a call path that never uses
+	// it. ResolveToolByName (the poll trigger engine) still leaves this at its
+	// zero value -- poll invocations never pause a run for operator input.
+	// The form/url mode sub-fields of the capability object are deliberately
+	// not modeled yet — see Key decisions.
 	Elicitation bool
 }
 

@@ -122,10 +122,17 @@ func run(cfg config.Config) error {
 	// Tool-initiated input requests (ADR-055) share the feedback scan interval:
 	// both measure the same thing — how long a human has been asked to wait —
 	// so a second knob would be a setting nobody could reason about separately.
+	//
+	// WithOnTerminated records a decision (ADR-055 §6.6) for every claim THIS
+	// scanner wins — the restart backstop: a host that restarted while a run
+	// was paused has no in-process Route call left to record anything, so the
+	// scanner's own claim is the only settlement event that will ever happen
+	// for that row (ADR-061).
 	toolInputScanner := timeout.NewToolInputScanner(
 		store,
 		cfg.FeedbackScanInterval,
 		timeout.WithPublisher(broadcaster),
+		timeout.WithOnTerminated(agent.NewToolInputTimeoutDecisionHook(store.Queries())),
 	)
 	toolInputScanner.Start(ctx)
 

@@ -23,6 +23,7 @@ import (
 	"strconv"
 
 	"github.com/felag-engineering/gleipnir/internal/mcp"
+	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/schemanorm"
 )
 
@@ -41,15 +42,25 @@ import (
 //     as a difference would send the human back for no reason. Normalization
 //     is the one transformation that is safe to apply here, on schemanorm's
 //     own argument: it reorders keys and changes nothing else.
-//   - The request COUNT and ORDER. MRTR correlates answers to requests by
-//     array position and nothing else, so a reordered pair of requests would
-//     replay each answer onto the wrong question. Position is part of the
-//     question's identity, not an incidental detail.
+//   - The request COUNT and ORDER of requests as this package holds them.
+//     The WIRE correlates an answer to its request by server-assigned ID
+//     (ADR-061, go-sdk v1.7.0) — position on the wire means nothing. Only
+//     internal/mcp's OWN representation is position-ordered: it sorts
+//     InputRequiredResult.InputRequests by ID for deterministic decoding
+//     (inputrequired.go), and it is THAT order this function hashes. A
+//     server that renames a question's ID without changing its content
+//     re-sorts to the same position (same content, same ID-order slot in the
+//     common case) and is still the same question; a server that changes
+//     WHICH questions it bundles changes this list's order or length either
+//     way, which is what this bullet is actually pinning.
 //
-// Deliberately NOT hashed: requestState (it is expected to change — a fresh
-// one is the whole point of the re-ask) and elicitationKind (derived from the
-// schema and message this function already covers; a server that flips only
-// the kind hint has not changed what it is asking a human to decide).
+// Deliberately NOT hashed: the request ID itself (a server MAY legitimately
+// mint a new ID for an identical re-ask; content is what makes two questions
+// the same, not the label the server put on them this time), requestState
+// (it is expected to change — a fresh one is the whole point of the re-ask),
+// and elicitationKind (derived from the schema and message this function
+// already covers; a server that flips only the kind hint has not changed
+// what it is asking a human to decide).
 //
 // A schema that schemanorm rejects is hashed as its raw bytes instead. That is
 // the conservative direction: an unnormalizable schema may then fail equality
@@ -97,8 +108,20 @@ func canonicalSchemaBytes(schema json.RawMessage) []byte {
 // suffering an expired-state hiccup — it is looping — and the honest response
 // is to stop rather than to keep feeding it an answer it evidently will not
 // accept. One replay per distinct question is the whole allowance.
+//
+// kind is the classification (permission/information) THIS answer settled
+// under. A replay is only ever spent when the fresh bundle's kind still
+// matches this one — a permission ask never replays at all, regardless of
+// fingerprint match (security review findings 1-3) — so the kind travels with
+// the answer, not just the content hash.
+//
+// requestID is the persisted tool_input_requests row this answer settled —
+// the ORIGINAL human decision a later replay's decision record points back to
+// (decision.Record.ReplayOfRequestID).
 type answeredQuestion struct {
 	fingerprint string
+	kind        model.ElicitationKind
+	requestID   string
 	requests    []mcp.InputRequest
 	answers     []mcp.InputResponse
 	replayed    bool
@@ -131,24 +154,46 @@ type ReplayContext struct {
 	PriorAnswers []mcp.InputResponse `json:"prior_answers"`
 
 	// Reason is a short host-authored (therefore trusted) explanation of why
-	// the operator is seeing a second prompt.
+	// the operator is seeing a second prompt: reasonQuestionChanged (the
+	// content actually differs) or reasonIdenticalReask (byte-identical, but
+	// not eligible for a silent replay — a permission ask, or an information
+	// ask whose kind flipped under an unchanged fingerprint).
 	Reason string `json:"reason"`
 }
 
-// reasonQuestionChanged is the only Reason value today. It is a constant
-// rather than an inline string so the UI can branch on it without matching
-// prose.
-const reasonQuestionChanged = "the tool re-asked a different question after your answer"
+// reasonQuestionChanged and reasonIdenticalReask are the two Reason values
+// this package produces. Constants rather than inline strings so the UI can
+// branch on them without matching prose.
+const (
+	reasonQuestionChanged = "the tool re-asked a different question after your answer"
 
-// newReplayContext builds the context attached to a re-prompt.
+	// reasonIdenticalReask fires when the fresh bundle matches the prior one
+	// byte-for-byte but is not eligible for a silent replay (security review
+	// follow-up): a permission ask never replays regardless of match, and an
+	// information ask whose classified kind flipped is treated as a new ask.
+	// Either way the operator answered this EXACT question moments ago, and
+	// needs to be told that plainly rather than seeing what looks like an
+	// unexplained duplicate.
+	reasonIdenticalReask = "identical_reask"
+)
+
+// newReplayContext builds the context attached to a re-prompt whose content
+// genuinely changed.
 func newReplayContext(prior *answeredQuestion) *ReplayContext {
+	return newReplayContextWithReason(prior, reasonQuestionChanged)
+}
+
+// newReplayContextWithReason builds the context attached to a re-prompt,
+// with an explicit reason -- used directly for reasonIdenticalReask, where
+// the content did NOT change but a silent replay was not available.
+func newReplayContextWithReason(prior *answeredQuestion, reason string) *ReplayContext {
 	if prior == nil {
 		return nil
 	}
 	return &ReplayContext{
 		PriorQuestions: toPersistedRequests(prior.requests),
 		PriorAnswers:   prior.answers,
-		Reason:         reasonQuestionChanged,
+		Reason:         reason,
 	}
 }
 

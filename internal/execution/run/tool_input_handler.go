@@ -17,6 +17,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -30,9 +31,17 @@ import (
 // ToolInputRequestResponse is the JSON shape returned for a pending
 // tool-initiated input request.
 type ToolInputRequestResponse struct {
-	ID              string              `json:"id"`
-	RunID           string              `json:"run_id"`
-	ToolName        string              `json:"tool_name"`
+	ID       string `json:"id"`
+	RunID    string `json:"run_id"`
+	ToolName string `json:"tool_name"`
+
+	// ServerName names the server that asked, so the UI can attribute the
+	// question to it rather than leaving "the tool server" unnamed (ADR-061).
+	// Resolved from row.ServerID via GetMCPServer; falls back to the tool
+	// name's dot prefix if that lookup fails, since the server that owns a
+	// tools/call is always nameable from the dot-name it was called under.
+	ServerName string `json:"server_name"`
+
 	ElicitationKind string              `json:"elicitation_kind"`
 	RequiredRole    string              `json:"required_role"`
 	ExpiresAt       string              `json:"expires_at"`
@@ -68,8 +77,11 @@ type ToolInputQuestion struct {
 }
 
 // ToolInputDecisionRequest is the body of a resolution. Responses are
-// correlated to the pending request's questions by position — MRTR carries no
-// per-question id — so the count must match exactly.
+// correlated to the pending request's questions by position, in the same
+// order GetToolInput rendered them — this is Gleipnir's OWN operator-facing
+// shape, not the wire: the retry to the server re-keys each response onto its
+// InputRequest.ID (ADR-061, agent.InputRequiredHandler.Resolve). The count
+// must match the pause's question count exactly.
 type ToolInputDecisionRequest struct {
 	Responses []ToolInputResponseItem `json:"responses"`
 }
@@ -136,6 +148,7 @@ func (h *RunsHandler) GetToolInput(w http.ResponseWriter, r *http.Request) {
 		ID:               row.ID,
 		RunID:            row.RunID,
 		ToolName:         row.ToolName,
+		ServerName:       h.toolInputServerName(ctx, row),
 		ElicitationKind:  row.ElicitationKind,
 		RequiredRole:     kind.RequiredRole().String(),
 		ExpiresAt:        row.ExpiresAt,
@@ -145,6 +158,28 @@ func (h *RunsHandler) GetToolInput(w http.ResponseWriter, r *http.Request) {
 		PriorAttempt:     prior,
 		UntrustedContent: true,
 	})
+}
+
+// toolInputServerName resolves the server name to attribute a request to
+// (ADR-061): the prompt names the server that asked, so an operator does not
+// read a bare "the tool server" for every pause regardless of who asked.
+// row.ServerID is the mcp_servers row that owns the original tools/call
+// (mcp.ResolvedTool.ServerID); a lookup failure falls back to the dot prefix
+// of row.ToolName, which is always nameable because the agent called the
+// tool under a dot-name of exactly that shape.
+func (h *RunsHandler) toolInputServerName(ctx context.Context, row db.ToolInputRequest) string {
+	srv, err := h.store.GetMCPServer(ctx, row.ServerID)
+	if err == nil {
+		return srv.Name
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		slog.Warn("GetMCPServer query failed while naming a tool input request",
+			"server_id", row.ServerID, "request_id", row.ID, "err", err)
+	}
+	if name, _, ok := strings.Cut(row.ToolName, "."); ok {
+		return name
+	}
+	return row.ToolName
 }
 
 // deadlineSourceOf reads the nullable deadline_source column as a string.
@@ -222,11 +257,17 @@ func (h *RunsHandler) SubmitToolInput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The responder identity is read from the authenticated session, never
+	// from the request body (ToolInputResponseItem accepts only action and
+	// content) -- ADR-061 asserts it to the server that asked, and neither
+	// the operator nor the model gets to set or alter who that says answered.
+	responder := agent.Responder{UserID: user.ID, Username: user.Username}
+
 	// Delivery validates the answer against the pause it claims to answer
 	// (action vocabulary, count, accept-carries-content). A rejection there is
 	// the caller's problem to fix and leaves the run paused and answerable, so
 	// it is a 400, not a 500.
-	switch err := h.manager.ResolveToolInput(runID, row.ID, string(body)); {
+	switch err := h.manager.ResolveToolInput(runID, row.ID, string(body), responder); {
 	case err == nil:
 	case errors.Is(err, ErrRunNotFound):
 		httputil.WriteError(w, http.StatusConflict, "no active tool input gate for this run", "")

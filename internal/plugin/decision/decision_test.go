@@ -239,15 +239,16 @@ func TestRecord_EachOutcomePathProducesExactlyOne(t *testing.T) {
 	store, recorder := fixture(t, "r-outcomes")
 
 	cases := []struct {
-		outcome Outcome
-		actor   string
-		link    LinkMethod
+		outcome     Outcome
+		actor       string
+		link        LinkMethod
+		replayOfReq string
 	}{
-		{OutcomeAnswered, "user-1", LinkSession},
-		{OutcomeRejected, "user-2", LinkSession},
-		{OutcomeTimeout, "", LinkNone},
-		{OutcomeCancelled, "", LinkNone},
-		{OutcomeReplayedAfterTTL, "", LinkNone},
+		{OutcomeAnswered, "user-1", LinkSession, ""},
+		{OutcomeRejected, "user-2", LinkSession, ""},
+		{OutcomeTimeout, "", LinkNone, ""},
+		{OutcomeCancelled, "", LinkNone, ""},
+		{OutcomeReplayedAfterTTL, "", LinkNone, "req-original"},
 	}
 
 	for i, tc := range cases {
@@ -256,6 +257,7 @@ func TestRecord_EachOutcomePathProducesExactlyOne(t *testing.T) {
 		rec.ActorExternalID = tc.actor
 		rec.ActorUserID = tc.actor
 		rec.LinkMethod = tc.link
+		rec.ReplayOfRequestID = tc.replayOfReq
 		if err := recorder.Record(ctx, rec); err != nil {
 			t.Fatalf("Record(%s): %v", tc.outcome, err)
 		}
@@ -447,6 +449,34 @@ func TestRecord_Validate(t *testing.T) {
 				r.ActorExternalID = ""
 				r.ActorUserID = ""
 				r.LinkMethod = LinkNone
+			},
+			wantOK: true,
+		},
+		{
+			name: "replay_of_request_id set on a non-replay outcome",
+			mutate: func(r *Record) {
+				r.ReplayOfRequestID = "req-original"
+			},
+			wantOK: false,
+		},
+		{
+			name: "a replay with no replay_of_request_id",
+			mutate: func(r *Record) {
+				r.Outcome = OutcomeReplayedAfterTTL
+				r.ActorExternalID = ""
+				r.ActorUserID = ""
+				r.LinkMethod = LinkNone
+			},
+			wantOK: false,
+		},
+		{
+			name: "a replay naming its original request is fine",
+			mutate: func(r *Record) {
+				r.Outcome = OutcomeReplayedAfterTTL
+				r.ActorExternalID = ""
+				r.ActorUserID = ""
+				r.LinkMethod = LinkNone
+				r.ReplayOfRequestID = "req-original"
 			},
 			wantOK: true,
 		},

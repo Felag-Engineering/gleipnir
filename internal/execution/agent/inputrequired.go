@@ -30,7 +30,49 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/infra/logctx"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/plugin/audience"
+	"github.com/felag-engineering/gleipnir/internal/plugin/decision"
 )
+
+// responderMetaKey is the _meta key asserting who answered an elicitation
+// (ADR-061, relay-646 §5): inputResponses[id]._meta["io.gleipnir/responder"] =
+// {username, user_id}. Set server-side only, from the authenticated session of
+// the person who answered — decodeInputResponses reads only action and
+// content from the operator's own body, so neither the operator nor the model
+// can set or alter this value. Sent to whichever server asked, with no
+// opt-in.
+const responderMetaKey = "io.gleipnir/responder"
+
+// Responder is the authenticated Gleipnir user who answered a tool-initiated
+// request, threaded from the HTTP handler's session down to the MRTR retry's
+// response _meta and to the decision record.
+type Responder struct {
+	UserID   string
+	Username string
+}
+
+// responderMetaValue is the wire shape of one responderMetaKey entry. Gate
+// names which role Gleipnir required to reach this answer — "permission" or
+// "information" — so a server can see which of its own two authorities was
+// actually enforced (security review finding 4) rather than trusting that
+// Gleipnir applied the role it asked for.
+type responderMetaValue struct {
+	Username string `json:"username"`
+	UserID   string `json:"user_id"`
+	Gate     string `json:"gate,omitempty"`
+}
+
+// responderMeta marshals r as inputResponses[id]._meta, or returns nil when r
+// is the zero value — an unidentified responder (e.g. Decline's non-production
+// call path) asserts nothing rather than an empty identity.
+func responderMeta(r Responder, gate model.ElicitationKind) (json.RawMessage, error) {
+	if r.UserID == "" {
+		return nil, nil
+	}
+	return json.Marshal(map[string]responderMetaValue{
+		responderMetaKey: {Username: r.Username, UserID: r.UserID, Gate: string(gate)},
+	})
+}
 
 // Elicitation action vocabulary. Gleipnir validates against this set before the
 // answer is handed back to the server: internal/mcp deliberately round-trips
@@ -225,6 +267,9 @@ type InputRoutingRequest struct {
 // API response, UI, channel delivery — must treat it as untrusted content, not
 // as markup and not as instructions.
 type PersistedInputRequest struct {
+	// ID is the server-assigned request id (ADR-061) this question was asked
+	// under — the correlation key for the matching answer on the retry.
+	ID              string          `json:"id"`
 	Message         string          `json:"message"`
 	RequestedSchema json.RawMessage `json:"requested_schema,omitempty"`
 	ElicitationKind string          `json:"elicitation_kind,omitempty"`
@@ -246,6 +291,7 @@ func toPersistedRequests(requests []mcp.InputRequest) []PersistedInputRequest {
 	out := make([]PersistedInputRequest, len(requests))
 	for i, r := range requests {
 		out[i] = PersistedInputRequest{
+			ID:              r.ID,
 			Message:         r.Message,
 			RequestedSchema: r.RequestedSchema,
 			ElicitationKind: r.ElicitationKind,
@@ -254,12 +300,28 @@ func toPersistedRequests(requests []mcp.InputRequest) []PersistedInputRequest {
 	return out
 }
 
-// inputWaiter is one registered wait. expected is the number of InputRequests
-// the pause is asking about, held here so Resolve can reject a mis-sized answer
-// while the run is still safely paused rather than after it has resumed.
+// inputAnswer is what a waiter's channel carries: the operator's answers,
+// correlated by ID to the pause's InputRequests, plus who answered. The
+// responder rides alongside the responses rather than only inside their
+// _meta so Route can attach it to the decision record without re-parsing
+// JSON it just built.
+type inputAnswer struct {
+	responses []mcp.InputResponse
+	responder Responder
+}
+
+// inputWaiter is one registered wait. requests is the pause's own
+// InputRequests, held here so Resolve/Decline can reject a mis-sized answer
+// while the run is still safely paused rather than after it has resumed, and
+// so each response can be stamped with the ID of the request it answers —
+// MRTR correlates by ID (ADR-061), not by position. kind is the classified
+// gate this pause required (permission or information), stamped into the
+// responder _meta's "gate" field so the asking server can see which of its
+// own two authorities Gleipnir actually enforced.
 type inputWaiter struct {
-	ch       chan []mcp.InputResponse
-	expected int
+	ch       chan inputAnswer
+	requests []mcp.InputRequest
+	kind     model.ElicitationKind
 }
 
 // InputRequiredHandler owns the tool-initiated pause lifecycle. It holds no
@@ -309,8 +371,8 @@ func NewInputRequiredHandler(audit *AuditWriter, sm *RunStateMachine, defaultTim
 // happens BEFORE the run transitions to waiting_for_feedback, so an answer that
 // arrives immediately after the transition's SSE event is never lost — the same
 // invariant the feedback path maintains.
-func (h *InputRequiredHandler) registerWaiter(requestID string, expected int) <-chan []mcp.InputResponse {
-	w := &inputWaiter{ch: make(chan []mcp.InputResponse, 1), expected: expected}
+func (h *InputRequiredHandler) registerWaiter(requestID string, requests []mcp.InputRequest, kind model.ElicitationKind) <-chan inputAnswer {
+	w := &inputWaiter{ch: make(chan inputAnswer, 1), requests: requests, kind: kind}
 	h.mu.Lock()
 	h.waiters[requestID] = w
 	h.mu.Unlock()
@@ -326,14 +388,19 @@ func (h *InputRequiredHandler) unregisterWaiter(requestID string) {
 
 // Resolve delivers an operator's answers to the waiter registered for
 // requestID. body is a JSON array of {action, content} objects, one per
-// InputRequest in the pause, correlated by position (MRTR carries no per-request
-// id).
+// InputRequest in the pause, correlated to the pause's InputRequests by
+// position in the SUBMITTED body — the same order the API rendered the
+// questions in — and re-keyed here onto each InputRequest's server-assigned
+// ID (ADR-061) before it is handed to the wire. responder is the
+// authenticated Gleipnir user who answered, asserted server-side in every
+// response's _meta — the body itself carries only action and content, so
+// neither the operator nor the model can set or alter this identity.
 //
 // Validation happens here rather than on the waiting side on purpose: a
 // malformed answer is the caller's problem to fix and leaves the run paused and
 // answerable, whereas the same check made after the handoff would fail a run
 // over a bad payload the operator could simply have resubmitted.
-func (h *InputRequiredHandler) Resolve(requestID, body string) error {
+func (h *InputRequiredHandler) Resolve(requestID, body string, responder Responder) error {
 	h.mu.Lock()
 	w, ok := h.waiters[requestID]
 	h.mu.Unlock()
@@ -341,17 +408,36 @@ func (h *InputRequiredHandler) Resolve(requestID, body string) error {
 		return ErrUnknownInputRequestID
 	}
 
-	responses, err := decodeInputResponses(body, w.expected)
+	responses, err := decodeInputResponses(body, len(w.requests))
 	if err != nil {
 		return err
 	}
-	return h.deliver(requestID, responses)
+
+	meta, err := responderMeta(responder, w.kind)
+	if err != nil {
+		return fmt.Errorf("marshaling responder identity: %w", err)
+	}
+	for i := range responses {
+		responses[i].ID = w.requests[i].ID
+		// A cancel asserts no responder identity: nobody decided anything, per
+		// the contract (security review finding 8) -- the operator abandoned
+		// the exchange rather than accepting or declining it.
+		if responses[i].Action != inputActionCancel {
+			responses[i].Meta = meta
+		}
+	}
+	return h.deliver(requestID, inputAnswer{responses: responses, responder: responder})
 }
 
 // Decline resolves the pause by declining every request in it — the deny path.
 // The declines are still handed back to the server: MRTR treats a refusal as a
 // legitimate answer, and the server decides whether that means an error result,
 // a partial result, or a different question.
+//
+// It has no production caller today (the API's deny path goes through Resolve
+// with action "decline" instead, so the responder identity is asserted the
+// same way an accept is); kept for tests and as the shape a future
+// host-initiated decline would use.
 func (h *InputRequiredHandler) Decline(requestID string) error {
 	h.mu.Lock()
 	w, ok := h.waiters[requestID]
@@ -360,18 +446,18 @@ func (h *InputRequiredHandler) Decline(requestID string) error {
 		return ErrUnknownInputRequestID
 	}
 
-	responses := make([]mcp.InputResponse, w.expected)
+	responses := make([]mcp.InputResponse, len(w.requests))
 	for i := range responses {
-		responses[i] = mcp.InputResponse{Action: inputActionDecline}
+		responses[i] = mcp.InputResponse{ID: w.requests[i].ID, Action: inputActionDecline}
 	}
-	return h.deliver(requestID, responses)
+	return h.deliver(requestID, inputAnswer{responses: responses})
 }
 
-// deliver hands validated responses to the registered waiter and drops the
+// deliver hands a validated answer to the registered waiter and drops the
 // registration so a second answer cannot arrive. The send is outside the lock:
 // the channel is buffered (cap 1) with a single reader, so it never blocks, and
 // holding the lock across it would serialize every Resolve call.
-func (h *InputRequiredHandler) deliver(requestID string, responses []mcp.InputResponse) error {
+func (h *InputRequiredHandler) deliver(requestID string, answer inputAnswer) error {
 	h.mu.Lock()
 	w, ok := h.waiters[requestID]
 	if ok {
@@ -381,7 +467,7 @@ func (h *InputRequiredHandler) deliver(requestID string, responses []mcp.InputRe
 	if !ok {
 		return ErrUnknownInputRequestID
 	}
-	w.ch <- responses
+	w.ch <- answer
 	return nil
 }
 
@@ -393,7 +479,7 @@ func (h *InputRequiredHandler) deliver(requestID string, responses []mcp.InputRe
 // a host that dies mid-wait leaves a pending row an operator answer can still be
 // applied against. Full run resurrection is explicitly not claimed — the record
 // surviving is.
-func (h *InputRequiredHandler) Route(ctx context.Context, req InputRoutingRequest) ([]mcp.InputResponse, error) {
+func (h *InputRequiredHandler) Route(ctx context.Context, req InputRoutingRequest) ([]mcp.InputResponse, string, error) {
 	requestID := model.NewULID()
 
 	// The budget refusal is returned unwrapped, NOT inside an
@@ -402,7 +488,7 @@ func (h *InputRequiredHandler) Route(ctx context.Context, req InputRoutingReques
 	// alive instead of treating it like an unanswered operator wait.
 	if h.budget != nil {
 		if err := h.budget.Check(ctx, req.RunID, len(req.Result.InputRequests)); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 	}
 
@@ -434,28 +520,30 @@ func (h *InputRequiredHandler) Route(ctx context.Context, req InputRoutingReques
 	}
 
 	if err := checkPersistedSize(req.Result, requestID); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	callArgs, err := json.Marshal(req.Input)
 	if err != nil {
-		return nil, fmt.Errorf("marshaling call args for %s: %w", req.ToolName, err)
+		return nil, "", fmt.Errorf("marshaling call args for %s: %w", req.ToolName, err)
 	}
 	requestPayload, err := json.Marshal(toPersistedRequests(req.Result.InputRequests))
 	if err != nil {
-		return nil, fmt.Errorf("marshaling input requests for %s: %w", req.ToolName, err)
+		return nil, "", fmt.Errorf("marshaling input requests for %s: %w", req.ToolName, err)
 	}
 	var replayContext string
 	if req.Replay != nil {
 		encoded, err := json.Marshal(req.Replay)
 		if err != nil {
-			return nil, fmt.Errorf("marshaling replay context for %s: %w", req.ToolName, err)
+			return nil, "", fmt.Errorf("marshaling replay context for %s: %w", req.ToolName, err)
 		}
 		replayContext = string(encoded)
 	}
 
+	kind := classifyElicitationKind(req.Result.InputRequests)
+
 	// Register before the transition; release on every exit path.
-	responses := h.registerWaiter(requestID, len(req.Result.InputRequests))
+	responses := h.registerWaiter(requestID, req.Result.InputRequests, kind)
 	defer h.unregisterWaiter(requestID)
 
 	if err := h.sm.Transition(ctx, model.RunStatusWaitingForFeedback, "", WithToolInputPayload(ToolInputPayload{
@@ -465,31 +553,71 @@ func (h *InputRequiredHandler) Route(ctx context.Context, req InputRoutingReques
 		CallArgs:        string(callArgs),
 		RequestState:    string(req.Result.RequestState),
 		RequestPayload:  string(requestPayload),
-		ElicitationKind: string(classifyElicitationKind(req.Result.InputRequests)),
+		ElicitationKind: string(kind),
 		ExpiresAt:       expiresAt,
 		DeadlineSource:  string(source),
 		ReplayContext:   replayContext,
 	})); err != nil {
-		return nil, fmt.Errorf("transitioning run to waiting_for_feedback for tool input: %w", err)
+		return nil, "", fmt.Errorf("transitioning run to waiting_for_feedback for tool input: %w", err)
+	}
+
+	// decisionBase carries the fields every settlement of THIS request shares,
+	// so each branch below only has to fill in what differs (outcome, actor).
+	decisionBase := decision.Record{
+		RunID:             req.RunID,
+		RequestID:         requestID,
+		Kind:              kind,
+		ToolName:          req.ToolName,
+		ChannelEntryID:    audience.InAppEntryID,
+		ChannelAssurance:  decision.AssuranceOf(mcp.ChannelAssuranceAuthenticated),
+		EffectiveDeadline: deadline,
+		DeadlineSource:    string(source),
 	}
 
 	timer := time.NewTimer(waitFor)
 	defer timer.Stop()
 
 	select {
-	case answers := <-responses:
-		h.resolveRecord(ctx, req.RunID, requestID, answers)
-		if err := h.sm.Transition(ctx, model.RunStatusRunning, ""); err != nil {
-			return nil, fmt.Errorf("transitioning run back to running after tool input: %w", err)
+	case ans := <-responses:
+		// Finding 6 (security review): rows==0 means the timeout scanner
+		// already claimed this row before the answer arrived. Send nothing
+		// back to the server -- the answer was never genuinely applied -- and
+		// do not record it as `answered`; the scanner's own OnTerminated hook
+		// already recorded the timeout.
+		rows := h.resolveRecord(ctx, req.RunID, requestID, ans.responses)
+		if rows == 0 {
+			logctx.Logger(ctx).WarnContext(ctx, "tool input: answer arrived after the scanner already claimed the row as timed out",
+				"request_id", requestID, "run_id", req.RunID)
+			return nil, "", &InputRoutingError{RequestID: requestID, Err: errors.New("request already resolved by the timeout scanner")}
 		}
-		return answers, nil
+
+		rec := decisionBase
+		rec.Outcome = outcomeFor(ans.responses)
+		if rec.Outcome.HadActor() && ans.responder.UserID != "" {
+			rec.ActorUserID = ans.responder.UserID
+			rec.LinkMethod = decision.LinkSession
+		} else {
+			rec.LinkMethod = decision.LinkNone
+		}
+		// Recorded BEFORE the run-state transition, not after: a human
+		// genuinely answered (rows==1), and that fact must survive even if
+		// the transition below fails (finding 6).
+		h.recordDecision(ctx, rec)
+
+		if err := h.sm.Transition(ctx, model.RunStatusRunning, ""); err != nil {
+			return nil, "", fmt.Errorf("transitioning run back to running after tool input: %w", err)
+		}
+		return ans.responses, requestID, nil
 
 	case <-timer.C:
 		logctx.Logger(ctx).WarnContext(ctx, "tool input request timed out",
 			"tool", req.ToolName, "request_id", requestID, "timeout", timeout.String())
 		// Race the timeout scanner for the pending row, exactly as the approval
 		// and feedback waits do: the conditional UPDATE arbitrates, and only the
-		// winner writes the error step.
+		// winner writes the error step and the decision record. The scanner's
+		// OWN win (this process restarted, or simply lost the race) is recorded
+		// separately by its WithOnTerminated hook in main.go — every settlement
+		// path gets a decision record, not only this live one.
 		err := claimRequestTimeout(ctx, h.audit, timeoutClaim{
 			name:      "tool input",
 			runID:     req.RunID,
@@ -503,12 +631,135 @@ func (h *InputRequiredHandler) Route(ctx context.Context, req InputRoutingReques
 			errorCode:   model.ErrorCodeFeedbackTimeout,
 			wonMessage:  timeoutMessage(req.ToolName, source, timeout),
 			lostMessage: fmt.Sprintf("tool input timeout: already resolved by scanner for tool %s", req.ToolName),
+			onWon: func() {
+				rec := decisionBase
+				rec.Outcome = decision.OutcomeTimeout
+				rec.LinkMethod = decision.LinkNone
+				h.recordDecision(ctx, rec)
+			},
 		})
-		return nil, &InputRoutingError{RequestID: requestID, Err: err}
+		return nil, "", &InputRoutingError{RequestID: requestID, Err: err}
 
 	case <-ctx.Done():
-		return nil, &InputRoutingError{RequestID: requestID, Err: fmt.Errorf("context cancelled waiting for tool input: %w", ctx.Err())}
+		// The run's context can be cancelled at almost the same instant an
+		// operator's answer lands in the buffered `responses` channel above
+		// (deliver() already returned success to the HTTP handler): Go's
+		// select makes no promise about which ready case it picks. That race
+		// is still safe here because nothing has touched the DB row yet — the
+		// write to 'resolved' only happens in the answer branch above, which
+		// cannot also run once this branch is chosen — so there is nothing
+		// for CancelToolInputRequest to clobber in that scenario; the answer
+		// is simply never applied, and labeling the row cancelled matches
+		// what actually happened to the run.
+		//
+		// The real hazard the conditional UPDATE guards against is the
+		// INDEPENDENT timeout scanner, racing on its own goroutine and ticker:
+		// it can claim the very same row as expired at nearly the same moment
+		// this run is cancelled. WHERE status='pending' is what makes the two
+		// writers race safely — whichever CAS lands first wins, and the loser
+		// (rows==0) records nothing rather than overwrite a decision that
+		// already happened, so a row an operator or the scanner had already
+		// settled is never relabelled cancelled underneath them.
+		// A fresh, bounded context for every write below: ctx is the run's own
+		// context and is already cancelled on this branch, so both the claim
+		// and the decision record it may produce need their own deadline
+		// rather than inheriting one that is already done.
+		cancelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		rows, cancelErr := h.sm.Queries().CancelToolInputRequest(cancelCtx, db.CancelToolInputRequestParams{
+			ResolvedAt: &now,
+			ID:         requestID,
+		})
+		if cancelErr != nil {
+			logctx.Logger(ctx).WarnContext(ctx, "tool input: CancelToolInputRequest failed",
+				"request_id", requestID, "run_id", req.RunID, "err", cancelErr)
+		} else if rows == 1 {
+			rec := decisionBase
+			rec.Outcome = decision.OutcomeCancelled
+			rec.LinkMethod = decision.LinkNone
+			h.recordDecision(cancelCtx, rec)
+		}
+		return nil, "", &InputRoutingError{RequestID: requestID, Err: fmt.Errorf("context cancelled waiting for tool input: %w", ctx.Err())}
 	}
+}
+
+// outcomeFor classifies a settled answer, in this priority order:
+//
+//   - Any accept is a consent/value grant (OutcomeAnswered).
+//   - Failing that, any decline is a refusal WITH an actor (OutcomeRejected)
+//     — a person pressed Reject, and that is still true even if the bundle
+//     mixes a decline with a cancel on another entry; a security-review
+//     follow-up correction from the original "any cancel wins" rule, which
+//     would have stripped a real human refusal of its actor whenever a
+//     cancel rode alongside it.
+//   - Only when EVERY response is a cancel is this OutcomeCancelled
+//     (security review finding 8 — a cancel is not a decision, and must not
+//     be recorded as one with an actor attached).
+//
+// Answered and rejected are both legitimate MRTR round trips handed back to
+// the server, not host-side failures; a cancel is reachable through the API
+// only (relay-646 §4).
+func outcomeFor(responses []mcp.InputResponse) decision.Outcome {
+	sawDecline := false
+	for _, r := range responses {
+		switch r.Action {
+		case inputActionAccept:
+			return decision.OutcomeAnswered
+		case inputActionDecline:
+			sawDecline = true
+		}
+	}
+	if sawDecline {
+		return decision.OutcomeRejected
+	}
+	return decision.OutcomeCancelled
+}
+
+// recordDecision writes one decision record for a settled tool-initiated
+// request (ADR-055 §6.6). Best-effort and logged, never fatal to the run: the
+// record is oversight evidence, and an audit-write hiccup must not fail a run
+// whose human leg already settled successfully.
+func (h *InputRequiredHandler) recordDecision(ctx context.Context, rec decision.Record) {
+	if err := decision.NewRecorder(h.sm.Queries()).Record(ctx, rec); err != nil {
+		logctx.Logger(ctx).WarnContext(ctx, "tool input: writing decision record failed",
+			"request_id", rec.RequestID, "run_id", rec.RunID, "outcome", string(rec.Outcome), "err", err)
+	}
+}
+
+// recordReplay writes the §6.5 replay's own decision record. Its outcome is
+// OutcomeReplayedAfterTTL rather than a second OutcomeAnswered: no human acted
+// at this moment, and reading a replay as a fresh approval would count one
+// consent twice (decision.OutcomeReplayedAfterTTL's own doc). Per that same
+// invariant, the record itself carries NO actor — decision.Record.Validate
+// rejects an actor on an outcome that HadActor() reports false for. The
+// original responder is not asserted on this round's wire either (security
+// review findings 1-3): rekeyReplayResponses strips it and substitutes
+// io.gleipnir/replayed-from, and this record's ReplayOfRequestID names the
+// SAME original request so an auditor can trace the replay back to the human
+// decision it reused without either side claiming a human acted twice.
+//
+// newKind is the classification of the FRESH bundle the server just sent, not
+// the prior one — recordReplay is only ever called once canReplay has already
+// confirmed the two match, but the record should describe what was actually
+// re-asked.
+//
+// There is no persisted tool_input_requests row backing this event — the
+// whole point of a replay is that the host never asked anyone again — so
+// RequestID is a fresh ID naming this settlement, distinct from the original
+// request's own (already-recorded) decision.
+func (h *InputRequiredHandler) recordReplay(ctx context.Context, runID, toolName string, prior *answeredQuestion, newKind model.ElicitationKind) {
+	h.recordDecision(ctx, decision.Record{
+		RunID:             runID,
+		RequestID:         model.NewULID(),
+		Kind:              newKind,
+		ToolName:          toolName,
+		ChannelEntryID:    audience.InAppEntryID,
+		ChannelAssurance:  decision.AssuranceOf(mcp.ChannelAssuranceAuthenticated),
+		LinkMethod:        decision.LinkNone,
+		Outcome:           decision.OutcomeReplayedAfterTTL,
+		ReplayOfRequestID: prior.requestID,
+	})
 }
 
 // callToolWithInputRounds performs a tools/call and, for as long as the server
@@ -577,36 +828,78 @@ func (a *BoundAgent) callToolWithInputRounds(ctx context.Context, runID string, 
 		}
 
 		fingerprint := questionFingerprint(result.InputRequired.InputRequests)
+		newKind := classifyElicitationKind(result.InputRequired.InputRequests)
 
 		// §6.5 replay: the same question again, so the answer already in hand
-		// still answers it. Spend it silently against the fresh requestState.
+		// still answers it. Spend it silently against the fresh requestState
+		// -- but ONLY for an information ask (security review findings 1-3).
+		//
+		// A permission ask is a consent decision, and the host replaying one
+		// on a human's behalf just because the bundle repeats byte-for-byte
+		// is exactly the shape a forged approval takes: nothing distinguishes
+		// "a legitimate MRTR retry" from "the server asking the same person
+		// to approve the same action twice and being told the FIRST answer
+		// still counts." Every permission re-ask reaches a human,
+		// unconditionally, regardless of whether it matches. The kind must
+		// also match on BOTH sides — prior.kind and newKind — so a server
+		// cannot flip a bundle's classification via the elicitation-kind
+		// _meta hint (content unchanged) and have that silently replayed
+		// under the WRONG gate; canReplay requires both to be information.
 		//
 		// Once per question. A server that answers the replay with the same
 		// question a THIRD time is not recovering from an expired state, it is
 		// looping, and continuing to feed it an answer it demonstrably will not
 		// accept just burns rounds — so the second identical re-ask falls
 		// through to the human, who can see something is wrong.
-		if prior.matches(fingerprint) && !prior.replayed {
-			logctx.Logger(ctx).InfoContext(ctx, "replaying operator answer after server re-asked the identical question",
+		canReplay := prior.matches(fingerprint) && !prior.replayed &&
+			prior.kind == elicitationKindInformation && newKind == elicitationKindInformation
+		if canReplay {
+			if replayed, ok := rekeyReplayResponses(result.InputRequired.InputRequests, prior.answers, prior.requestID); ok {
+				logctx.Logger(ctx).InfoContext(ctx, "replaying operator answer after server re-asked the identical information question",
+					"tool", toolName, "run_id", runID, "round", round, "original_request_id", prior.requestID)
+				prior.replayed = true
+				inputAnswerReplays.Inc()
+				opts.InputResponses = replayed
+				opts.RequestState = result.InputRequired.RequestState
+				a.inputRequired.recordReplay(ctx, runID, toolName, prior, newKind)
+				continue
+			}
+			// Defensive fallback (should be unreachable -- see
+			// rekeyReplayResponses' own doc): fall through to an ordinary
+			// human ask, which the "identical, not replayed" branch below
+			// still recognizes as prior.matches(fingerprint).
+			logctx.Logger(ctx).WarnContext(ctx, "replay eligible but the request/answer counts differ; asking a human instead",
 				"tool", toolName, "run_id", runID, "round", round)
-			prior.replayed = true
-			inputAnswerReplays.Inc()
-			opts.InputResponses = prior.answers
-			opts.RequestState = result.InputRequired.RequestState
-			continue
 		}
 
-		// Either a first ask, or the server changed the question. In the second
-		// case the operator gets the previous question and answer alongside the
-		// new one — a second prompt that looks like a duplicate but is not is
-		// exactly where a reflexive approval does the most damage.
+		// Either a first ask, or the server re-asked and this round did NOT
+		// silently replay: the content changed, the kind flipped, THIS
+		// answer was already spent on one replay, or (a permission ask) it
+		// is simply never eligible. `!prior.replayed` belongs only to
+		// canReplay's "once per question" allowance above — it plays no part
+		// in whether the operator gets to see the prior context, so it is
+		// deliberately absent from both branches here.
+		//
+		// In EITHER re-ask case the operator gets the previous question and
+		// answer alongside the new one:
+		//   - identical content (a permission ask, or a kind flip under an
+		//     unchanged fingerprint): the operator needs to know they
+		//     answered this EXACT question moments ago, so a reflexive
+		//     second approval is not the only signal they have to go on.
+		//   - genuinely different content: the same context, for the
+		//     ordinary reason a re-prompt should never look like an
+		//     unexplained duplicate.
 		var replay *ReplayContext
-		if prior != nil && !prior.matches(fingerprint) {
-			inputAnswerReplayMismatches.Inc()
-			replay = newReplayContext(prior)
+		if prior != nil {
+			if prior.matches(fingerprint) {
+				replay = newReplayContextWithReason(prior, reasonIdenticalReask)
+			} else {
+				inputAnswerReplayMismatches.Inc()
+				replay = newReplayContext(prior)
+			}
 		}
 
-		answers, err := a.inputRequired.Route(ctx, InputRoutingRequest{
+		answers, respRequestID, err := a.inputRequired.Route(ctx, InputRoutingRequest{
 			RunID:    runID,
 			ServerID: entry.tool.ServerID,
 			ToolName: toolName,
@@ -632,12 +925,83 @@ func (a *BoundAgent) callToolWithInputRounds(ctx context.Context, runID string, 
 
 		prior = &answeredQuestion{
 			fingerprint: fingerprint,
+			kind:        newKind,
+			requestID:   respRequestID,
 			requests:    result.InputRequired.InputRequests,
 			answers:     answers,
 		}
 		opts.InputResponses = answers
 		opts.RequestState = result.InputRequired.RequestState
 	}
+}
+
+// replayedFromMetaKey names the ORIGINAL tool_input_requests row a replayed
+// response's answer was spent on. It is the honest replacement for
+// responderMetaKey on a replay: no human acted this round, so no identity is
+// asserted (security review findings 1-3) — but a server or auditor reading
+// the wire can still tell where the answer came from.
+const replayedFromMetaKey = "io.gleipnir/replayed-from"
+
+type replayedFromMetaValue struct {
+	RequestID string `json:"request_id"`
+}
+
+// replayedFromMeta marshals the §6.5 replay provenance marker, or returns nil
+// when originalRequestID is empty (defensive; Route always returns one on a
+// successful answer).
+func replayedFromMeta(originalRequestID string) json.RawMessage {
+	if originalRequestID == "" {
+		return nil
+	}
+	meta, err := json.Marshal(map[string]replayedFromMetaValue{
+		replayedFromMetaKey: {RequestID: originalRequestID},
+	})
+	if err != nil {
+		// replayedFromMetaValue is a fixed, JSON-safe struct; this cannot
+		// fail in practice. Send nothing rather than a response the caller
+		// cannot construct, matching responderMeta's own posture.
+		return nil
+	}
+	return meta
+}
+
+// rekeyReplayResponses builds the retry's inputResponses from an answer
+// already in hand, for the §6.5 replay path (information asks only, per
+// canReplay above). Two things must NOT survive verbatim from the original
+// answer:
+//
+//   - The ID. The wire correlates by id (ADR-061), and a server MAY
+//     legitimately mint a fresh id for an identical re-ask; sending the OLD
+//     id back would answer a question this round never asked. Re-keyed by
+//     POSITION onto the NEW bundle's ids — the fingerprint match already
+//     guarantees the two bundles have the same count and order.
+//   - The responder _meta. No human acted this round — replaying is the host
+//     spending an answer already in hand, not a human clicking again — so
+//     asserting io.gleipnir/responder here would tell the server a person
+//     decided something they did not (security review findings 1-3).
+//     io.gleipnir/replayed-from names the ORIGINAL tool_input_requests row
+//     instead, so a server or an auditor can still tell where the answer
+//     came from without a false identity claim.
+func rekeyReplayResponses(newRequests []mcp.InputRequest, priorAnswers []mcp.InputResponse, originalRequestID string) ([]mcp.InputResponse, bool) {
+	if len(newRequests) != len(priorAnswers) {
+		// Defensive: the fingerprint match that gates a replay already
+		// length-prefixes the request count (questionFingerprint), so this
+		// should be structurally impossible -- but a replay is not something
+		// to risk on an invariant holding by construction alone. The caller
+		// falls back to asking a human instead of guessing at a mapping.
+		return nil, false
+	}
+	meta := replayedFromMeta(originalRequestID)
+	out := make([]mcp.InputResponse, len(priorAnswers))
+	for i, ans := range priorAnswers {
+		out[i] = mcp.InputResponse{
+			ID:      newRequests[i].ID,
+			Action:  ans.Action,
+			Content: ans.Content,
+			Meta:    meta,
+		}
+	}
+	return out, true
 }
 
 // toolResultError writes a tool_result error step and returns it in the
@@ -696,16 +1060,19 @@ func checkPersistedSize(result *mcp.InputRequiredResult, requestID string) error
 	return nil
 }
 
-// resolveRecord marks the tool_input_requests row resolved. Best-effort: the
-// answer is already in hand and the run must resume regardless of a DB hiccup,
-// and rows == 0 simply means the timeout scanner got there first — which the
-// caller will discover on its next transition, not here.
-func (h *InputRequiredHandler) resolveRecord(ctx context.Context, runID, requestID string, answers []mcp.InputResponse) {
+// resolveRecord marks the tool_input_requests row resolved and returns the
+// rows affected, so the caller can tell a genuine CAS loss (rows==0: the
+// timeout scanner got there first) from an infrastructure hiccup (marshal or
+// DB error, treated as best-effort success — the answer is already in hand
+// and the run must resume regardless of a DB hiccup). Route uses rows==0 to
+// refuse sending a retry for an answer that was never genuinely applied
+// (security review finding 6).
+func (h *InputRequiredHandler) resolveRecord(ctx context.Context, runID, requestID string, answers []mcp.InputResponse) int64 {
 	encoded, err := json.Marshal(answers)
 	if err != nil {
 		logctx.Logger(ctx).WarnContext(ctx, "tool input: marshaling operator answers failed",
 			"request_id", requestID, "run_id", runID, "err", err)
-		return
+		return 1
 	}
 	response := string(encoded)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -717,12 +1084,13 @@ func (h *InputRequiredHandler) resolveRecord(ctx context.Context, runID, request
 	if err != nil {
 		logctx.Logger(ctx).WarnContext(ctx, "tool input: ResolveToolInputRequest failed",
 			"request_id", requestID, "run_id", runID, "err", err)
-		return
+		return 1
 	}
 	if rows == 0 {
-		logctx.Logger(ctx).DebugContext(ctx, "tool input already resolved by scanner",
+		logctx.Logger(ctx).WarnContext(ctx, "tool input already resolved by scanner",
 			"request_id", requestID, "run_id", runID)
 	}
+	return rows
 }
 
 // decodeInputResponses parses an operator answer payload into per-request
@@ -764,33 +1132,45 @@ func decodeInputResponses(body string, expected int) ([]mcp.InputResponse, error
 
 // classifyElicitationKind maps one input_required result onto the
 // tool_input_requests.elicitation_kind vocabulary (spec §6.1). An explicit
-// _meta io.gleipnir/elicitation-kind wins when it names a known kind;
-// otherwise the §6.1 convention decides — a requestedSchema asking for no
-// fields is a consent-only ask, anything else needs a form. When one result
-// bundles several requests, "information" wins: a single field anywhere means
-// the operator must be shown a form rather than an approve/reject pair.
+// _meta io.gleipnir/elicitation-kind wins when it names a known kind for a
+// given entry; otherwise the §6.1 convention decides — a requestedSchema
+// asking for no fields is a consent-only ask, anything else needs a form.
+//
+// When one result bundles several requests, PERMISSION WINS: if any entry is
+// permission-shaped (an explicit permission hint, or no valid hint and no
+// fields), the WHOLE bundle is classified permission, requiring the approver
+// role (security review finding 4). The earlier rule let "information win" —
+// bundling one permission-shaped entry alongside one harmless information
+// entry classified the whole ask as information, letting an operator (not an
+// approver) consent to something that needed the stronger gate. Consent is
+// the higher-privilege operation here, so ANY consent-shaped entry in a
+// bundle must raise the WHOLE bundle to the role that may grant consent.
 //
 // A malformed _meta hint — a kind outside the vocabulary — falls through to
-// the convention rather than being honored or rejected: it is an optional hint
-// from a server that got it wrong, and the schema shape is still readable.
+// the schema-shape convention for that entry rather than being honored or
+// rejected: it is an optional hint from a server that got it wrong, and the
+// schema shape is still readable.
 //
 // Manifest-declared per-tool kinds are a third source the manifest v2 work
 // adds; the two here are what a server can express today.
 func classifyElicitationKind(requests []mcp.InputRequest) model.ElicitationKind {
-	kind := elicitationKindPermission
 	for _, r := range requests {
-		declared := model.ElicitationKind(r.ElicitationKind)
-		if declared.Valid() {
-			if declared == elicitationKindInformation {
-				return elicitationKindInformation
-			}
-			continue
-		}
-		if requestsFields(r.RequestedSchema) {
-			kind = elicitationKindInformation
+		if entryIsPermission(r) {
+			return elicitationKindPermission
 		}
 	}
-	return kind
+	return elicitationKindInformation
+}
+
+// entryIsPermission reports whether one inputRequests entry is, by itself, a
+// consent-only ask: an explicit permission hint, or no valid hint and a
+// requestedSchema with no fields.
+func entryIsPermission(r mcp.InputRequest) bool {
+	declared := model.ElicitationKind(r.ElicitationKind)
+	if declared.Valid() {
+		return declared == elicitationKindPermission
+	}
+	return !requestsFields(r.RequestedSchema)
 }
 
 // secretSchemaKeys are the schema markers that say a field carries a secret.

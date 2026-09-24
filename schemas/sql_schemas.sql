@@ -680,7 +680,7 @@ CREATE TABLE tool_input_requests (
     request_state     TEXT    NOT NULL,                                                 -- opaque MRTR requestState from the server's InputRequiredResult; size-capped at write (defense in depth, application layer, spec §6.2)
     request_payload   TEXT    NOT NULL,                                                 -- JSON blob: elicitation-shaped payload (messages + inputRequests/requestedSchema)
     elicitation_kind  TEXT    NOT NULL CHECK(elicitation_kind IN ('permission', 'information')),  -- spec §6.1
-    status            TEXT    NOT NULL CHECK(status IN ('pending', 'resolved', 'timed_out')),
+    status            TEXT    NOT NULL CHECK(status IN ('pending', 'resolved', 'timed_out', 'cancelled')),
     response          TEXT,                                                             -- nullable, JSON blob of inputResponses / operator answer
     resolved_at       TEXT,                                                             -- nullable, ISO 8601 UTC
     expires_at        TEXT    NOT NULL,                                                 -- effective deadline: min of Gleipnir policy timeout / server TTL / requestState TTL (spec §6.3)

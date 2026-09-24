@@ -69,8 +69,23 @@ func toolInputFixture(t *testing.T, runID string, kind model.ElicitationKind, pa
 	insertToolInputRequest(t, store, "tir-"+runID, runID, kind, payload)
 
 	manager.Register(runID, func() {}, make(chan bool, 1))
-	manager.RegisterToolInputResolver(runID, &stubResolver{})
+	manager.RegisterToolInputResolver(runID, &stubToolInputResolver{})
 	return store, manager
+}
+
+// stubToolInputResolver is a test double implementing run.ToolInputResolver
+// with a configurable ResolveFunc so individual test cases can control the
+// return value and capture the responder identity SubmitToolInput derived
+// from the authenticated session.
+type stubToolInputResolver struct {
+	ResolveFunc func(requestID, body string, responder agent.Responder) error
+}
+
+func (s *stubToolInputResolver) Resolve(requestID, body string, responder agent.Responder) error {
+	if s.ResolveFunc != nil {
+		return s.ResolveFunc(requestID, body, responder)
+	}
+	return nil
 }
 
 // authed returns a request carrying an authenticated user with the given roles.
@@ -213,8 +228,8 @@ func TestSubmitToolInput_Errors(t *testing.T) {
 // not a 500 and not a 202.
 func TestSubmitToolInput_RejectedAnswerIsABadRequest(t *testing.T) {
 	store, manager := toolInputFixture(t, "r-bad-answer", model.ElicitationKindPermission, permissionPayload)
-	manager.RegisterToolInputResolver("r-bad-answer", &stubResolver{
-		ResolveFunc: func(requestID, body string) error {
+	manager.RegisterToolInputResolver("r-bad-answer", &stubToolInputResolver{
+		ResolveFunc: func(requestID, body string, responder agent.Responder) error {
 			return errBadAnswer
 		},
 	})
@@ -233,8 +248,8 @@ func TestSubmitToolInput_RejectedAnswerIsABadRequest(t *testing.T) {
 // callback, not an error the operator caused.
 func TestSubmitToolInput_LateCallbackIsGone(t *testing.T) {
 	store, manager := toolInputFixture(t, "r-late", model.ElicitationKindPermission, permissionPayload)
-	manager.RegisterToolInputResolver("r-late", &stubResolver{
-		ResolveFunc: func(requestID, body string) error {
+	manager.RegisterToolInputResolver("r-late", &stubToolInputResolver{
+		ResolveFunc: func(requestID, body string, responder agent.Responder) error {
 			return agent.ErrUnknownInputRequestID
 		},
 	})
@@ -274,6 +289,9 @@ func TestGetToolInput(t *testing.T) {
 			if body.Data.ElicitationKind != string(model.ElicitationKindInformation) {
 				t.Errorf("elicitation_kind = %q, want information", body.Data.ElicitationKind)
 			}
+			if body.Data.ServerName != "myserver" {
+				t.Errorf("server_name = %q, want myserver — the prompt must name the server that asked", body.Data.ServerName)
+			}
 			if body.Data.RequiredRole != string(model.RoleOperator) {
 				t.Errorf("required_role = %q, want operator", body.Data.RequiredRole)
 			}
@@ -287,6 +305,52 @@ func TestGetToolInput(t *testing.T) {
 				t.Error("requested_schema is empty; the form cannot be rendered without it")
 			}
 		})
+	}
+}
+
+// A server_id the registry has no row for falls back to the dot prefix of the
+// tool name — the server that owns a tools/call is always nameable from the
+// dot-name the agent called it under, even when the lookup itself fails.
+// Exercised directly against the (in-memory, unpersisted) row rather than
+// through a real tool_input_requests insert: server_id is a CASCADE foreign
+// key, so a genuinely dangling reference cannot be persisted in the first
+// place — the fallback exists for the lookup failing, not for bad data.
+func TestGetToolInput_ServerNameFallsBackToDotPrefixWhenServerLookupFails(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	h := run.NewRunsHandler(store, run.NewRunManager(), nil)
+
+	row := db.ToolInputRequest{ServerID: "srv-does-not-exist", ToolName: "myserver.deploy"}
+	if got := run.ToolInputServerNameForTest(h, context.Background(), row); got != "myserver" {
+		t.Errorf("server_name = %q, want the dot prefix %q", got, "myserver")
+	}
+}
+
+// The responder is derived from the authenticated session, never the request
+// body — ToolInputResponseItem accepts only action and content, so there is
+// nowhere in the body an identity claim could even be placed.
+func TestSubmitToolInput_ResponderComesFromTheSession(t *testing.T) {
+	store, manager := toolInputFixture(t, "r-responder", model.ElicitationKindPermission, permissionPayload)
+
+	var captured agent.Responder
+	manager.RegisterToolInputResolver("r-responder", &stubToolInputResolver{
+		ResolveFunc: func(requestID, body string, responder agent.Responder) error {
+			captured = responder
+			return nil
+		},
+	})
+
+	req := authed(http.MethodPost, "/api/v1/runs/r-responder/tool-input",
+		`{"responses":[{"action":"accept","content":{"confirmed":true}}]}`, model.RoleApprover)
+	// authed() sets the session identity to (u1, tester); the body carries no
+	// identity field at all, so there is nothing for the operator to spoof.
+	w := httptest.NewRecorder()
+	newToolInputRouter(run.NewRunsHandler(store, manager, nil)).ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body: %s", w.Code, w.Body.String())
+	}
+	if captured.UserID != "u1" || captured.Username != "tester" {
+		t.Errorf("responder = %+v, want the authenticated session (u1, tester)", captured)
 	}
 }
 

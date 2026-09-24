@@ -1,6 +1,7 @@
 package run
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"log/slog"
@@ -44,8 +45,17 @@ type DecisionSummary struct {
 	// would present hearsay as identity.
 	ActorExternalID string `json:"actor_external_id,omitempty"`
 	ActorUserID     string `json:"actor_user_id,omitempty"`
-	LinkMethod      string `json:"link_method"`
-	LinkVerified    bool   `json:"link_verified"`
+
+	// ActorUsername is looked up from ActorUserID (GetUser) rather than
+	// stored on the record itself: a username is mutable, and the record is
+	// evidence of what a Gleipnir user ID did, not a snapshot of a
+	// display name that could drift out of sync with it. A failed lookup
+	// (e.g. the user was later deleted) is logged and leaves this empty
+	// rather than failing the whole list.
+	ActorUsername string `json:"actor_username,omitempty"`
+
+	LinkMethod   string `json:"link_method"`
+	LinkVerified bool   `json:"link_verified"`
 
 	// EffectiveDeadline is the minimum of every clock that governed the wait
 	// (spec §6.3), and DeadlineSource names which one won.
@@ -53,6 +63,12 @@ type DecisionSummary struct {
 	DeadlineSource    string `json:"deadline_source,omitempty"`
 
 	Outcome string `json:"outcome"`
+
+	// ReplayOfRequestID is set only on an OutcomeReplayedAfterTTL record: the
+	// ORIGINAL tool_input_requests row whose answer this replay spent. There
+	// is no row backing the replay event itself, so this is what lets a
+	// reader trace it back to the human decision it reused.
+	ReplayOfRequestID string `json:"replay_of_request_id,omitempty"`
 
 	// Considered is every audience entry passed over before the chosen one.
 	// "The third channel answered" only means something alongside why the
@@ -93,12 +109,12 @@ func (h *RunsHandler) ListDecisions(w http.ResponseWriter, r *http.Request) {
 
 	result := make([]DecisionSummary, 0, len(records))
 	for _, rec := range records {
-		result = append(result, toDecisionSummary(rec))
+		result = append(result, h.toDecisionSummary(ctx, rec))
 	}
 	httputil.WriteJSON(w, http.StatusOK, result)
 }
 
-func toDecisionSummary(rec decision.Record) DecisionSummary {
+func (h *RunsHandler) toDecisionSummary(ctx context.Context, rec decision.Record) DecisionSummary {
 	summary := DecisionSummary{
 		RunID:             rec.RunID,
 		RequestID:         rec.RequestID,
@@ -115,11 +131,20 @@ func toDecisionSummary(rec decision.Record) DecisionSummary {
 		LinkVerified:      rec.LinkMethod.Verified(),
 		DeadlineSource:    rec.DeadlineSource,
 		Outcome:           string(rec.Outcome),
+		ReplayOfRequestID: rec.ReplayOfRequestID,
 		Considered:        rec.Considered,
 		DecidedAt:         rec.DecidedAt.UTC().Format(time.RFC3339Nano),
 	}
 	if !rec.EffectiveDeadline.IsZero() {
 		summary.EffectiveDeadline = rec.EffectiveDeadline.UTC().Format(time.RFC3339Nano)
+	}
+	if rec.ActorUserID != "" {
+		if u, err := h.store.GetUser(ctx, rec.ActorUserID); err != nil {
+			slog.Warn("looking up decision record actor failed",
+				"actor_user_id", rec.ActorUserID, "request_id", rec.RequestID, "err", err)
+		} else {
+			summary.ActorUsername = u.Username
+		}
 	}
 	return summary
 }

@@ -159,8 +159,17 @@ func TestCallTool_ResultTypeAcrossEras(t *testing.T) {
 	// it as opaque data, so this row now needs a payload that actually
 	// decodes -- decode-failure coverage (absent requestState, malformed
 	// inputRequests, the size caps) lives in inputrequired_test.go.
-	fixtureInputRequests := []map[string]any{
-		{"message": "delete the production database?", "requestedSchema": map[string]any{"type": "object"}},
+	//
+	// ADR-061: the map shape, keyed by request id, per go-sdk v1.7.0.
+	const fixtureMessage = "delete the production database?"
+	fixtureInputRequests := map[string]any{
+		"q1": map[string]any{
+			"method": "elicitation/create",
+			"params": map[string]any{
+				"message":         fixtureMessage,
+				"requestedSchema": map[string]any{"type": "object"},
+			},
+		},
 	}
 	const fixtureRequestState = "opaque-state-token"
 
@@ -200,8 +209,11 @@ func TestCallTool_ResultTypeAcrossEras(t *testing.T) {
 						if len(res.InputRequired.InputRequests) != 1 {
 							t.Fatalf("len(InputRequired.InputRequests) = %d, want 1", len(res.InputRequired.InputRequests))
 						}
-						if got := res.InputRequired.InputRequests[0].Message; got != fixtureInputRequests[0]["message"] {
-							t.Errorf("InputRequests[0].Message = %q, want %q", got, fixtureInputRequests[0]["message"])
+						if got := res.InputRequired.InputRequests[0].Message; got != fixtureMessage {
+							t.Errorf("InputRequests[0].Message = %q, want %q", got, fixtureMessage)
+						}
+						if got := res.InputRequired.InputRequests[0].ID; got != "q1" {
+							t.Errorf("InputRequests[0].ID = %q, want %q", got, "q1")
 						}
 						if got := string(res.InputRequired.RequestState); got != `"`+fixtureRequestState+`"` {
 							t.Errorf("RequestState = %s, want %q", got, fixtureRequestState)

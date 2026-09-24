@@ -18,6 +18,7 @@ import {
 import { TriggerRunModal } from '@/components/TriggerRunModal'
 import { ApprovalActions } from '@/components/RunDetail/ApprovalActions'
 import { ToolInputCard } from '@/components/RunDetail/ToolInputCard'
+import { DecisionList } from '@/components/RunDetail/DecisionList'
 import { CopyBlock } from '@/components/CopyBlock'
 import type { FilterKey } from '@/components/RunDetail'
 import type { CapabilitySnapshotV2, GrantedToolEntry } from '@/components/RunDetail/types'
@@ -235,6 +236,8 @@ export default function RunDetailPage() {
                   New steps ↓
                 </button>
               )}
+
+              <DecisionList runId={id!} />
             </ErrorBoundary>
 
             {retryModalOpen && (

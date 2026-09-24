@@ -97,8 +97,22 @@ export interface ApiRunDecision {
   deadline_source?: string
   /** `answered` | `rejected` | `timeout` | `cancelled` | `replayed_after_ttl` */
   outcome: string
+  /**
+   * Set only on a `replayed_after_ttl` record: the original request whose
+   * answer this replay spent. There is no row for the replay event itself,
+   * so this is what lets a reader trace it back to the human decision.
+   */
+  replay_of_request_id?: string
   considered?: ApiRunDecisionCandidate[]
   decided_at: string
+
+  /**
+   * Looked up server-side from actor_user_id (GET /runs/:id/decisions), not
+   * stored on the record itself — a username is mutable display text, and
+   * the record is evidence of what a Gleipnir user ID did. Absent when
+   * actor_user_id is unset, or when that user could no longer be resolved.
+   */
+  actor_username?: string
 }
 
 // One audience entry that was considered and passed over, with the router's
@@ -231,6 +245,12 @@ export interface ApiToolInputRequest {
   id: string
   run_id: string
   tool_name: string
+  /**
+   * The server that asked (ADR-061) — resolved from the row's server_id, or
+   * the dot prefix of tool_name when that lookup fails. Used to attribute
+   * the untrusted message to its author rather than leaving it unnamed.
+   */
+  server_name: string
   /** `permission` (consent only) or `information` (a request for values). */
   elicitation_kind: string
   /** The role that may answer: `approver` for permission, `operator` for information. */

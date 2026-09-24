@@ -122,8 +122,11 @@ func TestElicitationLimits_Resolve(t *testing.T) {
 // defaults is rejected under a tighter limit.
 func TestDecodeInputRequiredResult_HonorsConfiguredLimits(t *testing.T) {
 	result := toolsCallResult{
-		RequestState:  []byte(`{"cursor":"abc"}`),
-		InputRequests: []byte(`[{"message":"one"},{"message":"two"}]`),
+		RequestState: []byte(`{"cursor":"abc"}`),
+		InputRequests: []byte(`{
+			"q1":{"method":"elicitation/create","params":{"message":"one"}},
+			"q2":{"method":"elicitation/create","params":{"message":"two"}}
+		}`),
 	}
 
 	if _, err := decodeInputRequiredResult(result, ElicitationLimits{}); err != nil {

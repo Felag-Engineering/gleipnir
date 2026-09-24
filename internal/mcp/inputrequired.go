@@ -1,8 +1,10 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"sort"
 )
 
 // metaKeyElicitationKind is the _meta key a managed plugin sets on one
@@ -75,12 +77,22 @@ const defaultMaxInputRequests = 8
 const defaultMaxInputRequestsBytes = 64 << 10 // 64 KiB
 
 // maxInputRequiredReasonLen bounds InputRequiredError.Reason. Reason is
-// built from this package's own fixed strings plus small integers (counts,
-// byte lengths); the one exception is a json.Unmarshal error's own message
-// wrapped verbatim (see decodeInputRequiredResult), which can in principle
-// re-embed a fragment of the server's payload. Same bounded-everything
-// posture as maxHeaderParamReasonLen in headerparams.go.
+// mostly built from this package's own fixed strings plus small integers
+// (counts, byte lengths), but it also directly embeds server-chosen values --
+// the request id and the (rejected) method name -- and, separately, a
+// json.Unmarshal error's own message wrapped verbatim (see
+// decodeInputRequiredResult); any of these can in principle re-embed a
+// fragment of the server's payload. Same bounded-everything posture as
+// maxHeaderParamReasonLen in headerparams.go.
 const maxInputRequiredReasonLen = 256
+
+// maxInputRequestIDBytes bounds a single inputRequests key. A request id is a
+// label the server chooses, round-tripped verbatim into inputResponses,
+// tool_input_requests.request_payload, log lines, and error reasons; an empty
+// id names nothing (the retry could never key a response to it) and an
+// unbounded one is a memory/log-flooding vector for the same reason the other
+// §6.2 caps exist. 256 bytes is generous for an opaque identifier.
+const maxInputRequestIDBytes = 256
 
 // InputRequiredError reports that an input_required tools/call result failed
 // to decode -- either it does not parse or it exceeds one of the spec §6.2
@@ -98,21 +110,47 @@ func newInputRequiredError(reason string) *InputRequiredError {
 	return &InputRequiredError{Reason: truncateForLog(reason, maxInputRequiredReasonLen)}
 }
 
-// inputRequestWire is the wire shape of one inputRequests entry (SEP-2322 /
-// ElicitRequest-shaped: message + requestedSchema). Meta is json.RawMessage,
+// elicitationCreateMethod is the only inputRequests entry method this package
+// accepts (go-sdk v1.7.0 mcp/protocol.go's ElicitParams; ADR-061). Sampling
+// (deprecated upstream, SEP-2577) and roots/list are refused structurally:
+// this package has no representation for either, and a server naming one is
+// making a claim Gleipnir will never honor.
+const elicitationCreateMethod = "elicitation/create"
+
+// inputRequestEntryWire is the wire shape of one inputRequests map entry
+// (go-sdk v1.7.0 mcp/protocol.go, mcp/testdata/conformance/server/mrtr.txtar):
+// `{"method":"elicitation/create","params":{...}}`. Params stays
+// json.RawMessage so a method this package refuses never has to parse as an
+// elicitation to be rejected.
+type inputRequestEntryWire struct {
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params"`
+}
+
+// elicitParamsWire is the wire shape of one inputRequests entry's params
+// (go-sdk's ElicitParams: message + requestedSchema + mode, with `_meta`
+// embedded at this level, not on the entry). Meta is json.RawMessage,
 // decoded tolerantly by parseElicitationKind, for the same reason
 // ServerInfo's _meta is (meta.go): a server that omits or mangles it is
 // still a usable input_required result, just without an explicit
 // elicitation-kind.
-type inputRequestWire struct {
+type elicitParamsWire struct {
+	Mode            string          `json:"mode"`
 	Message         string          `json:"message"`
 	RequestedSchema json.RawMessage `json:"requestedSchema"`
+	URL             string          `json:"url,omitempty"`
 	Meta            json.RawMessage `json:"_meta,omitempty"`
 }
 
 // InputRequest is one elicitation the server is asking the operator to
 // answer before a tools/call can complete (spec §6, §6.1).
 type InputRequest struct {
+	// ID is the server-assigned key of this entry in the inputRequests map
+	// (ADR-061). It is the correlation key for the matching InputResponse on
+	// the retry tools/call -- go-sdk v1.7.0 carries no positional contract,
+	// unlike the array shape this package used to parse.
+	ID string
+
 	// Message is server-controlled text describing what is being asked.
 	// Untrusted: render as content, never as markup or instructions (spec
 	// §6.1: "Elicitation messages are server-controlled text rendered as
@@ -127,9 +165,9 @@ type InputRequest struct {
 	// whoever renders the request.
 	RequestedSchema json.RawMessage
 
-	// ElicitationKind is _meta["io.gleipnir/elicitation-kind"] when a managed
-	// plugin declares it explicitly (spec §6.1); "" when the server omitted
-	// it or it was not a JSON string.
+	// ElicitationKind is params._meta["io.gleipnir/elicitation-kind"] when a
+	// managed plugin declares it explicitly (spec §6.1); "" when the server
+	// omitted it or it was not a JSON string.
 	ElicitationKind string
 }
 
@@ -137,6 +175,11 @@ type InputRequest struct {
 // a tools/call returned resultType "input_required" instead of completing.
 // ToolResult.InputRequired is non-nil exactly when ToolResult.ResultType ==
 // ResultTypeInputRequired.
+//
+// InputRequests is sorted by ID (ascending) so that decode order is
+// deterministic regardless of Go's randomized map iteration -- ONLY this
+// package's internal ordering, not a wire correlation: the wire correlates by
+// ID (InputRequest.ID / InputResponse.ID), never by position.
 type InputRequiredResult struct {
 	InputRequests []InputRequest
 
@@ -147,10 +190,14 @@ type InputRequiredResult struct {
 }
 
 // InputResponse is the operator's answer to one InputRequest from a prior
-// input_required result. MRTR carries no per-request id, so a response is
-// correlated to InputRequiredResult.InputRequests by array position (spec
-// §6): InputResponses[i] answers InputRequests[i].
+// input_required result, correlated by InputRequest.ID (ADR-061; go-sdk
+// v1.7.0 keys inputResponses by the same server-assigned id inputRequests
+// used).
 type InputResponse struct {
+	// ID must equal the InputRequest.ID this response answers. An empty ID is
+	// a caller bug, not a server condition -- see client.go's retry build.
+	ID string
+
 	// Action is the elicitation outcome: "accept", "decline", or "cancel".
 	// This package does not validate Action against that vocabulary -- it is
 	// round-tripped to the server, which owns it.
@@ -159,13 +206,47 @@ type InputResponse struct {
 	// Content is the operator-supplied answer payload, present only when
 	// Action is "accept". nil for "decline"/"cancel".
 	Content json.RawMessage
+
+	// Meta is this response's `_meta` object, sent verbatim to the server. Its
+	// production use is the ADR-061 responder assertion
+	// (`_meta["io.gleipnir/responder"]`), stamped by
+	// execution/agent.InputRequiredHandler.Resolve -- this package only
+	// carries the bytes, never interprets them.
+	Meta json.RawMessage
 }
 
-// inputResponseWire is the wire shape of one inputResponses entry sent on an
-// MRTR retry tools/call.
+// inputResponseWire is the wire shape of one inputResponses map entry sent on
+// an MRTR retry tools/call. ID is not a field here -- it is the map key
+// (client.go's retry build).
 type inputResponseWire struct {
 	Action  string          `json:"action"`
 	Content json.RawMessage `json:"content,omitempty"`
+	Meta    json.RawMessage `json:"_meta,omitempty"`
+}
+
+// buildInputResponsesMap converts responses into the map keyed by request id
+// that the wire uses (ADR-061). Shared by client.go's CallTool retry build and
+// tasks.go's UpdateTask (finding 5, security review) so the two producers of
+// an inputResponses map cannot drift apart on what they reject.
+//
+// An empty ID is a caller bug, not a server condition: nothing was ever asked
+// under that key, so nothing on the server side could ever match it. A
+// duplicate ID is rejected for the same reason -- two answers for the one
+// question would silently collapse to whichever wins the map assignment,
+// sending the server one response for a question the caller believed it
+// answered twice.
+func buildInputResponsesMap(responses []InputResponse) (map[string]inputResponseWire, error) {
+	out := make(map[string]inputResponseWire, len(responses))
+	for _, r := range responses {
+		if r.ID == "" {
+			return nil, fmt.Errorf("input response has no ID to key it by")
+		}
+		if _, dup := out[r.ID]; dup {
+			return nil, fmt.Errorf("input response ID %q is duplicated", r.ID)
+		}
+		out[r.ID] = inputResponseWire{Action: r.Action, Content: r.Content, Meta: r.Meta}
+	}
+	return out, nil
 }
 
 // parseElicitationKind returns the _meta["io.gleipnir/elicitation-kind"]
@@ -218,7 +299,16 @@ func decodeInputRequiredResult(result toolsCallResult, limits ElicitationLimits)
 			"inputRequests is %d bytes, exceeds the %d-byte limit", len(result.InputRequests), limits.MaxRequestsBytes))
 	}
 
-	var wireRequests []inputRequestWire
+	// ADR-061 drops the array shape outright. A JSON array is unambiguous --
+	// no valid inputRequests object starts with '[' -- so this is checked
+	// before attempting the map unmarshal, which would otherwise fail with a
+	// generic "cannot unmarshal array into Go value of type map" that does
+	// not name what actually went wrong.
+	if trimmed := bytes.TrimSpace(result.InputRequests); len(trimmed) > 0 && trimmed[0] == '[' {
+		return InputRequiredResult{}, newInputRequiredError("inputRequests must be an object keyed by request id, not an array")
+	}
+
+	var wireRequests map[string]inputRequestEntryWire
 	if err := json.Unmarshal(result.InputRequests, &wireRequests); err != nil {
 		return InputRequiredResult{}, newInputRequiredError(fmt.Sprintf("inputRequests does not parse: %s", err))
 	}
@@ -230,12 +320,53 @@ func decodeInputRequiredResult(result toolsCallResult, limits ElicitationLimits)
 			"inputRequests has %d entries, exceeds the limit of %d", len(wireRequests), limits.MaxRequests))
 	}
 
-	requests := make([]InputRequest, len(wireRequests))
-	for i, wr := range wireRequests {
+	// Sorted by ID so decode order is deterministic despite Go's randomized
+	// map iteration. This is ONLY this package's internal ordering -- the
+	// wire correlates inputResponses to inputRequests by ID, never position.
+	ids := make([]string, 0, len(wireRequests))
+	for id := range wireRequests {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	requests := make([]InputRequest, len(ids))
+	for i, id := range ids {
+		// Rejected before a human is ever asked (finding 5, security review):
+		// an empty id names nothing the retry could key a response to, and an
+		// oversize one is a flooding vector, not a realistic identifier.
+		if id == "" {
+			return InputRequiredResult{}, newInputRequiredError("inputRequests contains an empty request id")
+		}
+		if len(id) > maxInputRequestIDBytes {
+			return InputRequiredResult{}, newInputRequiredError(fmt.Sprintf(
+				"inputRequests id %q exceeds the %d-byte limit", truncateForLog(id, 64), maxInputRequestIDBytes))
+		}
+
+		entry := wireRequests[id]
+		if entry.Method != elicitationCreateMethod {
+			return InputRequiredResult{}, newInputRequiredError(fmt.Sprintf(
+				"inputRequests[%q]: unsupported input request method %q, want %q", id, entry.Method, elicitationCreateMethod))
+		}
+
+		var params elicitParamsWire
+		if err := json.Unmarshal(entry.Params, &params); err != nil {
+			return InputRequiredResult{}, newInputRequiredError(fmt.Sprintf("inputRequests[%q].params does not parse: %s", id, err))
+		}
+		switch params.Mode {
+		case "", "form":
+			// The §6.1 default (no mode) and the only implemented mode.
+		default:
+			// url mode is not implemented; sampling has no representation in
+			// this package at all and is refused earlier via Method above.
+			return InputRequiredResult{}, newInputRequiredError(fmt.Sprintf(
+				"inputRequests[%q]: url-mode elicitation is not supported", id))
+		}
+
 		requests[i] = InputRequest{
-			Message:         wr.Message,
-			RequestedSchema: wr.RequestedSchema,
-			ElicitationKind: parseElicitationKind(wr.Meta),
+			ID:              id,
+			Message:         params.Message,
+			RequestedSchema: params.RequestedSchema,
+			ElicitationKind: parseElicitationKind(params.Meta),
 		}
 	}
 

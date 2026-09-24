@@ -3,7 +3,8 @@
 For authors of MCP servers (and, after the cutover, Gleipnir plugins) whose
 tools need a person to decide something mid-call.
 
-**Spec:** `mcp-realignment-spec.md` §6 (ADR-055, Amendment 1) ·
+**Spec:** `mcp-realignment-spec.md` §6 (ADR-055, Amendment 1); wire conformance
+and the responder assertion are ADR-061 ·
 **Operator-facing version of this page:** [Human-in-the-loop](../user/human-in-the-loop.md)
 
 ## The shape
@@ -16,14 +17,25 @@ blob of your own. Gleipnir pauses the run, routes the question to a human, and
 
 You are not being resumed. You are being called again.
 
+`inputRequests` and `inputResponses` are **objects keyed by a request id you
+assign** — a map, not an array (go-sdk v1.7.0's shape; Gleipnir's own client
+refuses the array shape outright as a structural error). Each `inputRequests`
+entry is `{method: "elicitation/create", params: {mode, message,
+requestedSchema}}`; only form-mode `elicitation/create` is accepted — sampling,
+roots, and url mode are all refused.
+
 ```
-tools/call  ──►  input_required { inputRequests[], requestState }
+tools/call  ──►  input_required {
+                   inputRequests: {"<id>": {method, params}},
+                   requestState
+                 }
                       │
                       │   (host pauses the run, asks a human)
                       ▼
 tools/call  ──►  result            ← same name, same arguments,
-   + inputResponses[]                plus the answer and your blob back
-   + requestState
+   + inputResponses: {"<id>": {action, content, _meta}}
+   + requestState                    plus the answer and your blob back,
+                                      keyed by the SAME id you assigned
 ```
 
 ## The obligation that comes with it
@@ -50,22 +62,30 @@ Two kinds, and they are answerable by different roles:
 - **information** — values you need. A form. Needs an `operator`.
 
 Gleipnir infers it from the shape: a `requestedSchema` that asks for no fields
-is a permission ask; anything with fields is an information ask. When one result
-bundles several requests, *information wins* — a single field anywhere means the
-person must be shown a form rather than an approve/reject pair.
+is a permission ask; anything with fields is an information ask. When one
+result bundles several requests, *permission wins* — if ANY entry in the
+bundle is consent-only, the WHOLE bundle needs an `approver`, even if every
+other entry in it has fields. Bundling a permission-shaped entry alongside an
+information-shaped one must not let it be answered by the weaker role: consent
+is the higher-privilege operation, so one consent-only entry raises the whole
+ask to the role that may grant consent.
 
-Say it explicitly when you can, with `_meta`:
+Say it explicitly when you can, with `_meta` **on the entry's `params`**:
 
 ```json
 {
-  "inputRequests": [
-    {
-      "message": "Delete 12 production records?",
-      "requestedSchema": { "type": "object", "properties": {} },
-      "_meta": { "io.gleipnir/elicitation-kind": "permission" }
+  "inputRequests": {
+    "approval": {
+      "method": "elicitation/create",
+      "params": {
+        "mode": "form",
+        "message": "Delete 12 production records?",
+        "requestedSchema": { "type": "object", "properties": {} },
+        "_meta": { "io.gleipnir/elicitation-kind": "permission" }
+      }
     }
-  ],
-  "requestState": { "cursor": "abc-1" }
+  },
+  "requestState": "abc-1"
 }
 ```
 
@@ -97,8 +117,8 @@ forever waiting for an answer nobody can give.
 
 ## What comes back
 
-`inputResponses`, correlated to your `inputRequests` **by position** — MRTR
-carries no per-request id, so the count matches exactly. Each entry is one of:
+`inputResponses`, keyed by the **same request id** you assigned in
+`inputRequests` — not by position. Each entry is one of:
 
 | action | carries content | means |
 |---|---|---|
@@ -110,6 +130,54 @@ A `decline` is a **legitimate answer**, not an error. Gleipnir hands it back to
 you and you decide what it means — an error result, a partial result, or a
 different question. Do not treat it as a transport failure.
 
+**Every response a human actually answered carries that person's identity,
+asserted by Gleipnir** in that entry's own `_meta`, along with which of
+Gleipnir's own two gates it enforced:
+
+```json
+{
+  "inputResponses": {
+    "approval": {
+      "action": "accept",
+      "content": { "confirmed": true },
+      "_meta": {
+        "io.gleipnir/responder": { "username": "alice", "user_id": "01J...", "gate": "permission" }
+      }
+    }
+  },
+  "requestState": "abc-1"
+}
+```
+
+It is filled **server-side**, from the authenticated Gleipnir session of
+whoever pressed the button — never from anything the operator or the model
+supplied. `gate` is `"permission"` or `"information"`, letting you see which
+role Gleipnir actually required for this answer rather than trusting that it
+enforced the one you asked for.
+
+**Absent when no human answered this round**, and this is not merely a
+missing field — it is the honest description of two different things:
+
+- On `cancel`, always: the exchange was abandoned, not decided.
+- On a replayed answer (§6.5): when your `requestState` expired and you
+  re-asked the IDENTICAL question, Gleipnir spends the answer already in hand
+  without asking anyone again — but it does **not** resend the original
+  `io.gleipnir/responder` to assert that a human decided this round. Instead
+  you get `_meta["io.gleipnir/replayed-from"] = {"request_id": "..."}`, naming
+  the original request the answer came from. **Permission asks never take
+  this path at all** — a re-asked permission question always reaches a human
+  again, however byte-identical the bundle, because consent is not something
+  Gleipnir will assert on a person's behalf a second time. Only an
+  information ask can be replayed, and only when the fresh bundle classifies
+  as information too — a kind flip under an unchanged fingerprint (your
+  `_meta` hint changing while the message and schema do not) is treated as a
+  new ask, not a replay.
+
+If what you are asking for is authorization to act *as* that person (the same
+"who decided this" question `approve_request`-shaped tools must answer for
+themselves), refuse an answer carrying no `io.gleipnir/responder` — that
+absence is the signal, not merely an unfamiliar shape.
+
 ## Caps you will hit if you misbehave
 
 Hard limits, not heuristics. Repetition fatigue-trains approvers, which is the
@@ -118,7 +186,7 @@ bound requests absolutely rather than merely spacing them out.
 
 | Cap | Default | Effect |
 |---|---|---|
-| Per-run elicitation budget | policy's `max_elicitations_per_run` (unset = unlimited) | Fail-closed. Over budget ⇒ the call fails structurally, the run continues. |
+| Per-run elicitation budget | policy's `max_elicitations_per_run`, default **10** | Fail-closed. Over budget ⇒ the call fails structurally, the run continues. |
 | Per-server rate limit | 1/s sustained, burst 5 (`GLEIPNIR_ELICITATION_RATE_PER_SEC` / `_BURST`) | Over-limit results are refused **before decoding**. Token bucket. |
 | Requests per result | 8 (`GLEIPNIR_ELICITATION_MAX_REQUESTS`) | Structural error; nothing persisted. |
 | `inputRequests` bytes | 64 KiB (`GLEIPNIR_ELICITATION_MAX_REQUESTS_BYTES`) | Structural error. |
@@ -148,15 +216,25 @@ The recovery path, and the reason to keep your re-asks stable:
 - Your `requestState` expires while a human is thinking.
 - Their answer is spent on a retry you no longer recognize, so you start over
   and ask again.
-- **If you ask the identical question** — same message, same schema — Gleipnir
-  replays the stored answer against your fresh `requestState` automatically. The
-  human never sees the hiccup.
-- **If you ask anything different**, the human is re-prompted with the previous
-  question and answer attached, flagged as a change.
+- **If you ask the identical INFORMATION question** — same message, same
+  schema, same classified kind — Gleipnir replays the stored answer against
+  your fresh `requestState` automatically. The human never sees the hiccup.
+  The retry carries a **new** request id if you minted one, re-keyed
+  correctly, and `io.gleipnir/replayed-from` instead of a responder assertion.
+- **A permission question is never replayed, full stop** — however
+  byte-identical the re-ask, an approval always goes back to a human. Consent
+  is the one thing Gleipnir will not assert on someone's behalf a second time.
+- **If you ask anything different** — different message, different schema, or
+  a classification that changed via your `_meta` hint even with identical
+  content — the human is re-prompted with the previous question and answer
+  attached, flagged as a change.
 
-Equality is over the message text and the canonicalized schema. A cosmetically
-reworded re-ask is a *different* question and will interrupt someone, so do not
-regenerate prompt text non-deterministically.
+Equality is over the message text, the canonicalized schema, AND the
+classified kind. A cosmetically reworded re-ask, or one whose `_meta` hint
+flips permission↔information under an otherwise-identical bundle, is a
+*different* question and will interrupt someone, so do not regenerate prompt
+text non-deterministically and do not flip the hint without changing what you
+are actually asking.
 
 The replay happens **once per question**. Answering a replay with the same
 question a third time is a loop, not a recovery, and falls through to the human.

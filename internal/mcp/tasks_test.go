@@ -298,7 +298,7 @@ func TestClient_UpdateTask_SendsInputResponses(t *testing.T) {
 	srv := httptest.NewServer(fake)
 	t.Cleanup(srv.Close)
 
-	responses := []InputResponse{{Action: "accept", Content: json.RawMessage(`{"confirmed":true}`)}}
+	responses := []InputResponse{{ID: "who", Action: "accept", Content: json.RawMessage(`{"confirmed":true}`)}}
 	if _, err := newModernClient(srv).UpdateTask(context.Background(), "task-1", responses); err != nil {
 		t.Fatalf("UpdateTask: %v", err)
 	}
@@ -313,8 +313,51 @@ func TestClient_UpdateTask_SendsInputResponses(t *testing.T) {
 	if err := json.Unmarshal(fake.requests[0].Params, &params); err != nil {
 		t.Fatalf("unmarshal params: %v", err)
 	}
-	if len(params.InputResponses) != 1 || params.InputResponses[0].Action != "accept" {
-		t.Errorf("InputResponses = %+v, want one accept entry", params.InputResponses)
+	if len(params.InputResponses) != 1 || params.InputResponses["who"].Action != "accept" {
+		t.Errorf("InputResponses = %+v, want one accept entry keyed by id", params.InputResponses)
+	}
+}
+
+// TestClient_UpdateTask_RejectsEmptyOrDuplicateID mirrors CallTool's retry
+// guard (buildInputResponsesMap, shared by both): an empty ID names nothing
+// to update, and a duplicate silently collapses two answers onto one map
+// entry (finding 5, security review). Neither reaches the wire.
+func TestClient_UpdateTask_RejectsEmptyOrDuplicateID(t *testing.T) {
+	tests := []struct {
+		name      string
+		responses []InputResponse
+	}{
+		{
+			name:      "empty ID",
+			responses: []InputResponse{{Action: "accept", Content: json.RawMessage(`{}`)}},
+		},
+		{
+			name: "duplicate ID",
+			responses: []InputResponse{
+				{ID: "who", Action: "accept", Content: json.RawMessage(`{}`)},
+				{ID: "who", Action: "decline"},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &tasksFakeResponder{
+				respond: func(method, taskID string, params json.RawMessage) (any, int, string) {
+					t.Fatal("the request reached the wire despite the invalid ID")
+					return nil, 0, ""
+				},
+			}
+			srv := httptest.NewServer(fake)
+			t.Cleanup(srv.Close)
+
+			if _, err := newModernClient(srv).UpdateTask(context.Background(), "task-1", tc.responses); err == nil {
+				t.Fatal("UpdateTask: want an error, got nil")
+			}
+			if len(fake.requests) != 0 {
+				t.Errorf("len(requests) = %d, want 0", len(fake.requests))
+			}
+		})
 	}
 }
 

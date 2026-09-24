@@ -232,6 +232,13 @@ type Record struct {
 	// Outcome is how it ended.
 	Outcome Outcome `json:"outcome"`
 
+	// ReplayOfRequestID names the ORIGINAL tool_input_requests row whose
+	// answer an OutcomeReplayedAfterTTL record spent, since there is no
+	// persisted row backing the replay event itself — the whole point of a
+	// replay is that the host never asked anyone again. Set only for that
+	// outcome; empty everywhere else.
+	ReplayOfRequestID string `json:"replay_of_request_id,omitempty"`
+
 	// Considered is every audience entry passed over before the chosen one, in
 	// order.
 	Considered []Candidate `json:"considered,omitempty"`
@@ -268,6 +275,12 @@ func (r Record) Validate() error {
 	}
 	if !r.LinkMethod.Verified() && r.ActorUserID != "" {
 		return fmt.Errorf("decision record: names a Gleipnir user but link method is %q", r.LinkMethod)
+	}
+	if r.ReplayOfRequestID != "" && r.Outcome != OutcomeReplayedAfterTTL {
+		return fmt.Errorf("decision record: replay_of_request_id is set, but outcome is %q, not %q", r.Outcome, OutcomeReplayedAfterTTL)
+	}
+	if r.ReplayOfRequestID == "" && r.Outcome == OutcomeReplayedAfterTTL {
+		return fmt.Errorf("decision record: outcome %q requires replay_of_request_id, naming the original request its answer was spent on", OutcomeReplayedAfterTTL)
 	}
 	return nil
 }

@@ -44,6 +44,12 @@ type timeoutClaim struct {
 	// the scanner already wrote one.
 	wonMessage  string
 	lostMessage string
+
+	// onWon is an optional hook invoked when this caller wins the race
+	// (rows==1), after the error step is written. The tool-initiated HITL
+	// path uses this to record a decision (ADR-055 §6.6); nil is a no-op for
+	// the approval and feedback paths, which do not record decisions.
+	onWon func()
 }
 
 // claimRequestTimeout runs the two-writer timeout race against the timeout
@@ -77,6 +83,9 @@ func claimRequestTimeout(ctx context.Context, audit *AuditWriter, c timeoutClaim
 			Type:    model.StepTypeError,
 			Content: model.ErrorStepContent{Message: c.wonMessage, Code: c.errorCode},
 		})
+		if c.onWon != nil {
+			c.onWon()
+		}
 		return errors.New(c.wonMessage)
 	}
 
