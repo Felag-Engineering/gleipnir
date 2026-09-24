@@ -1,0 +1,24 @@
+{
+  "rules": [
+    {
+      "name": "relaysmoke-fleet-wide-mutates-in-band",
+      "match": { "risk_class": "mutate", "min_fan_out": 2 },
+      "require": {
+        "count": 1,
+        "audience": ["dev-approver"],
+        "channel": "in-band",
+        "ttl": "1h"
+      }
+    },
+    {
+      "name": "dev-raw-exec-always-needs-a-human",
+      "match": { "raw_exec": true },
+      "require": {
+        "count": 1,
+        "audience": ["dev-approver"],
+        "channel": "out-of-band",
+        "ttl": "1h"
+      }
+    }
+  ]
+}

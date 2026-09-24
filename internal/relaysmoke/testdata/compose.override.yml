@@ -1,0 +1,24 @@
+# Second `-f` layered onto "$RELAY_DIR/docker-compose.yml" by scripts/relaysmoke.sh's
+# dc() function. Compose resolves this file's own relative paths against the FIRST
+# file's project directory ($RELAY_DIR), which is why every path here is an absolute
+# value interpolated from the environment rather than a path relative to this file.
+#
+# Two overrides, both required so the smoke fleet can run beside a developer's own
+# `relay-demo` fleet without touching it (docs/developer/relay-smoke.md):
+#
+#   - volumes: mounts the smoke lane's own approval-gates.json over Relay's baked-in
+#     fixture (docker/fixtures/approval-gates.json), which is all out-of-band and would
+#     never let the gated_mutate step exercise MRTR even once gleipnir-relay#646 lands.
+#     This APPENDS to relay's existing `relay-data` volume entry rather than replacing
+#     it — Compose merges a service's `volumes:` list across files.
+#   - ports: !override drops the fixed 7654/9443 host publishes entirely and republishes
+#     only the control-plane port, on 19443 by default. `!override` (not the default
+#     append) is required here, or the smoke fleet would try to publish the SAME host
+#     ports as a running `relay-demo` fleet and fail to start. This needs Compose
+#     >= 2.24.4; scripts/relaysmoke.sh checks for it before calling `up`.
+services:
+  relay:
+    volumes:
+      - ${RELAYSMOKE_GATES_FILE:?RELAYSMOKE_GATES_FILE must be set by scripts/relaysmoke.sh}:/etc/relay/approval-gates.json:ro
+    ports: !override
+      - "127.0.0.1:${RELAYSMOKE_CONTROL_PORT:-19443}:9443"

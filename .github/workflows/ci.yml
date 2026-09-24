@@ -459,6 +459,30 @@ jobs:
         env:
           GOWORK: off
 
+  # The relaysmoke suite (issue #931) is behind its own build tag for the same
+  # reason: it needs Docker and a live, compose-started Relay fleet, neither
+  # of which belongs on a PR. Unlike substrate there is no integration job at
+  # all here yet — Relay does not publish images to GHCR
+  # (gleipnir-relay#451 item 5), so the nightly/on-demand leg
+  # (docs/developer/relay-smoke.md) has to run against a checked-out Relay
+  # source tree and is deferred until that lands. This compile-only vet is
+  # what keeps the suite from bit-rotting against API drift in
+  # internal/mcp, internal/execution/run, and internal/http/api in the
+  # meantime.
+  relaysmoke-build:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: Vet the relaysmoke suite
+        run: go vet -tags relaysmoke ./internal/relaysmoke/
+        env:
+          GOWORK: off
+
   # Decides whether the substrate lane has to run for this PR.
   #
   # The answer comes from scripts/ci-local-scope.sh — the SAME scoper the local

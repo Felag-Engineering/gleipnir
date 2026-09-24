@@ -19,6 +19,7 @@ For people writing Gleipnir code. If you're looking for how to *run* Gleipnir, s
 
 ### Reference
 - [Manual testing](manual-testing.md) — live integration test environment with real MCP servers and the Slack plugin.
+- [Relay smoke test](relay-smoke.md) — the cross-product smoke suite (`internal/relaysmoke`, build tag `relaysmoke`) that drives Gleipnir against a live, compose-started Relay demo fleet: what it proves, how to run it locally, and how to read a failure. Nightly/on-demand only — never `ci-local`, never a PR gate.
 - [MCP realignment spec](mcp-realignment-spec.md) — the target architecture for ADR-053…ADR-060 (containerized plugins, the `io.gleipnir/channel` and `io.gleipnir/events` extensions, tool-initiated HITL). The §10–§11 client half and the §6 HITL half have shipped; the container half has not.
 - [`io.gleipnir/channel` extension](extension-io-gleipnir-channel.md) — the host↔channel contract: payloads, task lifecycle, assurance declaration, versioning policy, conformance checklist.
 - [Manual mode](manual-mode.md) — the operator-owned container posture: what Gleipnir does and does not touch, the label contract, what discovery concludes, a reference compose file, and the four ways to get it silently wrong.

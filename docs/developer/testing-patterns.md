@@ -148,6 +148,10 @@ mcpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *htt
 }))
 ```
 
+### Cross-product smoke (Relay)
+
+`internal/testutil/mrtrfake` plus `internal/execution/run/mrtr_e2e_test.go` is the hermetic per-PR half of MRTR coverage: a Relay-shaped fake MCP server, driven through the real HTTP handlers and RunLauncher/RunManager stack, in every `go test ./...` run. `internal/relaysmoke` (build-tagged `relaysmoke`, never `go test ./...`) is the nightly real-Relay half — the same in-process Gleipnir harness pattern, but against a live, compose-started Relay demo fleet instead of the fake. See `docs/developer/relay-smoke.md`.
+
 ### State machine tests
 
 Test status transitions by injecting a publisher and asserting on published `run.status_changed` events. See `internal/execution/agent/state_test.go`.
