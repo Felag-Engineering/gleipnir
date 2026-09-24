@@ -186,8 +186,10 @@ type Registry struct {
 // RegistryOption configures a Registry.
 type RegistryOption func(*Registry)
 
-// WithMCPTimeout sets the HTTP timeout applied to every MCP Client created
-// by the Registry. When zero, the Client default (30 s) is used.
+// WithMCPTimeout sets the instance-wide default HTTP timeout applied to
+// every MCP Client created by the Registry. When zero, the Client default
+// (30 s) is used. A server's own call_timeout_seconds (issue #939) overrides
+// this default for that server's clients only -- see CallTimeoutFor.
 func WithMCPTimeout(d time.Duration) RegistryOption {
 	return func(r *Registry) {
 		r.mcpTimeout = d
@@ -285,6 +287,12 @@ func WithToolNamespaceArbiter(a *toolregistry.Registry) RegistryOption {
 // capacity decision, not a property of the server. Putting it in the servers
 // table would let whoever registered a server also decide how much of the host
 // it may occupy.
+//
+// call_timeout_seconds (issue #939) is a deliberate, bounded exception to
+// that reasoning: a call timeout, unlike concurrency, is a property of how
+// long the server's own calls legitimately run, so it lives on the server
+// row -- capped at 600s (CallTimeoutFor) so a long timeout cannot turn into
+// an unbounded hold on one of these concurrency slots.
 func WithServerCallLimits(defaults ServerLimits, perServer map[string]ServerLimits) RegistryOption {
 	return func(r *Registry) {
 		r.defaultLimits = defaults
@@ -309,16 +317,15 @@ func NewRegistry(queries *db.Queries, opts ...RegistryOption) *Registry {
 	return r
 }
 
-// newClientForServer creates an MCP Client for srv, applying the Registry's
-// mcpTimeout and decrypting any stored auth headers. On decrypt or unmarshal
-// error, or when the encryption key is unset, the client is returned with no
-// auth headers and a warning is logged — matching the fail-open pattern used
-// by the webhook secret loader.
+// newClientForServer creates an MCP Client for srv, applying the server's
+// call timeout (call_timeout_seconds, else the Registry's GLEIPNIR_MCP_TIMEOUT
+// default -- see CallTimeoutFor) and decrypting any stored auth headers. On
+// decrypt or unmarshal error, or when the encryption key is unset, the client
+// is returned with no auth headers and a warning is logged — matching the
+// fail-open pattern used by the webhook secret loader.
 func (r *Registry) newClientForServer(srv db.McpServer) *Client {
 	opts := make([]ClientOption, 0, 5)
-	if r.mcpTimeout > 0 {
-		opts = append(opts, WithTimeout(r.mcpTimeout))
-	}
+	opts = append(opts, WithTimeout(r.CallTimeoutFor(srv)))
 	opts = append(opts,
 		WithElicitationLimits(r.elicitationLimits),
 		WithElicitationRateLimit(r.elicitationRateHz, r.elicitationBurst),
@@ -599,6 +606,10 @@ func (r *Registry) LookupTool(ctx context.Context, serverName, toolName string) 
 //
 // The returned tools are canonicalized (see canonicalizeDiscovered) so the
 // caller can persist both the raw and canonical schema forms.
+//
+// The synthetic row carries no call_timeout_seconds override, so this probe
+// always runs at the Registry's instance default (issue #939) -- the whole
+// sequence is bounded by ProbeTimeout regardless.
 func (r *Registry) ProbeTools(ctx context.Context, name, urlStr string, encryptedAuthHeaders *string, caCertPEM *string) ([]DiscoveredTool, error) {
 	synthetic := db.McpServer{
 		ID:                   "<probe>",

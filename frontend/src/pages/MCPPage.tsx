@@ -84,7 +84,13 @@ export default function MCPPage() {
     }
   })
 
-  function handleAddSubmit(name: string, url: string, headers: HeaderRow[], caCertPem: string) {
+  function handleAddSubmit(
+    name: string,
+    url: string,
+    headers: HeaderRow[],
+    caCertPem: string,
+    callTimeoutSeconds: number | null,
+  ) {
     setAddDiscoveryWarning(null)
     addMutation.mutate(
       {
@@ -92,6 +98,7 @@ export default function MCPPage() {
         url,
         auth_headers: headers.length > 0 ? headers : undefined,
         ca_cert_pem: caCertPem.trim() || undefined,
+        call_timeout_seconds: callTimeoutSeconds ?? undefined,
       },
       {
         onSuccess: (data) => {

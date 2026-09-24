@@ -1,6 +1,6 @@
 -- name: CreateMCPServer :one
-INSERT INTO mcp_servers (id, name, url, created_at, auth_headers_encrypted, ca_cert_pem)
-VALUES (:id, :name, :url, :created_at, :auth_headers_encrypted, :ca_cert_pem)
+INSERT INTO mcp_servers (id, name, url, created_at, auth_headers_encrypted, ca_cert_pem, call_timeout_seconds)
+VALUES (:id, :name, :url, :created_at, :auth_headers_encrypted, :ca_cert_pem, :call_timeout_seconds)
 RETURNING *;
 
 -- name: GetMCPServer :one
@@ -22,7 +22,7 @@ DELETE FROM mcp_servers WHERE id = :id;
 
 -- name: UpdateMCPServer :one
 UPDATE mcp_servers
-SET name = :name, url = :url, ca_cert_pem = :ca_cert_pem
+SET name = :name, url = :url, ca_cert_pem = :ca_cert_pem, call_timeout_seconds = :call_timeout_seconds
 WHERE id = :id
 RETURNING *;
 

@@ -1469,3 +1469,137 @@ func TestAddToolInputCancelledStatusSkipsOnFreshSchema(t *testing.T) {
 		t.Fatal("ShouldSkip returned false on a fresh initial schema — did 0001_initial.sql forget 'cancelled' in the tool_input_requests status CHECK?")
 	}
 }
+
+// seedPreCallTimeoutMCPServers hand-creates the end-of-0053 mcp_servers
+// shape: every column through ca_cert_pem, but OMITTING call_timeout_seconds,
+// so AddMCPServerCallTimeout's ShouldSkip returns false and Up() actually
+// runs.
+func seedPreCallTimeoutMCPServers(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	stmts := []string{
+		`CREATE TABLE schema_migrations (
+			version     INTEGER PRIMARY KEY,
+			applied_at  TEXT    NOT NULL
+		)`,
+		`INSERT INTO schema_migrations(version, applied_at) VALUES (1, '2024-01-01T00:00:00Z')`,
+
+		`CREATE TABLE mcp_servers (
+			id                      TEXT    PRIMARY KEY,
+			name                    TEXT    NOT NULL UNIQUE,
+			url                     TEXT    NOT NULL,
+			last_discovered_at      TEXT,
+			has_drift               INTEGER NOT NULL DEFAULT 0,
+			created_at              TEXT    NOT NULL,
+			auth_headers_encrypted  TEXT,
+			protocol_version        TEXT,
+			plugin_instance_id      TEXT,
+			ca_cert_pem             TEXT
+		)`,
+	}
+
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seedPreCallTimeoutMCPServers: %v\nstatement: %s", err, stmt)
+		}
+	}
+}
+
+// TestAddMCPServerCallTimeout verifies that migration 0054 adds
+// call_timeout_seconds to mcp_servers on the existing-database upgrade path,
+// leaves pre-existing rows NULL ("use the instance default"), and round-trips
+// values.
+func TestAddMCPServerCallTimeout(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+
+	// Build the pre-0054 schema by hand — do NOT call applyInitialSchema.
+	seedPreCallTimeoutMCPServers(t, db)
+
+	// Confirm ShouldSkip is false so the test fails loudly if a future schema
+	// change makes the migration skip again (which would make the rest of this
+	// test a vacuous pass).
+	m := &migrations.AddMCPServerCallTimeout{}
+	skip, err := m.ShouldSkip(ctx, db)
+	if err != nil {
+		t.Fatalf("ShouldSkip: %v", err)
+	}
+	if skip {
+		t.Fatal("ShouldSkip returned true against the pre-target baseline — the hand-crafted DDL must omit call_timeout_seconds")
+	}
+
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO mcp_servers(id, name, url, created_at) VALUES ('s1', 'srv', 'https://localhost:9443', '2024-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("seed mcp_servers row: %v", err)
+	}
+
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	var count int64
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('mcp_servers') WHERE name = 'call_timeout_seconds'`,
+	).Scan(&count); err != nil {
+		t.Fatalf("query pragma_table_info: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("call_timeout_seconds column count = %d, want 1", count)
+	}
+
+	// The pre-existing row must backfill to NULL, not some default.
+	var timeout sql.NullInt64
+	if err := db.QueryRowContext(ctx, `SELECT call_timeout_seconds FROM mcp_servers WHERE id = 's1'`).Scan(&timeout); err != nil {
+		t.Fatalf("read call_timeout_seconds: %v", err)
+	}
+	if timeout.Valid {
+		t.Errorf("call_timeout_seconds = %d after migration, want NULL", timeout.Int64)
+	}
+
+	// Round-trip: set, read back, clear, read back.
+	if _, err := db.ExecContext(ctx, `UPDATE mcp_servers SET call_timeout_seconds = 120 WHERE id = 's1'`); err != nil {
+		t.Fatalf("set call_timeout_seconds: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT call_timeout_seconds FROM mcp_servers WHERE id = 's1'`).Scan(&timeout); err != nil {
+		t.Fatalf("read call_timeout_seconds after set: %v", err)
+	}
+	if !timeout.Valid || timeout.Int64 != 120 {
+		t.Errorf("call_timeout_seconds = %v after set, want 120", timeout)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE mcp_servers SET call_timeout_seconds = NULL WHERE id = 's1'`); err != nil {
+		t.Fatalf("clear call_timeout_seconds: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT call_timeout_seconds FROM mcp_servers WHERE id = 's1'`).Scan(&timeout); err != nil {
+		t.Fatalf("read call_timeout_seconds after clear: %v", err)
+	}
+	if timeout.Valid {
+		t.Errorf("call_timeout_seconds = %d after clear, want NULL", timeout.Int64)
+	}
+
+	// Second Apply must be a no-op — proves ShouldSkip flips to true after Up,
+	// not just on a fresh schema.
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("second Apply (idempotency): %v", err)
+	}
+}
+
+// TestAddMCPServerCallTimeoutSkipsOnFreshSchema is the regression gate for
+// forgetting to hand-sync 0001_initial.sql: on a fresh database built from
+// the initial schema, call_timeout_seconds must already exist, so ShouldSkip
+// must return true. If someone adds the Go migration without editing
+// 0001_initial.sql, this test fails (and sqlc would silently not see the
+// column, since sqlc.yaml only reads 0001_initial.sql).
+func TestAddMCPServerCallTimeoutSkipsOnFreshSchema(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	applyInitialSchema(t, db)
+
+	skip, err := (&migrations.AddMCPServerCallTimeout{}).ShouldSkip(ctx, db)
+	if err != nil {
+		t.Fatalf("ShouldSkip: %v", err)
+	}
+	if !skip {
+		t.Fatal("ShouldSkip returned false on a fresh initial schema — did 0001_initial.sql forget the call_timeout_seconds column?")
+	}
+}

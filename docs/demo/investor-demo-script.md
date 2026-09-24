@@ -44,7 +44,8 @@ act three is real whether the Node is a container or a datacenter, which is exac
 admitting the setup costs nothing — and getting caught overstating it would cost the whole
 argument.
 
-**Before you start:** set `GLEIPNIR_MCP_TIMEOUT=120s` in the demo stack — Relay's approved
+**Before you start:** confirm the Relay MCP server's Call timeout reads `120s` on Gleipnir's
+MCP servers page (set it in the server's detail if it shows `Default (30s)`) — Relay's approved
 retry runs the Job synchronously inside one `tools/call`, and the 30s default is tight for a
 fan-out restart. Confirm the Relay server shows `protocol_version 2026-07-28` on Gleipnir's
 MCP servers page before act two: a legacy pin means the approval in act two never reaches a

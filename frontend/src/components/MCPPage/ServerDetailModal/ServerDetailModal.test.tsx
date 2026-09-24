@@ -107,6 +107,17 @@ describe('ServerDetailModal', () => {
     expect(screen.getByText('get_time')).toBeInTheDocument()
   })
 
+  it('renders the call timeout section (issue #939)', () => {
+    renderWithClient(
+      <ServerDetailModal
+        {...defaultProps}
+        server={{ ...server, call_timeout_seconds: null, effective_call_timeout_seconds: 30 }}
+      />,
+    )
+    expect(screen.getByText('Call timeout')).toBeInTheDocument()
+    expect(screen.getByText('Default (30s)')).toBeInTheDocument()
+  })
+
   it('calls onClose when close button is clicked', () => {
     const onClose = vi.fn()
     renderWithClient(<ServerDetailModal {...defaultProps} onClose={onClose} />)

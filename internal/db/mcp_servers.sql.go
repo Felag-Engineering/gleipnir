@@ -22,9 +22,9 @@ func (q *Queries) CountMCPServers(ctx context.Context) (int64, error) {
 }
 
 const createMCPServer = `-- name: CreateMCPServer :one
-INSERT INTO mcp_servers (id, name, url, created_at, auth_headers_encrypted, ca_cert_pem)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-RETURNING id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem
+INSERT INTO mcp_servers (id, name, url, created_at, auth_headers_encrypted, ca_cert_pem, call_timeout_seconds)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+RETURNING id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem, call_timeout_seconds
 `
 
 type CreateMCPServerParams struct {
@@ -34,6 +34,7 @@ type CreateMCPServerParams struct {
 	CreatedAt            string  `json:"created_at"`
 	AuthHeadersEncrypted *string `json:"auth_headers_encrypted"`
 	CaCertPem            *string `json:"ca_cert_pem"`
+	CallTimeoutSeconds   *int64  `json:"call_timeout_seconds"`
 }
 
 func (q *Queries) CreateMCPServer(ctx context.Context, arg CreateMCPServerParams) (McpServer, error) {
@@ -44,6 +45,7 @@ func (q *Queries) CreateMCPServer(ctx context.Context, arg CreateMCPServerParams
 		arg.CreatedAt,
 		arg.AuthHeadersEncrypted,
 		arg.CaCertPem,
+		arg.CallTimeoutSeconds,
 	)
 	var i McpServer
 	err := row.Scan(
@@ -57,6 +59,7 @@ func (q *Queries) CreateMCPServer(ctx context.Context, arg CreateMCPServerParams
 		&i.ProtocolVersion,
 		&i.PluginInstanceID,
 		&i.CaCertPem,
+		&i.CallTimeoutSeconds,
 	)
 	return i, err
 }
@@ -64,7 +67,7 @@ func (q *Queries) CreateMCPServer(ctx context.Context, arg CreateMCPServerParams
 const createManagedMCPServer = `-- name: CreateManagedMCPServer :one
 INSERT INTO mcp_servers (id, name, url, created_at, plugin_instance_id, protocol_version)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-RETURNING id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem
+RETURNING id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem, call_timeout_seconds
 `
 
 type CreateManagedMCPServerParams struct {
@@ -102,6 +105,7 @@ func (q *Queries) CreateManagedMCPServer(ctx context.Context, arg CreateManagedM
 		&i.ProtocolVersion,
 		&i.PluginInstanceID,
 		&i.CaCertPem,
+		&i.CallTimeoutSeconds,
 	)
 	return i, err
 }
@@ -128,7 +132,7 @@ func (q *Queries) DeleteManagedMCPServer(ctx context.Context, pluginInstanceID *
 }
 
 const getMCPServer = `-- name: GetMCPServer :one
-SELECT id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem FROM mcp_servers WHERE id = ?1
+SELECT id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem, call_timeout_seconds FROM mcp_servers WHERE id = ?1
 `
 
 func (q *Queries) GetMCPServer(ctx context.Context, id string) (McpServer, error) {
@@ -145,12 +149,13 @@ func (q *Queries) GetMCPServer(ctx context.Context, id string) (McpServer, error
 		&i.ProtocolVersion,
 		&i.PluginInstanceID,
 		&i.CaCertPem,
+		&i.CallTimeoutSeconds,
 	)
 	return i, err
 }
 
 const getMCPServerByPluginInstance = `-- name: GetMCPServerByPluginInstance :one
-SELECT id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem FROM mcp_servers WHERE plugin_instance_id = ?1
+SELECT id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem, call_timeout_seconds FROM mcp_servers WHERE plugin_instance_id = ?1
 `
 
 // GetMCPServerByPluginInstance finds the registry entry backing a managed
@@ -171,12 +176,13 @@ func (q *Queries) GetMCPServerByPluginInstance(ctx context.Context, pluginInstan
 		&i.ProtocolVersion,
 		&i.PluginInstanceID,
 		&i.CaCertPem,
+		&i.CallTimeoutSeconds,
 	)
 	return i, err
 }
 
 const listMCPServers = `-- name: ListMCPServers :many
-SELECT id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem FROM mcp_servers ORDER BY created_at ASC
+SELECT id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem, call_timeout_seconds FROM mcp_servers ORDER BY created_at ASC
 `
 
 // ListMCPServers is ordered ASC: MCP servers are administrative objects registered
@@ -201,6 +207,7 @@ func (q *Queries) ListMCPServers(ctx context.Context) ([]McpServer, error) {
 			&i.ProtocolVersion,
 			&i.PluginInstanceID,
 			&i.CaCertPem,
+			&i.CallTimeoutSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -252,7 +259,7 @@ func (q *Queries) ListMCPServersWithAuthHeaders(ctx context.Context) ([]ListMCPS
 }
 
 const listManagedMCPServers = `-- name: ListManagedMCPServers :many
-SELECT id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem FROM mcp_servers WHERE plugin_instance_id IS NOT NULL ORDER BY created_at ASC
+SELECT id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem, call_timeout_seconds FROM mcp_servers WHERE plugin_instance_id IS NOT NULL ORDER BY created_at ASC
 `
 
 func (q *Queries) ListManagedMCPServers(ctx context.Context) ([]McpServer, error) {
@@ -275,6 +282,7 @@ func (q *Queries) ListManagedMCPServers(ctx context.Context) ([]McpServer, error
 			&i.ProtocolVersion,
 			&i.PluginInstanceID,
 			&i.CaCertPem,
+			&i.CallTimeoutSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -291,16 +299,17 @@ func (q *Queries) ListManagedMCPServers(ctx context.Context) ([]McpServer, error
 
 const updateMCPServer = `-- name: UpdateMCPServer :one
 UPDATE mcp_servers
-SET name = ?1, url = ?2, ca_cert_pem = ?3
-WHERE id = ?4
-RETURNING id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem
+SET name = ?1, url = ?2, ca_cert_pem = ?3, call_timeout_seconds = ?4
+WHERE id = ?5
+RETURNING id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem, call_timeout_seconds
 `
 
 type UpdateMCPServerParams struct {
-	Name      string  `json:"name"`
-	Url       string  `json:"url"`
-	CaCertPem *string `json:"ca_cert_pem"`
-	ID        string  `json:"id"`
+	Name               string  `json:"name"`
+	Url                string  `json:"url"`
+	CaCertPem          *string `json:"ca_cert_pem"`
+	CallTimeoutSeconds *int64  `json:"call_timeout_seconds"`
+	ID                 string  `json:"id"`
 }
 
 func (q *Queries) UpdateMCPServer(ctx context.Context, arg UpdateMCPServerParams) (McpServer, error) {
@@ -308,6 +317,7 @@ func (q *Queries) UpdateMCPServer(ctx context.Context, arg UpdateMCPServerParams
 		arg.Name,
 		arg.Url,
 		arg.CaCertPem,
+		arg.CallTimeoutSeconds,
 		arg.ID,
 	)
 	var i McpServer
@@ -322,6 +332,7 @@ func (q *Queries) UpdateMCPServer(ctx context.Context, arg UpdateMCPServerParams
 		&i.ProtocolVersion,
 		&i.PluginInstanceID,
 		&i.CaCertPem,
+		&i.CallTimeoutSeconds,
 	)
 	return i, err
 }

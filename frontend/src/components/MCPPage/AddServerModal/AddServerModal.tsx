@@ -5,6 +5,7 @@ import { Button } from '@/components/Button/Button'
 import { useTestMcpConnection } from '@/hooks/mutations/servers'
 import type { ApiError } from '@/api/fetch'
 import { ErrorBanner } from '@/components/form/ErrorBanner'
+import { parseCallTimeoutInput } from '../callTimeout'
 import styles from './AddServerModal.module.css'
 import formStyles from '@/styles/forms.module.css'
 import alertStyles from '@/styles/alerts.module.css'
@@ -16,7 +17,13 @@ interface HeaderRow {
 
 interface Props {
   onClose: () => void
-  onSubmit: (name: string, url: string, headers: HeaderRow[], caCertPem: string) => void
+  onSubmit: (
+    name: string,
+    url: string,
+    headers: HeaderRow[],
+    caCertPem: string,
+    callTimeoutSeconds: number | null,
+  ) => void
   isPending: boolean
   error: ApiError | null
   discoveryWarning?: string | null
@@ -27,14 +34,17 @@ export function AddServerModal({ onClose, onSubmit, isPending, error, discoveryW
   const [url, setUrl] = useState('')
   const [headers, setHeaders] = useState<HeaderRow[]>([])
   const [caCertPem, setCaCertPem] = useState('')
+  const [callTimeout, setCallTimeout] = useState('')
   const testMutation = useTestMcpConnection()
+
+  const { value: parsedCallTimeout, error: callTimeoutError } = parseCallTimeoutInput(callTimeout)
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
-    if (name.trim() && url.trim()) {
+    if (name.trim() && url.trim() && !callTimeoutError) {
       // Filter out rows where both key and value are empty.
       const nonEmpty = headers.filter((h) => h.key.trim() || h.value.trim())
-      onSubmit(name.trim(), url.trim(), nonEmpty, caCertPem.trim())
+      onSubmit(name.trim(), url.trim(), nonEmpty, caCertPem.trim(), parsedCallTimeout)
     }
   }
 
@@ -87,7 +97,7 @@ export function AddServerModal({ onClose, onSubmit, isPending, error, discoveryW
       isLoading={isPending}
       submitLabel="Add MCP server"
       loadingLabel="Adding…"
-      submitDisabled={!name.trim() || !url.trim()}
+      submitDisabled={!name.trim() || !url.trim() || !!callTimeoutError}
     />
   )
 
@@ -173,6 +183,29 @@ export function AddServerModal({ onClose, onSubmit, isPending, error, discoveryW
             For HTTPS servers behind a private CA. Paste the CA certificate (not the server
             certificate); only this CA will be trusted for this server.
           </p>
+        </div>
+
+        <div className={formStyles.field}>
+          <label htmlFor="server-call-timeout" className={formStyles.labelMono}>
+            Call timeout (seconds) <span className={styles.optionalLabel}>(optional)</span>
+          </label>
+          <input
+            id="server-call-timeout"
+            type="number"
+            inputMode="numeric"
+            min={1}
+            max={600}
+            step={1}
+            className={styles.callTimeoutInput}
+            placeholder="Default"
+            value={callTimeout}
+            onChange={(e) => setCallTimeout(e.target.value)}
+          />
+          <p className={styles.fieldHint}>
+            Leave blank to use the instance default. Raise it for servers whose tool calls
+            legitimately run long (1–600 seconds).
+          </p>
+          {callTimeoutError && <div className={styles.callTimeoutError}>{callTimeoutError}</div>}
         </div>
 
         <div className={formStyles.field}>

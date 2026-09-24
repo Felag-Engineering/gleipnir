@@ -57,7 +57,7 @@ describe('AddServerModal', () => {
     fireEvent.submit(document.getElementById('add-server-form')!)
     expect(onSubmit).toHaveBeenCalledWith('my-server', 'http://localhost:8080', [
       { key: 'x-api-key', value: 'sk-secret' },
-    ], '')
+    ], '', null)
   })
 
   it('submit without headers passes empty array', () => {
@@ -75,7 +75,7 @@ describe('AddServerModal', () => {
     fireEvent.change(screen.getByLabelText(/url/i), { target: { value: 'http://localhost:8080' } })
 
     fireEvent.submit(document.getElementById('add-server-form')!)
-    expect(onSubmit).toHaveBeenCalledWith('my-server', 'http://localhost:8080', [], '')
+    expect(onSubmit).toHaveBeenCalledWith('my-server', 'http://localhost:8080', [], '', null)
   })
 
   it('passes the CA certificate textarea value to onSubmit', () => {
@@ -94,7 +94,47 @@ describe('AddServerModal', () => {
     fireEvent.change(screen.getByLabelText(/ca certificate/i), { target: { value: FAKE_CERT_PEM } })
 
     fireEvent.submit(document.getElementById('add-server-form')!)
-    expect(onSubmit).toHaveBeenCalledWith('my-server', 'https://localhost:8443', [], FAKE_CERT_PEM)
+    expect(onSubmit).toHaveBeenCalledWith('my-server', 'https://localhost:8443', [], FAKE_CERT_PEM, null)
+  })
+
+  it('submits the parsed call timeout when set', () => {
+    const onSubmit = vi.fn()
+    render(
+      <AddServerModal
+        onClose={noop}
+        onSubmit={onSubmit}
+        isPending={false}
+        error={null}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText(/name/i), { target: { value: 'my-server' } })
+    fireEvent.change(screen.getByLabelText(/url/i), { target: { value: 'http://localhost:8080' } })
+    fireEvent.change(screen.getByLabelText(/call timeout/i), { target: { value: '120' } })
+
+    fireEvent.submit(document.getElementById('add-server-form')!)
+    expect(onSubmit).toHaveBeenCalledWith('my-server', 'http://localhost:8080', [], '', 120)
+  })
+
+  it('shows an inline error and blocks submit for an out-of-range call timeout', () => {
+    const onSubmit = vi.fn()
+    render(
+      <AddServerModal
+        onClose={noop}
+        onSubmit={onSubmit}
+        isPending={false}
+        error={null}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText(/name/i), { target: { value: 'my-server' } })
+    fireEvent.change(screen.getByLabelText(/url/i), { target: { value: 'http://localhost:8080' } })
+    fireEvent.change(screen.getByLabelText(/call timeout/i), { target: { value: '700' } })
+
+    expect(screen.getByText(/must be between 1 and 600 seconds/i)).toBeInTheDocument()
+
+    fireEvent.submit(document.getElementById('add-server-form')!)
+    expect(onSubmit).not.toHaveBeenCalled()
   })
 
   it('includes the CA certificate in the test-connection request', () => {
@@ -110,8 +150,12 @@ describe('AddServerModal', () => {
 
     fireEvent.change(screen.getByLabelText(/url/i), { target: { value: 'https://localhost:8443' } })
     fireEvent.change(screen.getByLabelText(/ca certificate/i), { target: { value: FAKE_CERT_PEM } })
+    fireEvent.change(screen.getByLabelText(/call timeout/i), { target: { value: '120' } })
     fireEvent.click(screen.getByRole('button', { name: /test connection/i }))
 
+    // call_timeout_seconds is never honored by TestConnection (see
+    // mcp_handler.go's doc); the payload must not carry it even when the
+    // field is filled in.
     expect(testMutate).toHaveBeenCalledWith({
       url: 'https://localhost:8443',
       auth_headers: undefined,

@@ -21,8 +21,8 @@ an ordinary machine Account and gets nothing another harness could not have.
 
 ## Prerequisites
 
-- Gleipnir from this repo (main or later, which includes per-server CA trust #928 and MRTR
-  approval #929), running with `GLEIPNIR_MCP_TIMEOUT=120s`.
+- Gleipnir from this repo (main or later, which includes per-server CA trust #928, MRTR
+  approval #929 and per-server call timeout #939).
 - A Relay with `-control-enabled`. For the demo: the Relay repo's nine-Node demo fleet
   (`make demo-build`, `make demo-reset`; see
   [gleipnir-relay docs/operations/demo-fleet.md](https://github.com/Felag-Engineering/gleipnir-relay/blob/main/docs/operations/demo-fleet.md)).
@@ -156,9 +156,9 @@ docker compose -f docker-compose.yml -f docs/playbooks/fleet-ops/docker-compose.
 
 The overlay is [`docker-compose.relay.yml`](docker-compose.relay.yml). The SAN rule: the URL
 host must equal Relay's `-hostname` (demo: `relay`). An IP or `localhost` fails verification
-with a hostname mismatch, and verification is never disabled. Non-container alternative: export
-`GLEIPNIR_MCP_TIMEOUT=120s` and add `127.0.0.1 relay` to `/etc/hosts` (the same line Relay's
-`dev-fleet.md` uses), then start Gleipnir normally.
+with a hostname mismatch, and verification is never disabled. Non-container alternative: add
+`127.0.0.1 relay` to `/etc/hosts` (the same line Relay's `dev-fleet.md` uses), then start
+Gleipnir normally.
 
 ## Step 6 — Gleipnir users
 
@@ -174,10 +174,13 @@ Tools → Add MCP server:
 - Name: `relay` (exactly; the YAML references `relay.<tool>`)
 - URL: `https://relay:9443/mcp`
 - CA certificate: paste `.dev-fleet/ca-cert.pem`
+- Call timeout: `120` seconds (Relay runs an approved Job synchronously inside the retried
+  `tools/call`; the 30s default is too short for a fan-out)
 - Auth header: `Authorization` = `Bearer <contents of .dev-fleet/gleipnir-credential>`
 
-Expected: badge "Protocol 2026-07-28" and eight tools. If the badge reads "Legacy protocol" or "Protocol unknown", press
-Rediscover. A legacy pin means Relay's approval question never reaches a human
+Expected: badge "Protocol 2026-07-28", eight tools, and Call timeout `120s` in the server's
+detail. If the badge reads "Legacy protocol" or "Protocol unknown", press Rediscover. A legacy
+pin means Relay's approval question never reaches a human
 ([gleipnir-relay#646](https://github.com/Felag-Engineering/gleipnir-relay/issues/646)). Then
 disable `raw_exec` and `approve_request` (recommended). Do this BEFORE Step 8, because `params`
 are validated against the discovered schema only at save time.
@@ -292,7 +295,7 @@ pin survive.
 | Badge Legacy / unknown | Rediscover. |
 | Agent reports `pending_approval` | The gate rule is out-of-band, or the Relay lacks #646. |
 | Approval answered but refused (not in audience / requester excluded) | The gate rule lacks audience `gleipnir` or `requester_allowed` true. |
-| Tool call times out after approval | `GLEIPNIR_MCP_TIMEOUT` is not `120s`. |
+| Tool call times out after approval | The `relay` server's Call timeout is not `120s` (detail modal shows `Default (30s)`). Set it there; no restart needed. |
 | Run fails with feedback timeout | Nobody with the `approver` role answered within `feedback.timeout`. |
 | `spawn systemctl` failure | The demo fleet's busybox limit. |
 | `data.warnings` about `params` | Server not discovered before the POST. |

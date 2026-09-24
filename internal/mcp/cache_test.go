@@ -119,6 +119,7 @@ func TestClientForServer_ReusesUntilConfigChanges(t *testing.T) {
 	protoA := "2026-07-28"
 	authA := "ciphertext-a"
 	caPEM := testutil.NewTestCA(t).PEM
+	callTimeoutA := int64(120)
 
 	tests := []struct {
 		name   string
@@ -129,6 +130,7 @@ func TestClientForServer_ReusesUntilConfigChanges(t *testing.T) {
 		{"protocol_version", func(s db.McpServer) db.McpServer { s.ProtocolVersion = &protoA; return s }},
 		{"auth_headers_encrypted", func(s db.McpServer) db.McpServer { s.AuthHeadersEncrypted = &authA; return s }},
 		{"ca_cert_pem", func(s db.McpServer) db.McpServer { s.CaCertPem = &caPEM; return s }},
+		{"call_timeout_seconds", func(s db.McpServer) db.McpServer { s.CallTimeoutSeconds = &callTimeoutA; return s }},
 	}
 
 	for _, tc := range tests {
@@ -417,6 +419,41 @@ func TestResolveToolByName_ConfigChangeRebuildsClient(t *testing.T) {
 		}
 		if _, err := client3.CallTool(context.Background(), toolName, nil, CallOptions{}); err != nil {
 			t.Fatalf("CallTool after reverting to the correct CA: %v", err)
+		}
+	})
+
+	// Acceptance: "edit takes effect on the next call without a restart"
+	// (issue #939) — a resolve after the DB write returns a rebuilt *Client
+	// carrying the new override as its http.Client.Timeout.
+	t.Run("call timeout change rebuilds the client", func(t *testing.T) {
+		reg, store := newTestRegistry(t)
+		rawDB := store.DB()
+
+		srv, _, _ := sessionCountingLegacyServer(t, "my-tool")
+
+		serverID, err := RegisterServerForTest(context.Background(), store.Queries(), reg, "my-server", srv.URL)
+		if err != nil {
+			t.Fatalf("RegisterServerForTest: %v", err)
+		}
+
+		client1, _, err := reg.ResolveToolByName(context.Background(), "my-server.my-tool")
+		if err != nil {
+			t.Fatalf("ResolveToolByName (before): %v", err)
+		}
+
+		if _, err := rawDB.Exec(`UPDATE mcp_servers SET call_timeout_seconds = 120 WHERE id = ?`, serverID); err != nil {
+			t.Fatalf("update call_timeout_seconds: %v", err)
+		}
+
+		client2, _, err := reg.ResolveToolByName(context.Background(), "my-server.my-tool")
+		if err != nil {
+			t.Fatalf("ResolveToolByName (after): %v", err)
+		}
+		if client2 == client1 {
+			t.Error("expected a rebuilt *Client after call_timeout_seconds changed")
+		}
+		if client2.httpClient.Timeout != 120*time.Second {
+			t.Errorf("client2.httpClient.Timeout = %v, want 120s", client2.httpClient.Timeout)
 		}
 	})
 }

@@ -132,7 +132,7 @@ A map from any go-sdk-based server fails to parse against Gleipnir's array decod
 - Any future MRTR server that emits the array shape stops working outright. No server in this repository's test suite or configuration does.
 - The §6.5 replay path is unchanged in its own logic (still a content hash of message + normalized schema + the internal ID-sorted order); only its decision-recording is new.
 - `internal/mcp` still does not import `internal/execution/agent` (package boundary intact) — the wire-shape and capability changes live entirely in `internal/mcp`, and the decision-recording/responder-threading changes live entirely in `internal/execution/{agent,run}` plus `main.go`.
-- The retry timeout (`GLEIPNIR_MCP_TIMEOUT`, default 30s) is not widened by this ADR; operators running a server whose approved retry does real synchronous work (e.g. Relay's fan-out restart) are expected to raise it operationally (documented at 120s in the demo runbook), not via a new per-server code path.
+- The retry timeout (`GLEIPNIR_MCP_TIMEOUT`, default 30s) is not widened by this ADR; operators running a server whose approved retry does real synchronous work (e.g. Relay's fan-out restart) are expected to raise it operationally (documented at 120s in the demo runbook), not via a new per-server code path. Amended by #939 (2026-09-24): per-server call timeout is an in-app setting; GLEIPNIR_MCP_TIMEOUT remains the default.
 
 CLAUDE.md settled line: "MRTR client conformance (ADR-061): map-keyed inputRequests/inputResponses per go-sdk (array shape refused); elicitation declared to every modern server; responder asserted server-side in response `_meta["io.gleipnir/responder"]`." Full statement: [settled-decisions.md](settled-decisions.md).
 
