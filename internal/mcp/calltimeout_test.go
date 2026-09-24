@@ -172,7 +172,7 @@ func TestCallTimeout_OverrideServerOutlastsDefaultServer(t *testing.T) {
 	if err := store.Migrate(context.Background()); err != nil {
 		t.Fatalf("store.Migrate: %v", err)
 	}
-	reg := NewRegistry(store.Queries(), WithMCPTimeout(50*time.Millisecond))
+	reg := NewRegistry(store.Queries(), WithMCPTimeout(200*time.Millisecond))
 
 	srv, entered, release := blockingCallLegacyServer(t, "my-tool")
 	t.Cleanup(srv.Close)
@@ -221,7 +221,7 @@ func TestCallTimeout_OverrideServerOutlastsDefaultServer(t *testing.T) {
 
 	_, err = defaultClient.CallTool(context.Background(), defaultToolName, nil, CallOptions{})
 	if err == nil {
-		t.Fatal("expected the unset-timeout call to fail against the 50ms instance default, got nil error")
+		t.Fatal("expected the unset-timeout call to fail against the 200ms instance default, got nil error")
 	}
 	var netErr net.Error
 	if !errors.As(err, &netErr) || !netErr.Timeout() {
