@@ -20,8 +20,31 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/llm"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/plugin/decision"
 	"github.com/felag-engineering/gleipnir/internal/testutil"
 )
+
+// testResponder is the authenticated operator these tests answer as, unless a
+// test is specifically about the responder identity itself. The matching
+// users row is inserted by insertTestResponderUser: decision records verify
+// ActorUserID against a real FK, so a decision record naming this ID needs the
+// row to exist.
+var testResponder = Responder{UserID: "u-alice", Username: "alice"}
+
+// insertTestResponderUser inserts the users row behind testResponder, so a
+// decision record naming ActorUserID = testResponder.UserID satisfies
+// plugin_audit_events.actor_user_id's foreign key.
+func insertTestResponderUser(t *testing.T, s *db.Store) {
+	t.Helper()
+	if _, err := s.CreateUser(context.Background(), db.CreateUserParams{
+		ID:           testResponder.UserID,
+		Username:     testResponder.Username,
+		PasswordHash: "x",
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("insertTestResponderUser: %v", err)
+	}
+}
 
 // permissionAsk is an input_required result asking for consent only: the §6.1
 // convention is a requestedSchema with no properties.
@@ -72,6 +95,7 @@ func awaitNthPendingToolInputID(t *testing.T, pub *capturePublisher, s *db.Store
 func newRoutingFixture(t *testing.T, timeout time.Duration) (*db.Store, *capturePublisher, *RunStateMachine, *InputRequiredHandler) {
 	t.Helper()
 	s := testutil.NewTestStore(t)
+	insertTestResponderUser(t, s)
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 	testutil.InsertMcpServer(t, s, "srv1", "myserver", "http://example.invalid")
@@ -104,7 +128,7 @@ func TestInputRequiredHandler_Route_ResumesOnAnswer(t *testing.T) {
 	}
 	done := make(chan routeResult, 1)
 	go func() {
-		answers, err := h.Route(context.Background(), routeRequest(permissionAsk("deploy to prod?"), time.Minute))
+		answers, _, err := h.Route(context.Background(), routeRequest(permissionAsk("deploy to prod?"), time.Minute))
 		done <- routeResult{answers: answers, err: err}
 	}()
 
@@ -138,7 +162,7 @@ func TestInputRequiredHandler_Route_ResumesOnAnswer(t *testing.T) {
 		t.Errorf("run status = %s, want waiting_for_feedback", sm.Current())
 	}
 
-	if err := h.Resolve(requestID, `[{"action":"accept","content":{"confirm":true}}]`); err != nil {
+	if err := h.Resolve(requestID, `[{"action":"accept","content":{"confirm":true}}]`, testResponder); err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 
@@ -181,7 +205,7 @@ func TestInputRequiredHandler_Route_DeclineResumesRun(t *testing.T) {
 	done := make(chan []mcp.InputResponse, 1)
 	errc := make(chan error, 1)
 	go func() {
-		answers, err := h.Route(context.Background(), routeRequest(permissionAsk("deploy to prod?"), time.Minute))
+		answers, _, err := h.Route(context.Background(), routeRequest(permissionAsk("deploy to prod?"), time.Minute))
 		if err != nil {
 			errc <- err
 			return
@@ -225,7 +249,7 @@ func TestInputRequiredHandler_Route_TimeoutFailsTheWait(t *testing.T) {
 
 	// A 10ms deadline nobody answers. The wait is the thing under test, so the
 	// short timeout is the input, not a race against a background actor.
-	_, err := h.Route(context.Background(), routeRequest(permissionAsk("deploy to prod?"), 10*time.Millisecond))
+	_, _, err := h.Route(context.Background(), routeRequest(permissionAsk("deploy to prod?"), 10*time.Millisecond))
 	if err == nil {
 		t.Fatal("Route: want a timeout error, got nil")
 	}
@@ -251,7 +275,7 @@ func TestInputRequiredHandler_Route_TimeoutLostToScanner(t *testing.T) {
 
 	errc := make(chan error, 1)
 	go func() {
-		_, err := h.Route(context.Background(), routeRequest(permissionAsk("deploy to prod?"), 300*time.Millisecond))
+		_, _, err := h.Route(context.Background(), routeRequest(permissionAsk("deploy to prod?"), 300*time.Millisecond))
 		errc <- err
 	}()
 
@@ -278,16 +302,18 @@ func TestInputRequiredHandler_Route_TimeoutLostToScanner(t *testing.T) {
 	}
 }
 
-// A host that dies mid-wait leaves a row an operator answer can still be
-// applied against — the §13 durability claim. Cancelling the context models the
-// process going away; the row must survive as pending and resumable.
-func TestInputRequiredHandler_Route_RestartLeavesRequestResumable(t *testing.T) {
+// A run cancelled while a tool-initiated request is pending must not leave the
+// row 'pending' forever, where the timeout scanner would eventually mislabel
+// it 'timed_out' -- a cancellation is neither "nobody answered in time" nor
+// "the server discarded its state" (relay-646 §7, ADR-061). Cancelling the
+// context models RunManager.Cancel reaching Route mid-wait.
+func TestInputRequiredHandler_Route_CtxCancelledMarksRequestCancelled(t *testing.T) {
 	s, pub, _, h := newRoutingFixture(t, time.Minute)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errc := make(chan error, 1)
 	go func() {
-		_, err := h.Route(ctx, routeRequest(permissionAsk("deploy to prod?"), time.Minute))
+		_, _, err := h.Route(ctx, routeRequest(permissionAsk("deploy to prod?"), time.Minute))
 		errc <- err
 	}()
 
@@ -303,15 +329,87 @@ func TestInputRequiredHandler_Route_RestartLeavesRequestResumable(t *testing.T) 
 		t.Fatal("Route did not return within deadline")
 	}
 
+	// No longer resumable: the row settled as cancelled rather than being
+	// left pending for the scanner to mislabel later.
 	rows, err := s.ListResumableToolInputRequests(context.Background())
 	if err != nil {
 		t.Fatalf("ListResumableToolInputRequests: %v", err)
 	}
-	if len(rows) != 1 || rows[0].ID != requestID {
-		t.Fatalf("resumable rows = %+v, want the pending request %s", rows, requestID)
+	if len(rows) != 0 {
+		t.Errorf("resumable rows = %+v, want none — a cancelled run must not leave the row pending", rows)
 	}
-	if rows[0].RequestState != `{"cursor":"abc"}` {
-		t.Errorf("request_state = %q, want the blob a retry would replay", rows[0].RequestState)
+
+	row, err := s.GetToolInputRequest(context.Background(), requestID)
+	if err != nil {
+		t.Fatalf("GetToolInputRequest: %v", err)
+	}
+	if row.Status != "cancelled" {
+		t.Errorf("status = %q, want cancelled", row.Status)
+	}
+	if row.ResolvedAt == nil {
+		t.Error("resolved_at is NULL for a cancelled request")
+	}
+
+	records, err := decision.NewRecorder(s.Queries()).ForRun(context.Background(), "run1")
+	if err != nil {
+		t.Fatalf("ForRun: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("decision records = %+v, want exactly 1", records)
+	}
+	if records[0].Outcome != decision.OutcomeCancelled {
+		t.Errorf("Outcome = %q, want %q", records[0].Outcome, decision.OutcomeCancelled)
+	}
+	if records[0].ActorUserID != "" {
+		t.Errorf("ActorUserID = %q, want none — nobody acted", records[0].ActorUserID)
+	}
+}
+
+// The conditional UPDATE (WHERE status='pending') is what makes cancellation
+// safe against the answer-vs-ctx.Done race documented at Route's select: a row
+// an operator (or the timeout scanner) already settled must never be
+// relabelled cancelled underneath them.
+func TestCancelToolInputRequest_NeverClobbersAnAlreadyResolvedRow(t *testing.T) {
+	s, _, _, _ := newRoutingFixture(t, time.Minute)
+
+	requestID := model.NewULID()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := s.CreateToolInputRequest(context.Background(), db.CreateToolInputRequestParams{
+		ID:              requestID,
+		RunID:           "run1",
+		ServerID:        "srv1",
+		ToolName:        "myserver.deploy",
+		CallArgs:        "{}",
+		RequestState:    "{}",
+		RequestPayload:  "[]",
+		ElicitationKind: "permission",
+		ExpiresAt:       now,
+	}); err != nil {
+		t.Fatalf("CreateToolInputRequest: %v", err)
+	}
+	resp := "[]"
+	if _, err := s.ResolveToolInputRequest(context.Background(), db.ResolveToolInputRequestParams{
+		Response:   &resp,
+		ResolvedAt: &now,
+		ID:         requestID,
+	}); err != nil {
+		t.Fatalf("ResolveToolInputRequest: %v", err)
+	}
+
+	rows, err := s.CancelToolInputRequest(context.Background(), db.CancelToolInputRequestParams{ResolvedAt: &now, ID: requestID})
+	if err != nil {
+		t.Fatalf("CancelToolInputRequest: %v", err)
+	}
+	if rows != 0 {
+		t.Fatalf("CancelToolInputRequest affected %d rows, want 0 — an already-resolved row must not be relabelled", rows)
+	}
+
+	row, err := s.GetToolInputRequest(context.Background(), requestID)
+	if err != nil {
+		t.Fatalf("GetToolInputRequest: %v", err)
+	}
+	if row.Status != "resolved" {
+		t.Errorf("status = %q after a failed cancel attempt, want resolved", row.Status)
 	}
 }
 
@@ -337,12 +435,12 @@ func TestInputRequiredHandler_Resolve_RejectsMalformedAnswers(t *testing.T) {
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				_, _ = h.Route(context.Background(), routeRequest(permissionAsk("deploy to prod?"), time.Minute))
+				_, _, _ = h.Route(context.Background(), routeRequest(permissionAsk("deploy to prod?"), time.Minute))
 			}()
 
 			requestID := awaitPendingToolInputID(t, pub, s)
 
-			err := h.Resolve(requestID, tc.body)
+			err := h.Resolve(requestID, tc.body, testResponder)
 			if err == nil {
 				t.Fatalf("Resolve(%s): want an error, got nil", tc.body)
 			}
@@ -354,7 +452,7 @@ func TestInputRequiredHandler_Resolve_RejectsMalformedAnswers(t *testing.T) {
 			if sm.Current() != model.RunStatusWaitingForFeedback {
 				t.Errorf("run status = %s, want waiting_for_feedback", sm.Current())
 			}
-			if err := h.Resolve(requestID, `[{"action":"decline"}]`); err != nil {
+			if err := h.Resolve(requestID, `[{"action":"decline"}]`, testResponder); err != nil {
 				t.Fatalf("Resolve after a rejected answer: %v", err)
 			}
 			<-done
@@ -365,7 +463,7 @@ func TestInputRequiredHandler_Resolve_RejectsMalformedAnswers(t *testing.T) {
 func TestInputRequiredHandler_Resolve_UnknownRequestID(t *testing.T) {
 	_, _, _, h := newRoutingFixture(t, time.Minute)
 
-	if err := h.Resolve("nope", `[{"action":"decline"}]`); !errors.Is(err, ErrUnknownInputRequestID) {
+	if err := h.Resolve("nope", `[{"action":"decline"}]`, testResponder); !errors.Is(err, ErrUnknownInputRequestID) {
 		t.Errorf("Resolve error = %v, want ErrUnknownInputRequestID", err)
 	}
 	if err := h.Decline("nope"); !errors.Is(err, ErrUnknownInputRequestID) {
@@ -424,10 +522,23 @@ func TestClassifyElicitationKind(t *testing.T) {
 			want: elicitationKindInformation,
 		},
 		{
-			name: "one_field_anywhere_makes_the_batch_a_form",
+			// Security review finding 4: permission wins. Bundling one
+			// consent-only entry alongside an information entry must not let
+			// the WHOLE ask be answered by an operator instead of an
+			// approver — that would let a bundled permission entry hide
+			// behind an unrelated information entry.
+			name: "any_permission_shaped_entry_makes_the_whole_batch_permission",
 			requests: []mcp.InputRequest{
 				{RequestedSchema: json.RawMessage(`{"type":"object","properties":{}}`)},
 				{RequestedSchema: json.RawMessage(`{"type":"object","properties":{"ticket":{"type":"string"}}}`)},
+			},
+			want: elicitationKindPermission,
+		},
+		{
+			name: "every_entry_information_stays_information",
+			requests: []mcp.InputRequest{
+				{RequestedSchema: json.RawMessage(`{"type":"object","properties":{"ticket":{"type":"string"}}}`)},
+				{RequestedSchema: json.RawMessage(`{"type":"object","properties":{"region":{"type":"string"}}}`)},
 			},
 			want: elicitationKindInformation,
 		},
@@ -442,6 +553,72 @@ func TestClassifyElicitationKind(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := classifyElicitationKind(tc.requests); got != tc.want {
 				t.Errorf("classifyElicitationKind = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestOutcomeFor(t *testing.T) {
+	tests := []struct {
+		name      string
+		responses []mcp.InputResponse
+		want      decision.Outcome
+	}{
+		{
+			name:      "single_accept",
+			responses: []mcp.InputResponse{{Action: inputActionAccept}},
+			want:      decision.OutcomeAnswered,
+		},
+		{
+			name:      "single_decline",
+			responses: []mcp.InputResponse{{Action: inputActionDecline}},
+			want:      decision.OutcomeRejected,
+		},
+		{
+			name:      "single_cancel",
+			responses: []mcp.InputResponse{{Action: inputActionCancel}},
+			want:      decision.OutcomeCancelled,
+		},
+		{
+			name:      "every_response_cancelled",
+			responses: []mcp.InputResponse{{Action: inputActionCancel}, {Action: inputActionCancel}},
+			want:      decision.OutcomeCancelled,
+		},
+		{
+			// LOW-finding follow-up: a decline mixed with a cancel on another
+			// entry is still a human refusal — the person who declined acted,
+			// and that must not be erased by treating the bundle as an
+			// unattended cancel just because a different entry rode along
+			// with it.
+			name:      "decline_mixed_with_cancel_is_rejected_not_cancelled",
+			responses: []mcp.InputResponse{{Action: inputActionDecline}, {Action: inputActionCancel}},
+			want:      decision.OutcomeRejected,
+		},
+		{
+			// And the reverse order, to prove this isn't an artifact of scan
+			// order — the FIRST entry seen must not decide the outcome.
+			name:      "cancel_then_decline_is_still_rejected",
+			responses: []mcp.InputResponse{{Action: inputActionCancel}, {Action: inputActionDecline}},
+			want:      decision.OutcomeRejected,
+		},
+		{
+			// An accept anywhere in the bundle wins over a decline or cancel
+			// elsewhere in it — the highest-priority outcome, regardless of
+			// position.
+			name: "accept_wins_over_decline_and_cancel",
+			responses: []mcp.InputResponse{
+				{Action: inputActionDecline},
+				{Action: inputActionCancel},
+				{Action: inputActionAccept},
+			},
+			want: decision.OutcomeAnswered,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := outcomeFor(tc.responses); got != tc.want {
+				t.Errorf("outcomeFor(%+v) = %q, want %q", tc.responses, got, tc.want)
 			}
 		})
 	}
@@ -470,6 +647,22 @@ type mrtrServer struct {
 	// server re-asks the identical question, which is the replay path; a
 	// different message is the re-prompt path.
 	reAskMessage string
+	// reAskMessageFromRound delays reAskMessage's override to round >= this
+	// value (0 means "from the first re-ask", the existing behavior). This is
+	// what lets a test model a server that re-asks IDENTICALLY once (round 2,
+	// the replay path) and then asks something DIFFERENT the round after
+	// (round 3) -- both within the same reAsksAfterAnswer run.
+	reAskMessageFromRound int
+	// informationSchema makes requestedSchema ask for a field, classifying the
+	// bundle as "information" instead of the default "permission" -- security
+	// review findings 1-3 make permission asks never replay, so the replay
+	// tests need an information-shaped bundle to exercise that path at all.
+	informationSchema bool
+	// reAskKindHint, when set, is sent as params._meta["io.gleipnir/elicitation-kind"]
+	// on every re-ask round (round > 1) only -- byte-identical message and
+	// schema, but a flipped classification hint, for the "kind changed under
+	// an unchanged fingerprint" case (security review findings 1-3).
+	reAskKindHint string
 
 	// asks counts the input_required responses emitted so far.
 	asks int
@@ -492,7 +685,7 @@ func (m *mrtrServer) handler() http.HandlerFunc {
 			switch {
 			case round == 1:
 				// The opening question.
-			case m.reAskMessage != "":
+			case m.reAskMessage != "" && round >= m.reAskMessageFromRound:
 				message = m.reAskMessage
 			case m.alwaysAsk:
 				// A server that never stops asking asks something NEW each
@@ -508,16 +701,32 @@ func (m *mrtrServer) handler() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		if ask {
+			// The id shifts every ask ("q1", "q2", ...) even when the message
+			// and schema are byte-identical -- a server MAY legitimately mint
+			// a fresh id for an identical re-ask (ADR-061), and this is what
+			// lets the replay tests prove re-keying onto the NEW round's id
+			// rather than assuming the old one still names anything.
+			id := fmt.Sprintf("q%d", asks)
+			params := map[string]any{
+				"message":         message,
+				"requestedSchema": m.requestedSchema(),
+			}
+			if round > 1 && m.reAskKindHint != "" {
+				params["_meta"] = map[string]any{"io.gleipnir/elicitation-kind": m.reAskKindHint}
+			}
 			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
 				"jsonrpc": "2.0",
 				"id":      1,
 				"result": map[string]any{
 					"content":    json.RawMessage(`[{"type":"text","text":"pending"}]`),
 					"resultType": mcp.ResultTypeInputRequired,
-					"inputRequests": []map[string]any{{
-						"message":         message,
-						"requestedSchema": m.requestedSchema(),
-					}},
+					// ADR-061: map keyed by request id, per go-sdk v1.7.0.
+					"inputRequests": map[string]any{
+						id: map[string]any{
+							"method": "elicitation/create",
+							"params": params,
+						},
+					},
 					// A distinct cursor per ask, so a test can tell which
 					// requestState the retry carried back.
 					"requestState": map[string]any{"cursor": fmt.Sprintf("abc-%d", asks)},
@@ -537,17 +746,27 @@ func (m *mrtrServer) handler() http.HandlerFunc {
 }
 
 // requestedSchema returns the schema the fake asks with: consent-only by
-// default, or a secret-collecting form when secretSchema is set.
+// default, a secret-collecting form when secretSchema is set, or an ordinary
+// information form (one field) when informationSchema is set.
 func (m *mrtrServer) requestedSchema() map[string]any {
-	if m.secretSchema {
+	switch {
+	case m.secretSchema:
 		return map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"api_token": map[string]any{"type": "string", "format": "password"},
 			},
 		}
+	case m.informationSchema:
+		return map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"ticket": map[string]any{"type": "string"},
+			},
+		}
+	default:
+		return map[string]any{"type": "object", "properties": map[string]any{}}
 	}
-	return map[string]any{"type": "object", "properties": map[string]any{}}
 }
 
 // params returns the params object of the recorded request at index i.
@@ -599,6 +818,7 @@ func mrtrTool(serverURL, serverID string, approval model.ApprovalMode) mcp.Resol
 func newMRTRAgent(t *testing.T, fake *mrtrServer, approval model.ApprovalMode, approvalCh <-chan bool) (*db.Store, *capturePublisher, *BoundAgent) {
 	t.Helper()
 	s := testutil.NewTestStore(t)
+	insertTestResponderUser(t, s)
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
 	testutil.InsertMcpServer(t, s, "srv1", "myserver", "http://example.invalid")
@@ -660,7 +880,7 @@ func TestBoundAgent_ToolCall_PausesAndRetriesWithAnswer(t *testing.T) {
 	}()
 
 	requestID := awaitPendingToolInputID(t, pub, s)
-	if err := ba.InputRequiredResolver().Resolve(requestID, `[{"action":"accept","content":{"confirm":true}}]`); err != nil {
+	if err := ba.InputRequiredResolver().Resolve(requestID, `[{"action":"accept","content":{"confirm":true}}]`, testResponder); err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 
@@ -693,12 +913,22 @@ func TestBoundAgent_ToolCall_PausesAndRetriesWithAnswer(t *testing.T) {
 	if env, _ := args["env"].(string); env != "prod" {
 		t.Errorf("retry arguments = %v, want the original arguments", args)
 	}
-	responses, ok := retry["inputResponses"].([]any)
+	responses, ok := retry["inputResponses"].(map[string]any)
 	if !ok || len(responses) != 1 {
 		t.Fatalf("retry inputResponses = %v, want one entry", retry["inputResponses"])
 	}
-	if action, _ := responses[0].(map[string]any)["action"].(string); action != inputActionAccept {
-		t.Errorf("retry action = %v, want accept", responses[0])
+	entry, _ := responses["q1"].(map[string]any)
+	if entry == nil {
+		t.Fatalf("retry inputResponses = %v, want an entry keyed \"q1\"", responses)
+	}
+	if action, _ := entry["action"].(string); action != inputActionAccept {
+		t.Errorf("retry action = %v, want accept", entry)
+	}
+	// ADR-061: the responder is asserted in the response's own _meta.
+	meta, _ := entry["_meta"].(map[string]any)
+	responder, _ := meta["io.gleipnir/responder"].(map[string]any)
+	if responder["username"] != testResponder.Username || responder["user_id"] != testResponder.UserID {
+		t.Errorf("retry responder = %v, want %+v", responder, testResponder)
 	}
 	state, ok := retry["requestState"].(map[string]any)
 	if !ok || state["cursor"] != "abc-1" {
@@ -731,7 +961,7 @@ func TestBoundAgent_ToolCall_ApprovalThenToolInitiatedInput(t *testing.T) {
 	// The approval lands first (the channel is pre-loaded), so the first
 	// waiting_for_feedback pause is the tool-initiated one.
 	requestID := awaitPendingToolInputID(t, pub, s)
-	if err := ba.InputRequiredResolver().Resolve(requestID, `[{"action":"accept","content":{"confirm":true}}]`); err != nil {
+	if err := ba.InputRequiredResolver().Resolve(requestID, `[{"action":"accept","content":{"confirm":true}}]`, testResponder); err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 
@@ -780,7 +1010,7 @@ func TestBoundAgent_ToolCall_InputRoundLimit(t *testing.T) {
 	// Answer every pause immediately; the limit, not the operator, ends this.
 	for n := 1; n < maxInputRequiredRounds; n++ {
 		requestID := awaitNthPendingToolInputID(t, pub, s, n)
-		if err := ba.InputRequiredResolver().Resolve(requestID, `[{"action":"accept","content":{"confirm":true}}]`); err != nil {
+		if err := ba.InputRequiredResolver().Resolve(requestID, `[{"action":"accept","content":{"confirm":true}}]`, testResponder); err != nil {
 			t.Fatalf("Resolve #%d: %v", n, err)
 		}
 	}
@@ -862,7 +1092,7 @@ func TestInputRequiredHandler_Route_BudgetRefusalSkipsThePause(t *testing.T) {
 	budget := &recordingBudget{err: errors.New("per-run elicitation budget exhausted")}
 	h := NewInputRequiredHandler(w, sm, time.Minute, WithElicitationBudget(budget))
 
-	_, err := h.Route(context.Background(), routeRequest(permissionAsk("deploy to prod?"), time.Minute))
+	_, _, err := h.Route(context.Background(), routeRequest(permissionAsk("deploy to prod?"), time.Minute))
 	if err == nil {
 		t.Fatal("Route: want the budget refusal, got nil")
 	}
@@ -1110,6 +1340,7 @@ func TestInputRequiredOptions_FromPolicy(t *testing.T) {
 func TestBoundAgent_ToolCall_BudgetExhaustionAbandonsTheCall(t *testing.T) {
 	fake := &mrtrServer{alwaysAsk: true}
 	s := testutil.NewTestStore(t)
+	insertTestResponderUser(t, s)
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
 	testutil.InsertMcpServer(t, s, "srv1", "myserver", "http://example.invalid")
@@ -1148,7 +1379,7 @@ func TestBoundAgent_ToolCall_BudgetExhaustionAbandonsTheCall(t *testing.T) {
 	// ever reaches an operator.
 	for n := 1; n <= 2; n++ {
 		requestID := awaitNthPendingToolInputID(t, pub, s, n)
-		if err := ba.InputRequiredResolver().Resolve(requestID, `[{"action":"accept","content":{"confirm":true}}]`); err != nil {
+		if err := ba.InputRequiredResolver().Resolve(requestID, `[{"action":"accept","content":{"confirm":true}}]`, testResponder); err != nil {
 			t.Fatalf("Resolve #%d: %v", n, err)
 		}
 	}
@@ -1201,7 +1432,7 @@ func TestInputRequiredHandler_Route_OversizePayloadIsRefusedBeforePersisting(t *
 		t.Run(tc.name, func(t *testing.T) {
 			s, _, sm, h := newRoutingFixture(t, time.Minute)
 
-			_, err := h.Route(context.Background(), routeRequest(tc.result, time.Minute))
+			_, _, err := h.Route(context.Background(), routeRequest(tc.result, time.Minute))
 			if err == nil {
 				t.Fatal("Route: want a size refusal, got nil")
 			}
@@ -1256,7 +1487,7 @@ func TestInputRequiredHandler_Route_PersistsTheEffectiveDeadline(t *testing.T) {
 				req.ServerTaskTTL = time.Now().UTC().Add(tc.serverTTL)
 			}
 
-			go func() { _, _ = h.Route(context.Background(), req) }()
+			go func() { _, _, _ = h.Route(context.Background(), req) }()
 			requestID := awaitPendingToolInputID(t, pub, s)
 
 			row, err := s.GetToolInputRequest(context.Background(), requestID)
@@ -1294,7 +1525,7 @@ func TestInputRequiredHandler_Route_ExpiredServerTTLEndsTheWaitAtOnce(t *testing
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := h.Route(context.Background(), req)
+		_, _, err := h.Route(context.Background(), req)
 		done <- err
 	}()
 
@@ -1312,11 +1543,14 @@ func TestInputRequiredHandler_Route_ExpiredServerTTLEndsTheWaitAtOnce(t *testing
 }
 
 // §6.5, the case the whole mechanism exists for: the operator answers, the
-// server has meanwhile discarded its MRTR state and re-asks the SAME question,
-// and the answer is replayed against the fresh requestState without the human
-// ever being asked twice. Exactly one pause reaches an operator.
+// server has meanwhile discarded its MRTR state and re-asks the SAME
+// INFORMATION question, and the answer is replayed against the fresh
+// requestState without the human ever being asked twice. Exactly one pause
+// reaches an operator. Permission asks never take this path at all (security
+// review findings 1-3, see TestBoundAgent_ToolCall_PermissionAskNeverReplays)
+// — this test exercises the one case that still replays.
 func TestBoundAgent_ToolCall_ReplaysAnswerWhenServerReAsksIdentically(t *testing.T) {
-	fake := &mrtrServer{reAsksAfterAnswer: 1}
+	fake := &mrtrServer{reAsksAfterAnswer: 1, informationSchema: true}
 	s, pub, ba := newMRTRAgent(t, fake, model.ApprovalModeNone, nil)
 
 	type callResult struct {
@@ -1331,7 +1565,7 @@ func TestBoundAgent_ToolCall_ReplaysAnswerWhenServerReAsksIdentically(t *testing
 	}()
 
 	requestID := awaitPendingToolInputID(t, pub, s)
-	if err := ba.InputRequiredResolver().Resolve(requestID, `[{"action":"accept","content":{"confirm":true}}]`); err != nil {
+	if err := ba.InputRequiredResolver().Resolve(requestID, `[{"action":"accept","content":{"confirm":true}}]`, testResponder); err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 
@@ -1355,16 +1589,35 @@ func TestBoundAgent_ToolCall_ReplaysAnswerWhenServerReAsksIdentically(t *testing
 		t.Fatalf("server saw %d calls, want 3 (original + answered retry + replayed retry)", fake.count())
 	}
 
-	// The replay carries the SAME answer against the server's NEW requestState.
-	// Sending back the stale blob would be replaying into the same expiry the
-	// server just told us about.
+	// The replay carries the SAME answer against the server's NEW requestState,
+	// re-keyed onto round 3's OWN id ("q2") -- NOT round 1's ("q1"), which this
+	// round's server never asked under. Sending back the stale blob would be
+	// replaying into the same expiry the server just told us about.
 	replay := fake.params(t, 2)
-	responses, ok := replay["inputResponses"].([]any)
+	responses, ok := replay["inputResponses"].(map[string]any)
 	if !ok || len(responses) != 1 {
 		t.Fatalf("replay inputResponses = %v, want one entry", replay["inputResponses"])
 	}
-	if action, _ := responses[0].(map[string]any)["action"].(string); action != inputActionAccept {
-		t.Errorf("replay action = %v, want the stored answer replayed", responses[0])
+	if _, stale := responses["q1"]; stale {
+		t.Errorf("replay inputResponses = %v, still keyed to the ORIGINAL id, want the re-asked round's own id", responses)
+	}
+	entry, _ := responses["q2"].(map[string]any)
+	if entry == nil {
+		t.Fatalf("replay inputResponses = %v, want an entry keyed to round 3's own id \"q2\"", responses)
+	}
+	if action, _ := entry["action"].(string); action != inputActionAccept {
+		t.Errorf("replay action = %v, want the stored answer replayed", entry)
+	}
+	// No human acted this round: the responder assertion is stripped, and
+	// replaced with a provenance marker naming the ORIGINAL request instead
+	// (security review findings 1-3).
+	meta, _ := entry["_meta"].(map[string]any)
+	if _, hasResponder := meta["io.gleipnir/responder"]; hasResponder {
+		t.Errorf("replay _meta = %v, must not assert a responder — nobody answered this round", meta)
+	}
+	replayedFrom, _ := meta["io.gleipnir/replayed-from"].(map[string]any)
+	if replayedFrom["request_id"] != requestID {
+		t.Errorf("replayed-from = %v, want it to name the original request %q", replayedFrom, requestID)
 	}
 	state, _ := replay["requestState"].(map[string]any)
 	if state["cursor"] != "abc-2" {
@@ -1387,6 +1640,39 @@ func TestBoundAgent_ToolCall_ReplaysAnswerWhenServerReAsksIdentically(t *testing
 		t.Errorf("request status = %q, want resolved", all.Status)
 	}
 
+	// The replay itself is a distinct decision record from the original
+	// answer: an auditor sees two settlement events for one human decision,
+	// the second with no actor -- nobody acted a second time -- and pointing
+	// back at the original request via ReplayOfRequestID.
+	records, err := decision.NewRecorder(s.Queries()).ForRun(context.Background(), "r1")
+	if err != nil {
+		t.Fatalf("ForRun: %v", err)
+	}
+	var sawAnswered, sawReplayed bool
+	for _, rec := range records {
+		switch rec.Outcome {
+		case decision.OutcomeAnswered:
+			sawAnswered = true
+			if rec.ActorUserID != testResponder.UserID {
+				t.Errorf("answered record ActorUserID = %q, want %q", rec.ActorUserID, testResponder.UserID)
+			}
+		case decision.OutcomeReplayedAfterTTL:
+			sawReplayed = true
+			if rec.ActorUserID != "" {
+				t.Errorf("replayed record ActorUserID = %q, want none — nobody acted at this moment", rec.ActorUserID)
+			}
+			if rec.Kind != model.ElicitationKindInformation {
+				t.Errorf("replayed record Kind = %q, want %q (the NEW bundle's kind)", rec.Kind, model.ElicitationKindInformation)
+			}
+			if rec.ReplayOfRequestID != requestID {
+				t.Errorf("replayed record ReplayOfRequestID = %q, want the original request %q", rec.ReplayOfRequestID, requestID)
+			}
+		}
+	}
+	if !sawAnswered || !sawReplayed {
+		t.Fatalf("decision records = %+v, want one answered and one replayed_after_ttl", records)
+	}
+
 	// And the agent still sees one call and one result — a replay is no more
 	// visible to the model than the pause it recovers from (ADR-046).
 	types := stepTypes(t, s, ba.audit, "r1")
@@ -1398,6 +1684,147 @@ func TestBoundAgent_ToolCall_ReplaysAnswerWhenServerReAsksIdentically(t *testing
 		if types[i] != want[i] {
 			t.Fatalf("run steps = %v, want %v", types, want)
 		}
+	}
+}
+
+// Security review findings 1-3: a permission ask NEVER replays, even when the
+// server re-asks byte-for-byte the same question. Consent is not something
+// the host may re-assert on a human's behalf; every permission re-ask reaches
+// a human.
+func TestBoundAgent_ToolCall_PermissionAskNeverReplays(t *testing.T) {
+	fake := &mrtrServer{reAsksAfterAnswer: 1} // default schema is permission-shaped
+	s, pub, ba := newMRTRAgent(t, fake, model.ApprovalModeNone, nil)
+
+	type callResult struct {
+		output  string
+		isError bool
+		err     error
+	}
+	done := make(chan callResult, 1)
+	go func() {
+		output, isError, err := ba.handleToolCall(context.Background(), "r1", "myserver.deploy", map[string]any{"env": "prod"})
+		done <- callResult{output: output, isError: isError, err: err}
+	}()
+
+	first := awaitPendingToolInputID(t, pub, s)
+	if err := ba.InputRequiredResolver().Resolve(first, `[{"action":"accept","content":{"confirm":true}}]`, testResponder); err != nil {
+		t.Fatalf("Resolve first: %v", err)
+	}
+
+	// A second, ordinary human pause -- not a silent replay -- even though the
+	// server re-asked byte-for-byte the same permission question.
+	second := awaitNthPendingToolInputID(t, pub, s, 2)
+	if second == first {
+		t.Fatal("the second pause reused the first request ID; want a fresh human ask, not a replay")
+	}
+
+	// LOW-finding follow-up: an identical re-ask that is NOT silently
+	// replayed (a permission ask never is) still gets a ReplayContext, tagged
+	// reasonIdenticalReask -- the operator needs to be told plainly that they
+	// answered this exact question moments ago, not just shown what looks
+	// like an unexplained duplicate.
+	row, err := s.Queries().GetToolInputRequest(context.Background(), second)
+	if err != nil {
+		t.Fatalf("GetToolInputRequest: %v", err)
+	}
+	if row.ReplayContext == nil {
+		t.Fatal("second request has no replay_context; an identical permission re-ask must still explain itself")
+	}
+	rc, err := DecodeReplayContext(*row.ReplayContext)
+	if err != nil {
+		t.Fatalf("DecodeReplayContext: %v", err)
+	}
+	if rc.Reason != reasonIdenticalReask {
+		t.Errorf("Reason = %q, want %q", rc.Reason, reasonIdenticalReask)
+	}
+	if len(rc.PriorAnswers) != 1 || rc.PriorAnswers[0].Action != inputActionAccept {
+		t.Errorf("prior answers = %+v, want the operator's first answer preserved", rc.PriorAnswers)
+	}
+
+	if err := ba.InputRequiredResolver().Resolve(second, `[{"action":"accept","content":{"confirm":true}}]`, testResponder); err != nil {
+		t.Fatalf("Resolve second: %v", err)
+	}
+
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("handleToolCall: unexpected error: %v", res.err)
+		}
+		if !strings.Contains(res.output, "deployed") {
+			t.Errorf("output = %q, want the completed result", res.output)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("handleToolCall did not return within deadline")
+	}
+
+	// Two independent decision records, both answered by a human -- no
+	// replayed_after_ttl outcome at all.
+	records, err := decision.NewRecorder(s.Queries()).ForRun(context.Background(), "r1")
+	if err != nil {
+		t.Fatalf("ForRun: %v", err)
+	}
+	answeredCount := 0
+	for _, rec := range records {
+		if rec.Outcome == decision.OutcomeReplayedAfterTTL {
+			t.Errorf("got a replayed_after_ttl record for a permission ask, want none: %+v", rec)
+		}
+		if rec.Outcome == decision.OutcomeAnswered {
+			answeredCount++
+			if rec.ActorUserID != testResponder.UserID {
+				t.Errorf("answered record ActorUserID = %q, want %q", rec.ActorUserID, testResponder.UserID)
+			}
+		}
+	}
+	if answeredCount != 2 {
+		t.Fatalf("answered decision records = %d, want 2 (one per human ask)", answeredCount)
+	}
+}
+
+// Security review findings 1-3: a server that re-asks the identical message
+// and schema but flips the elicitation-kind hint from information to
+// permission must not have its answer silently replayed under the wrong
+// gate — the fingerprint alone is not enough; the kind must match on both
+// sides too. The operator sees it as a fresh, differently-classified ask.
+func TestBoundAgent_ToolCall_KindChangeUnderAnUnchangedFingerprintGoesToAHuman(t *testing.T) {
+	fake := &mrtrServer{reAsksAfterAnswer: 1, informationSchema: true, reAskKindHint: "permission"}
+	s, pub, ba := newMRTRAgent(t, fake, model.ApprovalModeNone, nil)
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := ba.handleToolCall(context.Background(), "r1", "myserver.deploy", map[string]any{"env": "prod"})
+		done <- err
+	}()
+
+	first := awaitPendingToolInputID(t, pub, s)
+	if err := ba.InputRequiredResolver().Resolve(first, `[{"action":"accept","content":{"confirm":true}}]`, testResponder); err != nil {
+		t.Fatalf("Resolve first: %v", err)
+	}
+
+	// The re-ask reaches a human as a SECOND pause despite matching content,
+	// because the kind hint flipped it to permission.
+	second := awaitNthPendingToolInputID(t, pub, s, 2)
+	if second == first {
+		t.Fatal("the second pause reused the first request ID; want a fresh human ask")
+	}
+	row, err := s.Queries().GetToolInputRequest(context.Background(), second)
+	if err != nil {
+		t.Fatalf("GetToolInputRequest: %v", err)
+	}
+	if row.ElicitationKind != string(model.ElicitationKindPermission) {
+		t.Errorf("second pause elicitation_kind = %q, want permission", row.ElicitationKind)
+	}
+
+	if err := ba.InputRequiredResolver().Resolve(second, `[{"action":"accept","content":{"confirm":true}}]`, testResponder); err != nil {
+		t.Fatalf("Resolve second: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("handleToolCall: unexpected error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("handleToolCall did not return within deadline")
 	}
 }
 
@@ -1420,7 +1847,7 @@ func TestBoundAgent_ToolCall_ReAskingDifferentlyRePromptsWithContext(t *testing.
 	}()
 
 	first := awaitPendingToolInputID(t, pub, s)
-	if err := ba.InputRequiredResolver().Resolve(first, `[{"action":"accept","content":{"confirm":true}}]`); err != nil {
+	if err := ba.InputRequiredResolver().Resolve(first, `[{"action":"accept","content":{"confirm":true}}]`, testResponder); err != nil {
 		t.Fatalf("Resolve first: %v", err)
 	}
 
@@ -1460,7 +1887,7 @@ func TestBoundAgent_ToolCall_ReAskingDifferentlyRePromptsWithContext(t *testing.
 		t.Errorf("first request carries a replay context %q, want NULL", *firstRow.ReplayContext)
 	}
 
-	if err := ba.InputRequiredResolver().Resolve(second, `[{"action":"decline"}]`); err != nil {
+	if err := ba.InputRequiredResolver().Resolve(second, `[{"action":"decline"}]`, testResponder); err != nil {
 		t.Fatalf("Resolve second: %v", err)
 	}
 
@@ -1471,5 +1898,78 @@ func TestBoundAgent_ToolCall_ReAskingDifferentlyRePromptsWithContext(t *testing.
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("handleToolCall did not return within deadline")
+	}
+}
+
+// LOW-finding follow-up: `!prior.replayed` used to gate the fallback
+// context-attachment branch too, not just canReplay's "once per question"
+// allowance. That meant a server re-asking something genuinely DIFFERENT
+// right after a spent replay got no ReplayContext at all — the operator
+// would see the new question with no way to tell what they'd just answered.
+// The term now belongs only to canReplay; a changed question always shows
+// the prior context, replay or no replay.
+func TestBoundAgent_ToolCall_ChangedQuestionAfterAReplayStillShowsPriorContext(t *testing.T) {
+	fake := &mrtrServer{
+		reAsksAfterAnswer:     2,
+		informationSchema:     true,
+		reAskMessage:          "what's the ticket number, actually?",
+		reAskMessageFromRound: 3, // round 2 re-asks identically (the replay); round 3 changes.
+	}
+	s, pub, ba := newMRTRAgent(t, fake, model.ApprovalModeNone, nil)
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := ba.handleToolCall(context.Background(), "r1", "myserver.deploy", map[string]any{"env": "prod"})
+		done <- err
+	}()
+
+	first := awaitPendingToolInputID(t, pub, s)
+	if err := ba.InputRequiredResolver().Resolve(first, `[{"action":"accept","content":{"ticket":"T-1"}}]`, testResponder); err != nil {
+		t.Fatalf("Resolve first: %v", err)
+	}
+
+	// Round 2 re-asks the identical question and is replayed silently — no
+	// second human pause for it. Round 3 changes the question, which IS a
+	// second human pause, reached with the original answer already spent on
+	// one replay (prior.replayed == true).
+	second := awaitNthPendingToolInputID(t, pub, s, 2)
+	if second == first {
+		t.Fatal("the second pause reused the first request ID")
+	}
+
+	row, err := s.Queries().GetToolInputRequest(context.Background(), second)
+	if err != nil {
+		t.Fatalf("GetToolInputRequest: %v", err)
+	}
+	if row.ReplayContext == nil {
+		t.Fatal("second request has no replay_context; a changed question after a spent replay must still show the prior answer")
+	}
+	rc, err := DecodeReplayContext(*row.ReplayContext)
+	if err != nil {
+		t.Fatalf("DecodeReplayContext: %v", err)
+	}
+	if rc.Reason != reasonQuestionChanged {
+		t.Errorf("Reason = %q, want %q", rc.Reason, reasonQuestionChanged)
+	}
+	if len(rc.PriorAnswers) != 1 || rc.PriorAnswers[0].Action != inputActionAccept {
+		t.Errorf("prior answers = %+v, want the operator's original answer preserved", rc.PriorAnswers)
+	}
+
+	if err := ba.InputRequiredResolver().Resolve(second, `[{"action":"accept","content":{"ticket":"T-2"}}]`, testResponder); err != nil {
+		t.Fatalf("Resolve second: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("handleToolCall: unexpected error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("handleToolCall did not return within deadline")
+	}
+
+	// original + replayed retry + changed-question retry + answered retry = 4.
+	if fake.count() != 4 {
+		t.Fatalf("server saw %d calls, want 4 (original + replayed retry + changed-question retry + answered retry)", fake.count())
 	}
 }

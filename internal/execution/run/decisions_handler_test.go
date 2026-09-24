@@ -126,6 +126,106 @@ func TestRunsHandler_ListDecisions(t *testing.T) {
 	}
 }
 
+// ActorUsername is looked up from ActorUserID at read time rather than stored
+// on the record — a decision record is evidence of what a Gleipnir user ID
+// did, and a username is a mutable display value, not part of that evidence.
+func TestRunsHandler_ListDecisions_ResolvesActorUsername(t *testing.T) {
+	ctx := context.Background()
+	store := testutil.NewTestStore(t)
+
+	testutil.InsertPolicy(t, store, "p-actor", "policy-p-actor", "webhook", testutil.MinimalWebhookPolicy)
+	testutil.InsertRun(t, store, "r-actor", "p-actor", model.RunStatusComplete)
+	if _, err := store.CreateUser(ctx, db.CreateUserParams{
+		ID: "u-alice", Username: "alice", PasswordHash: "x",
+		CreatedAt: "2026-08-05T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	recorder := decision.NewRecorder(store.Queries())
+	if err := recorder.Record(ctx, decision.Record{
+		RunID:            "r-actor",
+		RequestID:        "req-actor",
+		Kind:             model.ElicitationKindPermission,
+		ToolName:         "deploy.release",
+		ChannelEntryID:   "gleipnir.in-app",
+		ChannelAssurance: "authenticated",
+		LinkMethod:       decision.LinkSession,
+		ActorUserID:      "u-alice",
+		Outcome:          decision.OutcomeAnswered,
+		DecidedAt:        time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	h := run.NewRunsHandler(store, run.NewRunManager(), nil)
+	code, decisions := getDecisions(t, newDecisionsRouter(h), "r-actor")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	if len(decisions) != 1 {
+		t.Fatalf("got %d decisions, want 1", len(decisions))
+	}
+	if decisions[0].ActorUsername != "alice" {
+		t.Errorf("actor_username = %q, want alice", decisions[0].ActorUsername)
+	}
+}
+
+// A deleted user must not fail the whole list — the username is left empty
+// rather than surfacing a lookup error for every other decision on the run.
+func TestRunsHandler_ListDecisions_UnknownActorLeavesUsernameEmpty(t *testing.T) {
+	ctx := context.Background()
+	store := testutil.NewTestStore(t)
+
+	testutil.InsertPolicy(t, store, "p-gone", "policy-p-gone", "webhook", testutil.MinimalWebhookPolicy)
+	testutil.InsertRun(t, store, "r-gone", "p-gone", model.RunStatusComplete)
+	if _, err := store.CreateUser(ctx, db.CreateUserParams{
+		ID: "u-deleted", Username: "gone", PasswordHash: "x",
+		CreatedAt: "2026-08-05T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	recorder := decision.NewRecorder(store.Queries())
+	if err := recorder.Record(ctx, decision.Record{
+		RunID:            "r-gone",
+		RequestID:        "req-gone",
+		Kind:             model.ElicitationKindPermission,
+		ToolName:         "deploy.release",
+		ChannelEntryID:   "gleipnir.in-app",
+		ChannelAssurance: "authenticated",
+		LinkMethod:       decision.LinkSession,
+		ActorUserID:      "u-deleted",
+		Outcome:          decision.OutcomeAnswered,
+		DecidedAt:        time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	// The user is deleted AFTER the record exists: plugin_audit_events.actor_user_id
+	// is ON DELETE SET NULL, but the decision itself lives in the JSON payload,
+	// which the FK cascade never touches — this is what lets the record still
+	// name the actor after the account behind it is gone.
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM users WHERE id = 'u-deleted'`); err != nil {
+		t.Fatalf("delete user: %v", err)
+	}
+
+	h := run.NewRunsHandler(store, run.NewRunManager(), nil)
+	code, decisions := getDecisions(t, newDecisionsRouter(h), "r-gone")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	if len(decisions) != 1 {
+		t.Fatalf("got %d decisions, want 1", len(decisions))
+	}
+	if decisions[0].ActorUsername != "" {
+		t.Errorf("actor_username = %q, want empty for an unresolvable actor", decisions[0].ActorUsername)
+	}
+	if decisions[0].ActorUserID != "u-deleted" {
+		t.Errorf("actor_user_id = %q, want the recorded id preserved", decisions[0].ActorUserID)
+	}
+}
+
 func TestRunsHandler_ListDecisions_EmptyAndUnknown(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	testutil.InsertPolicy(t, store, "p-empty", "policy-p-empty", "webhook", testutil.MinimalWebhookPolicy)

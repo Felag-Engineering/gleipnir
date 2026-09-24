@@ -73,11 +73,13 @@ type ResolvedTool struct {
 	CanonicalSchema json.RawMessage
 
 	// Capabilities is the per-call client capability declaration sent in a
-	// modern-protocol tools/call request's _meta.clientCapabilities (spec §11). This
-	// is the policy-scoped enforcement seam: the HITL milestone (ADR-055) is what will
-	// set Elicitation from the policy's grants. ResolveForPolicy deliberately leaves
-	// it at its zero value today, so nothing is declared on any call path, and the
-	// type has no way to express sampling at all.
+	// modern-protocol tools/call request's _meta.clientCapabilities (spec §11).
+	// ResolveForPolicy sets Elicitation unconditionally for every tool it
+	// resolves (ADR-061) -- there is no per-policy opt-in, because a policy
+	// author cannot predict which granted tool might someday pause on an MRTR
+	// input_required. ResolveToolByName (the poll trigger engine) still
+	// leaves this at its zero value: poll invocations never pause a run for
+	// operator input. The type has no way to express sampling at all.
 	Capabilities ClientCapabilities
 }
 
@@ -481,7 +483,11 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 			canonical = json.RawMessage(*tool.CanonicalSchema)
 		}
 
-		// Capabilities is intentionally left zero until ADR-055 wires policy grants in.
+		// Elicitation is declared on every server pinned to 2026-07-28, with no
+		// per-policy opt-in (ADR-061): a granted tool that never asks for
+		// operator input costs nothing by declaring the capability, and a
+		// policy author has no way to predict which of a server's tools might
+		// someday pause on an MRTR input_required.
 		result = append(result, ResolvedTool{
 			GrantedTool: model.GrantedTool{
 				ServerName: serverName,
@@ -496,6 +502,7 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 			Description:     tool.Description,
 			InputSchema:     json.RawMessage(tool.InputSchema),
 			CanonicalSchema: canonical,
+			Capabilities:    ClientCapabilities{Elicitation: true},
 		})
 	}
 

@@ -23,6 +23,17 @@ UPDATE tool_input_requests
 SET status = 'timed_out', resolved_at = :resolved_at
 WHERE id = :id AND status = 'pending';
 
+-- CancelToolInputRequest transitions a pending tool input request to
+-- cancelled when the run is cancelled while the request is still waiting on
+-- an operator. The WHERE status = 'pending' guard is what makes this safe
+-- against the answer-vs-cancel race: an operator who already resolved the
+-- row before the cancellation reached it must never be relabelled cancelled
+-- underneath their answer.
+-- name: CancelToolInputRequest :execrows
+UPDATE tool_input_requests
+SET status = 'cancelled', resolved_at = :resolved_at
+WHERE id = :id AND status = 'pending';
+
 -- ListResumableToolInputRequests returns every pending tool input request so
 -- the host can re-arm its wait state after a restart (spec sec 13: persisted
 -- requestState survives restarts even though full run resurrection does not).

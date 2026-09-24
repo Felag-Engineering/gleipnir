@@ -15,7 +15,7 @@ import type { ApiRun, ApiRunStep } from '@/api/types'
 vi.mock('@/hooks/queries/runs')
 
 import { useRun } from '@/hooks/queries/runs'
-import { useRunSteps, useToolInput } from '@/hooks/queries/runs'
+import { useRunSteps, useToolInput, useRunDecisions } from '@/hooks/queries/runs'
 
 // --- Helpers ---
 
@@ -57,11 +57,17 @@ function makeStep(overrides?: Partial<ApiRunStep>): ApiRunStep {
 
 // The whole module is mocked, so every hook the page calls needs a return
 // value. useToolInput answers "not paused on anything" by default; the cases
-// that care about the card set their own.
+// that care about the card set their own. useRunDecisions answers "no
+// decisions yet" by default — DecisionList renders nothing for that, so no
+// test in this file needs to know it exists.
 beforeEach(() => {
   vi.mocked(useToolInput).mockReturnValue({
     request: null,
   } as ReturnType<typeof useToolInput>)
+  vi.mocked(useRunDecisions).mockReturnValue({
+    decisions: [],
+    status: 'success',
+  } as unknown as ReturnType<typeof useRunDecisions>)
 })
 
 function renderPage(queryClient = makeQueryClient()) {

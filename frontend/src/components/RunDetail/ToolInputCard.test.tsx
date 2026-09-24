@@ -29,6 +29,7 @@ function permissionRequest(overrides: Partial<ApiToolInputRequest> = {}): ApiToo
     id: 'tir-1',
     run_id: 'r1',
     tool_name: 'deploy.release',
+    server_name: 'relay',
     elicitation_kind: 'permission',
     required_role: 'approver',
     expires_at: new Date(Date.now() + 20 * 60 * 1000).toISOString(),
@@ -72,6 +73,18 @@ describe('ToolInputCard', () => {
     expect(await screen.findByRole('button', { name: 'Approve' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument()
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+  })
+
+  // ADR-061: the server is named as the author of the untrusted text, not
+  // left as an anonymous "the tool server" — the provenance line and the
+  // header both attribute the question to whoever actually asked it.
+  it('names the asking server in the header and the provenance line', async () => {
+    renderCard(permissionRequest({ server_name: 'relay' }))
+
+    expect(await screen.findByText('relay')).toBeInTheDocument()
+    expect(
+      screen.getByText('Asked by relay mid-call. The text below comes from relay, not from Gleipnir.'),
+    ).toBeInTheDocument()
   })
 
   it('renders an information ask as a form built from the requested schema', async () => {

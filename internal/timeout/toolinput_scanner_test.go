@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/execution/agent"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/plugin/decision"
 	"github.com/felag-engineering/gleipnir/internal/testutil"
 	"github.com/felag-engineering/gleipnir/internal/timeout"
 )
@@ -229,5 +231,47 @@ func TestToolInputScanner_LosesCleanlyToAnInProcessResolution(t *testing.T) {
 	}
 	if run.Status == string(model.RunStatusFailed) {
 		t.Error("run was failed by the scanner despite the answer landing first")
+	}
+}
+
+// The restart backstop (ADR-061 correction to ADR-055 §6.6): a process that
+// restarted while a run was paused has no in-process Route call left to record
+// anything, so the scanner's own claim is the ONLY settlement event for that
+// row. agent.NewToolInputTimeoutDecisionHook, wired via WithOnTerminated
+// exactly as main.go wires it, must be the one that writes the decision
+// record in that case.
+func TestToolInputScanner_OnTerminatedHookRecordsATimeoutDecision(t *testing.T) {
+	ctx := context.Background()
+	store := toolInputFixture(t, "r-stranded-decision")
+
+	past := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano)
+	insertToolInputRequest(t, store, "tir-stranded-decision", "r-stranded-decision", past, "policy")
+
+	scanner := timeout.NewToolInputScanner(store, time.Hour,
+		timeout.WithOnTerminated(agent.NewToolInputTimeoutDecisionHook(store.Queries())),
+	)
+	if err := scanner.Scan(ctx); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	records, err := decision.NewRecorder(store.Queries()).ForRun(ctx, "r-stranded-decision")
+	if err != nil {
+		t.Fatalf("ForRun: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("decision records = %+v, want exactly 1", records)
+	}
+	rec := records[0]
+	if rec.RequestID != "tir-stranded-decision" {
+		t.Errorf("RequestID = %q, want the claimed row's id", rec.RequestID)
+	}
+	if rec.Outcome != decision.OutcomeTimeout {
+		t.Errorf("Outcome = %q, want %q", rec.Outcome, decision.OutcomeTimeout)
+	}
+	if rec.ActorUserID != "" || rec.LinkMethod != decision.LinkNone {
+		t.Errorf("record names an actor (%q, %q), want none — nobody answered", rec.ActorUserID, rec.LinkMethod)
+	}
+	if rec.Kind != model.ElicitationKindPermission {
+		t.Errorf("Kind = %q, want %q", rec.Kind, model.ElicitationKindPermission)
 	}
 }

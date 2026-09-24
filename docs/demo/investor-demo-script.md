@@ -44,6 +44,12 @@ act three is real whether the Node is a container or a datacenter, which is exac
 admitting the setup costs nothing — and getting caught overstating it would cost the whole
 argument.
 
+**Before you start:** set `GLEIPNIR_MCP_TIMEOUT=120s` in the demo stack — Relay's approved
+retry runs the Job synchronously inside one `tools/call`, and the 30s default is tight for a
+fan-out restart. Confirm the Relay server shows `protocol_version 2026-07-28` on Gleipnir's
+MCP servers page before act two: a legacy pin means the approval in act two never reaches a
+human at all (relay#646).
+
 ---
 
 ## Act 0 — the world (45s)
@@ -81,24 +87,33 @@ Depends on: [#928](https://github.com/Felag-Engineering/gleipnir/issues/928),
 > divergent") is Relay's `v0.9.0` and is not built. At 24 Nodes the agent's own summary is
 > honest and reads fine.
 
-## Act 2 — the fix, gated twice (4 min)
+## Act 2 — the fix, approved in-band (4 min)
 
 Uptime Kuma fires a webhook: `api-gateway` down on three Nodes. The responder agent picks
-it up, diagnoses with read Operations, and proposes `service.restart` on a scoped Selector.
+it up, diagnoses with read Operations, and calls `relay.run_operation` proposing
+`service.restart` on a scoped Selector.
 
-**Wall 1 — Gleipnir.** The run stops at an approval gate. The attention queue shows the
-exact tool, the exact arguments, and the grant that gated it. Approve.
-
-> "The agent did not decide to ask. The runtime intercepted the call before it executed,
-> because the policy marks this tool as approval-required. There is no phrasing that skips
-> this step."
-
-**Wall 2 — Relay.** The Job parks. The Relay Console shows a plan — Operation, resolved
+**The wall is Relay's, and it is answered without leaving Gleipnir.** `run_operation` is not
+gated by Gleipnir's own `approval: required` in this policy — Relay owns approval for its
+own Operations, and the demo shows exactly one gate for this call, not a redundant second
+one. Relay's `tools/call` parks with an MRTR `input_required`: a plan — Operation, resolved
 arguments, resolved fan-out, risk class — **authored by Relay, not by the agent**, bound to
-a content hash. A *different* human approves.
+a content hash. It appears on the run's own attention queue, attributed to `relay`, rendered
+verbatim as the untrusted text it is. The approver answers right there, in Gleipnir's UI,
+with the `approver` role Relay's Operation demanded.
 
-> "The agent cannot write, truncate, or reshape what that approver sees. And it cannot
-> approve its own request — a machine Account is refused on every channel."
+> "That plan was never in the agent's context. The model saw a tool call go out and, three
+> screens later, a result come back — everything in between happened between two other
+> parties, and the model was not one of them."
+
+Approve. Relay records the decision — **who approved it, asserted by Gleipnir's session and
+verifiable, not typed into a form** — and runs the Job in the same call that was waiting.
+Gleipnir records its own copy of the same decision, independently, on the run's Decisions
+list.
+
+> "The agent cannot write, truncate, or reshape what that approver saw, and it cannot
+> approve its own request — a machine account is refused on every channel. Two independent
+> systems both wrote down that a human, verified, said yes to this exact plan."
 
 **Execution.** Per-Node results come back. Two Nodes restart. One returns
 `denied_by_policy` — that Node's local Policy does not permit restarting that unit.
@@ -106,10 +121,17 @@ a content hash. A *different* human approves.
 > "Nobody in this room can override that. Not me, not the AI, not an admin token. It is a
 > root-owned file on that machine, and this control plane has no code path that writes it."
 
+A production deployment may still gate `run_operation` with Gleipnir's own
+`approval: required` on top of Relay's — that produces a **double approval** for one call,
+Gleipnir's prompt first and Relay's second, back to back in the same UI. It is supported and
+tested; it is simply not what this demo's policy does, because one clean gate reads better
+on stage than two, and the point of act two is Relay's wall, not Gleipnir's.
+
 Depends on: [#929](https://github.com/Felag-Engineering/gleipnir/issues/929),
 [#932](https://github.com/Felag-Engineering/gleipnir/issues/932),
 [relay#453](https://github.com/Felag-Engineering/gleipnir-relay/issues/453),
-[relay#452](https://github.com/Felag-Engineering/gleipnir-relay/issues/452).
+[relay#452](https://github.com/Felag-Engineering/gleipnir-relay/issues/452),
+[relay#646](https://github.com/Felag-Engineering/gleipnir-relay/issues/646).
 
 ## Act 3 — break it on purpose (4 min)
 

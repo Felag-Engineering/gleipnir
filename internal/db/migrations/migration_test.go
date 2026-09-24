@@ -1349,3 +1349,123 @@ func TestAddMCPServerCACertSkipsOnFreshSchema(t *testing.T) {
 		t.Fatal("ShouldSkip returned false on a fresh initial schema — did 0001_initial.sql forget the ca_cert_pem column?")
 	}
 }
+
+// TestAddToolInputCancelledStatus verifies that migration 0053 rebuilds
+// tool_input_requests with 'cancelled' added to the status CHECK constraint,
+// that every pre-existing row's data (including its old status) survives the
+// rebuild, and that the migration is idempotent.
+func TestAddToolInputCancelledStatus(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+
+	// Build the pre-0053 shape by hand: tool_input_requests with the CHECK
+	// list that predates 'cancelled', plus the parents it references.
+	seedPreToolInputRequestsBaseline(t, db)
+	if _, err := db.ExecContext(ctx, `
+CREATE TABLE tool_input_requests (
+    id                TEXT    PRIMARY KEY,
+    run_id            TEXT    NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    server_id         TEXT    NOT NULL REFERENCES mcp_servers(id) ON DELETE CASCADE,
+    tool_name         TEXT    NOT NULL,
+    call_args         TEXT    NOT NULL,
+    request_state     TEXT    NOT NULL,
+    request_payload   TEXT    NOT NULL,
+    elicitation_kind  TEXT    NOT NULL CHECK(elicitation_kind IN ('permission', 'information')),
+    status            TEXT    NOT NULL CHECK(status IN ('pending', 'resolved', 'timed_out')),
+    response          TEXT,
+    resolved_at       TEXT,
+    expires_at        TEXT    NOT NULL,
+    deadline_source   TEXT    CHECK(deadline_source IS NULL OR deadline_source IN ('policy', 'server_ttl', 'request_state')),
+    replay_context    TEXT,
+    created_at        TEXT    NOT NULL
+)`); err != nil {
+		t.Fatalf("seed pre-0053 tool_input_requests: %v", err)
+	}
+
+	m := &migrations.AddToolInputCancelledStatus{}
+	skip, err := m.ShouldSkip(ctx, db)
+	if err != nil {
+		t.Fatalf("ShouldSkip: %v", err)
+	}
+	if skip {
+		t.Fatal("ShouldSkip returned true against the pre-target baseline")
+	}
+
+	for _, stmt := range []string{
+		`INSERT INTO policies(id, name, trigger_type, yaml, created_at, updated_at) VALUES ('p1', 'policy-1', 'manual', '{}', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+		`INSERT INTO runs(id, policy_id, status, trigger_type, trigger_payload, started_at, created_at) VALUES ('r1', 'p1', 'waiting_for_feedback', 'manual', '{}', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+		`INSERT INTO mcp_servers(id, name, url, created_at) VALUES ('s1', 'srv', 'http://localhost:8080', '2024-01-01T00:00:00Z')`,
+		`INSERT INTO tool_input_requests (id, run_id, server_id, tool_name, call_args, request_state, request_payload, elicitation_kind, status, expires_at, deadline_source, created_at)
+		 VALUES ('tir-pending', 'r1', 's1', 'deploy', '{}', 'state', '[]', 'permission', 'pending', '2024-01-01T01:00:00Z', 'policy', '2024-01-01T00:00:00Z')`,
+		`INSERT INTO tool_input_requests (id, run_id, server_id, tool_name, call_args, request_state, request_payload, elicitation_kind, status, response, resolved_at, expires_at, deadline_source, created_at)
+		 VALUES ('tir-resolved', 'r1', 's1', 'deploy', '{}', 'state', '[]', 'permission', 'resolved', '[]', '2024-01-01T00:30:00Z', '2024-01-01T01:00:00Z', 'policy', '2024-01-01T00:00:00Z')`,
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("seed: %v\nstatement: %s", err, stmt)
+		}
+	}
+
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	// Both pre-existing rows survive the rebuild with their data intact.
+	var status string
+	if err := db.QueryRowContext(ctx, `SELECT status FROM tool_input_requests WHERE id = 'tir-pending'`).Scan(&status); err != nil {
+		t.Fatalf("read tir-pending status: %v", err)
+	}
+	if status != "pending" {
+		t.Errorf("tir-pending status = %q, want pending", status)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT status FROM tool_input_requests WHERE id = 'tir-resolved'`).Scan(&status); err != nil {
+		t.Fatalf("read tir-resolved status: %v", err)
+	}
+	if status != "resolved" {
+		t.Errorf("tir-resolved status = %q, want resolved", status)
+	}
+
+	// 'cancelled' is now an accepted value, including going through
+	// CancelToolInputRequest's conditional UPDATE (WHERE status='pending').
+	if _, err := db.ExecContext(ctx,
+		`UPDATE tool_input_requests SET status = 'cancelled', resolved_at = '2024-01-01T00:45:00Z' WHERE id = 'tir-pending' AND status = 'pending'`,
+	); err != nil {
+		t.Fatalf("cancel tir-pending: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT status FROM tool_input_requests WHERE id = 'tir-pending'`).Scan(&status); err != nil {
+		t.Fatalf("read tir-pending status after cancel: %v", err)
+	}
+	if status != "cancelled" {
+		t.Errorf("tir-pending status = %q after cancel, want cancelled", status)
+	}
+
+	// An unknown status is still rejected rather than silently stored.
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO tool_input_requests (id, run_id, server_id, tool_name, call_args, request_state, request_payload, elicitation_kind, status, expires_at, deadline_source, created_at)
+		 VALUES ('tir-bogus', 'r1', 's1', 'deploy', '{}', 'state', '[]', 'permission', 'bogus', '2024-01-01T01:00:00Z', 'policy', '2024-01-01T00:00:00Z')`,
+	); err == nil {
+		t.Error("an unknown status was accepted, want a CHECK violation")
+	}
+
+	// Second Apply must be a no-op.
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("second Apply (idempotency): %v", err)
+	}
+}
+
+// TestAddToolInputCancelledStatusSkipsOnFreshSchema is the hand-sync gate for
+// 0001_initial.sql — sqlc reads only that file, so a CHECK value added by
+// migration but not there would be invisible to the generated code and to a
+// fresh install.
+func TestAddToolInputCancelledStatusSkipsOnFreshSchema(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	applyInitialSchema(t, db)
+
+	skip, err := (&migrations.AddToolInputCancelledStatus{}).ShouldSkip(ctx, db)
+	if err != nil {
+		t.Fatalf("ShouldSkip: %v", err)
+	}
+	if !skip {
+		t.Fatal("ShouldSkip returned false on a fresh initial schema — did 0001_initial.sql forget 'cancelled' in the tool_input_requests status CHECK?")
+	}
+}

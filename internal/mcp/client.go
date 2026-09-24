@@ -192,12 +192,14 @@ type toolsListParams struct {
 // InputResponses and RequestState are the MRTR retry fields (inputrequired.go,
 // spec §6.4): both omitempty, both nil on every call that is not answering a
 // prior input_required result, so an ordinary tools/call is unaffected.
+// InputResponses is a map keyed by request id (ADR-061, go-sdk v1.7.0), not
+// the array this package used to send.
 type toolsCallParams struct {
-	Name           string              `json:"name"`
-	Arguments      map[string]any      `json:"arguments"`
-	Meta           map[string]any      `json:"_meta,omitempty"`
-	InputResponses []inputResponseWire `json:"inputResponses,omitempty"`
-	RequestState   json.RawMessage     `json:"requestState,omitempty"`
+	Name           string                       `json:"name"`
+	Arguments      map[string]any               `json:"arguments"`
+	Meta           map[string]any               `json:"_meta,omitempty"`
+	InputResponses map[string]inputResponseWire `json:"inputResponses,omitempty"`
+	RequestState   json.RawMessage              `json:"requestState,omitempty"`
 }
 
 type toolsListResult struct {
@@ -804,9 +806,14 @@ func (c *Client) CallTool(ctx context.Context, name string, input map[string]any
 
 	params := toolsCallParams{Name: name, Arguments: input, Meta: c.requestMeta(opts.Capabilities)}
 	if c.isModernProtocol() && len(opts.InputResponses) > 0 {
-		wireResponses := make([]inputResponseWire, len(opts.InputResponses))
-		for i, r := range opts.InputResponses {
-			wireResponses[i] = inputResponseWire(r)
+		// Keyed by ID (ADR-061), not position: buildInputResponsesMap refuses an
+		// empty or duplicate ID before anything is sent, rather than silently
+		// sending a response the server cannot correlate to anything (or
+		// dropping one of two answers).
+		wireResponses, buildErr := buildInputResponsesMap(opts.InputResponses)
+		if buildErr != nil {
+			err = fmt.Errorf("calling tool %q: %w", name, buildErr)
+			return
 		}
 		params.InputResponses = wireResponses
 		params.RequestState = opts.RequestState

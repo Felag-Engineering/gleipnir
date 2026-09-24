@@ -187,6 +187,7 @@ export function ToolInputCard({ request }: Props) {
           {KIND_LABEL[request.elicitation_kind] ?? request.elicitation_kind.toUpperCase()}
         </span>
         <code className={styles.tool}>{request.tool_name}</code>
+        <span className={styles.server}>{request.server_name}</span>
         {countdown && (
           <span className={`${styles.countdown} ${countdown.urgent ? styles.countdownUrgent : ''}`}>
             {countdown.str}
@@ -195,8 +196,8 @@ export function ToolInputCard({ request }: Props) {
       </header>
 
       <p className={styles.provenance}>
-        Asked by the tool server mid-call. The text below comes from the server, not from
-        Gleipnir.
+        Asked by {request.server_name} mid-call. The text below comes from {request.server_name},
+        not from Gleipnir.
       </p>
 
       {deadlineNote && <p className={styles.deadlineNote}>{deadlineNote}</p>}

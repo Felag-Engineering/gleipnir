@@ -46,5 +46,6 @@ func All() []Migration {
 		&AddMCPServerPluginInstance{},
 		&AddPluginEventCursors{},
 		&AddMCPServerCACert{},
+		&AddToolInputCancelledStatus{},
 	}
 }

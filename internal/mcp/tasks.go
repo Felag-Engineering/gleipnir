@@ -132,10 +132,11 @@ type tasksCancelParams struct {
 // inputResponseWire (inputrequired.go): a Tasks-extension "please answer this
 // task" is elicitation-shaped in exactly the same way an MRTR retry's
 // inputResponses is, so the wire entry shape is shared rather than duplicated.
+// Keyed by request id (ADR-061), matching the MRTR retry's inputResponses.
 type tasksUpdateParams struct {
-	TaskID         string              `json:"taskId"`
-	InputResponses []inputResponseWire `json:"inputResponses"`
-	Meta           map[string]any      `json:"_meta,omitempty"`
+	TaskID         string                       `json:"taskId"`
+	InputResponses map[string]inputResponseWire `json:"inputResponses"`
+	Meta           map[string]any               `json:"_meta,omitempty"`
 }
 
 // taskResultWire is the wire shape shared by tasks/get, tasks/update, and
@@ -289,9 +290,12 @@ func (c *Client) CancelTask(ctx context.Context, taskID string) (TaskStatus, err
 // retry's inputResponses (CallOptions.InputResponses), addressed by taskId
 // instead of re-issuing the original tools/call.
 func (c *Client) UpdateTask(ctx context.Context, taskID string, responses []InputResponse) (TaskStatus, error) {
-	wireResponses := make([]inputResponseWire, len(responses))
-	for i, r := range responses {
-		wireResponses[i] = inputResponseWire(r)
+	// buildInputResponsesMap (inputrequired.go) is shared with CallTool's
+	// retry build so the two producers of an inputResponses map reject the
+	// same empty/duplicate IDs (finding 5, security review).
+	wireResponses, err := buildInputResponsesMap(responses)
+	if err != nil {
+		return TaskStatus{}, fmt.Errorf("update task %s: %w", taskID, err)
 	}
 	return c.callTasksMethod(ctx, methodTasksUpdate, taskID, tasksUpdateParams{
 		TaskID:         taskID,

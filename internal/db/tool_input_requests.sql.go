@@ -9,6 +9,31 @@ import (
 	"context"
 )
 
+const cancelToolInputRequest = `-- name: CancelToolInputRequest :execrows
+UPDATE tool_input_requests
+SET status = 'cancelled', resolved_at = ?1
+WHERE id = ?2 AND status = 'pending'
+`
+
+type CancelToolInputRequestParams struct {
+	ResolvedAt *string `json:"resolved_at"`
+	ID         string  `json:"id"`
+}
+
+// CancelToolInputRequest transitions a pending tool input request to
+// cancelled when the run is cancelled while the request is still waiting on
+// an operator. The WHERE status = 'pending' guard is what makes this safe
+// against the answer-vs-cancel race: an operator who already resolved the
+// row before the cancellation reached it must never be relabelled cancelled
+// underneath their answer.
+func (q *Queries) CancelToolInputRequest(ctx context.Context, arg CancelToolInputRequestParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, cancelToolInputRequest, arg.ResolvedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const createToolInputRequest = `-- name: CreateToolInputRequest :one
 INSERT INTO tool_input_requests (id, run_id, server_id, tool_name, call_args, request_state, request_payload, elicitation_kind, status, expires_at, deadline_source, replay_context, created_at)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', ?9, ?10, ?11, ?12)

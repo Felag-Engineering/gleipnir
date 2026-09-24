@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -16,8 +17,12 @@ import (
 // normalised resultType to ResultTypeInputRequired (see
 // TestCallTool_InputRequired_AbsentResultTypeNeverDecodes below), so an
 // absent resultType is proven by never calling this function at all.
+//
+// ADR-061: the wire shape is a map keyed by request id
+// (`{"<id>":{"method":"elicitation/create","params":{...}}}`), per go-sdk
+// v1.7.0. The array shape this package used to accept is refused outright.
 func TestDecodeInputRequiredResult(t *testing.T) {
-	validRequests := json.RawMessage(`[{"message":"delete the production database?","requestedSchema":{"type":"object"}}]`)
+	validRequests := json.RawMessage(`{"q1":{"method":"elicitation/create","params":{"message":"delete the production database?","requestedSchema":{"type":"object"}}}}`)
 	validState := json.RawMessage(`"opaque-state-token"`)
 
 	tests := []struct {
@@ -29,8 +34,18 @@ func TestDecodeInputRequiredResult(t *testing.T) {
 		{
 			name: "happy path",
 			result: toolsCallResult{
-				InputRequests: json.RawMessage(`[{"message":"delete the production database?","requestedSchema":{"type":"object","properties":{}},"_meta":{"io.gleipnir/elicitation-kind":"permission"}}]`),
+				InputRequests: json.RawMessage(`{"q1":{"method":"elicitation/create","params":{"mode":"form","message":"delete the production database?","requestedSchema":{"type":"object","properties":{}},"_meta":{"io.gleipnir/elicitation-kind":"permission"}}}}`),
 				RequestState:  validState,
+			},
+		},
+		{
+			name: "several ids come out sorted",
+			result: toolsCallResult{
+				InputRequests: json.RawMessage(`{
+					"zeta":{"method":"elicitation/create","params":{"message":"z?"}},
+					"alpha":{"method":"elicitation/create","params":{"message":"a?"}}
+				}`),
+				RequestState: validState,
 			},
 		},
 		{
@@ -53,7 +68,7 @@ func TestDecodeInputRequiredResult(t *testing.T) {
 		{
 			name: "inputRequests exceeds byte cap",
 			result: toolsCallResult{
-				InputRequests: json.RawMessage(`[{"message":"` + strings.Repeat("a", defaultMaxInputRequestsBytes) + `","requestedSchema":{}}]`),
+				InputRequests: json.RawMessage(`{"q1":{"method":"elicitation/create","params":{"message":"` + strings.Repeat("a", defaultMaxInputRequestsBytes) + `"}}}`),
 				RequestState:  validState,
 			},
 			wantErr:    true,
@@ -69,9 +84,9 @@ func TestDecodeInputRequiredResult(t *testing.T) {
 			wantReason: "exceeds the limit",
 		},
 		{
-			name: "inputRequests is empty array",
+			name: "inputRequests is empty object",
 			result: toolsCallResult{
-				InputRequests: json.RawMessage(`[]`),
+				InputRequests: json.RawMessage(`{}`),
 				RequestState:  validState,
 			},
 			wantErr:    true,
@@ -86,31 +101,99 @@ func TestDecodeInputRequiredResult(t *testing.T) {
 			wantReason: "does not parse",
 		},
 		{
-			name: "inputRequests is a JSON object, not an array",
+			name: "inputRequests is an array (regression pin: the dropped shape)",
 			result: toolsCallResult{
-				InputRequests: json.RawMessage(`{"message":"oops"}`),
+				InputRequests: json.RawMessage(`[{"message":"oops"}]`),
 				RequestState:  validState,
 			},
 			wantErr:    true,
-			wantReason: "does not parse",
+			wantReason: "not an array",
 		},
 		{
 			name: "inputRequests entry has a non-string message",
 			result: toolsCallResult{
-				InputRequests: json.RawMessage(`[{"message":123,"requestedSchema":{}}]`),
+				InputRequests: json.RawMessage(`{"q1":{"method":"elicitation/create","params":{"message":123}}}`),
+				RequestState:  validState,
+			},
+			wantErr:    true,
+			wantReason: "params does not parse",
+		},
+		{
+			name: "inputRequests entry is not an object",
+			result: toolsCallResult{
+				InputRequests: json.RawMessage(`{"q1":"not an object"}`),
 				RequestState:  validState,
 			},
 			wantErr:    true,
 			wantReason: "does not parse",
 		},
 		{
-			name: "inputRequests entry is not an object",
+			name: "sampling method is refused",
 			result: toolsCallResult{
-				InputRequests: json.RawMessage(`["not an object"]`),
+				InputRequests: json.RawMessage(`{"q1":{"method":"sampling/createMessage","params":{}}}`),
 				RequestState:  validState,
 			},
 			wantErr:    true,
-			wantReason: "does not parse",
+			wantReason: "unsupported input request method",
+		},
+		{
+			name: "roots/list method is refused",
+			result: toolsCallResult{
+				InputRequests: json.RawMessage(`{"q1":{"method":"roots/list","params":{}}}`),
+				RequestState:  validState,
+			},
+			wantErr:    true,
+			wantReason: "unsupported input request method",
+		},
+		{
+			name: "unknown method is refused",
+			result: toolsCallResult{
+				InputRequests: json.RawMessage(`{"q1":{"method":"something/else","params":{}}}`),
+				RequestState:  validState,
+			},
+			wantErr:    true,
+			wantReason: "unsupported input request method",
+		},
+		{
+			name: "url mode is refused",
+			result: toolsCallResult{
+				InputRequests: json.RawMessage(`{"q1":{"method":"elicitation/create","params":{"mode":"url","message":"approve?","url":"https://example.invalid/consent"}}}`),
+				RequestState:  validState,
+			},
+			wantErr:    true,
+			wantReason: "url-mode elicitation is not supported",
+		},
+		{
+			name: "empty mode is accepted",
+			result: toolsCallResult{
+				InputRequests: json.RawMessage(`{"q1":{"method":"elicitation/create","params":{"message":"approve?"}}}`),
+				RequestState:  validState,
+			},
+		},
+		{
+			name: "an empty request id is refused",
+			result: toolsCallResult{
+				InputRequests: json.RawMessage(`{"":{"method":"elicitation/create","params":{"message":"approve?"}}}`),
+				RequestState:  validState,
+			},
+			wantErr:    true,
+			wantReason: "empty request id",
+		},
+		{
+			name: "a request id over the byte limit is refused",
+			result: toolsCallResult{
+				InputRequests: json.RawMessage(`{"` + strings.Repeat("a", maxInputRequestIDBytes+1) + `":{"method":"elicitation/create","params":{"message":"approve?"}}}`),
+				RequestState:  validState,
+			},
+			wantErr:    true,
+			wantReason: "exceeds the",
+		},
+		{
+			name: "a request id AT the byte limit is accepted",
+			result: toolsCallResult{
+				InputRequests: json.RawMessage(`{"` + strings.Repeat("a", maxInputRequestIDBytes) + `":{"method":"elicitation/create","params":{"message":"approve?"}}}`),
+				RequestState:  validState,
+			},
 		},
 	}
 
@@ -122,17 +205,34 @@ func TestDecodeInputRequiredResult(t *testing.T) {
 				if err != nil {
 					t.Fatalf("decodeInputRequiredResult: unexpected error: %v", err)
 				}
+				if tc.name == "several ids come out sorted" {
+					if len(got.InputRequests) != 2 || got.InputRequests[0].ID != "alpha" || got.InputRequests[1].ID != "zeta" {
+						t.Fatalf("InputRequests = %+v, want [alpha, zeta] in sorted order", got.InputRequests)
+					}
+					return
+				}
+				if tc.name == "a request id AT the byte limit is accepted" {
+					if len(got.InputRequests) != 1 || len(got.InputRequests[0].ID) != maxInputRequestIDBytes {
+						t.Fatalf("InputRequests = %+v, want one %d-byte id", got.InputRequests, maxInputRequestIDBytes)
+					}
+					return
+				}
 				if len(got.InputRequests) != 1 {
 					t.Fatalf("len(InputRequests) = %d, want 1", len(got.InputRequests))
 				}
-				if got.InputRequests[0].Message != "delete the production database?" {
-					t.Errorf("Message = %q, want %q", got.InputRequests[0].Message, "delete the production database?")
-				}
-				if got.InputRequests[0].ElicitationKind != "permission" {
-					t.Errorf("ElicitationKind = %q, want %q", got.InputRequests[0].ElicitationKind, "permission")
+				if got.InputRequests[0].ID != "q1" {
+					t.Errorf("ID = %q, want %q", got.InputRequests[0].ID, "q1")
 				}
 				if string(got.RequestState) != string(validState) {
 					t.Errorf("RequestState = %s, want %s", got.RequestState, validState)
+				}
+				if tc.name == "happy path" {
+					if got.InputRequests[0].Message != "delete the production database?" {
+						t.Errorf("Message = %q, want %q", got.InputRequests[0].Message, "delete the production database?")
+					}
+					if got.InputRequests[0].ElicitationKind != "permission" {
+						t.Errorf("ElicitationKind = %q, want %q", got.InputRequests[0].ElicitationKind, "permission")
+					}
 				}
 				return
 			}
@@ -154,13 +254,17 @@ func TestDecodeInputRequiredResult(t *testing.T) {
 	}
 }
 
-// manyInputRequests builds a valid inputRequests JSON array of n entries, for
-// exercising the defaultMaxInputRequests count cap independent of the byte cap.
+// manyInputRequests builds a valid inputRequests JSON object of n entries,
+// keyed q0..qN-1, for exercising the defaultMaxInputRequests count cap
+// independent of the byte cap.
 func manyInputRequests(t *testing.T, n int) json.RawMessage {
 	t.Helper()
-	entries := make([]map[string]any, n)
-	for i := range entries {
-		entries[i] = map[string]any{"message": "confirm?", "requestedSchema": map[string]any{}}
+	entries := make(map[string]any, n)
+	for i := range n {
+		entries[fmt.Sprintf("q%d", i)] = map[string]any{
+			"method": "elicitation/create",
+			"params": map[string]any{"message": "confirm?", "requestedSchema": map[string]any{}},
+		}
 	}
 	raw, err := json.Marshal(entries)
 	if err != nil {
@@ -266,7 +370,7 @@ func TestCallTool_InputRequiredRetry_AttachesInputResponsesAndRequestState(t *te
 	c := NewClient(srv.URL, WithProtocolVersion(ProtocolVersion20260728))
 	opts := CallOptions{
 		InputResponses: []InputResponse{
-			{Action: "accept", Content: json.RawMessage(`{"confirmed":true}`)},
+			{ID: "q1", Action: "accept", Content: json.RawMessage(`{"confirmed":true}`)},
 		},
 		RequestState: json.RawMessage(`"opaque-state-token"`),
 	}
@@ -286,11 +390,58 @@ func TestCallTool_InputRequiredRetry_AttachesInputResponsesAndRequestState(t *te
 	if len(params.InputResponses) != 1 {
 		t.Fatalf("len(InputResponses) = %d, want 1", len(params.InputResponses))
 	}
-	if params.InputResponses[0].Action != "accept" {
-		t.Errorf("InputResponses[0].Action = %q, want %q", params.InputResponses[0].Action, "accept")
+	if params.InputResponses["q1"].Action != "accept" {
+		t.Errorf("InputResponses[%q].Action = %q, want %q", "q1", params.InputResponses["q1"].Action, "accept")
 	}
 	if string(params.RequestState) != `"opaque-state-token"` {
 		t.Errorf("RequestState = %s, want %q", params.RequestState, "opaque-state-token")
+	}
+}
+
+// TestCallTool_InputRequiredRetry_EmptyIDIsRefused proves that an
+// InputResponse with no ID never reaches the wire: it is a caller bug, not a
+// server condition, since nothing was ever asked under an empty key.
+func TestCallTool_InputRequiredRetry_EmptyIDIsRefused(t *testing.T) {
+	fake := NewFakeMCPServer(WithFakeMode(FakeModern), WithFakeRejectLegacyHandshake())
+	srv := httptest.NewServer(fake)
+	t.Cleanup(srv.Close)
+
+	c := NewClient(srv.URL, WithProtocolVersion(ProtocolVersion20260728))
+	opts := CallOptions{
+		InputResponses: []InputResponse{{Action: "accept", Content: json.RawMessage(`{"confirmed":true}`)}},
+		RequestState:   json.RawMessage(`"opaque-state-token"`),
+	}
+	if _, err := c.CallTool(context.Background(), "tool-a", nil, opts); err == nil {
+		t.Fatal("CallTool: want an error for an empty response ID, got nil")
+	}
+	if len(fake.RequestsFor(methodToolsCall)) != 0 {
+		t.Error("the retry was sent despite the empty ID, want nothing sent")
+	}
+}
+
+// TestCallTool_InputRequiredRetry_DuplicateIDIsRefused proves that two
+// responses claiming the same request ID never reach the wire: silently
+// collapsing them onto one map entry would send the server one answer for a
+// question the caller believed it answered twice (finding 5, security
+// review).
+func TestCallTool_InputRequiredRetry_DuplicateIDIsRefused(t *testing.T) {
+	fake := NewFakeMCPServer(WithFakeMode(FakeModern), WithFakeRejectLegacyHandshake())
+	srv := httptest.NewServer(fake)
+	t.Cleanup(srv.Close)
+
+	c := NewClient(srv.URL, WithProtocolVersion(ProtocolVersion20260728))
+	opts := CallOptions{
+		InputResponses: []InputResponse{
+			{ID: "q1", Action: "accept", Content: json.RawMessage(`{"confirmed":true}`)},
+			{ID: "q1", Action: "decline"},
+		},
+		RequestState: json.RawMessage(`"opaque-state-token"`),
+	}
+	if _, err := c.CallTool(context.Background(), "tool-a", nil, opts); err == nil {
+		t.Fatal("CallTool: want an error for a duplicate response ID, got nil")
+	}
+	if len(fake.RequestsFor(methodToolsCall)) != 0 {
+		t.Error("the retry was sent despite the duplicate ID, want nothing sent")
 	}
 }
 
@@ -306,7 +457,7 @@ func TestCallTool_InputRequiredRetry_LegacyTransportOmitsBothFields(t *testing.T
 
 	c := NewClient(srv.URL, WithProtocolVersion(ProtocolVersionLegacy))
 	opts := CallOptions{
-		InputResponses: []InputResponse{{Action: "accept"}},
+		InputResponses: []InputResponse{{ID: "q1", Action: "accept"}},
 		RequestState:   json.RawMessage(`"opaque-state-token"`),
 	}
 	if _, err := c.CallTool(context.Background(), "tool-a", nil, opts); err != nil {

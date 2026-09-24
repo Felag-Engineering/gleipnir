@@ -7,6 +7,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/felag-engineering/gleipnir/internal/execution/agent"
 )
 
 var (
@@ -25,13 +27,14 @@ type FeedbackResolver interface {
 }
 
 // ToolInputResolver is the per-run target that ResolveToolInput delegates to.
-// *agent.InputRequiredHandler satisfies it. It is a separate interface from
-// FeedbackResolver despite the identical method set: the two deliver different
-// payloads (freeform operator text vs a validated, position-correlated answer
-// to a specific elicitation) to different waiter maps, and collapsing them
-// would make it possible to hand one wait's answer to the other.
+// *agent.InputRequiredHandler satisfies it. It takes a Responder argument,
+// unlike FeedbackResolver's otherwise-identical shape: an operator's answer to
+// a tool-initiated elicitation is asserted to the asking server (ADR-061), so
+// the authenticated identity has to travel all the way from the HTTP handler
+// down to the wire, and collapsing this back onto FeedbackResolver would make
+// it possible to hand one wait's answer to the other with no identity at all.
 type ToolInputResolver interface {
-	Resolve(requestID, body string) error
+	Resolve(requestID, body string, responder agent.Responder) error
 }
 
 // trackedRun holds the per-run state that RunManager needs to cancel and
@@ -168,8 +171,9 @@ func (m *RunManager) ResolveFeedback(runID, requestID, body string) error {
 // ResolveToolInput delivers an operator's answer to a paused tool-initiated
 // input request (ADR-055). Returns ErrRunNotFound when the run is not tracked
 // or has been cancelled; agent.ErrUnknownInputRequestID when the run is live
-// but that particular wait is already over.
-func (m *RunManager) ResolveToolInput(runID, requestID, body string) error {
+// but that particular wait is already over. responder is the authenticated
+// Gleipnir user who answered, asserted to the asking server (ADR-061).
+func (m *RunManager) ResolveToolInput(runID, requestID, body string, responder agent.Responder) error {
 	m.mu.Lock()
 	tr, ok := m.runs[runID]
 	if !ok || tr.toolInputResolver == nil {
@@ -178,7 +182,7 @@ func (m *RunManager) ResolveToolInput(runID, requestID, body string) error {
 	}
 	resolver := tr.toolInputResolver // copy under lock
 	m.mu.Unlock()                    // release BEFORE calling Resolve
-	return resolver.Resolve(requestID, body)
+	return resolver.Resolve(requestID, body, responder)
 }
 
 // RegisterToolInputResolver attaches a ToolInputResolver to an already-registered
