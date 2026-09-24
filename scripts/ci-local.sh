@@ -114,7 +114,7 @@ summarize() {
 	if [ "$scope" = "full" ]; then
 		echo "ci-local ✅  FULL gate ($scope_reason)"
 		echo "  lanes: backend build + race tests (all packages) · gofmt · staticcheck · plugin import boundary · gate scoper self-test · sqlc drift · proto lint+gen drift · plugin-sdk+examples+plugins · frontend typecheck+unit"
-		echo "  relaysmoke:  nightly-only, never run by ci-local (vet-compiled only) — see docs/developer/relay-smoke.md"
+		echo "  relaysmoke:  manual-only (make relaysmoke), never run by ci-local (vet-compiled only) — see docs/developer/relay-smoke.md"
 	else
 		echo "ci-local ✅  SCOPED gate — $scope_reason"
 		echo "  always run:  go build ./... · gofmt · staticcheck · plugin import boundary · gate scoper self-test · sqlc drift · proto lint+gen drift"
@@ -122,7 +122,7 @@ summarize() {
 		echo "  sdk lane:    $([ "${CI_LOCAL_RUN_SDK:-1}" = "1" ] && echo "run" || echo "skipped — no plugin-sdk/, plugins/, or go.work change")"
 		echo "  frontend:    $([ "${CI_LOCAL_RUN_FRONTEND:-1}" = "1" ] && echo "run" || echo "skipped — no frontend/ change")"
 		echo "  substrate:   $(substrate_status)"
-		echo "  relaysmoke:  nightly-only, never run by ci-local (vet-compiled only) — see docs/developer/relay-smoke.md"
+		echo "  relaysmoke:  manual-only (make relaysmoke), never run by ci-local (vet-compiled only) — see docs/developer/relay-smoke.md"
 		echo "  ⚠ a scoped pass is an inner-loop signal, not full coverage — CI runs the whole matrix on the pushed branch."
 		echo "  run 'make ci-local-full' for the unnarrowed gate."
 	fi

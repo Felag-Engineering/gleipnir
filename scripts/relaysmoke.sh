@@ -57,7 +57,7 @@ compose_version="$(docker compose version --short 2>/dev/null || echo 0.0.0)"
 if ! python3 -c "
 import sys
 def parts(v):
-    return tuple(int(p) for p in v.split('.')[:3])
+    return tuple(int(p) for p in v.split('-')[0].split('.')[:3])
 sys.exit(0 if parts('$compose_version') >= (2, 24, 4) else 1)
 " 2>/dev/null; then
 	die 2 "docker compose $compose_version is too old — this lane's compose.override.yml uses 'ports: !override', which needs Compose >= 2.24.4"

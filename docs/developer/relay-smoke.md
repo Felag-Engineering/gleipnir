@@ -87,7 +87,7 @@ in `RELAYSMOKE_ARTIFACT_DIR` (default: a fresh `mktemp -d`), printed at the end 
 |---|---|---|
 | `CA configuration: ...` | `discovery_error` contains `TLS certificate verification failed` | Point `RELAYSMOKE_CA_FILE` at a different PEM before running the suite. |
 | `bearer token: ...` | `discovery_error` contains `status 401` (or `403`) | Substitute an invalid token in the machine Account mint step, or edit the registration body in a local run. |
-| `negotiated protocol version = ... want "2026-07-28"` | Relay's `server/discover` did not negotiate the modern transport | This is the intended nightly signal if Relay's SDK regresses to the legacy pin — it is not a Gleipnir-side bug to silence. |
+| `negotiated protocol version = ... want "2026-07-28"` | Relay's `server/discover` did not negotiate the modern transport | This is the intended signal if Relay's SDK regresses to the legacy pin — it is not a Gleipnir-side bug to silence. |
 | `mutate run ended without parking and without pending_approval` | Gleipnir's parked-result (`input_required`) handling | Break `decodeInputRequiredResult` locally against a Relay branch that implements #646, and confirm this message (not a skip) is what fires. |
 | `fleet did not reach N connected Nodes within 3m` | `waitForFleet` — the compose fleet did not finish enrolling | Check `relay-fleet.log` / `relay-fleet-ps.txt` in the artifact dir. |
 
@@ -109,9 +109,9 @@ A skip is not a pass: `report.json`'s `mrtr` field and the test's own step summa
 `skipped: pending_approval fallback`, not `exercised`. Anything that is neither of the above (the
 run fails, or completes with something that is not `pending_approval`) is a hard `t.Fatalf`
 naming Gleipnir's parked-result handling as the cause — a Gleipnir-side MRTR regression can never
-hide inside the skip. Once gleipnir-relay#646 lands, dispatch this lane with
-`workflow_dispatch`'s `relay_ref` input against its branch (or its merged SHA) to confirm Branch A
-runs unskipped before bumping the pin.
+hide inside the skip. Once gleipnir-relay#646 lands, check out its branch (or its merged SHA) and
+run `make relaysmoke RELAY_DIR=<that checkout>` to confirm Branch A runs unskipped before bumping
+the pin.
 
 ## The gate override
 
