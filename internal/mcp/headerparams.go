@@ -223,6 +223,22 @@ func headerNameConfiguredAsAuthHeader(canonical string, authHeaders []AuthHeader
 	return false
 }
 
+// headerNameConfiguredAsAttribution reports whether canonical -- already run
+// through http.CanonicalHeaderKey -- matches one of the server's effective
+// run attribution header names (issue #943). Used the same way as
+// headerNameConfiguredAsAuthHeader above, against a host-asserted header
+// rather than an operator-configured one: an x-mcp-header declaration must
+// never be able to claim a name the host itself asserts run attribution
+// under.
+func headerNameConfiguredAsAttribution(canonical string, attributionNames []string) bool {
+	for _, name := range attributionNames {
+		if http.CanonicalHeaderKey(name) == canonical {
+			return true
+		}
+	}
+	return false
+}
+
 // headerParam is one x-mcp-header-annotated tool parameter resolved to a
 // wire-ready header name/value pair. Unexported: the only consumer is
 // postOptions in this package. Deliberately not named AuthHeader -- that
@@ -286,20 +302,26 @@ type headerParamSchema struct {
 // never surfaces the collision to the operator, while an error does. Pass
 // nil when the server has none configured.
 //
+// attributionNames is the server's effective run attribution header names
+// (issue #943), passed in for the same reason: a declared x-mcp-header name
+// that collides with one of them is rejected here, closing off the same
+// silent-override path against a HOST-asserted header rather than an
+// operator-configured one. Pass nil when run attribution is off.
+//
 // Name validation (headervalidate.ValidateName, the [A-Za-z0-9-] allowlist,
-// the x-mcp-header-specific denylist below, the ADR-039 collision check, and
-// duplicate detection) runs for EVERY annotated property regardless of
-// whether input supplies a value: rejection must be a deterministic property
-// of the tool's declaration, not a function of what the model happened to
-// send, so a smuggling attempt cannot lie dormant until some future call
-// happens to fill the field.
+// the x-mcp-header-specific denylist below, the ADR-039 collision check, the
+// run-attribution collision check, and duplicate detection) runs for EVERY
+// annotated property regardless of whether input supplies a value: rejection
+// must be a deterministic property of the tool's declaration, not a function
+// of what the model happened to send, so a smuggling attempt cannot lie
+// dormant until some future call happens to fill the field.
 //
 // Value validation (type coercion, a length bound, then a CRLF/control-character
 // check) is deliberately NOT delegated to headervalidate: that package
 // validates header NAMES only, by design, and is shared with
 // internal/plugin/oauth, which has no concept of a per-call agent-supplied
 // value.
-func extractHeaderParams(schema json.RawMessage, input map[string]any, authHeaders []AuthHeader) ([]headerParam, error) {
+func extractHeaderParams(schema json.RawMessage, input map[string]any, authHeaders []AuthHeader, attributionNames []string) ([]headerParam, error) {
 	if len(schema) > maxHeaderParamSchemaBytes {
 		return nil, nil
 	}
@@ -367,6 +389,10 @@ func extractHeaderParams(schema json.RawMessage, input map[string]any, authHeade
 
 		if headerNameConfiguredAsAuthHeader(canonical, authHeaders) {
 			return nil, newHeaderParamError(propName, headerName, "header name collides with an auth header configured for this server")
+		}
+
+		if headerNameConfiguredAsAttribution(canonical, attributionNames) {
+			return nil, newHeaderParamError(propName, headerName, "header name collides with a run attribution header configured for this server")
 		}
 
 		if seen[canonical] {

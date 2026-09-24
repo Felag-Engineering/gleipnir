@@ -375,7 +375,7 @@ func (c *Client) ChannelNotify(ctx context.Context, n ChannelNotification) error
 		return fmt.Errorf("marshal %s request: %w", methodChannelNotify, err)
 	}
 
-	resp, err := c.sendRPC(ctx, body, methodChannelNotify, n.Target.Address, nil)
+	resp, err := c.sendRPC(ctx, body, methodChannelNotify, n.Target.Address, nil, nil)
 	if err != nil {
 		return fmt.Errorf("post %s: %w", methodChannelNotify, err)
 	}
@@ -444,7 +444,7 @@ func (c *Client) ChannelRequest(ctx context.Context, p ChannelRequestParams) (Ta
 		return TaskStatus{}, fmt.Errorf("marshal %s request: %w", methodChannelRequest, err)
 	}
 
-	resp, err := c.sendRPC(ctx, body, methodChannelRequest, p.Target.Address, nil)
+	resp, err := c.sendRPC(ctx, body, methodChannelRequest, p.Target.Address, nil, nil)
 	if err != nil {
 		return TaskStatus{}, fmt.Errorf("post %s: %w", methodChannelRequest, err)
 	}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -324,7 +325,7 @@ func NewRegistry(queries *db.Queries, opts ...RegistryOption) *Registry {
 // is returned with no auth headers and a warning is logged — matching the
 // fail-open pattern used by the webhook secret loader.
 func (r *Registry) newClientForServer(srv db.McpServer) *Client {
-	opts := make([]ClientOption, 0, 5)
+	opts := make([]ClientOption, 0, 6)
 	opts = append(opts, WithTimeout(r.CallTimeoutFor(srv)))
 	opts = append(opts,
 		WithElicitationLimits(r.elicitationLimits),
@@ -337,6 +338,7 @@ func (r *Registry) newClientForServer(srv db.McpServer) *Client {
 		WithServerLimits(r.limitsFor(srv)),
 	)
 
+	var authHeaders []AuthHeader
 	if srv.AuthHeadersEncrypted != nil {
 		if r.encKey == nil {
 			slog.Warn("encryption key unset; mcp server has stored auth headers but they will not be sent",
@@ -359,12 +361,27 @@ func (r *Registry) newClientForServer(srv db.McpServer) *Client {
 					// existed — are grandfathered in the DB. This is the
 					// injection-time backstop: a reserved-name header can
 					// never reach the wire regardless of when it was stored.
-					headers = dropReservedAuthHeaders(headers, srv.ID, srv.Name)
-					if len(headers) > 0 {
-						opts = append(opts, WithAuthHeaders(headers))
+					authHeaders = dropReservedAuthHeaders(headers, srv.ID, srv.Name)
+					if len(authHeaders) > 0 {
+						opts = append(opts, WithAuthHeaders(authHeaders))
 					}
 				}
 			}
+		}
+	}
+
+	// Run attribution (issue #943). An unparseable stored value is treated
+	// as off (with a warning) rather than failing client construction —
+	// matching runtime, where nothing is sent for a value that no longer
+	// parses.
+	attrCfg, err := ParseRunAttributionColumn(srv.RunAttribution)
+	if err != nil {
+		slog.Warn("stored run attribution does not parse; sending none",
+			"server_id", srv.ID, "server_name", srv.Name, "err", err)
+	} else {
+		names := dropUnsafeAttributionNames(attrCfg.EffectiveHeaderNames(), authHeaders, srv.ID, srv.Name)
+		if !names.IsZero() {
+			opts = append(opts, WithRunAttributionHeaders(names))
 		}
 	}
 
@@ -421,6 +438,53 @@ func dropReservedAuthHeaders(headers []AuthHeader, serverID, serverName string) 
 		kept = append(kept, h)
 	}
 	return kept
+}
+
+// dropUnsafeAttributionNames blanks any of names' fields that fails
+// headervalidate.ValidateName, the [A-Za-z0-9-] allowlist, the denylist
+// this package also applies to x-mcp-header names, or that collides
+// (canonically) with one of authHeaders. This is the injection-time
+// backstop for run attribution, mirroring dropReservedAuthHeaders above:
+// mcp_handler.go's ValidateRunAttribution already gates new writes, but
+// that gate cannot retroactively scrub a hand-edited row, and cannot see a
+// TOCTOU between validating a name and a concurrent SetAuthHeader adding a
+// colliding auth header afterward. Auth always wins — a dropped name is
+// logged with a WARN naming the field, and the call proceeds sending
+// nothing under that name rather than failing the whole client build.
+func dropUnsafeAttributionNames(names AttributionHeaderNames, authHeaders []AuthHeader, serverID, serverName string) AttributionHeaderNames {
+	safe := func(field, name string) string {
+		if name == "" {
+			return ""
+		}
+		if err := headervalidate.ValidateName(name); err != nil {
+			slog.Warn("dropping stored run attribution header: name fails validation",
+				"server_id", serverID, "server_name", serverName, "field", field, "header_name", name, "err", err)
+			return ""
+		}
+		if hasNonAllowlistedHeaderNameByte(name) {
+			slog.Warn("dropping stored run attribution header: name contains a byte outside the letters/digits/hyphen allowlist",
+				"server_id", serverID, "server_name", serverName, "field", field, "header_name", name)
+			return ""
+		}
+		canonical := http.CanonicalHeaderKey(name)
+		if isDeniedHeaderParamName(canonical) {
+			slog.Warn("dropping stored run attribution header: name is not permitted (hop-by-hop/proxy-control header, or a header that can carry an identity or origin the operator did not grant)",
+				"server_id", serverID, "server_name", serverName, "field", field, "header_name", name)
+			return ""
+		}
+		if headerNameConfiguredAsAuthHeader(canonical, authHeaders) {
+			slog.Warn("dropping stored run attribution header: name collides with this server's auth headers",
+				"server_id", serverID, "server_name", serverName, "field", field, "header_name", name)
+			return ""
+		}
+		return name
+	}
+
+	return AttributionHeaderNames{
+		OnBehalfOf:  safe("on_behalf_of_header", names.OnBehalfOf),
+		SessionRef:  safe("session_ref_header", names.SessionRef),
+		Traceparent: safe("traceparent_header", names.Traceparent),
+	}
 }
 
 // splitToolName splits a dot-notation tool name (e.g. "my-server.read_pods")

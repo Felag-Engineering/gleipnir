@@ -58,6 +58,12 @@ type BoundAgent struct {
 	approvals          *ApprovalHandler
 	feedback           *FeedbackHandler
 	inputRequired      *InputRequiredHandler
+
+	// triggeredBy and publicURL feed mcp.RunAttribution (issue #943); see
+	// runAttribution below. Both are host-owned, set once at New and never
+	// mutated.
+	triggeredBy string
+	publicURL   string
 }
 
 // Config holds the dependencies needed to construct a BoundAgent.
@@ -82,6 +88,16 @@ type Config struct {
 	// AudienceID is the DB row ID of the policy's audience, resolved by the
 	// launcher.  Empty string means no audience — fall back to in-app.
 	AudienceID string
+	// TriggeredBy is the authenticated username for a manual run, "" for
+	// every other trigger type and for a queued manual run re-launched by
+	// DrainQueue (issue #943; in-memory only, not persisted — see
+	// LaunchParams.TriggeredBy). Feeds mcp.RunAttribution's on-behalf-of
+	// value.
+	TriggeredBy string
+	// PublicURL is the system public_url setting, snapshotted once at
+	// launch (issue #943). "" when unset. Feeds mcp.RunAttribution's
+	// session-ref value.
+	PublicURL string
 }
 
 // New returns a BoundAgent ready to run, or an error if schema narrowing fails
@@ -144,7 +160,28 @@ func New(cfg Config) (*BoundAgent, error) {
 		approvals:          NewApprovalHandler(cfg.Audit, cfg.StateMachine, cfg.ApprovalCh, approvalOpts...),
 		feedback:           NewFeedbackHandler(cfg.Audit, cfg.StateMachine, cfg.DefaultFeedbackTimeout, feedbackOpts...),
 		inputRequired:      NewInputRequiredHandler(cfg.Audit, cfg.StateMachine, cfg.DefaultFeedbackTimeout, inputRequiredOptions(cfg.Policy)...),
+		triggeredBy:        cfg.TriggeredBy,
+		publicURL:          cfg.PublicURL,
 	}, nil
+}
+
+// runAttribution builds the mcp.RunAttribution for one tool call
+// (issue #943). Every field comes from host-owned state fixed at launch —
+// a.policy (guarded against nil), runID, a.triggeredBy, and a.publicURL —
+// never from the model or tool arguments; that is the structural half of the
+// "never from input" invariant (mcp.RunAttribution's own doc is the other
+// half: buildAttributionHeaders takes no access to a tool's input at all).
+func (a *BoundAgent) runAttribution(runID string) mcp.RunAttribution {
+	var agentName string
+	if a.policy != nil {
+		agentName = a.policy.Name
+	}
+	return mcp.RunAttribution{
+		AgentName:   agentName,
+		RunID:       runID,
+		TriggeredBy: a.triggeredBy,
+		PublicURL:   a.publicURL,
+	}
 }
 
 // failRun delegates to the package-level free function in errors.go.

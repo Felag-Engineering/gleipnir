@@ -9,6 +9,7 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/execution/run"
+	"github.com/felag-engineering/gleipnir/internal/http/auth"
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/settings"
@@ -68,10 +69,19 @@ func (h *ManualTriggerHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// TriggeredBy feeds mcp.RunAttribution's on-behalf-of value (issue
+	// #943). "" when unauthenticated (should not happen behind auth
+	// middleware, but this handler must not panic if it does).
+	var triggeredBy string
+	if u, ok := auth.UserFromContext(ctx); ok {
+		triggeredBy = u.Username
+	}
+
 	writeLaunchOutcome(ctx, w, h.launcher, run.LaunchParams{
 		PolicyID:       policyID,
 		TriggerType:    model.TriggerTypeManual,
 		TriggerPayload: string(body),
 		ParsedPolicy:   parsed,
+		TriggeredBy:    triggeredBy,
 	}, "manual trigger")
 }

@@ -186,10 +186,11 @@ func parseCacheHint(modern bool, rawTTLMs, rawScope json.RawMessage) cacheHint {
 	return cacheHint{Present: true, TTL: time.Duration(ttlMs) * time.Millisecond, Scope: parsedScope}
 }
 
-// serverConfig is the comparable snapshot of exactly the six db.McpServer
+// serverConfig is the comparable snapshot of exactly the seven db.McpServer
 // columns newClientForServer reads (registry.go): name, url, protocol
-// version, the encrypted auth headers, the CA certificate PEM, and the call
-// timeout override. It is the cache's invalidation mechanism — a serverConfig
+// version, the encrypted auth headers, the CA certificate PEM, the call
+// timeout override, and the run attribution setting. It is the cache's
+// invalidation mechanism — a serverConfig
 // read fresh from the DB on every resolve/refresh (via GetMCPServer) that no
 // longer equals the cached entry's serverConfig means the cached *Client or
 // tool catalog was built from stale configuration and must be rebuilt —
@@ -237,6 +238,11 @@ func parseCacheHint(modern bool, rawTTLMs, rawScope json.RawMessage) cacheHint {
 //     without a restart, not just the next NEW server. A run already in
 //     flight keeps the *Client (and its already-set http.Client.Timeout) it
 //     was handed at resolve time, exactly like the CA pin.
+//   - runAttribution collapses NULL and "" to "" like protocol and caCertPEM.
+//     It must be in this key so an operator's run attribution change (issue
+//     #943) reaches the next resolve without a restart: a run already
+//     holding a *Client keeps its configured names, exactly like the CA pin
+//     and the call timeout above.
 type serverConfig struct {
 	name               string
 	url                string
@@ -245,6 +251,7 @@ type serverConfig struct {
 	hasAuth            bool
 	caCertPEM          string
 	callTimeoutSeconds int64
+	runAttribution     string
 }
 
 // serverConfigOf extracts srv's serverConfig. See serverConfig's doc for the
@@ -263,6 +270,9 @@ func serverConfigOf(srv db.McpServer) serverConfig {
 	}
 	if srv.CallTimeoutSeconds != nil {
 		cfg.callTimeoutSeconds = *srv.CallTimeoutSeconds
+	}
+	if srv.RunAttribution != nil {
+		cfg.runAttribution = *srv.RunAttribution
 	}
 	return cfg
 }

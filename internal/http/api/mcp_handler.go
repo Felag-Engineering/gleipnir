@@ -147,6 +147,54 @@ type mcpServerResponse struct {
 	// signed bundle established; the UI renders these read-only rather than
 	// offering an edit the API will refuse.
 	Editable bool `json:"editable"`
+
+	// RunAttribution is the effective run attribution setting (issue #943):
+	// always present, reporting the EFFECTIVE header names for the current
+	// mode (the Relay preset's constants for "relay", "" for every field
+	// under "off"). Like CACertPEM and CallTimeoutSeconds above, header
+	// names are not secrets and are read back in full.
+	RunAttribution runAttributionResponse `json:"run_attribution"`
+}
+
+// runAttributionPayload is the JSON shape accepted for run_attribution in
+// Create/Update request bodies (issue #943): {mode, on_behalf_of_header?,
+// session_ref_header?, traceparent_header?}. See resolveRunAttributionField
+// for the absent/{mode:"off"}/value wire semantics.
+type runAttributionPayload struct {
+	Mode              string `json:"mode"`
+	OnBehalfOfHeader  string `json:"on_behalf_of_header,omitempty"`
+	SessionRefHeader  string `json:"session_ref_header,omitempty"`
+	TraceparentHeader string `json:"traceparent_header,omitempty"`
+}
+
+// runAttributionResponse reports the EFFECTIVE run attribution header names,
+// always present with all four keys (no omitempty) so a UI that round-trips
+// this object back through Update never accidentally omits a field it
+// should preserve.
+type runAttributionResponse struct {
+	Mode              string `json:"mode"`
+	OnBehalfOfHeader  string `json:"on_behalf_of_header"`
+	SessionRefHeader  string `json:"session_ref_header"`
+	TraceparentHeader string `json:"traceparent_header"`
+}
+
+// runAttributionToResponse parses stored (mcp_servers.run_attribution) and
+// reports its effective header names. An unparseable value is reported as
+// off, with a slog.Warn — matching runtime (mcp.Registry sends nothing for a
+// value that no longer parses either).
+func runAttributionToResponse(stored *string, serverID string) runAttributionResponse {
+	cfg, err := mcp.ParseRunAttributionColumn(stored)
+	if err != nil {
+		slog.Warn("stored run attribution does not parse; reporting off", "server_id", serverID, "err", err)
+		cfg = mcp.RunAttributionConfig{Mode: mcp.RunAttributionOff}
+	}
+	names := cfg.EffectiveHeaderNames()
+	return runAttributionResponse{
+		Mode:              string(cfg.Mode),
+		OnBehalfOfHeader:  names.OnBehalfOf,
+		SessionRefHeader:  names.SessionRef,
+		TraceparentHeader: names.Traceparent,
+	}
 }
 
 type mcpServerCreateResponse struct {
@@ -229,6 +277,7 @@ func (h *MCPHandler) serverToResponse(s db.McpServer) mcpServerResponse {
 		Editable:                    !mcp.IsManaged(s),
 		CallTimeoutSeconds:          s.CallTimeoutSeconds,
 		EffectiveCallTimeoutSeconds: int64(h.registry.CallTimeoutFor(s) / time.Second),
+		RunAttribution:              runAttributionToResponse(s.RunAttribution, s.ID),
 	}
 }
 
@@ -399,11 +448,12 @@ func (h *MCPHandler) List(w http.ResponseWriter, r *http.Request) {
 //  7. Return 201.
 func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name               string              `json:"name"`
-		URL                string              `json:"url"`
-		AuthHeaders        []authHeaderPayload `json:"auth_headers"`
-		CACertPEM          *string             `json:"ca_cert_pem"`
-		CallTimeoutSeconds *int64              `json:"call_timeout_seconds"`
+		Name               string                 `json:"name"`
+		URL                string                 `json:"url"`
+		AuthHeaders        []authHeaderPayload    `json:"auth_headers"`
+		CACertPEM          *string                `json:"ca_cert_pem"`
+		CallTimeoutSeconds *int64                 `json:"call_timeout_seconds"`
+		RunAttribution     *runAttributionPayload `json:"run_attribution"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
@@ -425,6 +475,20 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	// Resolved before any probe so a bad value is a 400 with no network call.
 	resolvedCallTimeoutSeconds, status, msg, detail := resolveCallTimeoutField(body.CallTimeoutSeconds, nil, false)
+	if status != 0 {
+		httputil.WriteError(w, status, msg, detail)
+		return
+	}
+	// Also resolved before any probe/network call. The auth header names
+	// come from this same request body, not any stored row — there is no
+	// existing row yet.
+	resolvedRunAttribution, status, msg, detail := resolveRunAttributionField(body.RunAttribution, nil, false, func() ([]string, int, string) {
+		names := make([]string, len(body.AuthHeaders))
+		for i, p := range body.AuthHeaders {
+			names[i] = p.Key
+		}
+		return names, 0, ""
+	})
 	if status != 0 {
 		httputil.WriteError(w, status, msg, detail)
 		return
@@ -528,6 +592,7 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 		AuthHeadersEncrypted: ciphertext,
 		CaCertPem:            normalizedCACertPEM,
 		CallTimeoutSeconds:   resolvedCallTimeoutSeconds,
+		RunAttribution:       resolvedRunAttribution,
 	})
 	if err != nil {
 		if h.arbiter != nil {
@@ -681,6 +746,14 @@ func (h *MCPHandler) Delete(w http.ResponseWriter, r *http.Request) {
 // to the instance default), and 1..600 replaces it after validation. See
 // resolveCallTimeoutField.
 //
+// run_attribution is pointer-typed with absent/{mode:"off"}/value semantics
+// (issue #943): absent leaves the existing setting unchanged (inherited
+// verbatim, not re-validated — same reasoning as ca_cert_pem's and
+// call_timeout_seconds's absent case), {"mode":"off"} clears it, and relay
+// or custom replace it after mcp.ValidateRunAttribution (custom names
+// validated like ADR-039 headers and checked against this server's existing
+// auth headers). See resolveRunAttributionField.
+//
 // Rename refreshes the cross-source tool-namespace arbiter (#578). A server's
 // tool dot-names are prefixed with its name ("<name>.<tool>"), so renaming
 // changes every reservation's key. This handler re-reserves the server's
@@ -703,6 +776,11 @@ func (h *MCPHandler) Update(w http.ResponseWriter, r *http.Request) {
 		// clears it, and 1..600 replaces it after validation. See
 		// resolveCallTimeoutField.
 		CallTimeoutSeconds *int64 `json:"call_timeout_seconds"`
+		// RunAttribution is pointer-typed so absent/{mode:"off"}/value are
+		// distinguishable: absent keeps the existing setting unchanged
+		// (inherited verbatim), {"mode":"off"} clears it, and relay/custom
+		// replace it after validation. See resolveRunAttributionField.
+		RunAttribution *runAttributionPayload `json:"run_attribution"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
@@ -776,6 +854,25 @@ func (h *MCPHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	resolvedRunAttribution, status, msg, detail := resolveRunAttributionField(body.RunAttribution, existing.RunAttribution, true, func() ([]string, int, string) {
+		headers, err := h.decryptHeaders(existing)
+		if err != nil {
+			if h.encKey == nil {
+				return nil, http.StatusServiceUnavailable, "encryption key not configured; cannot check run_attribution against auth headers"
+			}
+			return nil, http.StatusInternalServerError, "failed to load existing auth headers"
+		}
+		names := make([]string, len(headers))
+		for i, hdr := range headers {
+			names[i] = hdr.Name
+		}
+		return names, 0, ""
+	})
+	if status != 0 {
+		httputil.WriteError(w, status, msg, detail)
+		return
+	}
+
 	renamed := h.arbiter != nil && body.Name != existing.Name
 
 	// When renaming, reject a name already used by a *different* server before
@@ -843,6 +940,7 @@ func (h *MCPHandler) Update(w http.ResponseWriter, r *http.Request) {
 		Url:                body.URL,
 		CaCertPem:          resolvedCACertPEM,
 		CallTimeoutSeconds: resolvedCallTimeoutSeconds,
+		RunAttribution:     resolvedRunAttribution,
 		ID:                 id,
 	})
 	if err != nil {
@@ -898,16 +996,35 @@ func (h *MCPHandler) SetAuthHeader(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, status, msg, err := h.withMutatedHeaders(r.Context(), id, func(headers []mcp.AuthHeader) []mcp.AuthHeader {
-		// Replace by case-insensitive name match; append if not found.
-		for i, hdr := range headers {
-			if strings.EqualFold(hdr.Name, headerName) {
-				headers[i] = mcp.AuthHeader{Name: headerName, Value: body.Value}
-				return headers
+	updated, status, msg, err := h.withMutatedHeaders(r.Context(), id,
+		func(server db.McpServer) (int, string) {
+			// A new auth header must never be able to claim a name the host
+			// itself asserts run attribution under (issue #943, D4's reverse
+			// direction) — the reverse of newClientForServer's own drop, which
+			// covers the TOCTOU the other way.
+			collide, err := mcp.AttributionNamesCollide(server.RunAttribution, headerName)
+			if err != nil {
+				// A parse error means no collision: there is nothing to check
+				// against, and refusing an unrelated auth-header write because
+				// run_attribution is already unparseable would be the wrong
+				// failure mode.
+				return 0, ""
 			}
-		}
-		return append(headers, mcp.AuthHeader{Name: headerName, Value: body.Value})
-	})
+			if collide {
+				return http.StatusBadRequest, fmt.Sprintf("header name %q is used by this server's run attribution setting", headerName)
+			}
+			return 0, ""
+		},
+		func(headers []mcp.AuthHeader) []mcp.AuthHeader {
+			// Replace by case-insensitive name match; append if not found.
+			for i, hdr := range headers {
+				if strings.EqualFold(hdr.Name, headerName) {
+					headers[i] = mcp.AuthHeader{Name: headerName, Value: body.Value}
+					return headers
+				}
+			}
+			return append(headers, mcp.AuthHeader{Name: headerName, Value: body.Value})
+		})
 	if status != 0 {
 		detail := ""
 		if err != nil {
@@ -927,7 +1044,7 @@ func (h *MCPHandler) DeleteAuthHeader(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	headerName := chi.URLParam(r, "name")
 
-	updated, status, msg, err := h.withMutatedHeaders(r.Context(), id, func(headers []mcp.AuthHeader) []mcp.AuthHeader {
+	updated, status, msg, err := h.withMutatedHeaders(r.Context(), id, nil, func(headers []mcp.AuthHeader) []mcp.AuthHeader {
 		// Filter out the named header (case-insensitive). No-op if absent.
 		filtered := headers[:0]
 		for _, hdr := range headers {
@@ -1039,10 +1156,80 @@ func resolveCallTimeoutField(v *int64, existing *int64, isUpdate bool) (resolved
 	return v, 0, "", ""
 }
 
+// resolveRunAttributionField resolves run_attribution's absent/{mode:"off"}/
+// value wire semantics (issue #943), the same shape ca_cert_pem and
+// call_timeout_seconds use above:
+//   - v == nil: on Update, unchanged — returns existing VERBATIM, not
+//     re-validated (an unrelated edit must not start failing because a
+//     previously-valid setting somehow stopped validating — same reasoning
+//     as the other two fields' absent case). On Create, no setting (nil).
+//   - v.Mode == "off" (or unset): clears to nil.
+//   - otherwise: built into an mcp.RunAttributionConfig and validated via
+//     mcp.ValidateRunAttribution.
+//
+// authHeaderNames is called lazily, only when the resolved mode is not off
+// (off never needs to check a collision), and itself returns a non-zero
+// status/msg pair on a lookup failure — e.g. Update's "encryption key not
+// configured" 503 when decrypting the existing auth headers fails.
+//
+// Status 0 means ok, the same convention as validateCACertField and
+// resolveCallTimeoutField.
+func resolveRunAttributionField(
+	v *runAttributionPayload,
+	existing *string,
+	isUpdate bool,
+	authHeaderNames func() (names []string, status int, msg string),
+) (resolved *string, status int, msg, detail string) {
+	if v == nil {
+		if isUpdate {
+			return existing, 0, "", ""
+		}
+		return nil, 0, "", ""
+	}
+
+	cfg := mcp.RunAttributionConfig{
+		Mode:              mcp.RunAttributionMode(v.Mode),
+		OnBehalfOfHeader:  v.OnBehalfOfHeader,
+		SessionRefHeader:  v.SessionRefHeader,
+		TraceparentHeader: v.TraceparentHeader,
+	}
+	if cfg.Mode == "" {
+		cfg.Mode = mcp.RunAttributionOff
+	}
+
+	var names []string
+	if cfg.Mode != mcp.RunAttributionOff {
+		var authStatus int
+		var authMsg string
+		names, authStatus, authMsg = authHeaderNames()
+		if authStatus != 0 {
+			return nil, authStatus, authMsg, ""
+		}
+	}
+
+	validated, err := mcp.ValidateRunAttribution(cfg, names)
+	if err != nil {
+		return nil, http.StatusBadRequest, "invalid run_attribution", err.Error()
+	}
+
+	column, err := validated.Column()
+	if err != nil {
+		return nil, http.StatusInternalServerError, "failed to encode run_attribution", err.Error()
+	}
+	return column, 0, "", ""
+}
+
 // withMutatedHeaders decrypts the stored auth headers for serverID, applies
 // mutate to produce a new slice, re-encrypts, persists, and re-fetches the
 // updated server row. An empty post-mutation slice sets the column to NULL
 // (matching the "delete last header" semantics).
+//
+// validate, when non-nil, runs against the freshly-loaded row right after
+// the managed-endpoint guard, before anything is decrypted or mutated —
+// letting a caller like SetAuthHeader check a precondition against the row
+// (e.g. the run-attribution collision check, issue #943) without a second,
+// redundant GetMCPServer of its own. A non-zero status short-circuits with
+// that status and msg. Pass nil when there is nothing to check.
 //
 // Returns (server, 0, "", nil) on success. On any failure, status and msg
 // describe the error; err carries the underlying error when it exists so the
@@ -1050,6 +1237,7 @@ func resolveCallTimeoutField(v *int64, existing *int64, isUpdate bool) (resolved
 func (h *MCPHandler) withMutatedHeaders(
 	ctx context.Context,
 	serverID string,
+	validate func(db.McpServer) (status int, msg string),
 	mutate func([]mcp.AuthHeader) []mcp.AuthHeader,
 ) (db.McpServer, int, string, error) {
 	var zero db.McpServer
@@ -1072,6 +1260,12 @@ func (h *MCPHandler) withMutatedHeaders(
 	// on every call without appearing anywhere the consent screen shows.
 	if mcp.IsManaged(server) {
 		return zero, http.StatusConflict, "cannot set auth headers on a managed plugin endpoint", nil
+	}
+
+	if validate != nil {
+		if status, msg := validate(server); status != 0 {
+			return zero, status, msg, nil
+		}
 	}
 
 	headers, err := h.decryptHeaders(server)

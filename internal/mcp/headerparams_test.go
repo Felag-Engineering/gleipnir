@@ -16,6 +16,7 @@ func TestExtractHeaderParams(t *testing.T) {
 		schema             json.RawMessage
 		input              map[string]any
 		authHeaders        []AuthHeader // configured ADR-039 auth headers for the server; nil unless a case tests the collision
+		attributionNames   []string     // configured run attribution header names (#943); nil unless a case tests the collision
 		want               []headerParam
 		wantErrProperty    string // non-empty: assert errors.As(*HeaderParamError) with this Property
 		forbidValueInError string // non-empty: assert Error() does not contain this substring
@@ -199,6 +200,13 @@ func TestExtractHeaderParams(t *testing.T) {
 			wantErrProperty: "a",
 		},
 		{
+			name:             "declared name collides with a configured run attribution header, case-different → fails closed (#943)",
+			schema:           json.RawMessage(`{"properties":{"on_behalf_of":{"x-mcp-header":"x-relay-on-behalf-of"}}}`),
+			input:            map[string]any{"on_behalf_of": "agent-supplied"},
+			attributionNames: []string{"X-Relay-On-Behalf-Of"},
+			wantErrProperty:  "on_behalf_of",
+		},
+		{
 			name:   "ordinary hyphenated names are accepted (no regression)",
 			schema: json.RawMessage(`{"properties":{"v":{"type":"string","x-mcp-header":"X-Api-Version"},"t":{"type":"string","x-mcp-header":"X-Trace-Id"},"l":{"type":"string","x-mcp-header":"Accept-Language"}}}`),
 			input:  map[string]any{"v": "1", "t": "abc", "l": "en-US"},
@@ -208,7 +216,7 @@ func TestExtractHeaderParams(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := extractHeaderParams(tc.schema, tc.input, tc.authHeaders)
+			got, err := extractHeaderParams(tc.schema, tc.input, tc.authHeaders, tc.attributionNames)
 
 			if tc.wantErrProperty == "" {
 				if err != nil {
@@ -263,7 +271,7 @@ func TestExtractHeaderParams_MoreThanMaxHeaderParams(t *testing.T) {
 		t.Fatalf("marshal schema: %v", err)
 	}
 
-	got, err := extractHeaderParams(schema, input, nil)
+	got, err := extractHeaderParams(schema, input, nil, nil)
 	if err == nil {
 		t.Fatal("extractHeaderParams: expected an error for exceeding maxHeaderParams, got nil")
 	}
@@ -288,7 +296,7 @@ func TestExtractHeaderParams_SchemaTooLarge(t *testing.T) {
 	oversized[0] = '{'
 	oversized[len(oversized)-1] = '}'
 
-	got, err := extractHeaderParams(json.RawMessage(oversized), map[string]any{"a": "x"}, nil)
+	got, err := extractHeaderParams(json.RawMessage(oversized), map[string]any{"a": "x"}, nil, nil)
 	if err != nil {
 		t.Fatalf("extractHeaderParams: unexpected error: %v", err)
 	}
@@ -316,7 +324,7 @@ func TestExtractHeaderParams_ReservedNamesRejected(t *testing.T) {
 					t.Fatalf("marshal schema: %v", err)
 				}
 
-				got, err := extractHeaderParams(schema, map[string]any{"a": "x"}, nil)
+				got, err := extractHeaderParams(schema, map[string]any{"a": "x"}, nil, nil)
 				if err == nil {
 					t.Fatalf("extractHeaderParams: expected an error for reserved name %q, got nil", variant)
 				}
@@ -371,7 +379,7 @@ func TestExtractHeaderParams_DeniedNamesRejected(t *testing.T) {
 					t.Fatalf("marshal schema: %v", err)
 				}
 
-				got, err := extractHeaderParams(schema, map[string]any{"a": "x"}, nil)
+				got, err := extractHeaderParams(schema, map[string]any{"a": "x"}, nil, nil)
 				if err == nil {
 					t.Fatalf("extractHeaderParams: expected an error for denied name %q, got nil", variant)
 				}
@@ -412,7 +420,7 @@ func TestHeaderParamError_ErrorStaysBoundedForHugeName(t *testing.T) {
 		t.Fatalf("marshal schema: %v", err)
 	}
 
-	_, err = extractHeaderParams(schema, map[string]any{"a": "x"}, nil)
+	_, err = extractHeaderParams(schema, map[string]any{"a": "x"}, nil, nil)
 	if err == nil {
 		t.Fatal("extractHeaderParams: expected an error for an invalid header name, got nil")
 	}

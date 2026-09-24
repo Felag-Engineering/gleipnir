@@ -65,7 +65,8 @@
   width: 120px;
 }
 
-.callTimeoutError {
+/* Generic inline field error, shared by call timeout and run attribution. */
+.fieldError {
   margin-top: var(--space-2);
   font-size: var(--text-xs);
   color: var(--color-red);

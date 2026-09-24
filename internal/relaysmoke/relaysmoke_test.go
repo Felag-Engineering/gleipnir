@@ -140,6 +140,12 @@ func TestRelaySmoke(t *testing.T) {
 			"auth_headers": []map[string]string{
 				{"key": "Authorization", "value": "Bearer " + machineToken},
 			},
+			// run_attribution: relay (#943) is the live proof that Relay
+			// accepts the asserted attribution headers with no 400 — the
+			// point of this manual-only lane. gated_mutate is still expected
+			// to skip until relay#646 verifies the identity these headers
+			// merely claim.
+			"run_attribution": map[string]any{"mode": "relay"},
 		})
 		if err != nil {
 			t.Fatalf("marshal register request: %v", err)
@@ -156,6 +162,9 @@ func TestRelaySmoke(t *testing.T) {
 				ProtocolVersion             *string `json:"protocol_version"`
 				DiscoveryError              *string `json:"discovery_error"`
 				EffectiveCallTimeoutSeconds int64   `json:"effective_call_timeout_seconds"`
+				RunAttribution              struct {
+					Mode string `json:"mode"`
+				} `json:"run_attribution"`
 			} `json:"data"`
 		}
 		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
@@ -167,6 +176,9 @@ func TestRelaySmoke(t *testing.T) {
 		}
 		if resp.Data.EffectiveCallTimeoutSeconds != 120 {
 			t.Errorf("effective_call_timeout_seconds = %d, want 120 (issue #939's per-server override)", resp.Data.EffectiveCallTimeoutSeconds)
+		}
+		if resp.Data.RunAttribution.Mode != "relay" {
+			t.Errorf("run_attribution.mode = %q, want %q (issue #943)", resp.Data.RunAttribution.Mode, "relay")
 		}
 		serverID = resp.Data.ID
 		if resp.Data.ProtocolVersion != nil {
