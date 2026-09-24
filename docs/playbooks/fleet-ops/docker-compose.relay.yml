@@ -1,0 +1,19 @@
+# Overlay for Gleipnir's root docker-compose.yml, for driving a Relay demo fleet.
+# Run from the Gleipnir repo root:
+#   docker compose -f docker-compose.yml -f docs/playbooks/fleet-ops/docker-compose.relay.yml up -d
+#
+# Why host networking: the demo fleet publishes Relay's control plane on 127.0.0.1:9443
+# only, and its certificate's only SAN is "relay". A bridged container cannot reach the
+# host's loopback. Joining the relay-demo_default network instead would break
+# `make demo-reset` (its `down -v` cannot remove a network with an attached container).
+# Linux Docker Engine. Docker Desktop needs host networking turned on (4.34+).
+services:
+  api:
+    network_mode: host
+    ports: !reset []          # published ports do not apply under host networking (Compose >= 2.24)
+    extra_hosts:
+      - "relay:127.0.0.1"     # dial the certificate's SAN, never an IP
+    environment:
+      # Relay runs an approved Job synchronously inside the retried tools/call.
+      # 30s is too short for a fan-out.
+      - GLEIPNIR_MCP_TIMEOUT=120s

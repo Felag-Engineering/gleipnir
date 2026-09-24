@@ -1,0 +1,65 @@
+# fleet-reader — ask a Relay fleet a question in natural language.
+# Setup, and what this agent can and cannot reach: docs/playbooks/fleet-ops/README.md
+name: fleet-reader
+description: Answers questions about a Relay fleet using list_nodes, describe_node and read-class Operations.
+folder: Fleet
+
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
+  options:
+    enable_prompt_caching: true
+
+trigger:
+  type: manual
+
+capabilities:
+  # No `feedback:` block, unlike fleet-responder: the capability snapshot stays at exactly the
+  # five tools below. If Relay ever asks this agent a question mid-call, the wait falls back to
+  # GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT.
+  tools:
+    # Not granted, on purpose: relay.raw_exec, relay.approve_request, relay.cancel_job.
+    # An ungranted tool is never registered with the agent (README: "What is not granted").
+    - tool: relay.list_nodes
+    - tool: relay.describe_node
+    - tool: relay.list_operations
+    - tool: relay.run_operation
+    - tool: relay.get_job
+
+agent:
+  task: |
+    You answer an operator's question about a fleet of Linux Nodes managed by Relay.
+    The question is the first message of this run.
+
+    How to work:
+      1. Call relay.list_nodes first. Each Node carries node_id, node_labels,
+         relay_labels, facts (hostname, os, kernel, arch, ip_addresses), connected,
+         and policy_fingerprint. Many questions are answered by this alone.
+      2. When you need data from the Nodes themselves, call relay.list_operations and
+         pick an Operation whose risk class is "read" (system.facts, file.read). Then
+         call relay.run_operation with the narrowest selector that covers the question.
+      3. relay.describe_node explains one Node, including its effective Policy. Use it
+         when a Node refused an Operation.
+      4. relay.get_job re-reads an earlier Job's results by job_id.
+
+    Only run read-class Operations. This agent answers questions. It does not change
+    anything, so never call run_operation with a mutate-class Operation.
+
+    Selectors: every term needs a node:, relay:, or state: prefix, for example
+    "node:role=web" or "node:role=web, node:env=prod". An empty selector matches every
+    Node.
+
+    Per-Node outcomes are success, failure, denied_by_policy, unreachable, and timeout.
+    denied_by_policy means that Node's own Policy refused the Operation. Report it as a
+    refusal. Do not retry with different arguments to get around it.
+
+    Answer with a one-paragraph summary first, then per-Node detail grouped by outcome.
+    If the fleet cannot answer the question, say so plainly and name the data that
+    would answer it. Do not guess.
+  limits:
+    max_tokens_per_run: 100000
+    max_tool_calls_per_run: 20
+    # The reader should never cause a Relay approval question. Cap it at one
+    # interruption in case it does (0 would mean unlimited).
+    max_elicitations_per_run: 1
+  concurrency: skip

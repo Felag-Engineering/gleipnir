@@ -7,6 +7,7 @@ Gleipnir is a self-hosted runner for AI agents that quietly handle work you'd ra
 - **Plan the week's meals.** Checks your calendar for nights without dinner plans, picks recipes from Mealie for the empty slots, and schedules them in your meal plan. → [Playbook](docs/playbooks/meal-planning/README.md)
 - **Research your own todo list.** Finds Todoist tasks tagged `AI_Assist`, gathers context with web search, and posts the findings as a comment on each task. → [Playbook](docs/playbooks/todoist-research/README.md)
 - **Run homelab DevOps from natural language.** Restart Docker containers, fix Proxmox VMs, update Technitium DNS records, or reconfigure Caddy routes — every write is approval-gated. → [Playbook](docs/playbooks/devops/README.md)
+- **Drive a Linux fleet through Relay.** Ask the fleet questions in plain language and get typed, read-only Operations back. Let an Uptime Kuma alert propose a scoped restart, which Relay puts to a human in Gleipnir before anything changes. The agent is never given raw shell access. → [Playbook](docs/playbooks/fleet-ops/README.md)
 
 ## How it stays safe
 
