@@ -60,7 +60,7 @@ npm run storybook        # Storybook on port 6006
 | `GLEIPNIR_DB_PATH` | `/data/gleipnir.db` | SQLite file path |
 | `GLEIPNIR_LISTEN_ADDR` | `:8080` | HTTP listen address |
 | `GLEIPNIR_LOG_LEVEL` | `info` | Log level (debug, info, warn, error) |
-| `GLEIPNIR_MCP_TIMEOUT` | `30s` | Timeout for MCP server calls |
+| `GLEIPNIR_MCP_TIMEOUT` | `30s` | Timeout for MCP server calls; instance default, override per server on the MCP servers page |
 | `GLEIPNIR_HTTP_READ_TIMEOUT` | `15s` | HTTP server read timeout |
 | `GLEIPNIR_HTTP_WRITE_TIMEOUT` | `15s` | HTTP server write timeout |
 | `GLEIPNIR_HTTP_IDLE_TIMEOUT` | `60s` | HTTP server idle timeout |

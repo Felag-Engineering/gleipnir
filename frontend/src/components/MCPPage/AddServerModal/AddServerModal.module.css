@@ -58,6 +58,19 @@
   color: var(--text-muted);
 }
 
+/* Call timeout is a short number, unlike the CA textarea or the full-width
+   name/URL inputs — narrow it instead of stretching a one-word value. */
+.callTimeoutInput {
+  composes: input from '@/styles/forms.module.css';
+  width: 120px;
+}
+
+.callTimeoutError {
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--color-red);
+}
+
 /* Auth header editor rows: key input + value input + remove button */
 .headerRow {
   display: flex;

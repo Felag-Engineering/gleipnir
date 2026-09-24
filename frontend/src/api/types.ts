@@ -183,6 +183,15 @@ export interface ApiMcpServer {
   // its name is the tool namespace prefix the signed bundle established. Render
   // those read-only rather than offering an edit the API answers with a 409.
   editable: boolean
+
+  // call_timeout_seconds is the stored per-server override (issue #939); null
+  // means the server uses the instance-wide GLEIPNIR_MCP_TIMEOUT default.
+  // effective_call_timeout_seconds is the timeout the server's calls actually
+  // get (the override when set, else the instance default), so the UI can
+  // show "Default (30s)" without a separate config fetch. Optional so
+  // existing fixtures without these fields still type-check.
+  call_timeout_seconds?: number | null
+  effective_call_timeout_seconds?: number
 }
 
 // Matches mcp_handler.go → mcpServerCreateResponse (POST /api/v1/mcp/servers)
@@ -403,6 +412,8 @@ export interface AddMcpServerRequest {
   url: string
   auth_headers?: { key: string; value: string }[]
   ca_cert_pem?: string
+  // absent or 0 = no override (1..600 sets it)
+  call_timeout_seconds?: number
 }
 
 // Matches api/mcp_handler.go → Update body (PUT /api/v1/mcp/servers/:id)
@@ -412,6 +423,8 @@ export interface UpdateMcpServerRequest {
   name: string
   url: string
   ca_cert_pem?: string
+  // absent = unchanged, 0 = clear to the instance default, 1–600 sets it
+  call_timeout_seconds?: number
 }
 
 // Matches api/mcp_handler.go → SetAuthHeader body (PUT /api/v1/mcp/servers/:id/headers/:name)

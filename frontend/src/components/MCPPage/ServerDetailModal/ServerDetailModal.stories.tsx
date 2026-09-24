@@ -125,6 +125,11 @@ export const WithCACert: Story = {
           not_after: new Date(Date.now() + 365 * 86_400_000).toISOString(),
         },
       ],
+      // Also carries a call timeout override so this story shows both #928
+      // and #939's fields at once; Healthy (unset) shows the "Default (...)"
+      // state.
+      call_timeout_seconds: 120,
+      effective_call_timeout_seconds: 120,
     },
   },
 }

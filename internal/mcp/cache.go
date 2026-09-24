@@ -186,20 +186,21 @@ func parseCacheHint(modern bool, rawTTLMs, rawScope json.RawMessage) cacheHint {
 	return cacheHint{Present: true, TTL: time.Duration(ttlMs) * time.Millisecond, Scope: parsedScope}
 }
 
-// serverConfig is the comparable snapshot of exactly the five db.McpServer
+// serverConfig is the comparable snapshot of exactly the six db.McpServer
 // columns newClientForServer reads (registry.go): name, url, protocol
-// version, the encrypted auth headers, and the CA certificate PEM. It is the
-// cache's invalidation mechanism — a serverConfig read fresh from the DB on
-// every resolve/refresh (via GetMCPServer) that no longer equals the cached
-// entry's serverConfig means the cached *Client or tool catalog was built
-// from stale configuration and must be rebuilt — chosen over explicit
-// Invalidate(id) calls threaded through every mutating handler (Update,
-// SetAuthHeader, DeleteAuthHeader) because mcp_servers has no updated_at or
-// version column (verified: schemas/sql_schemas.sql), so there is no cheaper
-// "did this row change" signal to key off, and an explicit-call scheme can
-// silently rot the day a future mutation path forgets to call it. Comparable
-// via plain `==`, not a SHA-256 fingerprint: it needs no new imports, is directly
-// readable in a debugger, and cannot be misread as a security token.
+// version, the encrypted auth headers, the CA certificate PEM, and the call
+// timeout override. It is the cache's invalidation mechanism — a serverConfig
+// read fresh from the DB on every resolve/refresh (via GetMCPServer) that no
+// longer equals the cached entry's serverConfig means the cached *Client or
+// tool catalog was built from stale configuration and must be rebuilt —
+// chosen over explicit Invalidate(id) calls threaded through every mutating
+// handler (Update, SetAuthHeader, DeleteAuthHeader) because mcp_servers has
+// no updated_at or version column (verified: schemas/sql_schemas.sql), so
+// there is no cheaper "did this row change" signal to key off, and an
+// explicit-call scheme can silently rot the day a future mutation path
+// forgets to call it. Comparable via plain `==`, not a SHA-256 fingerprint:
+// it needs no new imports, is directly readable in a debugger, and cannot be
+// misread as a security token.
 //
 //   - name is included because it is the Prometheus "server" label
 //     (client.go), so a rename must invalidate a cached Client rather than
@@ -229,13 +230,21 @@ func parseCacheHint(modern bool, rawTTLMs, rawScope json.RawMessage) cacheHint {
 //     resolve time (ResolveForPolicy is not cache-backed, see its own doc)
 //     and finishes the run under the CA pin (or lack of one) that was live
 //     when it started.
+//   - callTimeoutSeconds collapses NULL (and any non-positive, hand-edited
+//     value) to 0, the same way CallTimeoutFor treats "unset". It must be in
+//     this key for the same reason as caCertPEM above: an operator's edit to
+//     a server's call timeout (issue #939) must reach the next resolve
+//     without a restart, not just the next NEW server. A run already in
+//     flight keeps the *Client (and its already-set http.Client.Timeout) it
+//     was handed at resolve time, exactly like the CA pin.
 type serverConfig struct {
-	name        string
-	url         string
-	protocol    string
-	authHeaders string
-	hasAuth     bool
-	caCertPEM   string
+	name               string
+	url                string
+	protocol           string
+	authHeaders        string
+	hasAuth            bool
+	caCertPEM          string
+	callTimeoutSeconds int64
 }
 
 // serverConfigOf extracts srv's serverConfig. See serverConfig's doc for the
@@ -251,6 +260,9 @@ func serverConfigOf(srv db.McpServer) serverConfig {
 	}
 	if srv.CaCertPem != nil {
 		cfg.caCertPEM = *srv.CaCertPem
+	}
+	if srv.CallTimeoutSeconds != nil {
+		cfg.callTimeoutSeconds = *srv.CallTimeoutSeconds
 	}
 	return cfg
 }

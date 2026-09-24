@@ -13,6 +13,7 @@ import {
 import { useToast } from '@/components/Toast'
 import { ArcadeAuthSection } from './ArcadeAuthSection'
 import { CaCertificateSection } from './CaCertificateSection'
+import { CallTimeoutSection } from './CallTimeoutSection'
 import styles from './ServerDetailModal.module.css'
 
 // A row in the header editor.
@@ -384,6 +385,8 @@ export function ServerDetailModal({
           {(showCaCertSection || caCertCount > 0) && (
             <CaCertificateSection server={server} />
           )}
+
+          <CallTimeoutSection server={server} />
 
           {server.is_arcade_gateway && tools && (
             <ArcadeAuthSection

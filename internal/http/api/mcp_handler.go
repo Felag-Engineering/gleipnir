@@ -121,6 +121,16 @@ type mcpServerResponse struct {
 	// empty slice when no CA is pinned or the stored PEM fails to parse).
 	CACertificates []caCertificateResponse `json:"ca_certificates"`
 
+	// CallTimeoutSeconds is the stored per-server override (issue #939);
+	// null means the server uses the instance-wide GLEIPNIR_MCP_TIMEOUT
+	// default. Like CACertPEM, this is not a secret and is read back in full.
+	CallTimeoutSeconds *int64 `json:"call_timeout_seconds"`
+	// EffectiveCallTimeoutSeconds is the timeout the server's calls actually
+	// get: CallTimeoutSeconds when set, else the Registry's instance default
+	// (mcp.Registry.CallTimeoutFor). Lets the UI show "Default (30s)" without
+	// a separate config fetch.
+	EffectiveCallTimeoutSeconds int64 `json:"effective_call_timeout_seconds"`
+
 	// TrustTier is "managed" for a plugin instance's endpoint and "external"
 	// for an operator-registered server (ADR-053, #819). It is derived from
 	// plugin_instance_id, not stored — see mcp.TrustTierOf.
@@ -203,20 +213,22 @@ func (h *MCPHandler) serverToResponse(s db.McpServer) mcpServerResponse {
 	}
 
 	return mcpServerResponse{
-		ID:               s.ID,
-		Name:             s.Name,
-		URL:              s.Url,
-		LastDiscoveredAt: s.LastDiscoveredAt,
-		HasDrift:         s.HasDrift != 0,
-		CreatedAt:        s.CreatedAt,
-		AuthHeaderKeys:   keys,
-		IsArcadeGateway:  arcade.IsArcadeGateway(s.Url, keys),
-		ProtocolVersion:  s.ProtocolVersion,
-		CACertPEM:        s.CaCertPem,
-		CACertificates:   certs,
-		TrustTier:        string(mcp.TrustTierOf(s)),
-		PluginInstanceID: s.PluginInstanceID,
-		Editable:         !mcp.IsManaged(s),
+		ID:                          s.ID,
+		Name:                        s.Name,
+		URL:                         s.Url,
+		LastDiscoveredAt:            s.LastDiscoveredAt,
+		HasDrift:                    s.HasDrift != 0,
+		CreatedAt:                   s.CreatedAt,
+		AuthHeaderKeys:              keys,
+		IsArcadeGateway:             arcade.IsArcadeGateway(s.Url, keys),
+		ProtocolVersion:             s.ProtocolVersion,
+		CACertPEM:                   s.CaCertPem,
+		CACertificates:              certs,
+		TrustTier:                   string(mcp.TrustTierOf(s)),
+		PluginInstanceID:            s.PluginInstanceID,
+		Editable:                    !mcp.IsManaged(s),
+		CallTimeoutSeconds:          s.CallTimeoutSeconds,
+		EffectiveCallTimeoutSeconds: int64(h.registry.CallTimeoutFor(s) / time.Second),
 	}
 }
 
@@ -387,10 +399,11 @@ func (h *MCPHandler) List(w http.ResponseWriter, r *http.Request) {
 //  7. Return 201.
 func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name        string              `json:"name"`
-		URL         string              `json:"url"`
-		AuthHeaders []authHeaderPayload `json:"auth_headers"`
-		CACertPEM   *string             `json:"ca_cert_pem"`
+		Name               string              `json:"name"`
+		URL                string              `json:"url"`
+		AuthHeaders        []authHeaderPayload `json:"auth_headers"`
+		CACertPEM          *string             `json:"ca_cert_pem"`
+		CallTimeoutSeconds *int64              `json:"call_timeout_seconds"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
@@ -406,6 +419,12 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	normalizedCACertPEM, _, status, msg, detail := validateCACertField(body.URL, body.CACertPEM)
+	if status != 0 {
+		httputil.WriteError(w, status, msg, detail)
+		return
+	}
+	// Resolved before any probe so a bad value is a 400 with no network call.
+	resolvedCallTimeoutSeconds, status, msg, detail := resolveCallTimeoutField(body.CallTimeoutSeconds, nil, false)
 	if status != 0 {
 		httputil.WriteError(w, status, msg, detail)
 		return
@@ -508,6 +527,7 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:            now,
 		AuthHeadersEncrypted: ciphertext,
 		CaCertPem:            normalizedCACertPEM,
+		CallTimeoutSeconds:   resolvedCallTimeoutSeconds,
 	})
 	if err != nil {
 		if h.arbiter != nil {
@@ -645,9 +665,9 @@ func (h *MCPHandler) Delete(w http.ResponseWriter, r *http.Request) {
 }
 
 // Update handles PUT /api/v1/mcp/servers/{id}.
-// Updates the server's name, url, and optional ca_cert_pem. Auth headers are
-// managed separately via PUT/DELETE /api/v1/mcp/servers/:id/headers/:name
-// (ADR-039).
+// Updates the server's name, url, and optional ca_cert_pem / call_timeout_seconds.
+// Auth headers are managed separately via PUT/DELETE
+// /api/v1/mcp/servers/:id/headers/:name (ADR-039).
 //
 // ca_cert_pem is pointer-typed with absent/""/value semantics (issue #928):
 // absent leaves the existing pin unchanged (current clients send only
@@ -655,6 +675,11 @@ func (h *MCPHandler) Delete(w http.ResponseWriter, r *http.Request) {
 // replaces it after full validation (structural parse + expiry). Unlike the
 // ADR-039 auth headers, this value is public and is returned in full on every
 // read — never write-only/redacted.
+//
+// call_timeout_seconds is pointer-typed with absent/0/value semantics (issue
+// #939): absent leaves the existing override unchanged, 0 clears it (reverts
+// to the instance default), and 1..600 replaces it after validation. See
+// resolveCallTimeoutField.
 //
 // Rename refreshes the cross-source tool-namespace arbiter (#578). A server's
 // tool dot-names are prefixed with its name ("<name>.<tool>"), so renaming
@@ -673,6 +698,11 @@ func (h *MCPHandler) Update(w http.ResponseWriter, r *http.Request) {
 		// other value replaces it after validation. See the resolution logic
 		// below for why absent does not even re-validate the inherited value.
 		CACertPEM *string `json:"ca_cert_pem"`
+		// CallTimeoutSeconds is pointer-typed so absent/0/value are
+		// distinguishable: absent keeps the existing override unchanged, 0
+		// clears it, and 1..600 replaces it after validation. See
+		// resolveCallTimeoutField.
+		CallTimeoutSeconds *int64 `json:"call_timeout_seconds"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
@@ -740,6 +770,12 @@ func (h *MCPHandler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	resolvedCallTimeoutSeconds, status, msg, detail := resolveCallTimeoutField(body.CallTimeoutSeconds, existing.CallTimeoutSeconds, true)
+	if status != 0 {
+		httputil.WriteError(w, status, msg, detail)
+		return
+	}
+
 	renamed := h.arbiter != nil && body.Name != existing.Name
 
 	// When renaming, reject a name already used by a *different* server before
@@ -803,10 +839,11 @@ func (h *MCPHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updated, err := h.store.UpdateMCPServer(r.Context(), db.UpdateMCPServerParams{
-		Name:      body.Name,
-		Url:       body.URL,
-		CaCertPem: resolvedCACertPEM,
-		ID:        id,
+		Name:               body.Name,
+		Url:                body.URL,
+		CaCertPem:          resolvedCACertPEM,
+		CallTimeoutSeconds: resolvedCallTimeoutSeconds,
+		ID:                 id,
 	})
 	if err != nil {
 		// The DB write failed, so the name did not change. Release the new-name
@@ -968,6 +1005,38 @@ func validateCACertField(urlStr string, pemField *string) (normalized *string, p
 	}
 
 	return &canonical, builtPool, 0, "", ""
+}
+
+// resolveCallTimeoutField resolves call_timeout_seconds's absent/0/value
+// wire semantics (issue #939), adapted from #928's absent/""/value rule for
+// ca_cert_pem to an integer:
+//   - v == nil: on Update, unchanged (returns existing verbatim, no
+//     re-validation — the same reasoning as ca_cert_pem's absent case: an
+//     unrelated edit must not start failing because a previously-valid
+//     override somehow stopped validating). On Create, no override (nil).
+//   - *v == 0: clears the override (nil) on Update, and is equivalent to
+//     "no override" on Create.
+//   - otherwise: validated via mcp.ValidateCallTimeoutSeconds. A failure
+//     returns status 400 with a detail suffix pointing out that 0 clears
+//     the override, since that is easy to miss when the caller expected 0
+//     to mean "no timeout".
+//
+// Status 0 means ok, the same convention as validateCACertField.
+func resolveCallTimeoutField(v *int64, existing *int64, isUpdate bool) (resolved *int64, status int, msg, detail string) {
+	if v == nil {
+		if isUpdate {
+			return existing, 0, "", ""
+		}
+		return nil, 0, "", ""
+	}
+	if *v == 0 {
+		return nil, 0, "", ""
+	}
+	if err := mcp.ValidateCallTimeoutSeconds(*v); err != nil {
+		return nil, http.StatusBadRequest, "invalid call_timeout_seconds",
+			err.Error() + " (0 clears the override and uses the instance default)"
+	}
+	return v, 0, "", ""
 }
 
 // withMutatedHeaders decrypts the stored auth headers for serverID, applies

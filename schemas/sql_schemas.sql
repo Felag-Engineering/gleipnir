@@ -53,7 +53,10 @@ CREATE TABLE mcp_servers (
     -- Nullable; PEM CA bundle pinned as this server's sole TLS trust root; public,
     -- read back in full (issue #928) -- unlike auth_headers_encrypted above, this
     -- is not a secret and must be verifiable, so it stays plaintext.
-    ca_cert_pem             TEXT
+    ca_cert_pem             TEXT,
+    -- Nullable; per-server MCP call timeout in whole seconds (1..600), overriding
+    -- GLEIPNIR_MCP_TIMEOUT for this server only. NULL = instance default (issue #939).
+    call_timeout_seconds    INTEGER
 );
 -- Partial: every external row's NULL stays out of the index entirely. The row
 -- is per INSTANCE, not per generation -- a rotation updates url in place.

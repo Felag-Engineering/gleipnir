@@ -213,6 +213,25 @@ func insertTestMCPServerWithCACert(t *testing.T, s *db.Store, name, url string, 
 	return id
 }
 
+// insertTestMCPServerWithCallTimeout is insertTestMCPServer's sibling for
+// tests that need a pre-existing call_timeout_seconds override — the same
+// separate-helper rationale as insertTestMCPServerWithCACert above.
+func insertTestMCPServerWithCallTimeout(t *testing.T, s *db.Store, name, url string, callTimeoutSeconds *int64) string {
+	t.Helper()
+	id := model.NewULID()
+	_, err := s.CreateMCPServer(context.Background(), db.CreateMCPServerParams{
+		ID:                 id,
+		Name:               name,
+		Url:                url,
+		CreatedAt:          "2024-01-01T00:00:00Z",
+		CallTimeoutSeconds: callTimeoutSeconds,
+	})
+	if err != nil {
+		t.Fatalf("insertTestMCPServerWithCallTimeout %s: %v", name, err)
+	}
+	return id
+}
+
 // makeFakeMCPTLSServer is makeFakeMCPServer's HTTPS sibling: a real TLS
 // listener presenting cert, so CA-pin tests can drive real certificate-chain
 // verification. Never sets InsecureSkipVerify anywhere (issue #928) — a test
@@ -412,6 +431,55 @@ func TestMCPServerListHandler(t *testing.T) {
 				}
 				if len(row.CACertificates) != 0 {
 					t.Errorf("without-ca: ca_certificates = %v, want empty", row.CACertificates)
+				}
+			default:
+				t.Fatalf("unexpected server name %q", row.Name)
+			}
+		}
+	})
+
+	t.Run("list returns call_timeout_seconds and effective_call_timeout_seconds", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries(), mcp.WithMCPTimeout(45*time.Second))
+
+		override := int64(120)
+		insertTestMCPServerWithCallTimeout(t, store, "with-override", "http://localhost:9997", &override)
+		insertTestMCPServer(t, store, "without-override", "http://localhost:9998")
+
+		srv := httptest.NewServer(newMCPRouter(store, registry))
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Get(srv.URL + "/servers")
+		if err != nil {
+			t.Fatalf("GET /servers: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var envelope struct {
+			Data []mcpServerResponseForTest `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if len(envelope.Data) != 2 {
+			t.Fatalf("len(data) = %d, want 2", len(envelope.Data))
+		}
+
+		for _, row := range envelope.Data {
+			switch row.Name {
+			case "with-override":
+				if row.CallTimeoutSeconds == nil || *row.CallTimeoutSeconds != 120 {
+					t.Errorf("with-override: call_timeout_seconds = %v, want 120", row.CallTimeoutSeconds)
+				}
+				if row.EffectiveCallTimeoutSeconds != 120 {
+					t.Errorf("with-override: effective_call_timeout_seconds = %d, want 120", row.EffectiveCallTimeoutSeconds)
+				}
+			case "without-override":
+				if row.CallTimeoutSeconds != nil {
+					t.Errorf("without-override: call_timeout_seconds = %v, want nil", row.CallTimeoutSeconds)
+				}
+				if row.EffectiveCallTimeoutSeconds != 45 {
+					t.Errorf("without-override: effective_call_timeout_seconds = %d, want 45 (the Registry's configured default)", row.EffectiveCallTimeoutSeconds)
 				}
 			default:
 				t.Fatalf("unexpected server name %q", row.Name)
@@ -3213,7 +3281,9 @@ type mcpServerResponseForTest struct {
 		SHA256Fingerprint string `json:"sha256_fingerprint"`
 		NotAfter          string `json:"not_after"`
 	} `json:"ca_certificates"`
-	DiscoveryError *string `json:"discovery_error"`
+	DiscoveryError              *string `json:"discovery_error"`
+	CallTimeoutSeconds          *int64  `json:"call_timeout_seconds"`
+	EffectiveCallTimeoutSeconds int64   `json:"effective_call_timeout_seconds"`
 }
 
 // TestMCPServerCACert_Create covers issue #928's write-path validation on
@@ -3502,6 +3572,399 @@ func TestMCPServerCACert_Update(t *testing.T) {
 		}
 		if after.CaCertPem != nil {
 			t.Error("a ca_cert_pem was written to a managed endpoint")
+		}
+	})
+}
+
+// TestMCPServerCallTimeout_Create covers issue #939's POST /servers
+// absent/0/value wire semantics for call_timeout_seconds. The registry is
+// built with a non-default WithMCPTimeout so "effective = 45 when unset"
+// proves the value is read from the Registry, not a hardcoded 30.
+func TestMCPServerCallTimeout_Create(t *testing.T) {
+	tests := []struct {
+		name          string
+		body          map[string]any
+		wantStatus    int
+		wantStored    *int64
+		wantEffective int64
+		wantErr       string
+	}{
+		{
+			name:          "absent means no override",
+			body:          map[string]any{"name": "srv-absent", "url": "https://example.invalid"},
+			wantStatus:    http.StatusCreated,
+			wantStored:    nil,
+			wantEffective: 45,
+		},
+		{
+			name:          "zero means no override",
+			body:          map[string]any{"name": "srv-zero", "url": "https://example.invalid", "call_timeout_seconds": 0},
+			wantStatus:    http.StatusCreated,
+			wantStored:    nil,
+			wantEffective: 45,
+		},
+		{
+			name:          "120 is stored and echoed",
+			body:          map[string]any{"name": "srv-120", "url": "https://example.invalid", "call_timeout_seconds": 120},
+			wantStatus:    http.StatusCreated,
+			wantStored:    int64Ptr(120),
+			wantEffective: 120,
+		},
+		{
+			name:          "1 is the floor",
+			body:          map[string]any{"name": "srv-1", "url": "https://example.invalid", "call_timeout_seconds": 1},
+			wantStatus:    http.StatusCreated,
+			wantStored:    int64Ptr(1),
+			wantEffective: 1,
+		},
+		{
+			name:          "600 is the ceiling",
+			body:          map[string]any{"name": "srv-600", "url": "https://example.invalid", "call_timeout_seconds": 600},
+			wantStatus:    http.StatusCreated,
+			wantStored:    int64Ptr(600),
+			wantEffective: 600,
+		},
+		{
+			name:       "-1 is rejected",
+			body:       map[string]any{"name": "srv-neg1", "url": "https://example.invalid", "call_timeout_seconds": -1},
+			wantStatus: http.StatusBadRequest,
+			wantErr:    "invalid call_timeout_seconds",
+		},
+		{
+			name:       "601 is rejected",
+			body:       map[string]any{"name": "srv-601", "url": "https://example.invalid", "call_timeout_seconds": 601},
+			wantStatus: http.StatusBadRequest,
+			wantErr:    "invalid call_timeout_seconds",
+		},
+		{
+			name:       "100000 is rejected",
+			body:       map[string]any{"name": "srv-100000", "url": "https://example.invalid", "call_timeout_seconds": 100000},
+			wantStatus: http.StatusBadRequest,
+			wantErr:    "invalid call_timeout_seconds",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := testutil.NewTestStore(t)
+			registry := mcp.NewRegistry(store.Queries(), mcp.WithMCPTimeout(45*time.Second))
+			srv := httptest.NewServer(newMCPRouter(store, registry))
+			t.Cleanup(srv.Close)
+
+			body, _ := json.Marshal(tc.body)
+			resp, err := http.Post(srv.URL+"/servers", "application/json", bytes.NewReader(body))
+			if err != nil {
+				t.Fatalf("POST /servers: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != tc.wantStatus {
+				b, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status = %d, want %d; body = %s", resp.StatusCode, tc.wantStatus, b)
+			}
+
+			if tc.wantStatus != http.StatusCreated {
+				var envelope struct {
+					Error string `json:"error"`
+				}
+				if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+					t.Fatalf("decode response: %v", err)
+				}
+				if envelope.Error != tc.wantErr {
+					t.Errorf("error = %q, want %q", envelope.Error, tc.wantErr)
+				}
+				rows, err := store.ListMCPServers(context.Background())
+				if err != nil {
+					t.Fatalf("ListMCPServers: %v", err)
+				}
+				if len(rows) != 0 {
+					t.Errorf("expected no MCP server rows after a rejected create, got %d", len(rows))
+				}
+				return
+			}
+
+			var envelope struct {
+				Data mcpServerResponseForTest `json:"data"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if !int64PtrEqual(envelope.Data.CallTimeoutSeconds, tc.wantStored) {
+				t.Errorf("call_timeout_seconds = %v, want %v", envelope.Data.CallTimeoutSeconds, tc.wantStored)
+			}
+			if envelope.Data.EffectiveCallTimeoutSeconds != tc.wantEffective {
+				t.Errorf("effective_call_timeout_seconds = %d, want %d", envelope.Data.EffectiveCallTimeoutSeconds, tc.wantEffective)
+			}
+		})
+	}
+
+	t.Run(`a string value fails JSON decode with "invalid request body"`, func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		srv := httptest.NewServer(newMCPRouter(store, registry))
+		t.Cleanup(srv.Close)
+
+		body := `{"name":"srv-string","url":"https://example.invalid","call_timeout_seconds":"120s"}`
+		resp, err := http.Post(srv.URL+"/servers", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST /servers: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusBadRequest {
+			b, _ := io.ReadAll(resp.Body)
+			t.Fatalf("status = %d, want 400; body = %s", resp.StatusCode, b)
+		}
+		var envelope struct {
+			Error string `json:"error"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if envelope.Error != "invalid request body" {
+			t.Errorf("error = %q, want %q", envelope.Error, "invalid request body")
+		}
+	})
+
+	t.Run(`a fractional value fails JSON decode with "invalid request body"`, func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		srv := httptest.NewServer(newMCPRouter(store, registry))
+		t.Cleanup(srv.Close)
+
+		body := `{"name":"srv-frac","url":"https://example.invalid","call_timeout_seconds":1.5}`
+		resp, err := http.Post(srv.URL+"/servers", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST /servers: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusBadRequest {
+			b, _ := io.ReadAll(resp.Body)
+			t.Fatalf("status = %d, want 400; body = %s", resp.StatusCode, b)
+		}
+		var envelope struct {
+			Error string `json:"error"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if envelope.Error != "invalid request body" {
+			t.Errorf("error = %q, want %q", envelope.Error, "invalid request body")
+		}
+	})
+}
+
+// int64Ptr returns a pointer to n, for building table-test expectations.
+func int64Ptr(n int64) *int64 { return &n }
+
+// int64PtrEqual compares two *int64 by value, treating two nils as equal.
+func int64PtrEqual(a, b *int64) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// TestMCPServerCallTimeout_Update covers issue #939's PUT /servers/:id
+// absent/0/value semantics, mirroring TestMCPServerCACert_Update.
+func TestMCPServerCallTimeout_Update(t *testing.T) {
+	t.Run("absent preserves the existing override across a rename", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		override := int64(120)
+		serverID := insertTestMCPServerWithCallTimeout(t, store, "srv1", "https://example.invalid", &override)
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()))
+
+		body := `{"name":"srv1-renamed","url":"https://example.invalid"}`
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/servers/"+serverID, strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), serverID)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if after.CallTimeoutSeconds == nil || *after.CallTimeoutSeconds != 120 {
+			t.Errorf("call_timeout_seconds = %v, want it preserved (120) across an update that omits the field", after.CallTimeoutSeconds)
+		}
+	})
+
+	t.Run("null preserves the existing override", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		override := int64(120)
+		serverID := insertTestMCPServerWithCallTimeout(t, store, "srv1", "https://example.invalid", &override)
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()))
+
+		body := `{"name":"srv1","url":"https://example.invalid","call_timeout_seconds":null}`
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/servers/"+serverID, strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), serverID)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if after.CallTimeoutSeconds == nil || *after.CallTimeoutSeconds != 120 {
+			t.Errorf("call_timeout_seconds = %v, want it preserved (120) after an explicit null", after.CallTimeoutSeconds)
+		}
+	})
+
+	t.Run("0 clears the override to the instance default", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		override := int64(120)
+		serverID := insertTestMCPServerWithCallTimeout(t, store, "srv1", "https://example.invalid", &override)
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries(), mcp.WithMCPTimeout(45*time.Second)))
+
+		body := `{"name":"srv1","url":"https://example.invalid","call_timeout_seconds":0}`
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/servers/"+serverID, strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		}
+
+		var envelope struct {
+			Data mcpServerResponseForTest `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if envelope.Data.CallTimeoutSeconds != nil {
+			t.Errorf("call_timeout_seconds = %v, want nil after clearing", *envelope.Data.CallTimeoutSeconds)
+		}
+		if envelope.Data.EffectiveCallTimeoutSeconds != 45 {
+			t.Errorf("effective_call_timeout_seconds = %d, want 45 (the instance default) after clearing", envelope.Data.EffectiveCallTimeoutSeconds)
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), serverID)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if after.CallTimeoutSeconds != nil {
+			t.Errorf("stored call_timeout_seconds = %v, want NULL after clearing", *after.CallTimeoutSeconds)
+		}
+	})
+
+	t.Run("300 replaces the existing override", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		override := int64(120)
+		serverID := insertTestMCPServerWithCallTimeout(t, store, "srv1", "https://example.invalid", &override)
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()))
+
+		body := `{"name":"srv1","url":"https://example.invalid","call_timeout_seconds":300}`
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/servers/"+serverID, strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), serverID)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if after.CallTimeoutSeconds == nil || *after.CallTimeoutSeconds != 300 {
+			t.Errorf("call_timeout_seconds = %v, want 300", after.CallTimeoutSeconds)
+		}
+	})
+
+	t.Run("601 is a 400 and leaves the row unchanged", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		override := int64(120)
+		serverID := insertTestMCPServerWithCallTimeout(t, store, "srv1", "https://example.invalid", &override)
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()))
+
+		body := `{"name":"srv1","url":"https://example.invalid","call_timeout_seconds":601}`
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/servers/"+serverID, strings.NewReader(body)))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), serverID)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if after.CallTimeoutSeconds == nil || *after.CallTimeoutSeconds != 120 {
+			t.Errorf("call_timeout_seconds = %v, want it unchanged (120) after a rejected update", after.CallTimeoutSeconds)
+		}
+	})
+
+	t.Run("a CA-only update leaves call_timeout_seconds alone", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		override := int64(120)
+		ca := testutil.NewTestCA(t)
+		serverID := insertTestMCPServerWithCallTimeout(t, store, "srv1", "https://example.invalid", &override)
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()))
+
+		body, _ := json.Marshal(map[string]any{
+			"name":        "srv1",
+			"url":         "https://example.invalid",
+			"ca_cert_pem": ca.PEM,
+		})
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/servers/"+serverID, bytes.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), serverID)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if after.CallTimeoutSeconds == nil || *after.CallTimeoutSeconds != 120 {
+			t.Errorf("call_timeout_seconds = %v, want it unchanged (120) after a CA-only update", after.CallTimeoutSeconds)
+		}
+		if after.CaCertPem == nil || *after.CaCertPem != ca.PEM {
+			t.Errorf("ca_cert_pem = %v, want the new PEM", after.CaCertPem)
+		}
+	})
+
+	t.Run("a call-timeout-only update leaves ca_cert_pem alone", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		ca := testutil.NewTestCA(t)
+		serverID := insertTestMCPServerWithCACert(t, store, "srv1", "https://example.invalid", &ca.PEM)
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()))
+
+		body := `{"name":"srv1","url":"https://example.invalid","call_timeout_seconds":300}`
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/servers/"+serverID, strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), serverID)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if after.CallTimeoutSeconds == nil || *after.CallTimeoutSeconds != 300 {
+			t.Errorf("call_timeout_seconds = %v, want 300", after.CallTimeoutSeconds)
+		}
+		if after.CaCertPem == nil || *after.CaCertPem != ca.PEM {
+			t.Errorf("ca_cert_pem = %v, want it unchanged after a call-timeout-only update", after.CaCertPem)
+		}
+	})
+
+	t.Run("a managed row refuses with 409 even when call_timeout_seconds is set", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		seedManagedServer(t, store)
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()))
+
+		body := `{"name":"slack-main","url":"https://elsewhere.example.com/mcp","call_timeout_seconds":120}`
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, withAdminUser(httptest.NewRequest(http.MethodPut, "/servers/srv-managed", strings.NewReader(body))))
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("status = %d, want 409; body = %s", rec.Code, rec.Body.String())
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), "srv-managed")
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if after.CallTimeoutSeconds != nil {
+			t.Error("a call_timeout_seconds override was written to a managed endpoint")
 		}
 	})
 }
