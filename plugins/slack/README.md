@@ -563,17 +563,21 @@ Then run `go test ./...` to confirm `TestManifestYAMLIsCanonical` still passes.
    make build
    ```
 
-2. **Generate signing keys** (not committed — keep the private key secret):
+2. **Generate signing keys outside the repository** (the private key must never be committed):
    ```sh
-   gleipnir-plugin keygen --out-dir . --name slack --unencrypted
-   # produces slack.key (private) and slack.pub (public)
+   mkdir -p ~/.config/gleipnir/keys
+   gleipnir-plugin keygen --out-dir ~/.config/gleipnir/keys --name slack --unencrypted
+   # produces ~/.config/gleipnir/keys/slack.key (private) and slack.pub (public)
    ```
+   Keep `slack.key` in a password manager or CI secret store. `make lint-secret-keys`
+   (part of `make lint` and CI) rejects any committed private key; a key that was ever
+   pushed must be treated as compromised and replaced, not just deleted.
 
 3. **Sign and package** (the `package` subcommand signs internally; a separate
    `sign` step is not required):
    ```sh
    gleipnir-plugin package --binary ./slack --manifest manifest.yaml \
-     --key slack.key --pubkey slack.pub --out-dir dist
+     --key ~/.config/gleipnir/keys/slack.key --pubkey ~/.config/gleipnir/keys/slack.pub --out-dir dist
    # produces dist/slack-0.1.1.tar.gz
    ```
 
