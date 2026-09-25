@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -30,11 +31,35 @@ type countingRuntime struct {
 	netCreates   int
 	netRemoves   int
 	imageRemoves int
+
+	// lastCreateEnv records the most recent Create call's environment, so a
+	// test can recover a minted instance token the way a real container would
+	// — by reading its own environment — rather than reaching into the
+	// reconciler's private token stash.
+	lastCreateEnv []string
+
+	// ListNetworksErr, when non-nil, is returned by ListNetworksByLabel
+	// instead of succeeding — lets a test simulate a failure unique to the
+	// CORE loop's own reads (ReconcileRotations never lists networks), to
+	// prove ReconcileOnce failing does not withhold a rotation pass (#955
+	// security re-review round 3 finding 2).
+	ListNetworksErr error
+}
+
+func (c *countingRuntime) ListNetworksByLabel(ctx context.Context, key, value string) ([]container.NetworkInfo, error) {
+	c.mu.Lock()
+	err := c.ListNetworksErr
+	c.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return c.Runtime.ListNetworksByLabel(ctx, key, value)
 }
 
 func (c *countingRuntime) Create(ctx context.Context, opts container.CreateOptions) (container.ContainerID, error) {
 	c.mu.Lock()
 	c.creates++
+	c.lastCreateEnv = opts.Env
 	c.mu.Unlock()
 	return c.Runtime.Create(ctx, opts)
 }
@@ -88,6 +113,12 @@ func (c *countingRuntime) writes() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.creates + c.starts + c.stops + c.removes + c.netCreates + c.netRemoves + c.imageRemoves
+}
+
+func (c *countingRuntime) createEnv() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastCreateEnv
 }
 
 // fakeStore is the desired-state side of the diff.
@@ -213,6 +244,22 @@ func (p *capturePublisher) waitForPasses(t *testing.T, n int) {
 	for p.count(EventPassCompleted) < n {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %d reconcile passes (saw %d)", n, p.count(EventPassCompleted))
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// waitForRotationPasses blocks until at least n rotation passes have been
+// published. A test driving convergence through Start/Kick alone (rather than
+// calling ReconcileRotations directly) synchronizes on this rather than
+// EventPassCompleted, because EventRotationPassCompleted is what fires AFTER
+// runPass's rotation half of the cycle has actually run.
+func (p *capturePublisher) waitForRotationPasses(t *testing.T, n int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for p.count(EventRotationPassCompleted) < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d rotation passes (saw %d)", n, p.count(EventRotationPassCompleted))
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
@@ -775,6 +822,61 @@ func TestReconciler_CreatePointsAtTheEgressProxy(t *testing.T) {
 	for i := range want {
 		if got.Env[i] != want[i] {
 			t.Errorf("env[%d] = %q, want %q", i, got.Env[i], want[i])
+		}
+	}
+}
+
+// A generation's container gets both the egress proxy pointer AND the host
+// endpoint URL, with the host endpoint's own host:port scoped into NO_PROXY
+// (#955 security review finding 3): the host endpoint call carries the
+// generation's bearer token, and it must never be tunnelled through the same
+// proxy that mediates the instance's egress to the outside world. Nothing
+// plugin-supplied survives to override either.
+func TestReconciler_GenerationEnvScopesNoProxyToTheHostEndpoint(t *testing.T) {
+	r, err := New(Config{
+		Runtime: container.NewFake(),
+		Store:   &fakeStore{},
+		EgressEnv: func(_ context.Context, instanceID string) []string {
+			return []string{"HTTPS_PROXY=http://10.83.1.1:8118", "HTTP_PROXY=http://10.83.1.1:8118", "NO_PROXY=", "no_proxy="}
+		},
+		HostEndpointEnv: func(_ context.Context, instanceID string) []string {
+			return []string{"GLEIPNIR_HOST_ENDPOINT_URL=http://10.83.1.1:8765"}
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	opts := container.CreateOptions{
+		Name:    "c",
+		Image:   "img@sha256:abc",
+		Network: "net",
+		// A plugin-supplied (or inherited-from-image) proxy config that must
+		// not survive.
+		Env: []string{"PATH=/usr/bin", "NO_PROXY=*", "http_proxy=http://attacker:3128"},
+	}
+	got := r.withGenerationEnv(context.Background(), opts, "inst-1")
+
+	want := map[string]string{
+		"PATH":                       "/usr/bin",
+		"HTTPS_PROXY":                "http://10.83.1.1:8118",
+		"HTTP_PROXY":                 "http://10.83.1.1:8118",
+		"NO_PROXY":                   "10.83.1.1:8765",
+		"no_proxy":                   "10.83.1.1:8765",
+		"GLEIPNIR_HOST_ENDPOINT_URL": "http://10.83.1.1:8765",
+	}
+	if len(got.Env) != len(want) {
+		t.Fatalf("env = %v, want exactly %v", got.Env, want)
+	}
+	for _, kv := range got.Env {
+		key, value, _ := strings.Cut(kv, "=")
+		wantValue, ok := want[key]
+		if !ok {
+			t.Errorf("unexpected env entry %q", kv)
+			continue
+		}
+		if value != wantValue {
+			t.Errorf("%s = %q, want %q", key, value, wantValue)
 		}
 	}
 }

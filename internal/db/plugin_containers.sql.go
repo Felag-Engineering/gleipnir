@@ -167,14 +167,21 @@ func (q *Queries) GetContainerGeneration(ctx context.Context, id string) (Plugin
 
 const getContainerGenerationByTokenHash = `-- name: GetContainerGenerationByTokenHash :one
 SELECT id, plugin_instance_id, generation, container_id, image_digest, config_hash, token_hash, token_revoked_at, status, status_detail, created_at, updated_at FROM plugin_container_generations
-WHERE token_hash = ?1 AND token_revoked_at IS NULL
+WHERE token_hash = ?1
+  AND token_revoked_at IS NULL
+  AND status IN ('pending', 'starting', 'healthy', 'active', 'draining')
 `
 
 // GetContainerGenerationByTokenHash is the authentication lookup: a plugin
 // presents its instance token, the host hashes it and finds the generation it
 // belongs to. Revoked tokens are excluded here rather than by the caller, so
 // there is no path that authenticates a revoked generation by forgetting a
-// check.
+// check. The status filter is defense in depth alongside it (#955 security
+// review): a generation that failed before it ever reached a container
+// (lost-token, health-gate abort) or was torn down for a removed instance
+// must not authenticate even in the window before its own revocation write
+// lands -- the two checks fail closed independently rather than one
+// depending on the other always having run first.
 func (q *Queries) GetContainerGenerationByTokenHash(ctx context.Context, tokenHash string) (PluginContainerGeneration, error) {
 	row := q.db.QueryRowContext(ctx, getContainerGenerationByTokenHash, tokenHash)
 	var i PluginContainerGeneration

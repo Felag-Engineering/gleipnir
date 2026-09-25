@@ -61,10 +61,17 @@ SELECT * FROM plugin_container_generations WHERE id = :id;
 -- presents its instance token, the host hashes it and finds the generation it
 -- belongs to. Revoked tokens are excluded here rather than by the caller, so
 -- there is no path that authenticates a revoked generation by forgetting a
--- check.
+-- check. The status filter is defense in depth alongside it (#955 security
+-- review): a generation that failed before it ever reached a container
+-- (lost-token, health-gate abort) or was torn down for a removed instance
+-- must not authenticate even in the window before its own revocation write
+-- lands -- the two checks fail closed independently rather than one
+-- depending on the other always having run first.
 -- name: GetContainerGenerationByTokenHash :one
 SELECT * FROM plugin_container_generations
-WHERE token_hash = :token_hash AND token_revoked_at IS NULL;
+WHERE token_hash = :token_hash
+  AND token_revoked_at IS NULL
+  AND status IN ('pending', 'starting', 'healthy', 'active', 'draining');
 
 -- name: ListContainerGenerationsByInstance :many
 SELECT * FROM plugin_container_generations

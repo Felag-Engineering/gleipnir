@@ -5,9 +5,65 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
+	"time"
 )
+
+// noProxyTransport is the default HTTP transport for host-endpoint calls: a
+// CLONE of http.DefaultTransport with proxying disabled outright, so it keeps
+// the dial, TLS handshake, and idle-connection timeouts a bare &http.Transport{}
+// would otherwise silently drop (#955 security review round 2 item 6) — a
+// timeout regression would trade one failure mode for another, not fix one.
+// http.DefaultClient's http.DefaultTransport honors HTTP_PROXY/HTTPS_PROXY/
+// NO_PROXY from the process environment — exactly the variables the
+// reconciler's egress proxy sets on every plugin container (#812) — so an
+// author who never overrides the HTTP client would otherwise send this
+// client's bearer token to the egress proxy along with everything else the
+// plugin talks to. The reconciler also scopes a NO_PROXY entry for the host
+// endpoint itself (#955 security review finding 3), but a client that never
+// consults NO_PROXY at all does not depend on that entry surviving whatever
+// else touches the environment.
+var noProxyTransport http.RoundTripper = newNoProxyTransport()
+
+// newNoProxyTransport clones http.DefaultTransport with proxying disabled.
+func newNoProxyTransport() *http.Transport {
+	return noProxyTransportFrom(http.DefaultTransport)
+}
+
+// noProxyTransportFrom does the actual work, taking the "default transport"
+// as a parameter so the fallback branch below is exercisable by a test
+// without depending on http.DefaultTransport ever actually changing shape.
+//
+// The comma-ok assertion (#955 security re-review round 3 item 5) is
+// defensive against http.DefaultTransport ever stopping being a
+// *http.Transport in some future Go release — an unchecked assertion would
+// panic at package init, taking down every plugin process with it, for a
+// property this package does not control. The fallback is an explicit
+// &http.Transport{} with the same dial/TLS/idle timeouts DefaultTransport
+// carries today, not the zero value: a bare &http.Transport{Proxy: nil}
+// would silently drop them, trading the proxy hole this package exists to
+// close for a client that can then hang forever on a wedged host endpoint.
+func noProxyTransportFrom(base http.RoundTripper) *http.Transport {
+	if t, ok := base.(*http.Transport); ok {
+		clone := t.Clone()
+		clone.Proxy = nil
+		return clone
+	}
+	return &http.Transport{
+		Proxy: nil,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+}
 
 // InstanceTokenEnvVar is the environment variable the host writes before
 // exec'ing (or, once the container substrate goes live, before starting) a
@@ -70,7 +126,10 @@ func WithToken(token string) Option {
 }
 
 // WithHTTPClient overrides the *http.Client used for host-endpoint requests.
-// Defaults to http.DefaultClient.
+// Defaults to a client with proxying disabled (noProxyTransport) — an author
+// reaching for this option to point at a test server should carry that
+// default forward rather than reintroducing environment-based proxying by
+// passing a client built on http.DefaultTransport.
 func WithHTTPClient(hc *http.Client) Option {
 	return func(c *clientConfig) { c.httpClient = hc }
 }
@@ -89,7 +148,7 @@ func New(opts ...Option) (*Client, error) {
 	cfg := &clientConfig{
 		baseURL:    os.Getenv(HostEndpointURLEnvVar),
 		token:      os.Getenv(InstanceTokenEnvVar),
-		httpClient: http.DefaultClient,
+		httpClient: &http.Client{Transport: noProxyTransport},
 	}
 	for _, opt := range opts {
 		opt(cfg)

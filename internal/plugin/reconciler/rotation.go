@@ -66,6 +66,15 @@ const defaultHealthGateTimeout = 2 * time.Minute
 // finish, not a veto over shutdown.
 const defaultDrainTimeout = 5 * time.Minute
 
+// maxRestartAttempts bounds how many times planActiveContainerHealth asks
+// for a plain restart before giving up and minting a fresh generation
+// instead (crash-loop bound, #955 security review item 5). A container that
+// cannot stay up is a different problem than one that has not started yet,
+// and re-minting starts a clean attempt through the same create/health-gate
+// sequence a genuine upgrade uses, rather than restarting the same broken
+// container indefinitely.
+const maxRestartAttempts = 5
+
 // RotationKind is the one rotation step a pass decides to take for an instance.
 type RotationKind string
 
@@ -83,11 +92,15 @@ const (
 
 	// RotationCreate creates and starts the new generation's container.
 	//
-	// Unlike the first-boot path (ActionCreate then ActionStart over two
-	// passes), rotation creates and starts in one step. The reason is the
-	// health gate: a created-but-not-started container is indistinguishable
+	// Unlike the GenerationTrackingDisabled fallback's two-pass ActionCreate
+	// then ActionStart, rotation creates and starts in one step. The reason is
+	// the health gate: a created-but-not-started container is indistinguishable
 	// from one that started and immediately exited, and the gate has to be able
-	// to tell those apart to decide between "still starting" and "failed".
+	// to tell those apart to decide between "still starting" and "failed". Once
+	// Config.Rotations is set, this is ALSO how first boot creates an
+	// instance's very first container — ActionBeginFirstGeneration only mints
+	// the generation 1 row, and RotationCreate carries it the rest of the way,
+	// exactly as it would for generation 2 and beyond.
 	RotationCreate RotationKind = "rotation_create"
 
 	// RotationPromote passes the new generation's health gate: starting ⇒
@@ -114,6 +127,43 @@ const (
 	// in-flight calls would fail that work at the host boundary, which is
 	// exactly what draining exists to avoid.
 	RotationRetire RotationKind = "rotation_retire"
+
+	// RotationStopInstance converges EVERY live generation of an instance
+	// toward terminal in one action, because the desired state is now stopped
+	// (security review round 3 finding 1): every token is revoked and every
+	// row marked terminal first, then every generation with a running
+	// container gets it stopped — a serving (active) or still-up (draining)
+	// container is acted on in the SAME pass a pending or starting candidate
+	// is failed, not after it. Unlike RotationDrain, there is no new
+	// generation to hand traffic to and therefore no drain window to respect
+	// — an explicit stop is deliberate, not a supersession the old generation
+	// should get a grace period against. Re-enabling the instance then finds
+	// no live generation at all — the same GenerationMissing state first boot
+	// starts from — and mints a fresh one rather than resurrecting any of
+	// these, exactly like a failed generation number is never reused.
+	// Removal of the (now stopped) containers is left to
+	// sweepOrphanedGenerationContainers on the next pass.
+	RotationStopInstance RotationKind = "rotation_stop_instance"
+
+	// RotationRestartActive restarts an active generation's container that is
+	// no longer running (security review, #955 finding 2): the container
+	// exited or died on its own, not because anything superseded it. Bounded
+	// by a per-generation exponential backoff between attempts and a cap
+	// (item 5) — a container that keeps dying must not be hammered with Start
+	// calls forever. Once the cap is reached, planActiveContainerHealth gives
+	// up restarting and issues a fresh RotationBegin instead.
+	RotationRestartActive RotationKind = "rotation_restart_active"
+
+	// RotationRetireOrphanedInstance revokes an unrevoked token and retires a
+	// live generation whose instance has no desired-state row at all (#955
+	// security review finding 4). Unlike every other RotationKind, this one
+	// is not produced by planRotation — ReconcileRotations only calls
+	// planRotation for rows IN the desired set, so an orphaned instance is
+	// found and swept separately, before the per-row loop, over every live
+	// generation for it rather than one step at a time: there is no
+	// state-machine sequence left to resume here, only unrevoked credential
+	// material to close out.
+	RotationRetireOrphanedInstance RotationKind = "rotation_retire_orphaned_instance"
 )
 
 // RotationAction is one planned rotation step.
@@ -134,6 +184,19 @@ type RotationAction struct {
 	// Reason is the operator-facing explanation, carried into the audit event
 	// and the log line.
 	Reason string
+
+	// CrashLoop marks a RotationBegin issued because an active generation's
+	// container kept dying past maxRestartAttempts, rather than because the
+	// desired image or config drifted. beginRotation logs it at a higher
+	// severity than an ordinary rotation start — a crash loop is something an
+	// operator should see, not a routine upgrade.
+	CrashLoop bool
+
+	// FromStatus is the generation's status at plan time, for RotationAbort.
+	// Always GenStarting today (planHealthGate is its only producer), but
+	// named rather than hardcoded in abortRotation's CAS so a future second
+	// producer does not have to guess which status the applier assumes.
+	FromStatus string
 }
 
 // RotationInputs is everything planRotation needs for one instance. It is a
@@ -160,6 +223,17 @@ type RotationInputs struct {
 	// package default.
 	HealthGateTimeout time.Duration
 	DrainTimeout      time.Duration
+
+	// RestartAttempts is how many consecutive restart attempts the active
+	// generation's container has already had since it last ran successfully
+	// (crash-loop bound, #955 security review item 5). Zero means it has
+	// never needed one. The reconciler tracks this in memory, keyed by
+	// generation ID, and clears it the moment the container is observed
+	// running again — the same "in memory only, a restart forgives it"
+	// posture instance tokens already have, and for the same reason: a
+	// freshly restarted host giving a crashing plugin one more immediate
+	// attempt before backing off again is not a hole.
+	RestartAttempts int
 }
 
 // planRotation decides the single rotation step for one instance.
@@ -175,6 +249,21 @@ func planRotation(in RotationInputs) RotationAction {
 	none := RotationAction{Kind: RotationNone, InstanceID: instanceID}
 
 	byStatus := indexGenerations(in.Generations)
+
+	// An explicit stop is checked FIRST, before any of the normal sequence
+	// steps below (security review, #955 finding 2 round 2): desired_state
+	// is an instruction from the operator, not a rotation trigger, and it
+	// overrides whatever an in-flight rotation was in the middle of —
+	// finishing a health gate or a switch just to then have to stop the
+	// result would be wasted work at best. planStop itself decides which
+	// live generation to act on, in the priority order that makes sense for
+	// stopping rather than for resuming a crash.
+	if in.Desired.DesiredState == DesiredStopped {
+		if action, ok := planStop(in); ok {
+			return action
+		}
+		return none
+	}
 
 	// Retire: a draining generation whose container has stopped, or is gone
 	// entirely. Last step first.
@@ -249,6 +338,18 @@ func planRotation(in RotationInputs) RotationAction {
 		// rotation's. Doing anything here would race it.
 		return none
 	}
+
+	// The active generation's own container may have died on its own,
+	// unrelated to any upgrade (finding 2's second half: a dead active
+	// container was never restarted, because generationDrift only compares
+	// image digest and config hash). Checked before drift so a container
+	// that is both down AND running a stale image gets recovered rather than
+	// silently left dead while a routine drift-triggered rotation is
+	// planned against it.
+	if action, ok := planActiveContainerHealth(in, active); ok {
+		return action
+	}
+
 	if reason := generationDrift(in.Desired, active); reason != "" {
 		return RotationAction{
 			Kind:         RotationBegin,
@@ -261,6 +362,86 @@ func planRotation(in RotationInputs) RotationAction {
 	return none
 }
 
+// planStop decides the single step that converges an instance toward stopped,
+// or (bool false) that there is nothing live to stop at all.
+//
+// It is ONE action for every live generation, not one generation at a time in
+// priority order (security review round 3 finding 1): a serving (active) or
+// still-up (draining) container must not wait behind a merely-formal
+// pending-generation fail-and-revoke that touches no container at all. The
+// apply step (stopInstance) does the actual work in the right internal order —
+// revoke and terminalize every live generation FIRST, then stop every one that
+// still has a running container — but from planRotation's point of view an
+// explicit stop is a single, indivisible step for the instance.
+func planStop(in RotationInputs) (RotationAction, bool) {
+	if len(in.Generations) == 0 {
+		return RotationAction{InstanceID: in.Desired.PluginInstanceID}, false
+	}
+	return RotationAction{
+		Kind:       RotationStopInstance,
+		InstanceID: in.Desired.PluginInstanceID,
+		Reason:     "desired state is stopped",
+	}, true
+}
+
+// terminalStatusForStop names the terminal status a generation moves to when
+// explicitly stopped: pending, starting, and healthy never took over serving
+// (a pending generation has no container at all; starting and healthy have
+// one but never switched to active), so they read as failed — the same
+// reading a health-gate abort gives them. Draining and active did serve,
+// however briefly, so they read as stopped.
+func terminalStatusForStop(status string) string {
+	switch status {
+	case GenPending, GenStarting, GenHealthy:
+		return GenFailed
+	default: // GenDraining, GenActive
+		return GenStopped
+	}
+}
+
+// planActiveContainerHealth reports what to do about an active generation
+// whose container is not running, or (bool false) that it needs nothing: the
+// container is present and running, which is the common case.
+//
+// A container that vanished entirely (removed by something outside the
+// reconciler) cannot be restarted, so it goes straight to a fresh
+// RotationBegin. One that merely exited or died gets up to maxRestartAttempts
+// plain restarts first — bounded by the caller-supplied RestartAttempts,
+// which the applier only increments on an attempt it actually makes, so a
+// backoff between attempts (item 5) does not by itself exhaust the cap.
+func planActiveContainerHealth(in RotationInputs, active db.PluginContainerGeneration) (RotationAction, bool) {
+	instanceID := in.Desired.PluginInstanceID
+	info, present := in.Observed[active.Generation]
+	if present && isRunning(info.State) {
+		return RotationAction{}, false
+	}
+
+	if !present || in.RestartAttempts >= maxRestartAttempts {
+		reason := "active generation's container disappeared; minting a fresh generation"
+		if present {
+			reason = "active generation's container kept crashing after " +
+				itoa64(int64(in.RestartAttempts)) + " restart attempts; minting a fresh generation"
+		}
+		return RotationAction{
+			Kind:         RotationBegin,
+			InstanceID:   instanceID,
+			GenerationID: active.ID,
+			Generation:   active.Generation,
+			Reason:       reason,
+			CrashLoop:    true,
+		}, true
+	}
+
+	return RotationAction{
+		Kind:         RotationRestartActive,
+		InstanceID:   instanceID,
+		GenerationID: active.ID,
+		Generation:   active.Generation,
+		ContainerID:  info.ID,
+		Reason:       "active generation's container is " + string(info.State) + "; restarting it",
+	}, true
+}
+
 // planHealthGate decides between promote, abort, and wait for a starting
 // generation.
 func planHealthGate(in RotationInputs, gen db.PluginContainerGeneration) RotationAction {
@@ -268,6 +449,7 @@ func planHealthGate(in RotationInputs, gen db.PluginContainerGeneration) Rotatio
 		InstanceID:   in.Desired.PluginInstanceID,
 		GenerationID: gen.ID,
 		Generation:   gen.Generation,
+		FromStatus:   GenStarting,
 	}
 
 	info, present := in.Observed[gen.Generation]
