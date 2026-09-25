@@ -701,10 +701,23 @@ func TestSubstrate_SelfAttachPinsAddressAndDetachesOnTeardown(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), convergeBudget)
 	defer cancel()
 
+	// The stand-in gets its own throwaway network rather than "bridge":
+	// rootless Podman has no network by that name (its default is "podman"),
+	// and any Internal network is enough for "a real container that
+	// self-attach then connects to instance networks".
+	selfNetName := "gleipnir-substrate-" + h.runID + "-selfnet"
+	if _, err := h.rt.CreateNetwork(ctx, container.NetworkOptions{
+		Name:     selfNetName,
+		Labels:   map[string]string{labelRun: h.runID},
+		Internal: true,
+	}); err != nil {
+		t.Fatalf("creating self stand-in network: %v", err)
+	}
+
 	selfID, err := h.rt.Create(ctx, container.CreateOptions{
 		Name:    "gleipnir-substrate-" + h.runID + "-self",
 		Image:   ref,
-		Network: "bridge",
+		Network: selfNetName,
 		Labels:  map[string]string{labelRun: h.runID},
 		CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"},
 	})
