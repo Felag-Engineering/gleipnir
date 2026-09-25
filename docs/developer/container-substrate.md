@@ -178,21 +178,49 @@ lane it did not run:
 
 ### When CI runs it
 
-Required on PRs that reach the substrate packages, and scheduled nightly
-otherwise. Without the schedule, a week where nobody touched those packages
-would be a week nobody checked the substrate still works against a real runtime
-— and drift there comes from the runtime changing underneath us, not only from
-our own diffs.
+Four triggers (issue #982):
+
+- **Pull requests** that reach the substrate packages, gated by `substrate-scope`.
+- **Pushes to `main`** — a merge is already-landed code, and it's the one point
+  every change passes through regardless of which PR carried it.
+- **Tag pushes** (release tags) — a release build gets the same real-daemon
+  check a merge does.
+- **Nightly, on schedule.** Without it, a week where nobody touched those
+  packages would be a week nobody checked the substrate still works against a
+  real runtime — and drift there comes from the runtime changing underneath us,
+  not only from our own diffs.
 
 "Does this diff reach the substrate" is answered by `scripts/ci-local-scope.sh`
 — the *same* scoper the local gate uses — rather than by a `paths:` filter
 maintained separately in the workflow. A second list would drift from the first,
 and the failure mode of that drift is a lane that silently stops running for the
-packages it exists to cover. `scripts/ci-local-scope-self-test.sh` pins the
-reachability rules, including that `egress` and `resources` select the lane even
-though the suite does not import them.
+packages it exists to cover. On a push or tag there is no PR diff to scope
+against — and the code is already merged — so `substrate-scope` skips the diff
+entirely and answers "run" unconditionally for those events. `substrate-scope`
+lists reachable packages by directory prefix, not purely by import graph:
+`egress` and `resources` select the lane even though the suite does not import
+either, and `loader`, `hostendpoint` and `internal/plugin/assembly` are
+forward-provisioned ahead of the reconciler wiring that will make them real
+dependencies. `scripts/ci-local-scope-self-test.sh` pins one case per prefix.
 
 The job is bounded at **15 minutes**. The value is a signal that the substrate
 still works against a real runtime, not breadth — breadth belongs in the unit
 suites, which are seconds. A job that grew past this budget is one people start
 skipping.
+
+### Nightly failures get a paper trail, not just a red run
+
+A scheduled failure has no PR and no author waiting on a check, so a red run in
+the Actions tab is easy to miss. On a nightly failure, CI opens (or, if one is
+already open, comments on) a single pinned tracking issue titled
+`substrate-integration: nightly failure tracking`, rather than filing a new
+issue per failed night. Close it once a nightly run goes green again.
+
+### Required-check status (owner action)
+
+Making `substrate-integration` (and `Build (substratev2)`, and `dood` once it
+exists) a **required check** is a repository ruleset setting only the repo
+owner can make — it is not something this workflow file can express. As of
+this writing that setting has not been made; until it is, a PR can merge
+without the substrate lane having run, and the schedule/push/tag triggers above
+are what keep the lane exercised in the meantime.

@@ -498,8 +498,14 @@ jobs:
   # source of truth for "does this diff reach the substrate": a second list here
   # would drift from the first, and the failure mode of that drift is a lane
   # that silently stops running for the packages it exists to cover.
+  #
+  # Also runs on push (a merge to main, or a release tag): there is no PR diff
+  # to scope there, and code on those refs is already merged, so the answer is
+  # simply "yes" (issue #982) — a push/tag build that skipped the lane would be
+  # the exact silent gap the scheduled run below exists to catch, except every
+  # week instead of once.
   substrate-scope:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       run: ${{ steps.scope.outputs.run }}
@@ -517,6 +523,14 @@ jobs:
         name: Ask the scoper whether this diff reaches the substrate
         run: |
           set -euo pipefail
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            # A push to main or a tag push has no base ref to diff against —
+            # and nothing to narrow against either, since this ref is already
+            # merged. Run the lane unconditionally.
+            echo "substrate lane: 1 (${{ github.event_name }}, no diff to scope)"
+            echo "run=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
           changed=$(git diff --name-only FETCH_HEAD...HEAD)
           echo "changed files:"; printf '%s\n' "$changed"
@@ -545,8 +559,11 @@ jobs:
   substrate-integration:
     needs: substrate-scope
     # always() so a scheduled run — where substrate-scope never ran and is
-    # therefore "skipped" — still reaches this job.
-    if: ${{ always() && (needs.substrate-scope.outputs.run == '1' || github.event_name == 'schedule') }}
+    # therefore "skipped" — still reaches this job. `github.event_name !=
+    # 'pull_request'` (rather than spelling out 'schedule' and 'push') is the
+    # belt-and-suspenders half of issue #982: it runs push/tag/schedule even
+    # if substrate-scope's own widened trigger above is ever narrowed back.
+    if: ${{ always() && (needs.substrate-scope.outputs.run == '1' || github.event_name != 'pull_request') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -689,6 +706,36 @@ jobs:
         run: |
           podman rm -f $(podman ps -aq --filter 'label=gleipnir.substrate-test-run') 2>/dev/null || true
           podman network prune -f 2>/dev/null || true
+
+  # A scheduled failure has no PR to fail loudly against and no author waiting
+  # on a check — left as just a red run in the Actions tab, it is exactly the
+  # kind of drift issue #820 exists to catch that would go unseen for weeks.
+  # This gives it a paper trail: one pinned tracking issue, appended to on
+  # every consecutive nightly failure rather than filing a new one each night.
+  substrate-integration-nightly-failure:
+    needs: substrate-integration
+    if: always() && github.event_name == 'schedule' && needs.substrate-integration.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: File or update the pinned nightly-failure tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="substrate-integration: nightly failure tracking"
+          existing=$(gh issue list --repo "${{ github.repository }}" --state open \
+            --search "in:title \"$title\"" --json number --jq '.[0].number // empty')
+          note="Nightly \`substrate-integration\` run failed: ${RUN_URL} (commit ${{ github.sha }})."
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "${{ github.repository }}" --body "$note"
+          else
+            gh issue create --repo "${{ github.repository }}" --title "$title" \
+              --label bug --label epic:plugin-system \
+              --body "$note"$'\n\n'"Pinned tracking issue for \`substrate-integration\` nightly-schedule failures (issue #982) — each consecutive failure appends a comment here instead of filing a new issue. Close it once a nightly run goes green again."
+          fi
 
   # Publishes :dev on every merge to main. Bleeding-edge tag — do not pull
   # this in production. :latest is reserved for the release job below.
