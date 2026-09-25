@@ -487,3 +487,93 @@ func TestLoad_ElicitationControls(t *testing.T) {
 		}
 	})
 }
+
+// GLEIPNIR_PLUGIN_SUBNET_POOL is validated at Load, before run() constructs
+// anything or starts a trigger loop — an invalid pool must fail the process
+// with a plain error immediately, not partway through startup (#1021).
+func TestLoad_PluginSubnetPoolValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		poolValue   string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:        "not a CIDR returns error",
+			poolValue:   "not-a-cidr",
+			wantErr:     true,
+			errContains: "is not a valid CIDR",
+		},
+		{
+			name:        "IPv6 pool returns error",
+			poolValue:   "fd00::/16",
+			wantErr:     true,
+			errContains: "must be IPv4",
+		},
+		{
+			name:        "wider than /8 returns error",
+			poolValue:   "10.0.0.0/7",
+			wantErr:     true,
+			errContains: "wider than /8",
+		},
+		{
+			name:        "0.0.0.0/0 returns error",
+			poolValue:   "0.0.0.0/0",
+			wantErr:     true,
+			errContains: "wider than /8",
+		},
+		{
+			name:      "exactly /8 succeeds",
+			poolValue: "10.0.0.0/8",
+			wantErr:   false,
+		},
+		{
+			name:      "default /16 succeeds",
+			poolValue: "10.83.0.0/16",
+			wantErr:   false,
+		},
+		{
+			name:      "exactly /24 succeeds",
+			poolValue: "10.83.4.0/24",
+			wantErr:   false,
+		},
+		{
+			name:        "narrower than /24 returns error",
+			poolValue:   "10.83.4.0/25",
+			wantErr:     true,
+			errContains: "narrower than /24",
+		},
+		{
+			name:        "a single host (/32) returns error",
+			poolValue:   "10.83.4.5/32",
+			wantErr:     true,
+			errContains: "narrower than /24",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GLEIPNIR_ENCRYPTION_KEY", validKey)
+			t.Setenv("GLEIPNIR_PLUGIN_SUBNET_POOL", tc.poolValue)
+
+			cfg, err := Load()
+
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("Load() expected an error but got nil")
+				}
+				if !strings.Contains(err.Error(), tc.errContains) {
+					t.Errorf("error message %q does not contain %q", err.Error(), tc.errContains)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("Load() unexpected error: %v", err)
+			}
+			if cfg.PluginSubnetPool != tc.poolValue {
+				t.Errorf("PluginSubnetPool = %q, want %q", cfg.PluginSubnetPool, tc.poolValue)
+			}
+		})
+	}
+}

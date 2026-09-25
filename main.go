@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/http/sse"
 	"github.com/felag-engineering/gleipnir/internal/infra/config"
 	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
+	"github.com/felag-engineering/gleipnir/internal/infra/netguard"
 	"github.com/felag-engineering/gleipnir/internal/infra/version"
 	"github.com/felag-engineering/gleipnir/internal/llm"
 	llmfactory "github.com/felag-engineering/gleipnir/internal/llm/factory"
@@ -63,13 +65,35 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
 	slog.SetDefault(logger)
 
-	if err := run(cfg); err != nil {
+	// config.Load already validated GLEIPNIR_PLUGIN_SUBNET_POOL's shape (valid
+	// IPv4 CIDR, no wider than /8), so this re-parse cannot fail — it exists
+	// only because Config carries the pool as the raw string, not a parsed
+	// netip.Prefix. Whether the pool overlaps a real interface address can
+	// only be known once this process is actually running on its host, so
+	// that check (unlike the shape check) happens here rather than in
+	// config.Load — but it still happens before run() opens the database or
+	// starts the plugin runtime or a single trigger loop. net.InterfaceAddrs
+	// doesn't depend on the operator listener at all, and exiting after the
+	// v1 plugin runtime has spawned subprocesses would orphan them. There is
+	// deliberately no override for this check — see netguard's package doc's
+	// "No escape hatch" section.
+	pluginSubnetPool, err := netip.ParsePrefix(cfg.PluginSubnetPool)
+	if err != nil {
+		slog.Error("invalid GLEIPNIR_PLUGIN_SUBNET_POOL (should have been rejected at config.Load)", "value", cfg.PluginSubnetPool, "err", err)
+		os.Exit(1)
+	}
+	if err := netguard.CheckPoolOverlap(pluginSubnetPool); err != nil {
+		slog.Error(err.Error())
+		os.Exit(1)
+	}
+
+	if err := run(cfg, pluginSubnetPool); err != nil {
 		slog.Error("fatal", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(cfg config.Config) error {
+func run(cfg config.Config, pluginSubnetPool netip.Prefix) error {
 	startTime := time.Now()
 
 	// Phase 1: background services and infrastructure.
@@ -531,6 +555,46 @@ func run(cfg config.Config) error {
 		slog.Error("failed to bind listen address", "addr", cfg.ListenAddr, "err", err)
 		os.Exit(1)
 	}
+
+	// Wrap the operator API listener so it refuses any connection that arrives
+	// on, or comes from, an address inside the plugin subnet pool. Gleipnir's
+	// own container joins every per-instance plugin network (spec §7/§8),
+	// which puts this wildcard listener on each of those networks too;
+	// without this guard, a plugin container could reach the full operator
+	// API — including auth:none webhooks and /api/v1/auth/setup — with no
+	// credential at all. See internal/infra/netguard's package doc for the
+	// full rationale, including why RemoteAddr is checked too and why that
+	// check is safe against a spoofed source (#1021).
+	//
+	// pluginSubnetPool was already validated (shape, in config.Load) and
+	// checked for interface overlap (in main, before this process opened the
+	// database or started the plugin runtime/triggers — see the comment
+	// there) by the time it reaches here; this is just where the guard
+	// actually gets installed, since that has to wait for the listener to
+	// exist.
+	//
+	// netguard has no internal imports of its own (it's a strict leaf
+	// package), so WithOnRefuse is how it's wired into
+	// operatorAPIRefusedTotal (metrics.go) instead of netguard reaching into
+	// internal/infra/metrics directly.
+	guardedLn, err := netguard.Wrap(ln, pluginSubnetPool, slog.Default(),
+		netguard.WithOnRefuse(func(reason string) {
+			operatorAPIRefusedTotal.WithLabelValues(reason).Inc()
+		}),
+	)
+	if err != nil {
+		slog.Error("failed to install operator API network guard", "err", err)
+		os.Exit(1)
+	}
+	ln = guardedLn
+
+	// The future v2 assembly (#962) must call netguard.Installed on its own
+	// operator listener before it enables plugin self-attach (#958) at all —
+	// self-attach only makes sense once every path that can receive
+	// plugin-network traffic already refuses it. Both builds construct their
+	// guard from the same GLEIPNIR_PLUGIN_SUBNET_POOL value; there is no
+	// second build to wire this into yet (#962 is unimplemented as of this
+	// change).
 
 	// public_url (ADR-035), when set, is the canonical URL to advertise; on any
 	// read error we simply fall back to the localhost form in the banner.
