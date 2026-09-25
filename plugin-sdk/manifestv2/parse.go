@@ -183,6 +183,15 @@ func validateEgress(grants []EgressGrant, add func(string, string, ...any)) {
 	}
 }
 
+// maxManifestCPUMillicores mirrors internal/plugin/resources' own hard
+// ceiling (64 cores). Kept as a local constant rather than imported:
+// plugin-sdk cannot depend on internal/* (it is a separate Go module meant to
+// also serve third-party plugin authors, same rationale as
+// allowedBindingOperators above). The host's Effective.NanoCPUs() multiplies
+// CPUMillicores by one million, so an unbounded manifest value is not just
+// implausible resource-wise — it can overflow that arithmetic outright.
+const maxManifestCPUMillicores = 64_000
+
 func validateResources(r *Resources, add func(string, string, ...any)) {
 	if r == nil {
 		return
@@ -190,8 +199,11 @@ func validateResources(r *Resources, add func(string, string, ...any)) {
 	if r.MemoryMB < 0 {
 		add("gleipnir.resources.memory_mb", "must not be negative, got %d", r.MemoryMB)
 	}
-	if r.CPUMillicores < 0 {
+	switch {
+	case r.CPUMillicores < 0:
 		add("gleipnir.resources.cpu_millicores", "must not be negative, got %d", r.CPUMillicores)
+	case r.CPUMillicores > maxManifestCPUMillicores:
+		add("gleipnir.resources.cpu_millicores", "must not exceed %d (64 cores), got %d", maxManifestCPUMillicores, r.CPUMillicores)
 	}
 }
 

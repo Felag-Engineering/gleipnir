@@ -105,13 +105,10 @@ func (l *Loader) StartWatcher(ctx context.Context, q *db.Queries, sqlDB *sql.DB,
 	}
 
 	l.installer = loader.NewInstaller(l.verifier, q, sqlDB, publisher, dir)
-	// The watcher's callback type is func(context.Context, string) error, but
-	// Install now returns (string, error). The adapter discards the plugin ID —
-	// the watcher only needs to know whether install succeeded.
-	l.watcher = loader.NewWatcher(dir, func(ctx context.Context, p string) error {
-		_, err := l.installer.Install(ctx, p)
-		return err
-	})
+	// *Installer already has the loader.BundleInstaller shape (Install(ctx,
+	// path) (string, error)), so v1 wires it straight through. The v2 assembly
+	// wires a different BundleInstaller (the OCI installer adapter, #952).
+	l.watcher = loader.NewWatcher(dir, l.installer)
 
 	fw, err := l.watcher.Setup()
 	if err != nil {

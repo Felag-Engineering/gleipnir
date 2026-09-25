@@ -16,6 +16,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/http/auth"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/plugin/lifecycle/desiredstate"
 	pluginstate "github.com/felag-engineering/gleipnir/internal/plugin/state"
 	"github.com/felag-engineering/gleipnir/internal/policy"
 )
@@ -145,6 +146,9 @@ type InstanceLifecycleDeps struct {
 	Evictor    ToolConnEvictor
 	Unreg      ToolUnregistrar
 	PluginsDir string
+	// Provisioner is nil in v1: Delete never removes a container desired-state
+	// row (there is none to remove).
+	Provisioner InstanceProvisioner
 }
 
 // InstanceLifecycle owns the four plugin-instance lifecycle transitions:
@@ -155,36 +159,44 @@ type InstanceLifecycleDeps struct {
 // non-extracted handlers (CreateInstance/ApprovePlugin/RejectPlugin). Wire the
 // same instance/value to both from main.go.
 type InstanceLifecycle struct {
-	q          PluginQuerier
-	store      *db.Store
-	publisher  event.Publisher
-	clock      func() time.Time
-	procMgr    PluginProcessManager
-	trigger    TriggerRestarter
-	inflight   InflightCounter
-	evictor    ToolConnEvictor
-	unreg      ToolUnregistrar
-	pluginsDir string
+	q           PluginQuerier
+	store       *db.Store
+	publisher   event.Publisher
+	clock       func() time.Time
+	procMgr     PluginProcessManager
+	trigger     TriggerRestarter
+	inflight    InflightCounter
+	evictor     ToolConnEvictor
+	unreg       ToolUnregistrar
+	pluginsDir  string
+	provisioner InstanceProvisioner
 }
 
 // NewInstanceLifecycle constructs an InstanceLifecycle with the given deps.
 // clock defaults to time.Now when nil.
 func NewInstanceLifecycle(deps InstanceLifecycleDeps) *InstanceLifecycle {
+	if deps.Provisioner != nil && deps.Store == nil {
+		// Same invariant as NewPluginHandler: Delete/Deactivate/Activate write
+		// the container desired-state row in the same transaction as the
+		// plugin_instances row they touch, which requires a Store to open one.
+		panic("admin: InstanceLifecycleDeps.Provisioner requires Store to be set")
+	}
 	clk := deps.Clock
 	if clk == nil {
 		clk = time.Now
 	}
 	return &InstanceLifecycle{
-		q:          deps.Q,
-		store:      deps.Store,
-		publisher:  deps.Publisher,
-		clock:      clk,
-		procMgr:    deps.ProcMgr,
-		trigger:    deps.Trigger,
-		inflight:   deps.Inflight,
-		evictor:    deps.Evictor,
-		unreg:      deps.Unreg,
-		pluginsDir: deps.PluginsDir,
+		q:           deps.Q,
+		store:       deps.Store,
+		publisher:   deps.Publisher,
+		clock:       clk,
+		procMgr:     deps.ProcMgr,
+		trigger:     deps.Trigger,
+		inflight:    deps.Inflight,
+		evictor:     deps.Evictor,
+		unreg:       deps.Unreg,
+		pluginsDir:  deps.PluginsDir,
+		provisioner: deps.Provisioner,
 	}
 }
 
@@ -219,6 +231,70 @@ func (m *InstanceLifecycle) resolveLifecycleInstance(ctx context.Context, plugin
 		return db.Plugin{}, db.PluginInstance{}, ErrInstanceNotFound
 	}
 	return plugin, inst, nil
+}
+
+// setHealthAndDesired transitions instanceID's health state and, when a
+// provisioner is wired, its container's desired_state, in the SAME
+// transaction — this is the kill switch, and a partial transition (health
+// flipped but the container left running toward the old desired_state, or
+// vice versa) would defeat the point of one. Without a provisioner (v1) this
+// is exactly the old direct pluginstate.SetHealthState call: nothing to make
+// atomic with, since there is no container row.
+//
+// NewInstanceLifecycle panics if Provisioner is set without Store, so
+// reaching the provisioner branch here always means m.store is non-nil.
+func (m *InstanceLifecycle) setHealthAndDesired(ctx context.Context, instanceID, pluginID string, health model.PluginHealthState, detail, desired string) error {
+	if m.provisioner == nil {
+		return pluginstate.SetHealthState(ctx, m.q, m.publisher, instanceID, pluginstate.OriginHost, health, detail)
+	}
+
+	tx, err := m.store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() {
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			slog.ErrorContext(ctx, "set health+desired state: rollback failed", "err", rbErr)
+		}
+	}()
+
+	q := db.New(tx)
+	// nil publisher: an SSE subscriber (or anything else Publish reaches) must
+	// never learn about a change before the transaction that makes it real has
+	// committed. pluginstate.SetHealthState treats a nil publisher as "skip
+	// publishing" (checked internally), so this is safe by construction, not
+	// by caller discipline. The publish this write would have made happens
+	// below, after Commit, from m.publisher directly.
+	if err := pluginstate.SetHealthState(ctx, q, nil, instanceID, pluginstate.OriginHost, health, detail); err != nil {
+		return err
+	}
+	if err := m.provisioner.SetDesired(ctx, q, instanceID, desired); err != nil {
+		return fmt.Errorf("set desired state: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	m.publishHealthChanged(instanceID, pluginID, health)
+	return nil
+}
+
+// publishHealthChanged mirrors pluginstate.SetHealthState's own
+// plugin.health_changed payload shape exactly, so a subscriber cannot tell
+// which path produced the event. It is the after-commit half of the publish
+// setHealthAndDesired's provisioner branch deliberately deferred.
+func (m *InstanceLifecycle) publishHealthChanged(instanceID, pluginID string, state model.PluginHealthState) {
+	if m.publisher == nil {
+		return
+	}
+	data, err := json.Marshal(map[string]string{
+		"instance_id": instanceID,
+		"plugin_id":   pluginID,
+		"state":       string(state),
+	})
+	if err != nil {
+		return
+	}
+	m.publisher.Publish("plugin.health_changed", data)
 }
 
 // Deactivate soft-deactivates the instance: gates on in-flight calls, transitions
@@ -256,8 +332,8 @@ func (m *InstanceLifecycle) Deactivate(ctx context.Context, pluginID, instanceID
 		}
 	}
 
-	if err := pluginstate.SetHealthState(ctx, m.q, m.publisher, instanceID, pluginstate.OriginHost,
-		model.PluginHealthStateInactive, "deactivated by admin"); err != nil {
+	if err := m.setHealthAndDesired(ctx, instanceID, inst.PluginID, model.PluginHealthStateInactive, "deactivated by admin",
+		desiredstate.Stopped); err != nil {
 		return db.PluginInstance{}, &lifecycleInternalError{
 			PublicMsg: "failed to set health state",
 			Detail:    err.Error(),
@@ -327,8 +403,8 @@ func (m *InstanceLifecycle) Activate(ctx context.Context, pluginID, instanceID s
 
 	// Transition to unhealthy first. The subprocess handshake will drive the
 	// state to healthy once the process comes up.
-	if err := pluginstate.SetHealthState(ctx, m.q, m.publisher, instanceID, pluginstate.OriginHost,
-		model.PluginHealthStateUnhealthy, "reactivated by admin"); err != nil {
+	if err := m.setHealthAndDesired(ctx, instanceID, inst.PluginID, model.PluginHealthStateUnhealthy, "reactivated by admin",
+		desiredstate.Running); err != nil {
 		return db.PluginInstance{}, &lifecycleInternalError{
 			PublicMsg: "failed to set health state",
 			Detail:    err.Error(),
@@ -456,7 +532,9 @@ func (m *InstanceLifecycle) Delete(ctx context.Context, pluginID, instanceID str
 	// Transactional delete in FK-safe order (ADR-003 sqlc/no-ORM):
 	//   1. plugin_pending_requests (RESTRICT FK — must clear first)
 	//   2. plugin_oauth_nonces (instance_id FK)
-	//   3. plugin_instances row (audit events use SET NULL so history survives)
+	//   3. provisioner.Remove — the plugin_containers desired-state row, when a
+	//      provisioner is wired (v1: no-op, nothing to remove)
+	//   4. plugin_instances row (audit events use SET NULL so history survives)
 	tx, err := m.store.DB().BeginTx(ctx, nil)
 	if err != nil {
 		slog.ErrorContext(ctx, "delete instance: begin tx", "err", err)
@@ -476,6 +554,12 @@ func (m *InstanceLifecycle) Delete(ctx context.Context, pluginID, instanceID str
 	if err := q.DeletePluginOAuthNoncesByInstance(ctx, instanceID); err != nil {
 		slog.ErrorContext(ctx, "delete instance: clear oauth nonces", "err", err)
 		return &lifecycleInternalError{PublicMsg: "internal error", Err: err}
+	}
+	if m.provisioner != nil {
+		if err := m.provisioner.Remove(ctx, q, instanceID); err != nil {
+			slog.ErrorContext(ctx, "delete instance: remove container", "err", err)
+			return &lifecycleInternalError{PublicMsg: "internal error", Err: err}
+		}
 	}
 	if _, err := q.DeletePluginInstance(ctx, instanceID); err != nil {
 		slog.ErrorContext(ctx, "delete instance: delete row", "err", err)

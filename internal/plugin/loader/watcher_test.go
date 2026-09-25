@@ -18,11 +18,11 @@ type stubInstaller struct {
 	calls []string
 }
 
-func (s *stubInstaller) install(ctx context.Context, tarPath string) error {
+func (s *stubInstaller) Install(ctx context.Context, tarPath string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls = append(s.calls, tarPath)
-	return nil
+	return "", nil
 }
 
 func (s *stubInstaller) count() int {
@@ -66,7 +66,7 @@ func TestWatcher_DebouncesBurstWrites(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	w := NewWatcher(dir, stub.install, WithDebounce(testDebounce))
+	w := NewWatcher(dir, stub, WithDebounce(testDebounce))
 	done := runWatcher(t, ctx, w)
 
 	// fw.Add in Setup registers the watch synchronously with the kernel, so
@@ -109,7 +109,7 @@ func TestWatcher_InitialSweep(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	w := NewWatcher(dir, stub.install, WithDebounce(testDebounce))
+	w := NewWatcher(dir, stub, WithDebounce(testDebounce))
 	done := runWatcher(t, ctx, w)
 
 	// The initial sweep enqueues the file immediately, then the debounce window fires.
@@ -129,7 +129,7 @@ func TestWatcher_IgnoresNonTarball(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	w := NewWatcher(dir, stub.install, WithDebounce(testDebounce))
+	w := NewWatcher(dir, stub, WithDebounce(testDebounce))
 	done := runWatcher(t, ctx, w)
 
 	// Drop a non-tarball file — must not trigger an install.
@@ -151,10 +151,10 @@ func TestWatcher_ContextCancel_StopsCleanly(t *testing.T) {
 	dir := t.TempDir()
 
 	var installCount atomic.Int64
-	install := func(ctx context.Context, tarPath string) error {
+	install := BundleInstallerFunc(func(ctx context.Context, tarPath string) (string, error) {
 		installCount.Add(1)
-		return nil
-	}
+		return "", nil
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -184,7 +184,7 @@ func TestWatcher_CancelDuringDebounce_NoRace(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	const debounce = 50 * time.Millisecond
-	w := NewWatcher(dir, stub.install, WithDebounce(debounce))
+	w := NewWatcher(dir, stub, WithDebounce(debounce))
 	done := runWatcher(t, ctx, w)
 
 	// Drop a tarball to arm the debounce timer.
@@ -224,7 +224,7 @@ func TestWatcher_FsnotifySetupFailure_NoGoroutineLeak(t *testing.T) {
 	}
 
 	stub := &stubInstaller{}
-	w := NewWatcher(dir, stub.install, WithDebounce(20*time.Millisecond))
+	w := NewWatcher(dir, stub, WithDebounce(20*time.Millisecond))
 
 	before := runtime.NumGoroutine()
 
@@ -259,7 +259,7 @@ func TestWatcher_RemoveCancelsPendingTimer(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	w := NewWatcher(dir, stub.install, WithDebounce(testDebounce))
+	w := NewWatcher(dir, stub, WithDebounce(testDebounce))
 	done := runWatcher(t, ctx, w)
 
 	tarPath := filepath.Join(dir, "remove-me.tar.gz")
@@ -309,7 +309,7 @@ func sweepPaths(t *testing.T, dir string, expectedCount int) []string {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	w := NewWatcher(dir, stub.install, WithDebounce(testDebounce))
+	w := NewWatcher(dir, stub, WithDebounce(testDebounce))
 	done := runWatcher(t, ctx, w)
 
 	// Wait long enough for all debounce timers to fire.
