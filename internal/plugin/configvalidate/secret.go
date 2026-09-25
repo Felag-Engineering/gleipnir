@@ -25,6 +25,14 @@ const RedactionSentinel = "***"
 // Returns a nil map (not an error) when schemaNode is nil or declares no
 // properties key. The boolean value of the annotation must be exactly true —
 // the string "true" and non-boolean values are not included.
+//
+// plugin-sdk/manifestv2.SecretPropertyNames duplicates this logic for v2
+// manifests rather than importing it (the two manifest packages stay
+// separate — see plugin-sdk/manifestv2's package doc). This is the LIVE
+// implementation behind the ADR-049 redaction path and is deliberately left
+// unchanged pre-demo; internal/plugin/manifest's TestAnnotationParity pins
+// both implementations to identical output. #950 is where configvalidate
+// forwards to plugin-sdk/manifestv2's copy and that parity test is deleted.
 func SecretPropertyNames(schemaNode *yaml.Node) (map[string]bool, error) {
 	if schemaNode == nil {
 		return nil, nil

@@ -400,6 +400,160 @@ func TestDiffV2_NoChange_Empty(t *testing.T) {
 	}
 }
 
+// The auth strategy decides which credential a running instance trusts —
+// switching it must block a silent hot-reload, same as v1's auth.strategy.
+func TestDiffV2_MaterialAuthStrategyChanged(t *testing.T) {
+	old := baseManifestV2()
+	old.Gleipnir.Auth = &manifestv2.AuthDecl{Strategy: manifestv2.AuthStrategyNone}
+
+	new := baseManifestV2()
+	new.Gleipnir.Auth = &manifestv2.AuthDecl{Strategy: manifestv2.AuthStrategyBasicAuth}
+
+	changes := pluginmanifest.DiffV2(old, new)
+	if !pluginmanifest.HasMaterial(changes) {
+		t.Error("expected material change for auth.strategy")
+	}
+	fields := pluginmanifest.MaterialFields(changes)
+	if len(fields) != 1 || fields[0] != "auth.strategy" {
+		t.Errorf("material fields = %v, want [auth.strategy]", fields)
+	}
+}
+
+func TestDiffV2_MaterialAuthHeaderNameChanged(t *testing.T) {
+	old := baseManifestV2()
+	old.Gleipnir.Auth = &manifestv2.AuthDecl{Strategy: manifestv2.AuthStrategyStaticAPIKey, HeaderName: "Authorization"}
+
+	new := baseManifestV2()
+	new.Gleipnir.Auth = &manifestv2.AuthDecl{Strategy: manifestv2.AuthStrategyStaticAPIKey, HeaderName: "X-App-Token"}
+
+	changes := pluginmanifest.DiffV2(old, new)
+	fields := pluginmanifest.MaterialFields(changes)
+	if len(fields) != 1 || fields[0] != "auth.header_name" {
+		t.Errorf("material fields = %v, want [auth.header_name]", fields)
+	}
+}
+
+func TestDiffV2_MaterialAuthHeaderNamesChanged(t *testing.T) {
+	old := baseManifestV2()
+	old.Gleipnir.Auth = &manifestv2.AuthDecl{Strategy: manifestv2.AuthStrategyHeaderSet, HeaderNames: []string{"Authorization"}}
+
+	new := baseManifestV2()
+	new.Gleipnir.Auth = &manifestv2.AuthDecl{Strategy: manifestv2.AuthStrategyHeaderSet, HeaderNames: []string{"Authorization", "X-App-Token"}}
+
+	changes := pluginmanifest.DiffV2(old, new)
+	fields := pluginmanifest.MaterialFields(changes)
+	if len(fields) != 1 || fields[0] != "auth.header_names" {
+		t.Errorf("material fields = %v, want [auth.header_names]", fields)
+	}
+}
+
+// Reordering the same set of header names carries no meaning, mirroring the
+// tier2_capabilities and OAuth-scope reorder-is-a-no-op rule elsewhere.
+func TestDiffV2_AuthHeaderNamesReordered_NoDiff(t *testing.T) {
+	old := baseManifestV2()
+	old.Gleipnir.Auth = &manifestv2.AuthDecl{Strategy: manifestv2.AuthStrategyHeaderSet, HeaderNames: []string{"Authorization", "X-App-Token"}}
+
+	new := baseManifestV2()
+	new.Gleipnir.Auth = &manifestv2.AuthDecl{Strategy: manifestv2.AuthStrategyHeaderSet, HeaderNames: []string{"X-App-Token", "Authorization"}}
+
+	changes := pluginmanifest.DiffV2(old, new)
+	for _, c := range changes {
+		if c.Field == "auth.header_names" {
+			t.Errorf("unexpected change for reordered header_names: %+v", c)
+		}
+	}
+}
+
+func TestDiffV2_MaterialAuthOAuthDefaultsAdded(t *testing.T) {
+	old := baseManifestV2()
+	old.Gleipnir.Auth = &manifestv2.AuthDecl{Strategy: manifestv2.AuthStrategyOAuth2Clientcred}
+
+	new := baseManifestV2()
+	new.Gleipnir.Auth = &manifestv2.AuthDecl{
+		Strategy: manifestv2.AuthStrategyOAuth2Clientcred,
+		OAuthDefaults: &manifestv2.OAuthDefaultsDecl{
+			TokenURL: "https://example.com/token",
+			Scopes:   []string{"read"},
+		},
+	}
+
+	changes := pluginmanifest.DiffV2(old, new)
+	fields := pluginmanifest.MaterialFields(changes)
+	if len(fields) != 1 || fields[0] != "auth.oauth_defaults" {
+		t.Errorf("material fields = %v, want [auth.oauth_defaults]", fields)
+	}
+}
+
+func TestDiffV2_MaterialAuthOAuthDefaultsFieldsChanged(t *testing.T) {
+	old := baseManifestV2()
+	old.Gleipnir.Auth = &manifestv2.AuthDecl{
+		Strategy: manifestv2.AuthStrategyOAuth2Authcode,
+		OAuthDefaults: &manifestv2.OAuthDefaultsDecl{
+			AuthorizationURL: "https://example.com/authorize",
+			TokenURL:         "https://example.com/token",
+			Scopes:           []string{"read"},
+		},
+	}
+
+	new := baseManifestV2()
+	new.Gleipnir.Auth = &manifestv2.AuthDecl{
+		Strategy: manifestv2.AuthStrategyOAuth2Authcode,
+		OAuthDefaults: &manifestv2.OAuthDefaultsDecl{
+			AuthorizationURL: "https://example.com/v2/authorize",
+			TokenURL:         "https://example.com/v2/token",
+			Scopes:           []string{"read", "write"},
+		},
+	}
+
+	changes := pluginmanifest.DiffV2(old, new)
+	fields := pluginmanifest.MaterialFields(changes)
+	wantFields := map[string]bool{
+		"auth.oauth_defaults.authorization_url": true,
+		"auth.oauth_defaults.token_url":         true,
+		"auth.oauth_defaults.scopes":            true,
+	}
+	if len(fields) != len(wantFields) {
+		t.Fatalf("material fields = %v, want %v", fields, wantFields)
+	}
+	for _, f := range fields {
+		if !wantFields[f] {
+			t.Errorf("unexpected material field %q", f)
+		}
+	}
+}
+
+func TestDiffV2_MaterialTier2CapabilitiesChanged(t *testing.T) {
+	old := baseManifestV2()
+	new := baseManifestV2()
+	new.Gleipnir.Tier2Capabilities = []string{manifestv2.Tier2RunHistoryRead}
+
+	changes := pluginmanifest.DiffV2(old, new)
+	if !pluginmanifest.HasMaterial(changes) {
+		t.Error("expected material change when tier2_capabilities is added")
+	}
+	fields := pluginmanifest.MaterialFields(changes)
+	if len(fields) != 1 || fields[0] != "tier2_capabilities" {
+		t.Errorf("material fields = %v, want [tier2_capabilities]", fields)
+	}
+}
+
+// Reordering the same set of tier-2 capabilities carries no meaning — it is
+// a set — so it must not produce a change.
+func TestDiffV2_Tier2CapabilitiesReordered_NoDiff(t *testing.T) {
+	old := baseManifestV2()
+	old.Gleipnir.Tier2Capabilities = []string{manifestv2.Tier2RunHistoryRead, manifestv2.Tier2UserDirectoryRead}
+
+	new := baseManifestV2()
+	new.Gleipnir.Tier2Capabilities = []string{manifestv2.Tier2UserDirectoryRead, manifestv2.Tier2RunHistoryRead}
+
+	changes := pluginmanifest.DiffV2(old, new)
+	for _, c := range changes {
+		if c.Field == "tier2_capabilities" {
+			t.Errorf("unexpected change for reordered tier2_capabilities: %+v", c)
+		}
+	}
+}
+
 func TestDiff_MaterialEventKindAdded(t *testing.T) {
 	old := baseManifest()
 	new := baseManifest()

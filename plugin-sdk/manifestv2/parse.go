@@ -83,6 +83,8 @@ func Validate(m *Manifest) error {
 	validateProfiles(m.Gleipnir.Profiles, add)
 	validateEgress(m.Gleipnir.Egress, add)
 	validateResources(m.Gleipnir.Resources, add)
+	validateAuth(m.Gleipnir.Auth, add)
+	validateTier2(m.Gleipnir.Tier2Capabilities, add)
 	validateTools(m.Gleipnir.Tools, add)
 	validateEventKinds(m.Gleipnir.EventKinds, m.Gleipnir.Profiles.EventSource, add)
 
@@ -190,6 +192,108 @@ func validateResources(r *Resources, add func(string, string, ...any)) {
 	}
 	if r.CPUMillicores < 0 {
 		add("gleipnir.resources.cpu_millicores", "must not be negative, got %d", r.CPUMillicores)
+	}
+}
+
+// allowedAuthStrategies is the closed AuthStrategy* set. Kept as a map (not a
+// switch case list) so allowedAuthStrategyNames can render it deterministically
+// for error messages, the same pattern allowedBindingOperators uses below.
+var allowedAuthStrategies = map[string]bool{
+	AuthStrategyNone:             true,
+	AuthStrategyStaticAPIKey:     true,
+	AuthStrategyHeaderSet:        true,
+	AuthStrategyBasicAuth:        true,
+	AuthStrategyOAuth2Authcode:   true,
+	AuthStrategyOAuth2Clientcred: true,
+}
+
+func allowedAuthStrategyNames() string {
+	names := make([]string, 0, len(allowedAuthStrategies))
+	for name := range allowedAuthStrategies {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
+// validateAuth checks the credential-strategy declaration. A nil auth is not
+// an error — it means the plugin never claimed a strategy, equivalent to
+// AuthStrategyNone but without the manifest saying so explicitly — but a
+// present one must name a known strategy and carry that strategy's required
+// fields.
+func validateAuth(auth *AuthDecl, add func(string, string, ...any)) {
+	if auth == nil {
+		return
+	}
+	if !allowedAuthStrategies[auth.Strategy] {
+		add("gleipnir.auth.strategy", "must be one of %s, got %q", allowedAuthStrategyNames(), auth.Strategy)
+		return
+	}
+
+	switch auth.Strategy {
+	case AuthStrategyStaticAPIKey:
+		if strings.TrimSpace(auth.HeaderName) == "" {
+			add("gleipnir.auth.header_name", "is required for strategy %q", AuthStrategyStaticAPIKey)
+		}
+	case AuthStrategyHeaderSet:
+		if len(auth.HeaderNames) == 0 {
+			add("gleipnir.auth.header_names", "at least one header name is required for strategy %q", AuthStrategyHeaderSet)
+		}
+	case AuthStrategyOAuth2Authcode:
+		validateOAuthDefaults(auth.OAuthDefaults, true, add)
+	case AuthStrategyOAuth2Clientcred:
+		validateOAuthDefaults(auth.OAuthDefaults, false, add)
+	}
+}
+
+// validateOAuthDefaults checks the OAuth2 endpoints and scopes an author bakes
+// into the manifest. requireAuthorizationURL is false for the client-credentials
+// strategy, which has no browser leg and therefore no authorization endpoint.
+func validateOAuthDefaults(d *OAuthDefaultsDecl, requireAuthorizationURL bool, add func(string, string, ...any)) {
+	if d == nil {
+		add("gleipnir.auth.oauth_defaults", "is required for this strategy")
+		return
+	}
+	if requireAuthorizationURL && strings.TrimSpace(d.AuthorizationURL) == "" {
+		add("gleipnir.auth.oauth_defaults.authorization_url", "is required for strategy %q", AuthStrategyOAuth2Authcode)
+	}
+	if strings.TrimSpace(d.TokenURL) == "" {
+		add("gleipnir.auth.oauth_defaults.token_url", "is required")
+	}
+	if len(d.Scopes) == 0 {
+		add("gleipnir.auth.oauth_defaults.scopes", "at least one scope is required")
+	}
+}
+
+// allowedTier2Capabilities is the closed Tier2* set.
+var allowedTier2Capabilities = map[string]bool{
+	Tier2RunHistoryRead:    true,
+	Tier2UserDirectoryRead: true,
+}
+
+func allowedTier2CapabilityNames() string {
+	names := make([]string, 0, len(allowedTier2Capabilities))
+	for name := range allowedTier2Capabilities {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
+// validateTier2 checks that every declared Tier-2 capability is a known one,
+// declared at most once.
+func validateTier2(capabilities []string, add func(string, string, ...any)) {
+	seen := make(map[string]bool, len(capabilities))
+	for i, c := range capabilities {
+		field := fmt.Sprintf("gleipnir.tier2_capabilities[%d]", i)
+		if !allowedTier2Capabilities[c] {
+			add(field, "must be one of %s, got %q", allowedTier2CapabilityNames(), c)
+			continue
+		}
+		if seen[c] {
+			add(field, "is declared more than once: %q", c)
+		}
+		seen[c] = true
 	}
 }
 

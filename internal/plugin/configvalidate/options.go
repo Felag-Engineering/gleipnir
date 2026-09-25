@@ -26,6 +26,10 @@ type OptionsSpec struct {
 // "source" key; "multi" is optional and defaults to false.
 //
 // Returns nil, nil when schemaNode is nil or declares no annotated properties.
+//
+// plugin-sdk/manifestv2.OptionsAnnotations duplicates this logic for v2
+// manifests — see SecretPropertyNames's doc comment for why, and for the
+// parity test that pins the two to identical output.
 func OptionsAnnotations(schemaNode *yaml.Node) (map[string]OptionsSpec, error) {
 	if schemaNode == nil {
 		return nil, nil
