@@ -107,7 +107,7 @@ gleipnir:
     human_channel:
       assurance: authenticated # or: weak — REQUIRED
     identity_provider:
-      link_methods: [oauth, code]   # at least one
+      link_methods: [admin_set, dm_code, inbound_code, oidc]   # at least one
 ```
 
 **`human_channel.assurance` is required** and has no default. It states how strongly
@@ -119,7 +119,50 @@ through to the next audience entry. Defaulting this either way would be the host
 guessing about somebody else's authentication.
 
 **`identity_provider.link_methods` needs at least one entry.** A provider with no
-way to link identities provides no identity.
+way to link identities provides no identity. The spec §9.1 names are `admin_set`,
+`dm_code`, `inbound_code`, and `oidc`.
+
+### `auth` — credential strategy
+
+Optional; a plugin that declares no `auth` block is read the same as
+`{strategy: none}`, but without having said so. Uses the same six-strategy
+vocabulary as the v1.1 manifest (spec §9.1), copied rather than shared so the two
+manifest formats stay separate types.
+
+```yaml
+  auth:
+    strategy: oauth2_authcode   # none | static_api_key | header_set | basic_auth
+                                # | oauth2_authcode | oauth2_clientcred
+    oauth_defaults:
+      authorization_url: https://example.com/oauth/authorize
+      token_url: https://example.com/oauth/token
+      scopes: [read, write]
+```
+
+Each strategy carries its own required fields, checked at validation time:
+
+| Strategy | Required fields |
+|----------|------------------|
+| `none`, `basic_auth` | none — the operator supplies credentials (if any) at instance-config time |
+| `static_api_key` | `header_name` — the header the key is sent on |
+| `header_set` | `header_names` — at least one header name |
+| `oauth2_authcode` | `oauth_defaults.authorization_url`, `.token_url`, and at least one scope |
+| `oauth2_clientcred` | `oauth_defaults.token_url` and at least one scope (no authorization URL — there is no browser leg) |
+
+Declaring `header_name`/`header_names` here — unlike v1, which learns them only
+once an operator configures credentials — lets the install consent screen show
+what a plugin expects before it ever runs.
+
+### `tier2_capabilities` — Tier-2 host RPCs
+
+Optional list of Tier-2 host RPCs this plugin declares, shown on the install
+consent screen (spec §8.2). Every entry must be one of the known capability
+names — `run_history_read` or `user_directory_read` — declared at most once.
+
+```yaml
+  tier2_capabilities:
+    - run_history_read
+```
 
 ### `egress` — default deny
 

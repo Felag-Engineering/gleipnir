@@ -58,7 +58,15 @@ gleipnir:
     human_channel:
       assurance: authenticated
     identity_provider:
-      link_methods: [oauth, code]
+      link_methods: [admin_set, dm_code, inbound_code, oidc]
+  auth:
+    strategy: oauth2_authcode
+    oauth_defaults:
+      authorization_url: https://example.com/oauth/authorize
+      token_url: https://example.com/oauth/token
+      scopes: [read, write]
+  tier2_capabilities:
+    - run_history_read
   egress:
     - domain: api.example.com
       reason: the vendor API this plugin wraps
@@ -157,6 +165,15 @@ func TestParse_Full(t *testing.T) {
 	}
 	if m.Gleipnir.Profiles.EventSource == nil || m.Gleipnir.Profiles.EventSource.SubscriptionSchema == nil {
 		t.Error("profiles.event_source.subscription_schema is nil")
+	}
+	if m.Gleipnir.Auth == nil || m.Gleipnir.Auth.Strategy != AuthStrategyOAuth2Authcode {
+		t.Fatalf("auth = %+v, want strategy %q", m.Gleipnir.Auth, AuthStrategyOAuth2Authcode)
+	}
+	if m.Gleipnir.Auth.OAuthDefaults == nil || len(m.Gleipnir.Auth.OAuthDefaults.Scopes) != 2 {
+		t.Errorf("auth.oauth_defaults = %+v", m.Gleipnir.Auth.OAuthDefaults)
+	}
+	if want := []string{Tier2RunHistoryRead}; len(m.Gleipnir.Tier2Capabilities) != 1 || m.Gleipnir.Tier2Capabilities[0] != want[0] {
+		t.Errorf("tier2_capabilities = %v, want %v", m.Gleipnir.Tier2Capabilities, want)
 	}
 }
 
@@ -372,6 +389,64 @@ func TestParse_Rejections(t *testing.T) {
 			},
 			wantField: "gleipnir.event_kinds[0].operators",
 		},
+		{
+			name: "unknown auth strategy",
+			mutate: func(s string) string {
+				return s + "  auth:\n    strategy: carrier_pigeon\n"
+			},
+			wantField: "gleipnir.auth.strategy",
+		},
+		{
+			name: "static_api_key with no header_name",
+			mutate: func(s string) string {
+				return s + "  auth:\n    strategy: static_api_key\n"
+			},
+			wantField: "gleipnir.auth.header_name",
+		},
+		{
+			name: "header_set with no header_names",
+			mutate: func(s string) string {
+				return s + "  auth:\n    strategy: header_set\n"
+			},
+			wantField: "gleipnir.auth.header_names",
+		},
+		{
+			name: "oauth2_authcode with no oauth_defaults",
+			mutate: func(s string) string {
+				return s + "  auth:\n    strategy: oauth2_authcode\n"
+			},
+			wantField: "gleipnir.auth.oauth_defaults",
+		},
+		{
+			name: "oauth2_authcode with no authorization_url",
+			mutate: func(s string) string {
+				return s + "  auth:\n    strategy: oauth2_authcode\n" +
+					"    oauth_defaults:\n      token_url: https://example.com/token\n      scopes: [read]\n"
+			},
+			wantField: "gleipnir.auth.oauth_defaults.authorization_url",
+		},
+		{
+			name: "oauth2_clientcred with empty scopes",
+			mutate: func(s string) string {
+				return s + "  auth:\n    strategy: oauth2_clientcred\n" +
+					"    oauth_defaults:\n      token_url: https://example.com/token\n"
+			},
+			wantField: "gleipnir.auth.oauth_defaults.scopes",
+		},
+		{
+			name: "unknown tier2 capability",
+			mutate: func(s string) string {
+				return s + "  tier2_capabilities:\n    - launch_missiles\n"
+			},
+			wantField: "gleipnir.tier2_capabilities[0]",
+		},
+		{
+			name: "duplicate tier2 capability",
+			mutate: func(s string) string {
+				return s + "  tier2_capabilities:\n    - run_history_read\n    - run_history_read\n"
+			},
+			wantField: "gleipnir.tier2_capabilities[1]",
+		},
 	}
 
 	for _, tc := range tests {
@@ -432,6 +507,19 @@ func TestParse_UnknownFieldsAreRejected(t *testing.T) {
 					"    tool_provider: {}\n    event_source:\n      bogus_field: true\n", 1)
 			},
 		},
+		{
+			name: "unknown key under gleipnir.auth",
+			mutate: func(s string) string {
+				return s + "  auth:\n    strategy: none\n    bogus_field: true\n"
+			},
+		},
+		{
+			name: "unknown key under gleipnir.auth.oauth_defaults",
+			mutate: func(s string) string {
+				return s + "  auth:\n    strategy: oauth2_clientcred\n" +
+					"    oauth_defaults:\n      token_url: https://example.com/token\n      scopes: [read]\n      bogus_field: true\n"
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -475,6 +563,57 @@ func TestParse_UnknownOperatorErrorListsAcceptedSet(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %q, want it to list accepted operator %q", err, want)
 		}
+	}
+}
+
+// A valid auth block for every one of the six strategies parses and
+// validates. Absent auth is its own case: the manifest never claimed a
+// strategy, which is accepted rather than defaulted.
+func TestParse_AuthStrategies(t *testing.T) {
+	tests := []struct {
+		name  string
+		block string
+	}{
+		{name: "absent", block: ""},
+		{name: AuthStrategyNone, block: "  auth:\n    strategy: none\n"},
+		{
+			name:  AuthStrategyStaticAPIKey,
+			block: "  auth:\n    strategy: static_api_key\n    header_name: Authorization\n",
+		},
+		{
+			name:  AuthStrategyHeaderSet,
+			block: "  auth:\n    strategy: header_set\n    header_names: [Authorization, X-App-Token]\n",
+		},
+		{name: AuthStrategyBasicAuth, block: "  auth:\n    strategy: basic_auth\n"},
+		{
+			name: AuthStrategyOAuth2Authcode,
+			block: "  auth:\n    strategy: oauth2_authcode\n" +
+				"    oauth_defaults:\n      authorization_url: https://example.com/authorize\n" +
+				"      token_url: https://example.com/token\n      scopes: [read]\n",
+		},
+		{
+			name: AuthStrategyOAuth2Clientcred,
+			block: "  auth:\n    strategy: oauth2_clientcred\n" +
+				"    oauth_defaults:\n      token_url: https://example.com/token\n      scopes: [read]\n",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := Parse([]byte(minimalManifest + tc.block))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if tc.name == "absent" {
+				if m.Gleipnir.Auth != nil {
+					t.Errorf("auth = %+v, want nil", m.Gleipnir.Auth)
+				}
+				return
+			}
+			if m.Gleipnir.Auth == nil || m.Gleipnir.Auth.Strategy != tc.name {
+				t.Errorf("auth = %+v, want strategy %q", m.Gleipnir.Auth, tc.name)
+			}
+		})
 	}
 }
 

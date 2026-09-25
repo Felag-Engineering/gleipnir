@@ -75,6 +75,43 @@ const (
 	ElicitationKindInformation = "information"
 )
 
+// Auth strategy constants for AuthDecl.Strategy — the same six-strategy
+// vocabulary plugin-sdk/manifest declares for the v1.1 substrate (spec §9.1),
+// copied rather than imported so the two manifest formats stay separate types
+// (see the package doc).
+const (
+	// AuthStrategyNone means the plugin requires no credentials.
+	AuthStrategyNone = "none"
+
+	// AuthStrategyStaticAPIKey means the plugin expects a single static API
+	// key, sent on the header AuthDecl.HeaderName names.
+	AuthStrategyStaticAPIKey = "static_api_key"
+
+	// AuthStrategyHeaderSet means the plugin expects one or more static HTTP
+	// headers, named in AuthDecl.HeaderNames.
+	AuthStrategyHeaderSet = "header_set"
+
+	// AuthStrategyBasicAuth means the plugin expects HTTP Basic Auth
+	// credentials, supplied by the operator at instance-config time.
+	AuthStrategyBasicAuth = "basic_auth"
+
+	// AuthStrategyOAuth2Authcode means the host runs the OAuth2 authorization
+	// code flow on the plugin's behalf (spec §9.2).
+	AuthStrategyOAuth2Authcode = "oauth2_authcode"
+
+	// AuthStrategyOAuth2Clientcred means the host runs the OAuth2 client
+	// credentials flow on the plugin's behalf (spec §9.2). No user interaction
+	// is required.
+	AuthStrategyOAuth2Clientcred = "oauth2_clientcred"
+)
+
+// Tier-2 capability identifiers for Gleipnir.Tier2Capabilities. Each names a
+// manifest-declared, admin-approved host RPC (spec §8.2).
+const (
+	Tier2RunHistoryRead    = "run_history_read"
+	Tier2UserDirectoryRead = "user_directory_read"
+)
+
 // Manifest is a containerized plugin's manifest (manifest.yaml).
 type Manifest struct {
 	// SchemaVersion must be SchemaVersion ("2").
@@ -156,6 +193,15 @@ type Gleipnir struct {
 	// Resources caps what one instance may consume. Absent means the host
 	// default applies; an admin override wins over both.
 	Resources *Resources `yaml:"resources,omitempty"`
+
+	// Auth declares the credential strategy for this plugin (spec §9.1). Absent
+	// means the plugin needs no credential-strategy review — equivalent to
+	// AuthStrategyNone, but the plugin never made the claim explicitly.
+	Auth *AuthDecl `yaml:"auth,omitempty"`
+
+	// Tier2Capabilities lists any Tier-2 host RPCs this plugin declares, shown
+	// on the install consent screen (spec §8.2). Use the Tier2* constants.
+	Tier2Capabilities []string `yaml:"tier2_capabilities,omitempty"`
 
 	// Tools declares per-tool metadata the host needs at review time. It does
 	// NOT enumerate the tool list — that comes from tools/list at runtime, and
@@ -279,6 +325,96 @@ type Resources struct {
 	CPUMillicores int `yaml:"cpu_millicores,omitempty"`
 }
 
+// AuthDecl declares the credential strategy for a plugin instance (spec
+// §9.1). Copied from plugin-sdk/manifest's vocabulary rather than imported,
+// per the package doc.
+type AuthDecl struct {
+	// Strategy selects which of the six AuthStrategy* strategies this plugin
+	// uses. Required whenever Auth is present.
+	Strategy string `yaml:"strategy"`
+
+	// HeaderName is the HTTP header a static_api_key credential is sent on
+	// (e.g. "Authorization"). Required for AuthStrategyStaticAPIKey; ignored
+	// for every other strategy.
+	HeaderName string `yaml:"header_name,omitempty"`
+
+	// HeaderNames lists the HTTP headers a header_set credential configures.
+	// Required (non-empty) for AuthStrategyHeaderSet; ignored for every other
+	// strategy. Declaring the names here — unlike v1, which learns them only
+	// when an operator configures credentials — lets the install consent
+	// screen show what a header_set plugin expects before it runs.
+	HeaderNames []string `yaml:"header_names,omitempty"`
+
+	// OAuthDefaults carries the OAuth2 endpoints and default scopes baked in
+	// by the plugin author. Required for AuthStrategyOAuth2Authcode and
+	// AuthStrategyOAuth2Clientcred; ignored otherwise.
+	OAuthDefaults *OAuthDefaultsDecl `yaml:"oauth_defaults,omitempty"`
+}
+
+// OAuthDefaultsDecl holds the OAuth2 endpoints and scopes an author bakes
+// into the manifest for an OAuth2 strategy. Instance config may override
+// these for power users with private apps.
+type OAuthDefaultsDecl struct {
+	// AuthorizationURL is the OAuth2 authorization endpoint. Required for
+	// AuthStrategyOAuth2Authcode; meaningless for AuthStrategyOAuth2Clientcred,
+	// which has no browser leg.
+	AuthorizationURL string `yaml:"authorization_url,omitempty"`
+
+	// TokenURL is the OAuth2 token endpoint. Required for both OAuth2
+	// strategies.
+	TokenURL string `yaml:"token_url"`
+
+	// Scopes is the default set of OAuth2 scopes to request. Required
+	// (non-empty): a plugin author who has not decided what scopes their own
+	// integration needs has not finished designing it.
+	Scopes []string `yaml:"scopes,omitempty"`
+}
+
+// UnmarshalYAML decodes AuthDecl, rejecting any key this host does not know.
+func (a *AuthDecl) UnmarshalYAML(value *yaml.Node) error {
+	if err := assertKnownKeys(value, "auth",
+		"strategy", "header_name", "header_names", "oauth_defaults"); err != nil {
+		return err
+	}
+	type plain struct {
+		Strategy      string             `yaml:"strategy"`
+		HeaderName    string             `yaml:"header_name,omitempty"`
+		HeaderNames   []string           `yaml:"header_names,omitempty"`
+		OAuthDefaults *OAuthDefaultsDecl `yaml:"oauth_defaults,omitempty"`
+	}
+	var p plain
+	if err := value.Decode(&p); err != nil {
+		return err
+	}
+	a.Strategy = p.Strategy
+	a.HeaderName = p.HeaderName
+	a.HeaderNames = p.HeaderNames
+	a.OAuthDefaults = p.OAuthDefaults
+	return nil
+}
+
+// UnmarshalYAML decodes OAuthDefaultsDecl, rejecting any key this host does
+// not know.
+func (o *OAuthDefaultsDecl) UnmarshalYAML(value *yaml.Node) error {
+	if err := assertKnownKeys(value, "oauth_defaults",
+		"authorization_url", "token_url", "scopes"); err != nil {
+		return err
+	}
+	type plain struct {
+		AuthorizationURL string   `yaml:"authorization_url,omitempty"`
+		TokenURL         string   `yaml:"token_url"`
+		Scopes           []string `yaml:"scopes,omitempty"`
+	}
+	var p plain
+	if err := value.Decode(&p); err != nil {
+		return err
+	}
+	o.AuthorizationURL = p.AuthorizationURL
+	o.TokenURL = p.TokenURL
+	o.Scopes = p.Scopes
+	return nil
+}
+
 // ToolDecl carries per-tool facts the host needs before the tool is called.
 type ToolDecl struct {
 	// Name is the tool name as the server serves it in tools/list.
@@ -375,19 +511,21 @@ func (p *Profiles) UnmarshalYAML(value *yaml.Node) error {
 // same quirk v1 works around in rawnode.go.
 func (g *Gleipnir) UnmarshalYAML(value *yaml.Node) error {
 	if err := assertKnownKeys(value, "gleipnir",
-		"profiles", "egress", "resources", "tools", "event_kinds",
+		"profiles", "egress", "resources", "auth", "tier2_capabilities", "tools", "event_kinds",
 		"config_schema", "user_config_schema", "sbom"); err != nil {
 		return err
 	}
 	type plain struct {
-		Profiles         Profiles        `yaml:"profiles,omitempty"`
-		Egress           []EgressGrant   `yaml:"egress,omitempty"`
-		Resources        *Resources      `yaml:"resources,omitempty"`
-		Tools            []ToolDecl      `yaml:"tools,omitempty"`
-		EventKinds       []EventKindDecl `yaml:"event_kinds,omitempty"`
-		ConfigSchema     yaml.Node       `yaml:"config_schema,omitempty"`
-		UserConfigSchema yaml.Node       `yaml:"user_config_schema,omitempty"`
-		SBOM             string          `yaml:"sbom,omitempty"`
+		Profiles          Profiles        `yaml:"profiles,omitempty"`
+		Egress            []EgressGrant   `yaml:"egress,omitempty"`
+		Resources         *Resources      `yaml:"resources,omitempty"`
+		Auth              *AuthDecl       `yaml:"auth,omitempty"`
+		Tier2Capabilities []string        `yaml:"tier2_capabilities,omitempty"`
+		Tools             []ToolDecl      `yaml:"tools,omitempty"`
+		EventKinds        []EventKindDecl `yaml:"event_kinds,omitempty"`
+		ConfigSchema      yaml.Node       `yaml:"config_schema,omitempty"`
+		UserConfigSchema  yaml.Node       `yaml:"user_config_schema,omitempty"`
+		SBOM              string          `yaml:"sbom,omitempty"`
 	}
 	var p plain
 	if err := value.Decode(&p); err != nil {
@@ -396,6 +534,8 @@ func (g *Gleipnir) UnmarshalYAML(value *yaml.Node) error {
 	g.Profiles = p.Profiles
 	g.Egress = p.Egress
 	g.Resources = p.Resources
+	g.Auth = p.Auth
+	g.Tier2Capabilities = p.Tier2Capabilities
 	g.Tools = p.Tools
 	g.EventKinds = p.EventKinds
 	g.SBOM = p.SBOM

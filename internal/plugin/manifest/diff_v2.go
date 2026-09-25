@@ -24,7 +24,86 @@ func DiffV2(old, new *manifestv2.Manifest) []Change {
 	var changes []Change
 	changes = append(changes, diffEventKindsV2(old, new)...)
 	changes = append(changes, diffEventSourceProfileV2(old, new)...)
+	changes = append(changes, diffAuthV2(old, new)...)
+	changes = append(changes, diffTier2V2(old, new)...)
 	return changes
+}
+
+// diffAuthV2 emits material changes for the auth strategy and its
+// strategy-specific fields, mirroring diffAuth's v1 counterpart field for
+// field: the strategy decides what an install grants trust to obtain a
+// credential for, and header_name/header_names/oauth_defaults decide WHICH
+// credential — all of it is something the admin reviewed at install and a
+// hot-reload must not change silently.
+func diffAuthV2(old, new *manifestv2.Manifest) []Change {
+	oldAuth := authDeclV2(old)
+	newAuth := authDeclV2(new)
+
+	var changes []Change
+	if oldAuth.Strategy != newAuth.Strategy {
+		changes = append(changes, Change{Field: "auth.strategy", Material: true, From: oldAuth.Strategy, To: newAuth.Strategy})
+	}
+	if oldAuth.HeaderName != newAuth.HeaderName {
+		changes = append(changes, Change{Field: "auth.header_name", Material: true, From: oldAuth.HeaderName, To: newAuth.HeaderName})
+	}
+	oldHeaderNames := sortedJoin(oldAuth.HeaderNames)
+	newHeaderNames := sortedJoin(newAuth.HeaderNames)
+	if oldHeaderNames != newHeaderNames {
+		changes = append(changes, Change{Field: "auth.header_names", Material: true, From: oldHeaderNames, To: newHeaderNames})
+	}
+	changes = append(changes, diffOAuthDefaultsV2(oldAuth.OAuthDefaults, newAuth.OAuthDefaults)...)
+	return changes
+}
+
+// authDeclV2 returns m's auth declaration, or the zero AuthDecl when none is
+// declared — treating "no auth block" the same as an explicit "none" strategy
+// with no strategy-specific fields, which is how Read and Validate already
+// treat it.
+func authDeclV2(m *manifestv2.Manifest) manifestv2.AuthDecl {
+	if m.Gleipnir.Auth == nil {
+		return manifestv2.AuthDecl{}
+	}
+	return *m.Gleipnir.Auth
+}
+
+// diffOAuthDefaultsV2 compares OAuthDefaultsDecl presence and fields,
+// mirroring diffOAuthDefaults's v1 counterpart (minus HasClientID/
+// HasClientSecret, which v2's OAuthDefaultsDecl does not carry).
+func diffOAuthDefaultsV2(old, new *manifestv2.OAuthDefaultsDecl) []Change {
+	if old == nil && new == nil {
+		return nil
+	}
+	if (old == nil) != (new == nil) {
+		from, to := "nil", "set"
+		if old != nil {
+			from, to = "set", "nil"
+		}
+		return []Change{{Field: "auth.oauth_defaults", Material: true, From: from, To: to}}
+	}
+	var changes []Change
+	if old.AuthorizationURL != new.AuthorizationURL {
+		changes = append(changes, Change{Field: "auth.oauth_defaults.authorization_url", Material: true, From: old.AuthorizationURL, To: new.AuthorizationURL})
+	}
+	if old.TokenURL != new.TokenURL {
+		changes = append(changes, Change{Field: "auth.oauth_defaults.token_url", Material: true, From: old.TokenURL, To: new.TokenURL})
+	}
+	oldScopes := sortedJoin(old.Scopes)
+	newScopes := sortedJoin(new.Scopes)
+	if oldScopes != newScopes {
+		changes = append(changes, Change{Field: "auth.oauth_defaults.scopes", Material: true, From: oldScopes, To: newScopes})
+	}
+	return changes
+}
+
+// diffTier2V2 emits a single material change when the sorted tier-2
+// capability set changes, mirroring diffTier2's v1 rule.
+func diffTier2V2(old, new *manifestv2.Manifest) []Change {
+	oldSet := sortedJoin(old.Gleipnir.Tier2Capabilities)
+	newSet := sortedJoin(new.Gleipnir.Tier2Capabilities)
+	if oldSet == newSet {
+		return nil
+	}
+	return []Change{{Field: "tier2_capabilities", Material: true, From: oldSet, To: newSet}}
 }
 
 // diffEventKindsV2 compares event_kinds keyed by Kind. Added/removed kinds
