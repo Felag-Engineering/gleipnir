@@ -113,11 +113,11 @@ summarize() {
 	echo ""
 	if [ "$scope" = "full" ]; then
 		echo "ci-local ✅  FULL gate ($scope_reason)"
-		echo "  lanes: backend build + race tests (all packages) · gofmt · staticcheck · plugin import boundary · gate scoper self-test · sqlc drift · proto lint+gen drift · plugin-sdk+examples+plugins · frontend typecheck+unit"
+		echo "  lanes: backend build + race tests (all packages) · gofmt · staticcheck · plugin import boundary · gate scoper self-test · sqlc drift · proto lint+gen drift · plugin-sdk+examples+plugins · frontend typecheck+unit · substratev2 build+vet+test+staticcheck"
 		echo "  relaysmoke:  manual-only (make relaysmoke), never run by ci-local (vet-compiled only) — see docs/developer/relay-smoke.md"
 	else
 		echo "ci-local ✅  SCOPED gate — $scope_reason"
-		echo "  always run:  go build ./... · gofmt · staticcheck · plugin import boundary · gate scoper self-test · sqlc drift · proto lint+gen drift"
+		echo "  always run:  go build ./... · gofmt · staticcheck · plugin import boundary · gate scoper self-test · sqlc drift · proto lint+gen drift · substratev2 build+vet+test+staticcheck"
 		echo "  race tests:  ${pkg_count} of $(GOWORK=off go list ./... 2>/dev/null | wc -l | tr -d ' ') root packages"
 		echo "  sdk lane:    $([ "${CI_LOCAL_RUN_SDK:-1}" = "1" ] && echo "run" || echo "skipped — no plugin-sdk/, plugins/, or go.work change")"
 		echo "  frontend:    $([ "${CI_LOCAL_RUN_FRONTEND:-1}" = "1" ] && echo "run" || echo "skipped — no frontend/ change")"

@@ -1,10 +1,14 @@
+//go:build !substratev2
+
 package main
 
 // pluginruntime.go extracts the plugin subsystem bring-up from run() in main.go
-// into a single constructor. run() calls startPluginRuntime once and then reads
-// the fields it needs.
+// into a single constructor. plugins_v1.go's startPluginSubsystem calls
+// startPluginRuntime once and wraps the result to satisfy pluginSubsystem.
 //
 // Motivation: ADR-reference for plugin system spec §15.2; issue #351.
+//
+// #1005 (G-59, the flip) deletes this file along with plugins_v1.go.
 
 import (
 	"context"
