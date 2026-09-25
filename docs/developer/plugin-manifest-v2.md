@@ -71,6 +71,25 @@ whatever that tag points at tomorrow, which is not consent. The signed bundle
 carries the image, so the digest is knowable at authoring time — there is no case
 where a tag is the only thing an author could write.
 
+## Transport
+
+`package.transport.type: streamable-http` means the container answers the
+modern-only 2026-07-28 MCP transport on `package.transport.port` — one HTTP
+listener, no session, one JSON-RPC request per POST. The host dials
+`http://<container-ip>:<port>/` and nothing else: the server answers on
+**every path**, so a plugin author must not route by URL and the host never
+needs to know one.
+
+`plugin-sdk/mcpserver` is the reference implementation of that server for
+plugin authors: `mcpserver.Server` composes `tools/list`/`tools/call` and any
+number of extensions (`io.gleipnir/channel`, `io.gleipnir/events`, …) behind
+one `server/discover`, so a plugin that serves tools and an extension does
+not have to hand-merge `capabilities.extensions` itself. A plugin is not
+required to use it — the contract is the wire shape, not the package — but
+authoring a compliant server from scratch means reimplementing the same A1
+(`_meta`)/A4 (header) validation rules `internal/plugin/hostendpoint.Server`
+enforces on the host side of this same transport.
+
 ## `gleipnir:` fields
 
 ### `profiles` — required, at least one
