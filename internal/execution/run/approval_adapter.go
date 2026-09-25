@@ -36,13 +36,17 @@ func NewApprovalChannelAdapter(d approvalChannelRequester) *ApprovalChannelAdapt
 // DispatchApproval routes an approval request through the plugin channel and
 // blocks until the operator responds, the timeout fires, or ctx is cancelled.
 //
-//   - Returns (true, nil) when the operator approves.
-//   - Returns (false, nil) when the operator denies.
-//   - Returns (false, agent.ErrApprovalRouteToInApp) when the audience resolves
+//   - Returns (Settlement{Approved: true}, nil) when the operator approves.
+//   - Returns (Settlement{Approved: false}, nil) when the operator denies.
+//   - Returns (_, agent.ErrApprovalRouteToInApp) when the audience resolves
 //     to the synthetic in-app entry — the caller falls through to the approvalCh
 //     path.
-//   - Returns (false, err) on any other dispatch or wait failure.
-func (a *ApprovalChannelAdapter) DispatchApproval(ctx context.Context, req agent.ApprovalDispatchRequest) (bool, error) {
+//   - Returns (_, err) on any other dispatch or wait failure.
+//
+// Settle is always nil: this v1 adapter has no decision-record concept, so
+// there is nothing for ApprovalHandler.Wait to tell it about once its own
+// approval_requests CAS resolves.
+func (a *ApprovalChannelAdapter) DispatchApproval(ctx context.Context, req agent.ApprovalDispatchRequest) (agent.ApprovalSettlement, error) {
 	// Derive the Wait timeout from ExpiresAt.  The caller computes ExpiresAt
 	// once; the adapter owns the derivation so the API surface stays minimal.
 	var waitTimeout time.Duration
@@ -62,24 +66,24 @@ func (a *ApprovalChannelAdapter) DispatchApproval(ctx context.Context, req agent
 	reqID, outcome, err := a.d.Request(ctx, req.AudienceID, rc, req.Prompt, req.ExpiresAt)
 	if err != nil {
 		if errors.Is(err, dispatch.ErrNoRequestCapableEntry) {
-			return false, agent.ErrApprovalRouteToInApp
+			return agent.ApprovalSettlement{}, agent.ErrApprovalRouteToInApp
 		}
-		return false, fmt.Errorf("channel request: %w", err)
+		return agent.ApprovalSettlement{}, fmt.Errorf("channel request: %w", err)
 	}
 	if outcome == dispatch.RouteToInApp {
-		return false, agent.ErrApprovalRouteToInApp
+		return agent.ApprovalSettlement{}, agent.ErrApprovalRouteToInApp
 	}
 
 	responseJSON, err := a.d.Wait(ctx, reqID, waitTimeout)
 	if err != nil {
-		return false, fmt.Errorf("waiting for approval response: %w", err)
+		return agent.ApprovalSettlement{}, fmt.Errorf("waiting for approval response: %w", err)
 	}
 
 	approved, err := ParseApprovalDecision(responseJSON)
 	if err != nil {
-		return false, fmt.Errorf("parsing approval decision: %w", err)
+		return agent.ApprovalSettlement{}, fmt.Errorf("parsing approval decision: %w", err)
 	}
-	return approved, nil
+	return agent.ApprovalSettlement{Approved: approved}, nil
 }
 
 // approvalDecisionBody is the wire format for plugin-channel approval responses.

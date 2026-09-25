@@ -17,9 +17,20 @@ import (
 // fakeAuthorizeQuerier is an in-memory AuthorizeActorQuerier with an audit
 // recorder — a separate fake from tier1_test.go's fakeTier1Querier because
 // the two Deps types carry disjoint interfaces on purpose.
+//
+// GetMCPServerByPluginInstance and GetMCPTaskByServerAndTaskID derive
+// deterministic synthetic IDs from their inputs (rather than requiring every
+// test to pre-seed a server/task row) SO THAT the derived mcp_tasks row id is
+// always a function of BOTH the calling instance and the plugin's own
+// task_id — which is exactly the scoping resolveTaskRowID exists to enforce,
+// and lets TestAuthorizeActor_PollNowScopesTaskLookupToTheCallingInstance
+// assert on it directly instead of only on opaque pre-seeded fixtures.
 type fakeAuthorizeQuerier struct {
 	instances map[string]db.PluginInstance
 	audits    []db.InsertPluginAuditEventParams
+
+	serverLookupErr error
+	taskLookupErr   error
 }
 
 func (f *fakeAuthorizeQuerier) GetPluginInstanceByID(_ context.Context, id string) (db.PluginInstance, error) {
@@ -33,6 +44,24 @@ func (f *fakeAuthorizeQuerier) GetPluginInstanceByID(_ context.Context, id strin
 func (f *fakeAuthorizeQuerier) InsertPluginAuditEvent(_ context.Context, arg db.InsertPluginAuditEventParams) (db.PluginAuditEvent, error) {
 	f.audits = append(f.audits, arg)
 	return db.PluginAuditEvent{}, nil
+}
+
+func (f *fakeAuthorizeQuerier) GetMCPServerByPluginInstance(_ context.Context, pluginInstanceID *string) (db.McpServer, error) {
+	if f.serverLookupErr != nil {
+		return db.McpServer{}, f.serverLookupErr
+	}
+	return db.McpServer{ID: "srv-" + *pluginInstanceID}, nil
+}
+
+func (f *fakeAuthorizeQuerier) GetMCPTaskByServerAndTaskID(_ context.Context, arg db.GetMCPTaskByServerAndTaskIDParams) (db.McpTask, error) {
+	if f.taskLookupErr != nil {
+		return db.McpTask{}, f.taskLookupErr
+	}
+	serverID := ""
+	if arg.ServerID != nil {
+		serverID = *arg.ServerID
+	}
+	return db.McpTask{ID: "row-" + serverID + "-" + arg.TaskID}, nil
 }
 
 // fakeActorDirectory is a hand-rolled ActorDirectory — the #18 seam under
@@ -144,8 +173,11 @@ func TestAuthorizeActor_AuthorizedActor(t *testing.T) {
 	if res["user_id"] != "user-1" {
 		t.Errorf("user_id = %v, want user-1", res["user_id"])
 	}
-	if len(poll.calls) != 1 || poll.calls[0] != "task-123" {
-		t.Fatalf("PollNow calls = %v, want exactly [\"task-123\"] — the poll-now hint must fire with the request's own identifier", poll.calls)
+	// PollNow must fire with the RESOLVED mcp_tasks row id, not the plugin's
+	// own "task-123" — that raw value is only meaningful scoped to the
+	// calling instance's own server (issue #961 review item 6).
+	if len(poll.calls) != 1 || poll.calls[0] != "row-srv-inst-a-task-123" {
+		t.Fatalf("PollNow calls = %v, want exactly [\"row-srv-inst-a-task-123\"]", poll.calls)
 	}
 	if len(f.q.audits) != 0 {
 		t.Errorf("audits = %d, want 0 for an authorized actor", len(f.q.audits))
@@ -271,6 +303,62 @@ func TestAuthorizeActor_PollHintFailureDoesNotFlipAuthorization(t *testing.T) {
 	}
 	if len(poll.calls) != 1 {
 		t.Errorf("PollNow calls = %d, want 1 (attempted even though it errors)", len(poll.calls))
+	}
+}
+
+// TestAuthorizeActor_TaskRowResolveFailureDoesNotFlipAuthorization mirrors
+// TestAuthorizeActor_PollHintFailureDoesNotFlipAuthorization for the OTHER
+// way the poll-now hint can fail: resolving the plugin's task_id to a
+// mcp_tasks row (e.g. the row does not exist, or the DB hiccups). Either way
+// PollNow itself must never be called with an unresolved id, and
+// authorization must not depend on the hint succeeding.
+func TestAuthorizeActor_TaskRowResolveFailureDoesNotFlipAuthorization(t *testing.T) {
+	poll := &fakePollHint{}
+	f := newAuthorizeFixture(t, poll)
+	f.q.taskLookupErr = errors.New("no mcp_tasks row for this server/task_id")
+	f.dir.byExternalID["U-APPROVER"] = ActorResolution{UserID: "user-1", Roles: []model.Role{model.RoleApprover}}
+
+	isErr, text := f.callTool(t, "inst-a", map[string]any{
+		"request_id": "task-1", "actor_external_id": "U-APPROVER",
+	})
+	if isErr {
+		t.Fatalf("error: %s", text)
+	}
+	if decodeResult(t, text)["authorized"] != true {
+		t.Error("a failed task-row resolution is a latency regression, not a correctness one")
+	}
+	if len(poll.calls) != 0 {
+		t.Errorf("PollNow calls = %v, want none — PollNow must never be called with an unresolved id", poll.calls)
+	}
+}
+
+// TestAuthorizeActor_PollNowScopesTaskLookupToTheCallingInstance proves the
+// scoping resolveTaskRowID exists for: two different instances resolving the
+// SAME plugin-chosen task_id string must never collide on the same mcp_tasks
+// row (issue #961 review item 6) — each instance's own mcp_servers row is
+// looked up first, and the task lookup is scoped to it.
+func TestAuthorizeActor_PollNowScopesTaskLookupToTheCallingInstance(t *testing.T) {
+	poll := &fakePollHint{}
+	f := newAuthorizeFixture(t, poll)
+	f.q.instances["inst-b"] = db.PluginInstance{ID: "inst-b", PluginID: "plug-b", InstanceName: "slack-staging"}
+	f.dir.byExternalID["U-APPROVER"] = ActorResolution{UserID: "user-1", Roles: []model.Role{model.RoleApprover}}
+
+	for _, instanceID := range []string{"inst-a", "inst-b"} {
+		if isErr, text := f.callTool(t, instanceID, map[string]any{
+			"request_id": "shared-task-id", "actor_external_id": "U-APPROVER",
+		}); isErr {
+			t.Fatalf("instance %s: error: %s", instanceID, text)
+		}
+	}
+
+	if len(poll.calls) != 2 {
+		t.Fatalf("PollNow calls = %v, want 2", poll.calls)
+	}
+	if poll.calls[0] == poll.calls[1] {
+		t.Fatalf("both instances resolved the shared task_id to the SAME row %q — the lookup is not scoped to the calling instance", poll.calls[0])
+	}
+	if poll.calls[0] != "row-srv-inst-a-shared-task-id" || poll.calls[1] != "row-srv-inst-b-shared-task-id" {
+		t.Errorf("PollNow calls = %v, want [row-srv-inst-a-shared-task-id, row-srv-inst-b-shared-task-id]", poll.calls)
 	}
 }
 

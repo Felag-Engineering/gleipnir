@@ -2,8 +2,9 @@
 // the types it operates on.  The interface lives in the agent package so the agent
 // can depend on it without importing internal/plugin/dispatch (which would violate
 // the package-boundary constraint: agent must not import execution-layer packages).
-// The concrete adapter lives in internal/execution/run (approval_adapter.go) where
-// both agent and dispatch are already imported.
+// The concrete adapters live in internal/execution/run (approval_adapter.go for
+// v1, channel_adapter.go for v2) where both agent and dispatch/hitl are already
+// imported.
 package agent
 
 import (
@@ -19,7 +20,7 @@ import (
 // The implementation lives in internal/execution/run to avoid the circular
 // import that would result from agent importing internal/plugin/dispatch.
 type ApprovalChannelDispatcher interface {
-	DispatchApproval(ctx context.Context, req ApprovalDispatchRequest) (approved bool, err error)
+	DispatchApproval(ctx context.Context, req ApprovalDispatchRequest) (ApprovalSettlement, error)
 }
 
 // ApprovalDispatchRequest carries everything the dispatcher needs to route a
@@ -30,11 +31,32 @@ type ApprovalDispatchRequest struct {
 	PolicyID   string
 	ToolName   string
 	Prompt     string
-	// ExpiresAt is the absolute time at which the approval gate expires.
-	// Nil means no expiry — the adapter defaults to a 1-hour timeout.
-	// The adapter derives the Timeout duration via time.Until(*ExpiresAt) so
-	// callers compute ExpiresAt once; the adapter owns the derivation.
+	// ExpiresAt is the absolute deadline for this gate. ApprovalHandler.Wait
+	// always sets it to the exact same instant it wrote to the
+	// approval_requests row's expires_at column — including the no-timeout
+	// default (1h) — so the dispatcher's own wait can never diverge from the
+	// deadline the timeout scanner enforces. Dispatchers must not treat nil
+	// as meaningful; it exists only so a hand-built request in a test can
+	// omit it.
 	ExpiresAt *time.Time
+}
+
+// ApprovalSettlement is what DispatchApproval resolved to.
+type ApprovalSettlement struct {
+	// Approved is the operator's decision, valid only once the caller's own
+	// approval_requests CAS (ApprovalHandler.resolveApprovalRecord) confirms
+	// the request actually settled through this call — see Settle.
+	Approved bool
+
+	// Settle, when non-nil, is called exactly once by ApprovalHandler.Wait
+	// after it attempts the approval_requests CAS: won=true means this
+	// call's decision is the one that is actually taking effect; won=false
+	// means the timeout scanner already claimed the row first, and whatever
+	// this dispatcher would otherwise record as a settled decision must not
+	// be recorded as one, since the request never resolved through this
+	// route. nil for a dispatcher with nothing to settle (the v1 gRPC
+	// adapter has no decision-record concept).
+	Settle func(ctx context.Context, won bool)
 }
 
 // ErrApprovalRouteToInApp is returned by the adapter when the audience resolves
@@ -47,10 +69,10 @@ var ErrApprovalRouteToInApp = errors.New("approval: route to in-app channel")
 // ApprovalChannelDispatcher; the interface lives here to keep all channel-dispatch
 // interfaces together in the agent package.
 //
-// The concrete adapter lives in internal/execution/run (feedback_adapter.go)
-// where both agent and dispatch are already imported.
+// The concrete adapter lives in internal/execution/run (feedback_adapter.go for
+// v1, channel_adapter.go for v2).
 type FeedbackChannelDispatcher interface {
-	DispatchFeedback(ctx context.Context, req FeedbackDispatchRequest) (response string, err error)
+	DispatchFeedback(ctx context.Context, req FeedbackDispatchRequest) (FeedbackSettlement, error)
 }
 
 // FeedbackDispatchRequest carries everything the dispatcher needs to route a
@@ -61,9 +83,20 @@ type FeedbackDispatchRequest struct {
 	PolicyID   string
 	ToolName   string
 	Prompt     string
-	// ExpiresAt is the absolute time at which the feedback request expires.
-	// Nil means no expiry — the adapter defaults to a 1-hour timeout.
+	// ExpiresAt is the absolute deadline for this request — see the matching
+	// field on ApprovalDispatchRequest for why it is always set, never left
+	// nil, by FeedbackHandler.Wait.
 	ExpiresAt *time.Time
+}
+
+// FeedbackSettlement is what DispatchFeedback resolved to.
+type FeedbackSettlement struct {
+	// Response is the operator's freeform reply, valid only once won=true
+	// reaches Settle — see ApprovalSettlement.Settle's doc for why.
+	Response string
+
+	// Settle mirrors ApprovalSettlement.Settle for the feedback path.
+	Settle func(ctx context.Context, won bool)
 }
 
 // ErrFeedbackRouteToInApp is returned by the adapter when the audience resolves

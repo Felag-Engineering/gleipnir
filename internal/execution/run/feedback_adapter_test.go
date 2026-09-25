@@ -74,14 +74,14 @@ func TestFeedbackChannelAdapter_DispatchFeedback(t *testing.T) {
 			waitResponse:   `{"text":"operator reply","user":"U123","request_id":"req-1"}`,
 		}
 		adapter := run.NewFeedbackChannelAdapter(stub)
-		resp, err := adapter.DispatchFeedback(ctx, dummyReq)
+		settlement, err := adapter.DispatchFeedback(ctx, dummyReq)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		// The adapter returns raw JSON; parseFeedbackResponse extracts the text
 		// in FeedbackHandler.Wait, not here.
-		if resp != stub.waitResponse {
-			t.Errorf("response = %q, want %q", resp, stub.waitResponse)
+		if settlement.Response != stub.waitResponse {
+			t.Errorf("response = %q, want %q", settlement.Response, stub.waitResponse)
 		}
 	})
 

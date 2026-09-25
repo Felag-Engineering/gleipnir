@@ -107,12 +107,22 @@ func (h *FeedbackHandler) Resolve(requestID, body string) error {
 	return h.inApp.Resolve(requestID, body)
 }
 
-// resolveFeedbackRecord marks the feedback_requests DB row as resolved and
-// emits the feedback.resolved SSE event.  Both operations are best-effort:
-// the agent goroutine must resume regardless of DB or marshal errors.  SSE is
-// gated on the CAS winning (rows > 0) — if the scanner already timed out the
-// row, the SSE must not be emitted for a stale decision.
-func (h *FeedbackHandler) resolveFeedbackRecord(ctx context.Context, runID, feedbackID, responseText string) {
+// resolveFeedbackRecord CASes the feedback_requests row to resolved and emits
+// the feedback.resolved SSE event, then reports whether this call's answer is
+// the one taking effect. won=false means the timeout scanner already claimed
+// the row first (rows==0 on the conditional UPDATE) — mirroring
+// ApprovalHandler.resolveApprovalRecord's CAS-loss contract.
+//
+// Deliberately UNLIKE resolveApprovalRecord (issue #961 review R3), a DB
+// write ERROR here is best-effort, not fail-closed: it is logged and treated
+// as won=true, so the run resumes with the answer already in hand. Approval
+// grants PERMISSION (ADR-008's hard runtime guarantee), where an unconfirmed
+// write cannot be told apart from a genuine loss to the scanner, and a tool
+// must not run on that ambiguity. A feedback answer carries no such stakes —
+// it is text the agent goes on to reason about, not a grant — so failing the
+// run over a transient write failure here would be strictly worse than the
+// stale-row risk it would avoid.
+func (h *FeedbackHandler) resolveFeedbackRecord(ctx context.Context, runID, feedbackID, responseText string) (won bool) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	rows, err := h.sm.Queries().UpdateFeedbackRequestStatus(ctx, db.UpdateFeedbackRequestStatusParams{
 		Status:     "resolved",
@@ -123,13 +133,13 @@ func (h *FeedbackHandler) resolveFeedbackRecord(ctx context.Context, runID, feed
 	if err != nil {
 		logctx.Logger(ctx).WarnContext(ctx, "plugin feedback: UpdateFeedbackRequestStatus failed",
 			"feedback_id", feedbackID, "run_id", runID, "err", err)
-		return
+		return true
 	}
 	if rows == 0 {
 		// Scanner already resolved this row (e.g. timeout beat the callback).
-		logctx.Logger(ctx).DebugContext(ctx, "feedback already resolved by scanner",
+		logctx.Logger(ctx).WarnContext(ctx, "plugin feedback: lost the race with the timeout scanner",
 			"feedback_id", feedbackID, "run_id", runID)
-		return
+		return false
 	}
 
 	if pub := h.sm.Publisher(); pub != nil {
@@ -142,6 +152,7 @@ func (h *FeedbackHandler) resolveFeedbackRecord(ctx context.Context, runID, feed
 			pub.Publish("feedback.resolved", data)
 		}
 	}
+	return true
 }
 
 // parseFeedbackResponse extracts the "text" field from a JSON response string.
@@ -180,11 +191,17 @@ func parseFeedbackResponse(responseJSON string) string {
 func (h *FeedbackHandler) Wait(ctx context.Context, runID, toolName, inputJSON, mcpOutput string, feedbackTimeout time.Duration) (string, error) {
 	feedbackID := model.NewULID()
 
-	// Compute expires_at so the DB record and the audit step both carry the deadline.
-	// An empty string means no timeout — the DB scanner ignores rows with NULL expires_at.
+	// Computed ONCE, here, so the DB record's expires_at and the deadline
+	// handed to a plugin dispatcher can never diverge (the same fix
+	// ApprovalHandler.Wait applies, and for the same reason). An empty
+	// expiresAt/nil deadline means no timeout — the DB scanner ignores rows
+	// with NULL expires_at, and the dispatcher's own default applies.
 	var expiresAt string
+	var deadline *time.Time
 	if feedbackTimeout > 0 {
-		expiresAt = time.Now().UTC().Add(feedbackTimeout).Format(time.RFC3339Nano)
+		t := time.Now().UTC().Add(feedbackTimeout)
+		deadline = &t
+		expiresAt = t.Format(time.RFC3339Nano)
 	}
 
 	// Pre-register the in-app waiter BEFORE the state transition.  This preserves
@@ -222,19 +239,13 @@ func (h *FeedbackHandler) Wait(ctx context.Context, runID, toolName, inputJSON, 
 
 	// Phase 2a: plugin channel path.
 	if h.channelDispatcher != nil && h.audienceID != "" {
-		var expiresAtTime *time.Time
-		if feedbackTimeout > 0 {
-			t := time.Now().UTC().Add(feedbackTimeout)
-			expiresAtTime = &t
-		}
-
-		response, dispatchErr := h.channelDispatcher.DispatchFeedback(ctx, FeedbackDispatchRequest{
+		settlement, dispatchErr := h.channelDispatcher.DispatchFeedback(ctx, FeedbackDispatchRequest{
 			AudienceID: h.audienceID,
 			RunID:      runID,
 			PolicyID:   h.policyID,
 			ToolName:   toolName,
 			Prompt:     mcpOutput,
-			ExpiresAt:  expiresAtTime,
+			ExpiresAt:  deadline,
 		})
 		if errors.Is(dispatchErr, ErrFeedbackRouteToInApp) {
 			// Audience resolved to in-app; fall through to the waiter select below.
@@ -245,8 +256,14 @@ func (h *FeedbackHandler) Wait(ctx context.Context, runID, toolName, inputJSON, 
 			// NOTE: Do NOT write a feedback_response audit step here.
 			// hostsvc.WriteAuditStep (called by the Slack plugin) has already written
 			// it — writing another would create a duplicate (BLOCKING #4).
-			parsedText := parseFeedbackResponse(response)
-			h.resolveFeedbackRecord(ctx, runID, feedbackID, parsedText)
+			parsedText := parseFeedbackResponse(settlement.Response)
+			won := h.resolveFeedbackRecord(ctx, runID, feedbackID, parsedText)
+			if settlement.Settle != nil {
+				settlement.Settle(ctx, won)
+			}
+			if !won {
+				return "", fmt.Errorf("feedback request for tool %s: the response window already closed before this answer arrived", toolName)
+			}
 			if err := h.sm.Transition(ctx, model.RunStatusRunning, ""); err != nil {
 				return "", fmt.Errorf("transitioning run back to running after plugin feedback: %w", err)
 			}

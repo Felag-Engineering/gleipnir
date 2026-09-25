@@ -15,6 +15,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/execution/agent"
 	"github.com/felag-engineering/gleipnir/internal/execution/run"
+	"github.com/felag-engineering/gleipnir/internal/execution/runstate"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/testutil"
 )
@@ -1204,10 +1205,15 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 			wantCode: http.StatusBadRequest,
 		},
 		{
-			name: "waiting_for_approval but no active gate returns 409",
+			// A PENDING approval_requests row exists (so fetchPending finds it
+			// and updateStatus wins its CAS), but the manager's own channel send
+			// fails — this is what exercises sendToGate's own gateErrorMsg path,
+			// distinct from "no pending row at all" below.
+			name: "waiting_for_approval with a pending row but a closed gate returns 409",
 			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) chan bool {
 				testutil.InsertPolicy(t, store, "p-approval-no-gate", "policy-"+"p-approval-no-gate", "webhook", testutil.MinimalWebhookPolicy)
 				testutil.InsertRun(t, store, "r-approval-no-gate", "p-approval-no-gate", model.RunStatusWaitingForApproval)
+				testutil.InsertApprovalRequest(t, store, "ar-approval-no-gate", "r-approval-no-gate", "some_tool")
 				// Pre-fill the buffer to simulate a gate that has already closed
 				// (e.g. the agent's approval timeout fired before the operator
 				// responded). The handler's non-blocking send must fail and return 409.
@@ -1222,6 +1228,31 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 			checkError: func(t *testing.T, body approvalErrorBody) {
 				if body.Error != "no active approval gate for this run" {
 					t.Errorf("error = %q, want %q", body.Error, "no active approval gate for this run")
+				}
+			},
+		},
+		{
+			// No approval_requests row exists at all — resolveRequest must
+			// refuse via fetchPending's own "" result rather than falling
+			// through to sendToGate (issue #961 review R1). Distinct from the
+			// case above, which reaches sendToGate and fails there instead.
+			name: "waiting_for_approval with no pending row at all returns 409",
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) chan bool {
+				testutil.InsertPolicy(t, store, "p-approval-no-row", "policy-"+"p-approval-no-row", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-approval-no-row", "p-approval-no-row", model.RunStatusWaitingForApproval)
+				ch := make(chan bool, 1)
+				manager.Register("r-approval-no-row", func() {}, ch)
+				// Nothing is ever sent to ch: resolveRequest must refuse before
+				// ever reaching sendToGate, so returning ch here (which the test
+				// loop drains with a goroutine) would leak that goroutine forever.
+				return nil
+			},
+			runID:    "r-approval-no-row",
+			body:     `{"decision":"approved"}`,
+			wantCode: http.StatusConflict,
+			checkError: func(t *testing.T, body approvalErrorBody) {
+				if body.Error != "approval request already resolved" {
+					t.Errorf("error = %q, want %q", body.Error, "approval request already resolved")
 				}
 			},
 		},
@@ -1318,6 +1349,263 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 			// Clean up any registered runs to drain the WaitGroup.
 			manager.Deregister(tc.runID)
 		})
+	}
+}
+
+// TestRunsHandler_SubmitApproval_ScannerAlreadyResolved_NeverWakesTheAgent is
+// the in-app half of issue #961 review item 1 (the plugin-channel half lives
+// in internal/execution/agent's approval_test.go, since that CAS is
+// resolveApprovalRecord's own): resolveRequest now CASes the pending
+// approval_requests row BEFORE it ever sends on approvalCh, so a row the
+// timeout scanner already claimed (simulating the scanner racing ahead of
+// the operator's decision) must return 409 AND must never deliver anything
+// to the agent's channel — a stale decision must never reach
+// ApprovalHandler.Wait at all, let alone run the tool.
+func TestRunsHandler_SubmitApproval_ScannerAlreadyResolved_NeverWakesTheAgent(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
+
+	testutil.InsertPolicy(t, store, "p-approval-raced", "policy-p-approval-raced", "webhook", testutil.MinimalWebhookPolicy)
+	testutil.InsertRun(t, store, "r-approval-raced", "p-approval-raced", model.RunStatusWaitingForApproval)
+	testutil.InsertApprovalRequest(t, store, "ar-approval-raced", "r-approval-raced", "some_tool")
+
+	// The scanner claims the row as timed out before the operator's decision
+	// arrives at this handler — the full effect (both the approval_requests
+	// CAS and the run's own transition out of waiting_for_approval), exactly
+	// what internal/timeout.Scanner.resolveTimeout performs.
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if rows, err := store.UpdateApprovalRequestStatus(context.Background(), db.UpdateApprovalRequestStatusParams{
+		Status: "timeout", DecidedAt: &now, ID: "ar-approval-raced",
+	}); err != nil || rows != 1 {
+		t.Fatalf("pre-resolving the approval row: rows=%d err=%v", rows, err)
+	}
+	if err := runstate.TransitionRunFailed(context.Background(), store.Queries(), nil, "r-approval-raced", "approval timeout"); err != nil {
+		t.Fatalf("TransitionRunFailed: %v", err)
+	}
+
+	ch := make(chan bool, 1)
+	manager.Register("r-approval-raced", func() {}, ch)
+	t.Cleanup(func() { manager.Deregister("r-approval-raced") })
+
+	h := run.NewRunsHandler(store, manager, nil)
+	router := newRunsRouter(h)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/r-approval-raced/approval", strings.NewReader(`{"decision":"approved"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body: %s", w.Code, w.Body.String())
+	}
+
+	select {
+	case v := <-ch:
+		t.Fatalf("approvalCh received %v, want nothing — a decision that lost the race must never reach the agent", v)
+	default:
+		// Correct: nothing was ever sent.
+	}
+}
+
+// TestRunsHandler_SubmitApproval_RowTimedOutButRunStillWaiting_NeverWakesTheAgent
+// is the narrower half of issue #961 review R1: the scanner has claimed the
+// approval_requests row (status="timeout") but has NOT yet transitioned the
+// run out of waiting_for_approval — the brief window between the scanner's
+// two writes (internal/timeout.Scanner.resolveTimeout does the row CAS
+// first, the run transition second). resolveRequest's run-status early
+// check alone cannot catch this window; it is fetchPending finding no
+// PENDING row (or updateStatus losing its own CAS) that must.
+func TestRunsHandler_SubmitApproval_RowTimedOutButRunStillWaiting_NeverWakesTheAgent(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
+
+	testutil.InsertPolicy(t, store, "p-approval-midrace", "policy-p-approval-midrace", "webhook", testutil.MinimalWebhookPolicy)
+	testutil.InsertRun(t, store, "r-approval-midrace", "p-approval-midrace", model.RunStatusWaitingForApproval)
+	testutil.InsertApprovalRequest(t, store, "ar-approval-midrace", "r-approval-midrace", "some_tool")
+
+	// The scanner has claimed the row, but the run is deliberately left in
+	// waiting_for_approval — it has not yet reached its own second write.
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if rows, err := store.UpdateApprovalRequestStatus(context.Background(), db.UpdateApprovalRequestStatusParams{
+		Status: "timeout", DecidedAt: &now, ID: "ar-approval-midrace",
+	}); err != nil || rows != 1 {
+		t.Fatalf("pre-resolving the approval row: rows=%d err=%v", rows, err)
+	}
+
+	ch := make(chan bool, 1)
+	manager.Register("r-approval-midrace", func() {}, ch)
+	t.Cleanup(func() { manager.Deregister("r-approval-midrace") })
+
+	h := run.NewRunsHandler(store, manager, nil)
+	router := newRunsRouter(h)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/r-approval-midrace/approval", strings.NewReader(`{"decision":"approved"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body: %s", w.Code, w.Body.String())
+	}
+
+	select {
+	case v := <-ch:
+		t.Fatalf("approvalCh received %v, want nothing", v)
+	default:
+	}
+}
+
+// TestRunsHandler_SubmitApproval_DoubleSubmit_SecondIsRefused proves the
+// first genuine submission wins and consumes the pending row, and a second
+// submission for the same gate never reaches the agent a second time.
+func TestRunsHandler_SubmitApproval_DoubleSubmit_SecondIsRefused(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
+
+	testutil.InsertPolicy(t, store, "p-approval-double", "policy-p-approval-double", "webhook", testutil.MinimalWebhookPolicy)
+	testutil.InsertRun(t, store, "r-approval-double", "p-approval-double", model.RunStatusWaitingForApproval)
+	testutil.InsertApprovalRequest(t, store, "ar-approval-double", "r-approval-double", "some_tool")
+
+	ch := make(chan bool, 1)
+	manager.Register("r-approval-double", func() {}, ch)
+	t.Cleanup(func() { manager.Deregister("r-approval-double") })
+
+	h := run.NewRunsHandler(store, manager, nil)
+	router := newRunsRouter(h)
+
+	doSubmit := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/r-approval-double/approval", strings.NewReader(`{"decision":"approved"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w
+	}
+
+	first := doSubmit()
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first submit status = %d, want 202; body: %s", first.Code, first.Body.String())
+	}
+	// Drain the one decision the first submit legitimately sent.
+	select {
+	case v := <-ch:
+		if !v {
+			t.Errorf("first submit delivered %v, want true", v)
+		}
+	default:
+		t.Fatal("first submit sent nothing to approvalCh")
+	}
+
+	second := doSubmit()
+	if second.Code != http.StatusConflict {
+		t.Fatalf("second submit status = %d, want 409; body: %s", second.Code, second.Body.String())
+	}
+	select {
+	case v := <-ch:
+		t.Fatalf("second submit delivered %v, want nothing buffered", v)
+	default:
+		// Correct: the second submit found no pending row and never sent.
+	}
+}
+
+// audienceRoutedPolicy is testutil.MinimalWebhookPolicy plus a top-level
+// audience declaration. Naming an audience does not guarantee a request
+// actually reaches a plugin channel — the audience can fall back to in-app
+// for reasons runs_handler.go cannot see from here at all (an audience with
+// no request-capable entry, an unresolvable audience name, a nil
+// approvalDispatcher, the v2 router's own in-app fallback, or a policy
+// edited mid-run) — which is exactly why SubmitApproval/SubmitFeedback must
+// NOT refuse based on the policy's declared audience name: refusing an
+// audience-declaring policy whose gate is actually in-app would strand a
+// no-timeout feedback request forever. A route-aware refusal is #1037.
+const audienceRoutedPolicy = `
+name: test-policy
+audience: slack-ops
+trigger:
+  type: webhook
+  auth: none
+agent:
+  model: claude-opus-4-5
+  task: "test task"
+`
+
+// TestRunsHandler_SubmitApproval_InAppPolicy_Unaffected pins the baseline
+// case: a policy naming NO audience (testutil.MinimalWebhookPolicy — the
+// Relay demo's own shape) submits normally.
+func TestRunsHandler_SubmitApproval_InAppPolicy_Unaffected(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
+
+	testutil.InsertPolicy(t, store, "p-approval-inapp", "policy-p-approval-inapp", "webhook", testutil.MinimalWebhookPolicy)
+	testutil.InsertRun(t, store, "r-approval-inapp", "p-approval-inapp", model.RunStatusWaitingForApproval)
+	testutil.InsertApprovalRequest(t, store, "ar-approval-inapp", "r-approval-inapp", "some_tool")
+
+	ch := make(chan bool, 1)
+	manager.Register("r-approval-inapp", func() {}, ch)
+	t.Cleanup(func() { manager.Deregister("r-approval-inapp") })
+
+	h := run.NewRunsHandler(store, manager, nil)
+	router := newRunsRouter(h)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/r-approval-inapp/approval", strings.NewReader(`{"decision":"approved"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body: %s", w.Code, w.Body.String())
+	}
+	select {
+	case v := <-ch:
+		if !v {
+			t.Errorf("approvalCh received %v, want true", v)
+		}
+	default:
+		t.Fatal("nothing was sent to approvalCh, want the approval to have been delivered")
+	}
+}
+
+// TestRunsHandler_SubmitApproval_AudienceRoutedPolicy_InAppGateStillDelivers
+// is the issue #961 review R5 removal's pinning test: a policy that names an
+// audience must NOT be treated as evidence the gate is plugin-waiting. This
+// run's approval_requests row is a normal in-app-answerable pending row —
+// exactly what an audience falling back to in-app looks like from
+// SubmitApproval's side — so the submission must succeed and deliver, the
+// same as any other approval.
+func TestRunsHandler_SubmitApproval_AudienceRoutedPolicy_InAppGateStillDelivers(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
+
+	testutil.InsertPolicy(t, store, "p-approval-audience-inapp", "policy-p-approval-audience-inapp", "webhook", audienceRoutedPolicy)
+	testutil.InsertRun(t, store, "r-approval-audience-inapp", "p-approval-audience-inapp", model.RunStatusWaitingForApproval)
+	testutil.InsertApprovalRequest(t, store, "ar-approval-audience-inapp", "r-approval-audience-inapp", "some_tool")
+
+	ch := make(chan bool, 1)
+	manager.Register("r-approval-audience-inapp", func() {}, ch)
+	t.Cleanup(func() { manager.Deregister("r-approval-audience-inapp") })
+
+	h := run.NewRunsHandler(store, manager, nil)
+	router := newRunsRouter(h)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/r-approval-audience-inapp/approval", strings.NewReader(`{"decision":"approved"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body: %s", w.Code, w.Body.String())
+	}
+	select {
+	case v := <-ch:
+		if !v {
+			t.Errorf("approvalCh received %v, want true", v)
+		}
+	default:
+		t.Fatal("nothing was sent to approvalCh, want the approval to have been delivered")
 	}
 }
 
@@ -1706,4 +1994,35 @@ func TestRunsHandler_SubmitFeedback_LateCallback(t *testing.T) {
 	}
 
 	manager.Deregister("r-late-cb")
+}
+
+// TestRunsHandler_SubmitFeedback_AudienceRoutedPolicy_InAppGateStillDelivers
+// is SubmitFeedback's half of the issue #961 review R5 removal's pinning
+// test — see the approval version's doc comment for why naming an audience
+// must not be read as "this gate is plugin-waiting."
+func TestRunsHandler_SubmitFeedback_AudienceRoutedPolicy_InAppGateStillDelivers(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	manager := run.NewRunManager()
+
+	testutil.InsertPolicy(t, store, "p-feedback-audience-inapp", "policy-p-feedback-audience-inapp", "webhook", audienceRoutedPolicy)
+	testutil.InsertRun(t, store, "r-feedback-audience-inapp", "p-feedback-audience-inapp", model.RunStatusWaitingForFeedback)
+	insertFeedbackRequest(t, store, "fr-audience-inapp-1", "r-feedback-audience-inapp")
+
+	resolver := &stubResolver{ResolveFunc: nil} // nil ResolveFunc → returns nil, i.e. delivered
+	manager.Register("r-feedback-audience-inapp", func() {}, make(chan bool, 1))
+	manager.RegisterFeedbackResolver("r-feedback-audience-inapp", resolver)
+	t.Cleanup(func() { manager.Deregister("r-feedback-audience-inapp") })
+
+	h := run.NewRunsHandler(store, manager, nil)
+	router := newRunsRouter(h)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/r-feedback-audience-inapp/feedback",
+		strings.NewReader(`{"response":"go ahead"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body: %s", w.Code, w.Body.String())
+	}
 }

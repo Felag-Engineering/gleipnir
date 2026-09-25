@@ -6,6 +6,17 @@ RETURNING *;
 -- name: GetMCPTask :one
 SELECT * FROM mcp_tasks WHERE id = :id;
 
+-- GetMCPTaskByServerAndTaskID resolves a task by the SERVER's own task_id,
+-- scoped to one mcp_servers row (the UNIQUE(server_id, task_id) constraint
+-- this table already carries). Used by host/authorize_actor's poll-now hint
+-- (internal/plugin/hostendpoint/authorize.go, issue #961 review item 6): a
+-- plugin's AuthorizeActor call names the task by ITS OWN id, not by
+-- mcp_tasks.id, and scoping the lookup to the calling instance's own server
+-- row is what stops one instance's task_id string from ever resolving to a
+-- different instance's row.
+-- name: GetMCPTaskByServerAndTaskID :one
+SELECT * FROM mcp_tasks WHERE server_id = :server_id AND task_id = :task_id;
+
 -- ResolveMCPTask transitions a non-terminal task (working or input_required)
 -- to a terminal status (complete, failed, or cancelled) and records its
 -- result. The WHERE clause guards against double-transition: rows_affected
