@@ -220,6 +220,33 @@ func planFor(desired *db.PluginContainer, observed *container.ContainerInfo, has
 		}
 
 	case gen == GenerationLive:
+		// ReconcileRotations owns this instance's container lifecycle end to
+		// end from here (create, start, health gate, switch, drain, retire),
+		// but network MEMBERSHIP is the core loop's job regardless of
+		// generation state (#958 combination review): rotation never
+		// touches self-attach, so an unconditional ActionNone here would
+		// mean a recreated Gleipnir (a fresh container ID, so Attached
+		// starts false again) never rejoins a live instance's network, and
+		// an operator-stopped live instance is never detached from. These
+		// are exactly planForExisting's own self-attach checks, applied
+		// before the lifecycle handoff rather than instead of it — a
+		// generation-tracked instance's desired row still carries the same
+		// DesiredRunning/DesiredStopped meaning planForExisting reads.
+		if desired.DesiredState == DesiredRunning {
+			if self.Enabled && !self.Unknown && !self.Attached {
+				return Action{
+					Kind:       ActionAttachSelf,
+					InstanceID: desired.PluginInstanceID,
+					Reason:     "gleipnir has not joined this instance's network yet",
+				}
+			}
+		} else if self.Enabled && self.Attached {
+			return Action{
+				Kind:       ActionDetachSelf,
+				InstanceID: desired.PluginInstanceID,
+				Reason:     "instance desired stopped; leaving its network",
+			}
+		}
 		return Action{Kind: ActionNone, InstanceID: desired.PluginInstanceID}
 
 	// Once generation tracking is enabled (the branch above already disposed
