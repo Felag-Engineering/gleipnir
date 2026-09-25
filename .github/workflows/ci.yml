@@ -467,6 +467,52 @@ jobs:
         env:
           GOWORK: off
 
+  # Builds, vets, and tests the substratev2 tag set (issue #948): the
+  # MCP-realignment plugin substrate, compiled in behind -tags substratev2
+  # instead of the default (untagged) v1.1 go-plugin substrate. Exactly one
+  # pluginSubsystem implementation links into any given binary
+  # (main_linkage_test.go / main_linkage_v2_test.go prove it), so this job is
+  # the tagged mirror of backend-tests above, not a replacement for it — both
+  # must stay green independently until #1005 (G-59, the flip) makes this tag
+  # set the only one.
+  build-substratev2:
+    name: Build (substratev2)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    # Least-privilege: this job only checks out and builds/tests — it never
+    # pushes, comments, or uploads anything, so it needs no write scope.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Build
+        run: go build -tags substratev2 ./...
+        env:
+          GOWORK: off
+
+      - name: Vet
+        run: go vet -tags substratev2 ./...
+        env:
+          GOWORK: off
+
+      - name: Test
+        run: go test -tags substratev2 .
+        env:
+          GOWORK: off
+
+      # Mirrors the Makefile's lint-substratev2-build lane so a green CI check
+      # and a green local `make lint` mean the same thing.
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 -tags substratev2 ./...
+        env:
+          GOWORK: off
+
   # The relaysmoke suite (issue #931) is behind its own build tag for the same
   # reason: it needs Docker and a live, compose-started Relay fleet, neither
   # of which belongs on a PR. Unlike substrate there is no integration job at

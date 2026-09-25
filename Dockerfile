@@ -19,6 +19,17 @@ RUN npm run build
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 ARG TARGETOS
 ARG TARGETARCH
+# GO_TAGS selects the plugin substrate compiled into the gleipnir binary: empty
+# (the default) builds the live v1.1 go-plugin substrate; "substratev2" builds
+# the MCP-realignment substrate instead. Exactly one pluginSubsystem
+# implementation is wired into run() per binary — the default build never
+# STARTS v2 machinery, and the tagged build never links the v1.1 runtime
+# packages (process/hostsvc/tools/hashicorp's go-plugin) — proved by
+# main_linkage_test.go, main_direct_imports_test.go, and
+# main_linkage_v2_test.go (see pluginsubsystem.go for exactly what each
+# checks and the two documented transitive exceptions). gleipnirctl has no
+# plugin substrate of its own, so it is never built with this tag.
+ARG GO_TAGS=""
 WORKDIR /app
 # plugin-sdk is a sub-module pulled in via a `replace` directive in the root
 # go.mod; its go.mod/go.sum must exist on disk before `go mod download` can
@@ -29,7 +40,7 @@ RUN go mod download
 COPY . .
 # Overwrite frontend/dist with the freshly built assets so go:embed picks them up.
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /gleipnir . && \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -tags "${GO_TAGS}" -o /gleipnir . && \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /gleipnirctl ./cmd/gleipnirctl
 
 # Stage 3: Minimal runtime image

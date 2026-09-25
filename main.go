@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,9 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -30,18 +27,12 @@ import (
 	llmfactory "github.com/felag-engineering/gleipnir/internal/llm/factory"
 	openaicompatllm "github.com/felag-engineering/gleipnir/internal/llm/openaicompat"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
-	"github.com/felag-engineering/gleipnir/internal/model"
-	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
-	"github.com/felag-engineering/gleipnir/internal/plugin/dispatch"
 	"github.com/felag-engineering/gleipnir/internal/plugin/hostendpoint"
-	"github.com/felag-engineering/gleipnir/internal/plugin/process"
 	"github.com/felag-engineering/gleipnir/internal/policy"
 	"github.com/felag-engineering/gleipnir/internal/settings"
 	"github.com/felag-engineering/gleipnir/internal/timeout"
 	"github.com/felag-engineering/gleipnir/internal/toolregistry"
 	"github.com/felag-engineering/gleipnir/internal/trigger"
-	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
-	"google.golang.org/grpc"
 )
 
 // knownProviders is the list of LLM providers the system supports.
@@ -169,18 +160,21 @@ func run(cfg config.Config) error {
 	// Constructed once here so both sides see the same state.
 	arbiter := toolregistry.New()
 
-	// systemSettings is constructed early so startPluginRuntime can use it for
+	// systemSettings is constructed early so startPluginSubsystem can use it for
 	// the OAuth getPublicURL closure. It is also used by the provider bootstrap
 	// loop and the launcher below.
 	systemSettings := settings.NewService(store.Queries())
 
-	// Bring up the plugin subsystem. On success rt is always non-nil; some of its
-	// fields are nil when no encryption key is configured (OAuth/credentials).
-	rt, err := startPluginRuntime(ctx, cfg, store, broadcaster, encryptionKey, arbiter, systemSettings)
+	// Bring up the plugin subsystem. Exactly one implementation of
+	// pluginSubsystem is compiled into any given binary — plugins_v1.go (the
+	// default build) or plugins_v2.go (-tags substratev2) — so run() never
+	// reaches into either substrate's concrete fields directly.
+	pluginSys, err := startPluginSubsystem(ctx, cfg, store, broadcaster, encryptionKey, arbiter, systemSettings)
 	if err != nil {
-		return fmt.Errorf("start plugin runtime: %w", err)
+		return fmt.Errorf("start plugin subsystem: %w", err)
 	}
-	runManager.WithPluginCanceller(rt.Pool)
+	pluginLauncherDeps := pluginSys.launcherDeps()
+	runManager.WithPluginCanceller(pluginLauncherDeps.Canceller)
 
 	// Host-plane invariant (mcp-realignment-spec.md §8, ADR-057): no
 	// host-endpoint tool name may sit in the shared tool namespace, because
@@ -281,22 +275,22 @@ func run(cfg config.Config) error {
 
 	launcher := runpkg.NewRunLauncher(runpkg.RunLauncherConfig{
 		Store:                  store,
-		Resolver:               runpkg.NewDefaultToolResolver(registry, rt.ToolClassifier, rt.ToolResolver),
+		Resolver:               runpkg.NewDefaultToolResolver(registry, pluginLauncherDeps.ToolClassifier, pluginLauncherDeps.ToolResolver),
 		Manager:                runManager,
 		AgentFactory:           runpkg.NewAgentFactory(providerRegistry),
 		Publisher:              broadcaster,
 		DefaultFeedbackTimeout: cfg.DefaultFeedbackTimeout,
 		ModelResolver:          systemSettings,
-		PluginRegistrar:        rt.ToolRegistrar,
-		PluginDispatcher:       rt.DispatchAdapter,
-		ApprovalDispatcher:     rt.ApprovalAdapter,
-		FeedbackDispatcher:     rt.FeedbackAdapter,
+		PluginRegistrar:        pluginLauncherDeps.Registrar,
+		PluginDispatcher:       pluginLauncherDeps.Dispatcher,
+		ApprovalDispatcher:     pluginLauncherDeps.ApprovalDispatcher,
+		FeedbackDispatcher:     pluginLauncherDeps.FeedbackDispatcher,
 	})
 
-	// Wire the trigger supervisor now that the launcher is available. The trigger
-	// dispatcher needs the launcher (to fire runs); wireTriggerSupervisor is
-	// therefore a two-phase completion of the plugin runtime.
-	rt.wireTriggerSupervisor(ctx, launcher, store, broadcaster, systemSettings)
+	// Complete the two-phase wiring now that the launcher is available: the
+	// trigger dispatcher (v1) or its v2 equivalent needs the launcher to fire
+	// runs.
+	pluginSys.bindLauncher(ctx, launcher)
 
 	webhookSecretLoader := trigger.NewSecretLoader(store.Queries(), encryptionKey)
 	webhookHandler := trigger.NewWebhookHandler(store, launcher, webhookSecretLoader, systemSettings)
@@ -329,10 +323,14 @@ func run(cfg config.Config) error {
 	if registry != nil {
 		toolLookup = registry
 	}
+	// adminDeps is fetched once, here, because ManifestSnap is needed before
+	// the plugin admin surface itself is built below.
+	pluginAdminDeps := pluginSys.adminDeps()
+
 	subscribedResolver := &pluginInstanceResolver{q: store.Queries()}
 	policyService := policy.NewService(store, toolLookup, providerRegistry, providerRegistry, systemSettings)
 	policyService.WithSubscribedBindingValidator(
-		policy.NewSubscribedBindingValidator(subscribedResolver, rt.ManifestSnap),
+		policy.NewSubscribedBindingValidator(subscribedResolver, pluginAdminDeps.ManifestSnap),
 	)
 	if webhookEncrypter != nil {
 		policyService.WithWebhookSecretEncrypter(webhookEncrypter)
@@ -383,92 +381,58 @@ func run(cfg config.Config) error {
 	settingsHandler := auth.NewSettingsHandler(store.Queries())
 
 	// ManifestSnap is shared between the audience handler, binding test handler,
-	// and the plugin tool resolver (constructed in startPluginRuntime).
-	snap := rt.ManifestSnap
+	// and the plugin tool resolver (constructed inside the plugin subsystem).
+	snap := pluginAdminDeps.ManifestSnap
 	audienceH := api.NewAudienceHandler(store, snap, time.Now)
 	bindingTestH := api.NewBindingTestHandler(snap)
 
 	// Wire OAuth handlers and the public-URL rescan hook. All three are populated
-	// by startPluginRuntime only when an encryption key is set; nil otherwise.
-	pluginOAuthHandler := rt.OAuthHandler
-	pluginCredHandler := rt.CredentialsHandler
-	pluginOptionsHandler := rt.OptionsHandler
-	if rt.OnPublicURLChanged != nil {
-		adminHandler.OnPublicURLChanged = rt.OnPublicURLChanged
+	// by the plugin subsystem only when an encryption key is set; nil otherwise.
+	pluginOAuthHandler := pluginAdminDeps.OAuthHandler
+	pluginCredHandler := pluginAdminDeps.CredentialsHandler
+	pluginOptionsHandler := pluginAdminDeps.OptionsHandler
+	if pluginAdminDeps.OnPublicURLChanged != nil {
+		adminHandler.OnPublicURLChanged = pluginAdminDeps.OnPublicURLChanged
 	}
 
 	// Build InstanceLifecycle and InstanceConfig modules before PluginHandler so
 	// all deps are constructor-injected (no late-bind setters, per issue #504).
 	//
-	// These deps come from the plugin runtime and are non-nil in normal
-	// operation. The nil-guards are defensive: the admin helpers are designed to
-	// tolerate absent deps (DB-only cleanup still works), which keeps them
-	// test-injectable and safe against a partially-initialized runtime.
+	// These deps come from the plugin subsystem and are non-nil in normal
+	// operation. The nil-guards inside adminDeps() are defensive: the admin
+	// helpers are designed to tolerate absent deps (DB-only cleanup still
+	// works), which keeps them test-injectable and safe against a
+	// partially-initialized runtime.
 	//
 	// processManager and pluginsDir are shared by reference/value into BOTH the
 	// InstanceLifecycleDeps AND the PluginHandlerDeps — both holders use the
 	// one shared instance (plan §DEPS THAT STAY).
-	var (
-		pluginProcMgr    admin.PluginProcessManager
-		pluginTrigger    admin.TriggerRestarter
-		pluginInflight   admin.InflightCounter
-		pluginEvictor    admin.ToolConnEvictor
-		pluginPluginsDir string
-		pluginInstaller  admin.PluginInstaller
-		pluginRSSAgg     admin.RSSAggregator
-	)
-	if rt.TriggerSupervisor != nil {
-		pluginTrigger = rt.TriggerSupervisor
-	}
-	if rt.Loader().Installer() != nil {
-		pluginInstaller = rt.Loader().Installer()
-		if mgr := rt.Manager(); mgr != nil {
-			pluginProcMgr = mgr
-			pluginPluginsDir = cfg.PluginsDir
-			pluginInflight = rt.Pool
-			pluginEvictor = rt.Pool
-		}
-	}
-	if mgr := rt.Manager(); mgr != nil {
-		rssSampler := process.NewRSSSampler(mgr.Snapshot)
-		rssSampler.Start(ctx, 30*time.Second)
-		pluginRSSAgg = rssAggregatorAdapter{sampler: rssSampler}
-	}
-
 	pluginLifecycle := admin.NewInstanceLifecycle(admin.InstanceLifecycleDeps{
 		Q:          store.Queries(),
 		Store:      store,
 		Publisher:  broadcaster,
-		ProcMgr:    pluginProcMgr,
-		Trigger:    pluginTrigger,
-		Inflight:   pluginInflight,
-		Evictor:    pluginEvictor,
-		PluginsDir: pluginPluginsDir,
-		Unreg:      rt.ToolRegistrar,
+		ProcMgr:    pluginAdminDeps.ProcMgr,
+		Trigger:    pluginAdminDeps.Trigger,
+		Inflight:   pluginAdminDeps.Inflight,
+		Evictor:    pluginAdminDeps.Evictor,
+		PluginsDir: pluginAdminDeps.PluginsDir,
+		Unreg:      pluginAdminDeps.Unregistrar,
 	})
 	pluginConfig := admin.NewInstanceConfig(admin.InstanceConfigDeps{
 		Q:         store.Queries(),
 		Publisher: broadcaster,
-		Trigger:   pluginTrigger,
+		Trigger:   pluginAdminDeps.Trigger,
 	})
-	// Seed the credential blob on instance create (#572). rt.CredStore is nil
-	// when no encryption key is configured; we must avoid stuffing a typed-nil
-	// pointer into the CredentialSeeder interface (that would defeat the handler's
-	// nil-guard), so only set the field when the store is genuinely present.
-	var pluginCredSeeder admin.CredentialSeeder
-	if rt.CredStore != nil {
-		pluginCredSeeder = rt.CredStore
-	}
 	pluginAdmin := admin.NewPluginHandler(admin.PluginHandlerDeps{
 		Q:                store.Queries(),
 		Publisher:        broadcaster,
-		Installer:        pluginInstaller,
-		RSSAggregator:    pluginRSSAgg,
-		ProcessManager:   pluginProcMgr,
-		PluginsDir:       pluginPluginsDir,
+		Installer:        pluginAdminDeps.Installer,
+		RSSAggregator:    pluginAdminDeps.RSSAggregator,
+		ProcessManager:   pluginAdminDeps.ProcMgr,
+		PluginsDir:       pluginAdminDeps.PluginsDir,
 		Lifecycle:        pluginLifecycle,
 		Config:           pluginConfig,
-		CredentialSeeder: pluginCredSeeder,
+		CredentialSeeder: pluginAdminDeps.CredentialSeeder,
 	})
 
 	handlers := api.HandlerBundle{
@@ -491,9 +455,10 @@ func run(cfg config.Config) error {
 	// admin endpoint or the fsnotify watcher) immediately spawns the plugin
 	// subprocess — no server restart required (#386). The same Installer instance
 	// is used by both paths so this registration covers both.
-	if mgr := rt.Manager(); mgr != nil && rt.Loader().Installer() != nil {
-		rt.Loader().Installer().OnInstalled(func(ctx context.Context, pluginID string) {
-			if err := mgr.StartByPluginID(ctx, pluginID); err != nil {
+	if pluginAdminDeps.Installer != nil && pluginAdminDeps.ProcMgr != nil {
+		procMgr := pluginAdminDeps.ProcMgr
+		pluginAdminDeps.Installer.OnInstalled(func(ctx context.Context, pluginID string) {
+			if err := procMgr.StartByPluginID(ctx, pluginID); err != nil {
 				slog.Warn("post-install spawn failed", "plugin_id", pluginID, "err", err)
 			}
 		})
@@ -571,12 +536,13 @@ func run(cfg config.Config) error {
 	// signals the supervisor's stream goroutines cooperatively; a goroutine could
 	// still pass its ctx check and reach RunLauncher.Launch — which does the
 	// RunManager wg.Add — after runManager.Wait() returns below. That add-after-Wait
-	// leaves the run unawaited and racing dispatch-pool teardown. quiesceTriggers
-	// calls TriggerSupervisor.StopAll(), which synchronously cancels and joins every
-	// stream goroutine, so no new Launch can land once it returns. Doing this before
-	// CancelAll means any run that does land during the quiesce window is still
-	// cancelled by CancelAll and awaited by the drain below (#500).
-	rt.quiesceTriggers()
+	// leaves the run unawaited and racing dispatch-pool teardown. quiesce()
+	// calls TriggerSupervisor.StopAll() (v1) or its v2 equivalent, which
+	// synchronously cancels and joins every stream goroutine, so no new Launch
+	// can land once it returns. Doing this before CancelAll means any run that
+	// does land during the quiesce window is still cancelled by CancelAll and
+	// awaited by the drain below (#500).
+	pluginSys.quiesce()
 
 	// Signal all in-flight agent runs to stop.
 	runManager.CancelAll()
@@ -607,8 +573,8 @@ func run(cfg config.Config) error {
 		slog.Warn("agent run drain timed out, proceeding with server shutdown")
 	}
 
-	// Stop the plugin runtime (trigger supervisor → subprocesses → dispatch pool).
-	rt.shutdown()
+	// Stop the plugin subsystem (trigger supervisor → subprocesses → dispatch pool).
+	pluginSys.shutdown()
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer shutdownCancel()
@@ -793,221 +759,6 @@ func countEncryptedWebhookSecrets(ctx context.Context, store *db.Store) (int, er
 	return n, err
 }
 
-// pluginDispatchAdapter wraps *dispatch.Pool to satisfy agent.PluginToolDispatcher.
-// dispatch.ErrCallTimeout and dispatch.ErrQueueFull are the same sentinel values
-// as agent.ErrPluginCallTimeout and agent.ErrPluginQueueFull (both alias
-// internal/plugin/pluginerr), so the adapter is now a pure interface bridge —
-// no error translation needed.
-type pluginDispatchAdapter struct {
-	pool *dispatch.Pool
-}
-
-func (a *pluginDispatchAdapter) Call(ctx context.Context, runID, policyID, instanceName, toolName, inputJSON string) (string, bool, error) {
-	return a.pool.Call(ctx, runID, policyID, instanceName, toolName, inputJSON)
-}
-
-// manifestClassifier decides whether a dot-name tool grant belongs to a plugin
-// instance by consulting the installed instance row and its manifest snapshot —
-// NOT the in-memory namespace arbiter. This makes classification static: a tool's
-// source does not change when its plugin subprocess starts or stops (see #399).
-// The arbiter remains the spawn-time uniqueness enforcer; it is simply no longer
-// the classification oracle. This is the production implementation of
-// runpkg.ToolSourceClassifier.
-//
-// It shares lookupPluginInstanceTool with pluginToolResolverAdapter so the two
-// can never disagree about what is a plugin tool.
-type manifestClassifier struct {
-	snap *configvalidate.Snapshotter
-	q    pluginInstanceLookup
-}
-
-func (c *manifestClassifier) IsPluginTool(ctx context.Context, dotName string) (bool, error) {
-	_, decl, instanceFound, err := lookupPluginInstanceTool(ctx, c.snap, c.q, dotName)
-	if err != nil {
-		return false, err
-	}
-	// A grant is a plugin tool only when an installed instance exists AND its
-	// manifest declares the tool. Otherwise it routes to the MCP path.
-	return instanceFound && decl != nil, nil
-}
-
-// lookupPluginInstanceTool resolves dotName ("<instance>.<tool>") to the installed
-// plugin instance and the manifest ToolDecl it declares. It is the single source
-// of truth shared by the classifier (routing) and the resolver (materialization),
-// so the two cannot diverge. The lookup is independent of subprocess liveness.
-//
-// Return contract:
-//   - bad dot-form, or no installed instance with that name: instanceFound=false,
-//     decl=nil, err=nil — "not a plugin tool", route to MCP.
-//   - instance exists but its manifest does not declare the tool: instanceFound=true,
-//     decl=nil, err=nil.
-//   - instance exists and declares the tool: instanceFound=true, decl!=nil, err=nil.
-//   - a lookup that should have succeeded failed (DB error other than no-rows, or
-//     manifest snapshot unreadable): err!=nil — the caller should fail loudly.
-func lookupPluginInstanceTool(ctx context.Context, snap *configvalidate.Snapshotter, q pluginInstanceLookup, dotName string) (inst db.PluginInstance, decl *sdkmanifest.ToolDecl, instanceFound bool, err error) {
-	instanceName, toolName, splitErr := splitDotName(dotName)
-	if splitErr != nil {
-		// Not in instance.tool form — cannot be a plugin tool.
-		return db.PluginInstance{}, nil, false, nil
-	}
-
-	inst, err = q.GetPluginInstanceByGlobalName(ctx, instanceName)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			// No installed instance by that name — route to MCP.
-			return db.PluginInstance{}, nil, false, nil
-		}
-		return db.PluginInstance{}, nil, false, fmt.Errorf("lookup plugin instance %q: %w", instanceName, err)
-	}
-
-	manifest, err := snap.ForPluginID(ctx, inst.PluginID)
-	if err != nil {
-		return db.PluginInstance{}, nil, true, fmt.Errorf("manifest lookup for instance %q: %w", instanceName, err)
-	}
-
-	for i := range manifest.Tools {
-		if manifest.Tools[i].Name == toolName {
-			return inst, &manifest.Tools[i], true, nil
-		}
-	}
-	return inst, nil, true, nil
-}
-
-// pluginToolGenerationLookup is the narrow interface that pluginToolResolverAdapter
-// needs from *plugintools.Registrar. Only the Generation method is required —
-// narrowing to an interface avoids importing the tools package in tests that
-// use stub implementations.
-type pluginToolGenerationLookup interface {
-	Generation(instanceName string) (int64, bool)
-}
-
-// pluginInstanceLookup is the narrow DB interface that pluginToolResolverAdapter
-// needs. Only GetPluginInstanceByGlobalName is required.
-type pluginInstanceLookup interface {
-	GetPluginInstanceByGlobalName(ctx context.Context, instanceName string) (db.PluginInstance, error)
-}
-
-// pluginToolResolverAdapter implements runpkg.PluginToolResolver by looking up
-// each plugin tool grant in the manifest and the registrar. It is constructed in
-// main.go (not in a separate package) because it wires together multiple internal
-// packages that must not import each other — the same pattern as pluginDispatchAdapter.
-type pluginToolResolverAdapter struct {
-	snap      *configvalidate.Snapshotter
-	registrar pluginToolGenerationLookup
-	q         pluginInstanceLookup
-}
-
-// ResolvePluginTools resolves a list of plugin tool grants into agent-ready
-// PluginToolEntry values. For each grant it:
-//  1. Splits the "instance.tool" dot-name.
-//  2. Looks up the plugin instance in the DB to get its plugin_id.
-//  3. Fetches the manifest snapshot for that plugin to read the tool's
-//     description and JSON schema.
-//  4. Reads the current generation from the registrar so the agent can detect
-//     stale calls after a generation rotation.
-func (r *pluginToolResolverAdapter) ResolvePluginTools(ctx context.Context, grants []model.ToolCapability) ([]agent.PluginToolEntry, error) {
-	result := make([]agent.PluginToolEntry, 0, len(grants))
-	for _, g := range grants {
-		instanceName, toolName, err := splitDotName(g.Tool)
-		if err != nil {
-			return nil, fmt.Errorf("resolve plugin tool %q: %w", g.Tool, err)
-		}
-
-		// lookupPluginInstanceTool is the same lookup the classifier uses, so
-		// routing and resolution can never disagree. The launcher only sends
-		// already-classified plugin grants here, so a missing instance or
-		// undeclared tool is a genuine error at this point (not a route-to-MCP
-		// signal as it is for the classifier). The instance row itself is not
-		// needed here — the registrar is keyed by instance name below.
-		_, toolDecl, instanceFound, err := lookupPluginInstanceTool(ctx, r.snap, r.q, g.Tool)
-		if err != nil {
-			return nil, fmt.Errorf("plugin tool %q: %w", g.Tool, err)
-		}
-		if !instanceFound {
-			return nil, fmt.Errorf("plugin tool %q: instance %q not found", g.Tool, instanceName)
-		}
-		if toolDecl == nil {
-			return nil, fmt.Errorf("plugin tool %q: tool %q not declared in manifest", g.Tool, toolName)
-		}
-
-		var schema map[string]any
-		if toolDecl.InputSchema != nil {
-			if err := toolDecl.InputSchema.Decode(&schema); err != nil {
-				return nil, fmt.Errorf("plugin tool %q: decode input schema: %w", g.Tool, err)
-			}
-		}
-
-		gen, registered := r.registrar.Generation(instanceName)
-		if !registered {
-			// The DB lookup above confirmed the instance exists in the DB; the
-			// registrar not knowing about it means its subprocess is not running.
-			return nil, fmt.Errorf("plugin tool %q: instance %q subprocess is not running", g.Tool, instanceName)
-		}
-
-		// Approval mode passes through from the policy grant unchanged. The parser
-		// normalizes empty approval to "none" (parser.go:209-211), so g.Approval is
-		// always "none" or "required" by this point. The manifest's ApprovalRequired
-		// is advisory metadata for the policy author; the policy controls at runtime.
-		approval := g.Approval
-
-		var timeout time.Duration
-		if g.Timeout != "" {
-			timeout, err = time.ParseDuration(g.Timeout)
-			if err != nil {
-				return nil, fmt.Errorf("plugin tool %q: parse timeout: %w", g.Tool, err)
-			}
-		}
-
-		result = append(result, agent.PluginToolEntry{
-			InstanceName: instanceName,
-			ToolName:     toolName,
-			Generation:   gen,
-			Description:  toolDecl.Description,
-			Schema:       schema,
-			Approval:     approval,
-			Timeout:      timeout,
-			Params:       g.Params,
-		})
-	}
-	return result, nil
-}
-
-// splitDotName splits a "source.tool" dot-name into its two parts. Returns an
-// error when the name is missing the dot or has empty parts on either side.
-// Same 3-line logic as internal/mcp's unexported splitToolName.
-func splitDotName(dotName string) (source, tool string, err error) {
-	parts := strings.SplitN(dotName, ".", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", fmt.Errorf("tool name %q must be in source.tool dot-notation", dotName)
-	}
-	return parts[0], parts[1], nil
-}
-
-// rssAggregatorAdapter bridges *process.RSSSampler to admin.RSSAggregator.
-//
-// The admin package defines its own RSSSample type with primitive fields only
-// so it does not need to import internal/plugin/process. This adapter converts
-// between the two types at wiring time (main.go), keeping the package boundary
-// clean. The pattern mirrors managerConnFactory and PluginProcessManager.
-type rssAggregatorAdapter struct {
-	sampler *process.RSSSampler
-}
-
-func (a rssAggregatorAdapter) Aggregate() (uint64, int, []admin.RSSSample) {
-	total, count, samples := a.sampler.Aggregate()
-	out := make([]admin.RSSSample, len(samples))
-	for i, s := range samples {
-		out[i] = admin.RSSSample{
-			InstanceID:   s.InstanceID,
-			InstanceName: s.InstanceName,
-			PluginID:     s.PluginID,
-			Bytes:        s.Bytes,
-			SampledAt:    s.SampledAt,
-		}
-	}
-	return total, count, out
-}
-
 // pluginInstanceResolver adapts *db.Queries to satisfy policy.InstanceManifestResolver.
 // It looks up a plugin instance by its human-readable name across all plugins.
 type pluginInstanceResolver struct {
@@ -1020,41 +771,4 @@ func (r *pluginInstanceResolver) ResolveInstanceByName(ctx context.Context, name
 		return "", fmt.Errorf("resolve instance %q: %w", name, err)
 	}
 	return inst.ID, nil
-}
-
-// managerConnFactory resolves a *grpc.ClientConn for a named plugin instance by
-// looking it up in the host's process.Manager. It is the production ConnFactory
-// that replaces the old stubConnFactory.
-//
-// The argument is the human-readable instance_name (matching
-// dispatch.ConnFactory's contract and the plugin_instances.instance_name
-// column), NOT the ULID. We therefore call Manager.LookupByName, not Lookup.
-//
-// The manager is set via setManager after loader.StartManager succeeds. Until
-// then (or when plugins are disabled), Connect returns ErrManagerUnavailable.
-// The atomic.Pointer lets connFactory be wired into dispatch.New and
-// dispatch.NewDispatcher before StartManager runs; late-binding is safe because
-// no plugin subprocess is reachable until StartManager completes anyway.
-type managerConnFactory struct {
-	mgr atomic.Pointer[process.Manager]
-}
-
-func (f *managerConnFactory) setManager(m *process.Manager) { f.mgr.Store(m) }
-
-func (f *managerConnFactory) Connect(instanceName string) (*grpc.ClientConn, error) {
-	m := f.mgr.Load()
-	if m == nil {
-		return nil, fmt.Errorf("%w: %q", dispatch.ErrManagerUnavailable, instanceName)
-	}
-	inst := m.LookupByName(instanceName)
-	if inst == nil {
-		return nil, fmt.Errorf("%w: %q", dispatch.ErrInstanceNotRunning, instanceName)
-	}
-	conn := inst.Client().Conn()
-	if conn == nil {
-		// Defence in depth: Client.Conn() should always be non-nil for instances
-		// returned by the real process.Start path (hostwire.GRPCClient sets conn).
-		return nil, fmt.Errorf("%w: %q (nil conn)", dispatch.ErrInstanceNotRunning, instanceName)
-	}
-	return conn, nil
 }
