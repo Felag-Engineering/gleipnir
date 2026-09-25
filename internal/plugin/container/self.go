@@ -312,5 +312,12 @@ func SelfAttached(self ContainerInfo, net NetworkInfo) bool {
 			return true
 		}
 	}
+	if net.Name != "" {
+		for _, name := range self.NetworkNames {
+			if name == net.Name {
+				return true
+			}
+		}
+	}
 	return false
 }

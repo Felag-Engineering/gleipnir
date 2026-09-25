@@ -227,6 +227,12 @@ type ContainerInfo struct {
 	// re-derive-every-pass idiom as everything else here, rather than
 	// tracking membership state between passes.
 	Networks []NetworkID
+	// NetworkNames holds the same memberships by name. Docker's inspect
+	// response carries each endpoint's NetworkID, but Podman's compat API
+	// keys the endpoints by network name and may leave NetworkID empty or
+	// set to something other than the ID ListNetworksByLabel returns, so
+	// SelfAttached matches on either.
+	NetworkNames []string
 
 	CreatedAt time.Time
 }
