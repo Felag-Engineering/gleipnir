@@ -88,19 +88,41 @@ escapes.
 ### Simplification: no second network
 
 The issue frames (a) as "second network + host-side forward proxy". The second
-network turns out to be unnecessary. Gleipnir is already attached to every
-per-instance network (#811, so it can reach each plugin's MCP endpoint), which
-means the plugin can already reach Gleipnir at that network's **gateway
-address**. The proxy listens there. Adding a second network would add a subnet
+network turns out to be unnecessary. Gleipnir joins every per-instance network
+itself (#811/#958, so it can reach each plugin's MCP endpoint), which means the
+plugin can already reach Gleipnir at the address Gleipnir occupies on that
+network. The proxy listens there. Adding a second network would add a subnet
 allocation, a lifecycle, and a failure mode to reach a place we can already
 stand.
+
+**Status note (as of #958):** the mechanism above — `internal/plugin/container.SelfAttacher`
+joining and leaving each instance network from inside Gleipnir's own container —
+is implemented and unit-tested, but the reconciler that drives it is **not yet
+wired into `main.go`** (see `container-networking.md` and the
+`internal/plugin/reconciler` entry in `internal/plugin/CLAUDE.md`). The egress
+proxy this document describes is a design that consumes that mechanism once
+both land; it does not yet run.
+
+That address is deliberately NOT the network's own gateway address (e.g. `.1`):
+the gateway belongs to the bridge interface itself, owned by the container
+runtime rather than by any container, so no container — including Gleipnir's —
+can ever be assigned it. Self-attach instead PINS a reserved, deterministic
+address one past the gateway (`egress.GleipnirAddrOf`, e.g. `.2`) at attach
+time, rather than accepting whatever the daemon's IPAM would hand out next —
+see `container-networking.md` for the full mechanism, including two more
+preconditions self-attach enforces before it ever runs: Gleipnir's own kernel
+must have IP forwarding disabled on both stacks (a forwarding-enabled Gleipnir
+container attached to two instance networks could itself become the bridge
+this design exists to prevent), and the operator-facing admin API's own
+exposure to this topology is tracked separately (#1021), not covered here.
 
 ## How instance identity is established
 
 The proxy must apply *this instance's* allowlist, so it has to know which
 instance is calling — and it must not be tellable.
 
-It reads `conn.LocalAddr()`: the gateway address the connection arrived on. Each
+It reads `conn.LocalAddr()`: the address Gleipnir occupies on the network the
+connection arrived on (NOT the network's own gateway address — see above). Each
 instance has its own `/24` and its own bridge, so that address identifies the
 instance exactly. Crucially the peer does not choose it — the kernel does, from
 which interface the packet arrived on. A plugin cannot make its traffic appear on
@@ -181,9 +203,10 @@ services:
     image: ghcr.io/example/acme@sha256:...
     networks: [plugin-acme]
     environment:
-      # Gleipnir's proxy, reachable at the network's gateway address.
-      HTTPS_PROXY: "http://172.30.0.1:8118"
-      HTTP_PROXY:  "http://172.30.0.1:8118"
+      # Gleipnir's proxy, reachable at the address Gleipnir occupies on this
+      # network (its reserved .2, never the network's own .1 gateway).
+      HTTPS_PROXY: "http://172.30.0.2:8118"
+      HTTP_PROXY:  "http://172.30.0.2:8118"
       NO_PROXY:    ""     # <- empty on purpose: nothing bypasses the proxy.
     labels:
       gleipnir.managed: "false"
@@ -197,9 +220,9 @@ Two things go wrong most often, both silent:
 - **Setting `NO_PROXY`** to anything. Each entry is a hole; `NO_PROXY=*` disables
   containment entirely while leaving every other line looking correct.
 
-The proxy still applies the consented allowlist for whichever instance the
-gateway address maps to, so a manual-mode container that *does* route through it
-is contained identically. What manual mode cannot do is force it to.
+The proxy still applies the consented allowlist for whichever instance
+Gleipnir's address maps to, so a manual-mode container that *does* route
+through it is contained identically. What manual mode cannot do is force it to.
 
 ## What this does not cover
 

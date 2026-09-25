@@ -229,6 +229,7 @@ func seedInstance(t *testing.T, store *db.Store, rt *countingRuntime, instanceID
 			LabelManaged: ManagedValue, LabelInstance: instanceID,
 			LabelGeneration: "1", LabelImageDigest: digest, LabelConfigHash: config,
 		},
+		CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"},
 	})
 	if err != nil {
 		t.Fatalf("seed container: %v", err)
@@ -274,6 +275,7 @@ func seedGenerationContainer(t *testing.T, store *db.Store, rt *countingRuntime,
 			LabelManaged: ManagedValue, LabelInstance: instanceID,
 			LabelGeneration: itoa64(generation), LabelImageDigest: digest, LabelConfigHash: config,
 		},
+		CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"},
 	})
 	if err != nil {
 		t.Fatalf("seed generation %d container: %v", generation, err)

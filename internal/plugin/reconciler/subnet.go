@@ -96,6 +96,26 @@ func NewSubnetAllocator(store SubnetStore, pool netip.Prefix, now func() string)
 	return &SubnetAllocator{store: store, pool: pool.Masked(), now: now}, nil
 }
 
+// Lookup returns the subnet already allocated to instanceID, or ok=false when
+// none is recorded yet. SelfAttacher's validation uses this, when available,
+// to refuse a network whose subnet does not match what the database recorded
+// for that specific instance — a stronger check than "somewhere in the pool"
+// when the caller happens to know the exact expected value.
+func (a *SubnetAllocator) Lookup(ctx context.Context, instanceID string) (netip.Prefix, bool, error) {
+	row, err := a.store.GetContainerSubnetByInstance(ctx, instanceID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return netip.Prefix{}, false, nil
+		}
+		return netip.Prefix{}, false, fmt.Errorf("looking up subnet for instance %q: %w", instanceID, err)
+	}
+	prefix, err := netip.ParsePrefix(row.Subnet)
+	if err != nil {
+		return netip.Prefix{}, false, fmt.Errorf("stored subnet %q for instance %q does not parse: %w", row.Subnet, instanceID, err)
+	}
+	return prefix, true, nil
+}
+
 // ValidatePool reports whether pool can back per-instance /24 allocations.
 // Exported so configuration can be rejected at startup with the same message
 // the allocator would produce, rather than at first plugin install.
@@ -240,6 +260,32 @@ func subnetForSlot(pool netip.Prefix, slot int) (netip.Prefix, error) {
 		byte(value >> 24), byte(value >> 16), byte(value >> 8), byte(value),
 	})
 	return netip.PrefixFrom(addr, subnetBits), nil
+}
+
+// upperHalfIPRange returns the upper half of subnet as a CIDR — the range
+// createNetwork hands the daemon as CreateNetwork's IPRange, restricting
+// DYNAMIC IPAM allocation to it (#1021 review item 3). The lower half —
+// including the network address, the gateway, and the address self-attach
+// reserves for Gleipnir (subnet base + 2, egress.GleipnirAddrOf) — is
+// entirely outside it, which is what stops the daemon's dynamic allocator
+// from ever handing a plugin container the address self-attach pins.
+//
+// Same 4-byte arithmetic as subnetForSlot, for the same reason (IPv4-only,
+// byte-aligned).
+func upperHalfIPRange(subnet netip.Prefix) (netip.Prefix, error) {
+	if subnet.Bits() >= 31 {
+		return netip.Prefix{}, fmt.Errorf("subnet %s has no room for a dynamic-allocation half", subnet)
+	}
+
+	base := subnet.Masked().Addr().As4()
+	value := uint32(base[0])<<24 | uint32(base[1])<<16 | uint32(base[2])<<8 | uint32(base[3])
+	half := uint32(1) << (32 - subnet.Bits() - 1)
+	value += half
+
+	addr := netip.AddrFrom4([4]byte{
+		byte(value >> 24), byte(value >> 16), byte(value >> 8), byte(value),
+	})
+	return netip.PrefixFrom(addr, subnet.Bits()+1), nil
 }
 
 // isNoRows reports whether err is the "no such row" sentinel. Kept local so

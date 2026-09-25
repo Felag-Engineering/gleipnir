@@ -33,6 +33,12 @@ func TestReadOnlyRuntime_RejectsWrites(t *testing.T) {
 	if err := ro.ImageRemove(ctx, "any"); !errors.Is(err, ErrManualModeWrite) {
 		t.Errorf("ImageRemove() error = %v, want ErrManualModeWrite", err)
 	}
+	if err := ro.ConnectNetwork(ctx, "any", "any", nil); !errors.Is(err, ErrManualModeWrite) {
+		t.Errorf("ConnectNetwork() error = %v, want ErrManualModeWrite", err)
+	}
+	if err := ro.DisconnectNetwork(ctx, "any", "any"); !errors.Is(err, ErrManualModeWrite) {
+		t.Errorf("DisconnectNetwork() error = %v, want ErrManualModeWrite", err)
+	}
 
 	// None of the rejected calls should have reached inner.
 	if list, err := inner.ListByLabel(ctx, "any", "any"); err != nil || len(list) != 0 {

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	dockercontainer "github.com/moby/moby/api/types/container"
+	dockernetwork "github.com/moby/moby/api/types/network"
 )
 
 // TestToDockerCreateArgs exercises the pure CreateOptions -> SDK-args
@@ -14,13 +15,15 @@ import (
 // issue (see internal/plugin/container's package doc).
 func TestToDockerCreateArgs(t *testing.T) {
 	opts := CreateOptions{
-		Name:    "plugin-abc123",
-		Image:   "registry.example.com/plugin@sha256:deadbeef",
-		Env:     []string{"FOO=bar"},
-		Command: []string{"serve"},
-		Labels:  map[string]string{"gleipnir.instance_id": "abc123"},
-		Network: "gleipnir-plugin-abc123",
-		Volume:  VolumeMount{Name: "plugin-abc123-data", MountPath: "/data", ReadOnly: true},
+		Name:        "plugin-abc123",
+		Image:       "registry.example.com/plugin@sha256:deadbeef",
+		Env:         []string{"FOO=bar"},
+		Command:     []string{"serve"},
+		Labels:      map[string]string{"gleipnir.instance_id": "abc123"},
+		Network:     "gleipnir-plugin-abc123",
+		Volume:      VolumeMount{Name: "plugin-abc123-data", MountPath: "/data", ReadOnly: true},
+		CapDrop:     []string{"ALL"},
+		SecurityOpt: []string{"no-new-privileges"},
 		Resources: Resources{
 			MemoryBytes: 128 * 1024 * 1024,
 			NanoCPUs:    500_000_000,
@@ -48,6 +51,12 @@ func TestToDockerCreateArgs(t *testing.T) {
 	if hostCfg.NanoCPUs != opts.Resources.NanoCPUs {
 		t.Errorf("HostConfig.NanoCPUs = %d, want %d", hostCfg.NanoCPUs, opts.Resources.NanoCPUs)
 	}
+	if len(hostCfg.CapDrop) != 1 || hostCfg.CapDrop[0] != "ALL" {
+		t.Errorf("HostConfig.CapDrop = %v, want [ALL]", hostCfg.CapDrop)
+	}
+	if len(hostCfg.SecurityOpt) != 1 || hostCfg.SecurityOpt[0] != "no-new-privileges" {
+		t.Errorf("HostConfig.SecurityOpt = %v, want [no-new-privileges]", hostCfg.SecurityOpt)
+	}
 	if len(hostCfg.Mounts) != 1 {
 		t.Fatalf("HostConfig.Mounts = %v, want exactly one mount", hostCfg.Mounts)
 	}
@@ -66,6 +75,92 @@ func TestToDockerCreateArgs_NoVolumeMeansNoMounts(t *testing.T) {
 	_, hostCfg, _ := toDockerCreateArgs(opts)
 	if len(hostCfg.Mounts) != 0 {
 		t.Errorf("Mounts = %v, want none when Volume is unset", hostCfg.Mounts)
+	}
+}
+
+// TestToDockerNetworkCreateArgs exercises the pure NetworkOptions -> SDK-args
+// translation without a socket (#1021 review item V1).
+func TestToDockerNetworkCreateArgs(t *testing.T) {
+	opts := NetworkOptions{
+		Name:     "gleipnir-plugin-abc123",
+		Labels:   map[string]string{"gleipnir.managed": "true"},
+		Subnet:   "10.83.4.0/24",
+		Internal: true,
+	}
+
+	got, err := toDockerNetworkCreateArgs(opts)
+	if err != nil {
+		t.Fatalf("toDockerNetworkCreateArgs: %v", err)
+	}
+	if !got.Internal {
+		t.Error("Internal = false, want true")
+	}
+	if got.Labels["gleipnir.managed"] != "true" {
+		t.Error("Labels missing gleipnir.managed")
+	}
+	if got.IPAM == nil || len(got.IPAM.Config) != 1 || got.IPAM.Config[0].Subnet.String() != opts.Subnet {
+		t.Errorf("IPAM = %+v, want one config carrying subnet %q", got.IPAM, opts.Subnet)
+	}
+	if got.EnableIPv6 == nil || *got.EnableIPv6 {
+		t.Errorf("EnableIPv6 = %v, want an explicit false", got.EnableIPv6)
+	}
+}
+
+// A daemon-level "enable IPv6 by default" setting must not be able to give an
+// instance network IPv6 addressing just because the caller's own opts value
+// (already zero/false, having passed ValidateCreateNetwork) said nothing —
+// EnableIPv6 must be an explicit pointer, never left nil.
+func TestToDockerNetworkCreateArgs_EnableIPv6AlwaysExplicit(t *testing.T) {
+	got, err := toDockerNetworkCreateArgs(NetworkOptions{Name: "n", Internal: true})
+	if err != nil {
+		t.Fatalf("toDockerNetworkCreateArgs: %v", err)
+	}
+	if got.EnableIPv6 == nil {
+		t.Fatal("EnableIPv6 is nil; a daemon-level default could still enable it")
+	}
+	if *got.EnableIPv6 {
+		t.Error("EnableIPv6 = true, want false")
+	}
+}
+
+func TestToDockerNetworkCreateArgs_NoSubnetMeansNoIPAM(t *testing.T) {
+	got, err := toDockerNetworkCreateArgs(NetworkOptions{Name: "n", Internal: true})
+	if err != nil {
+		t.Fatalf("toDockerNetworkCreateArgs: %v", err)
+	}
+	if got.IPAM != nil {
+		t.Errorf("IPAM = %+v, want nil when Subnet is unset", got.IPAM)
+	}
+}
+
+func TestToDockerNetworkCreateArgs_MalformedSubnet(t *testing.T) {
+	if _, err := toDockerNetworkCreateArgs(NetworkOptions{Name: "n", Internal: true, Subnet: "not-a-cidr"}); err == nil {
+		t.Error("toDockerNetworkCreateArgs accepted a malformed subnet")
+	}
+}
+
+// #1021 review item 3: IPRange translates through to the daemon's IPAM
+// config alongside Subnet, so dynamic allocation is actually confined to it.
+func TestToDockerNetworkCreateArgs_IPRange(t *testing.T) {
+	got, err := toDockerNetworkCreateArgs(NetworkOptions{
+		Name: "n", Internal: true,
+		Subnet: "10.83.4.0/24", IPRange: "10.83.4.128/25",
+	})
+	if err != nil {
+		t.Fatalf("toDockerNetworkCreateArgs: %v", err)
+	}
+	if got.IPAM == nil || len(got.IPAM.Config) != 1 || got.IPAM.Config[0].IPRange.String() != "10.83.4.128/25" {
+		t.Errorf("IPAM = %+v, want one config carrying IPRange 10.83.4.128/25", got.IPAM)
+	}
+}
+
+func TestToDockerNetworkCreateArgs_MalformedIPRange(t *testing.T) {
+	_, err := toDockerNetworkCreateArgs(NetworkOptions{
+		Name: "n", Internal: true,
+		Subnet: "10.83.4.0/24", IPRange: "not-a-cidr",
+	})
+	if err == nil {
+		t.Error("toDockerNetworkCreateArgs accepted a malformed IPRange")
 	}
 }
 
@@ -117,6 +212,11 @@ func TestFromInspectResponse_FullyPopulated(t *testing.T) {
 			Image:  "img@sha256:deadbeef",
 			Labels: map[string]string{"k": "v"},
 		},
+		NetworkSettings: &dockercontainer.NetworkSettings{
+			Networks: map[string]*dockernetwork.EndpointSettings{
+				"gleipnir-plugin-abc123": {NetworkID: "net-xyz"},
+			},
+		},
 	}
 
 	info := fromInspectResponse(resp)
@@ -141,6 +241,19 @@ func TestFromInspectResponse_FullyPopulated(t *testing.T) {
 	}
 	if info.Labels["k"] != "v" {
 		t.Errorf("Labels = %v, want k=v", info.Labels)
+	}
+	if len(info.Networks) != 1 || info.Networks[0] != NetworkID("net-xyz") {
+		t.Errorf("Networks = %v, want exactly [net-xyz]", info.Networks)
+	}
+}
+
+// A container inspected before it has any network endpoint (or one whose
+// NetworkSettings the daemon omitted entirely) must not panic, and reports no
+// memberships rather than a nil-pointer one.
+func TestFromInspectResponse_NoNetworkSettings(t *testing.T) {
+	info := fromInspectResponse(dockercontainer.InspectResponse{ID: "abc123"})
+	if info.Networks != nil {
+		t.Errorf("Networks = %v, want nil", info.Networks)
 	}
 }
 
