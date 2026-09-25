@@ -122,11 +122,11 @@ func TestApprovalChannelAdapter_DispatchApproval(t *testing.T) {
 			requestOutcome: dispatch.RouteToInApp,
 		}
 		adapter := run.NewApprovalChannelAdapter(stub)
-		approved, err := adapter.DispatchApproval(ctx, dummyReq)
+		settlement, err := adapter.DispatchApproval(ctx, dummyReq)
 		if !errors.Is(err, agent.ErrApprovalRouteToInApp) {
 			t.Errorf("err = %v, want ErrApprovalRouteToInApp", err)
 		}
-		if approved {
+		if settlement.Approved {
 			t.Error("approved must be false on in-app route")
 		}
 	})
@@ -136,11 +136,11 @@ func TestApprovalChannelAdapter_DispatchApproval(t *testing.T) {
 			requestErr: dispatch.ErrNoRequestCapableEntry,
 		}
 		adapter := run.NewApprovalChannelAdapter(stub)
-		approved, err := adapter.DispatchApproval(ctx, dummyReq)
+		settlement, err := adapter.DispatchApproval(ctx, dummyReq)
 		if !errors.Is(err, agent.ErrApprovalRouteToInApp) {
 			t.Errorf("err = %v, want ErrApprovalRouteToInApp", err)
 		}
-		if approved {
+		if settlement.Approved {
 			t.Error("approved must be false on no-entry route")
 		}
 	})
@@ -152,11 +152,11 @@ func TestApprovalChannelAdapter_DispatchApproval(t *testing.T) {
 			waitResponse:   `{"decision":"approved"}`,
 		}
 		adapter := run.NewApprovalChannelAdapter(stub)
-		approved, err := adapter.DispatchApproval(ctx, dummyReq)
+		settlement, err := adapter.DispatchApproval(ctx, dummyReq)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !approved {
+		if !settlement.Approved {
 			t.Error("expected approved=true")
 		}
 	})
@@ -168,11 +168,11 @@ func TestApprovalChannelAdapter_DispatchApproval(t *testing.T) {
 			waitResponse:   `{"decision":"denied"}`,
 		}
 		adapter := run.NewApprovalChannelAdapter(stub)
-		approved, err := adapter.DispatchApproval(ctx, dummyReq)
+		settlement, err := adapter.DispatchApproval(ctx, dummyReq)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if approved {
+		if settlement.Approved {
 			t.Error("expected approved=false on denied response")
 		}
 	})

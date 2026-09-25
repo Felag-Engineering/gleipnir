@@ -361,8 +361,9 @@ func (s *PollScheduler) expireIfPastTTL(ctx context.Context, task db.McpTask) bo
 		return false
 	}
 
+	updatedAt := timeNow().UTC().Format(time.RFC3339Nano)
 	rows, err := s.store.ExpireMCPTask(ctx, db.ExpireMCPTaskParams{
-		UpdatedAt: timeNow().UTC().Format(time.RFC3339Nano),
+		UpdatedAt: updatedAt,
 		ID:        task.ID,
 	})
 	if err != nil {
@@ -371,6 +372,12 @@ func (s *PollScheduler) expireIfPastTTL(ctx context.Context, task db.McpTask) bo
 	}
 	s.forget(task.ID)
 	if rows == 1 {
+		// Same reflect-the-write-before-notify fix finalize applies (issue
+		// #961 review item 5) — an expired task carries no Result, but its
+		// Status must still say "expired" for a caller reading the notified
+		// copy rather than re-querying the row.
+		task.Status = "expired"
+		task.UpdatedAt = updatedAt
 		s.notify(ctx, task, ErrTaskExpired)
 	}
 	return true
@@ -388,11 +395,12 @@ func (s *PollScheduler) finalize(ctx context.Context, task db.McpTask, dbStatus 
 		r := string(result)
 		resultPtr = &r
 	}
+	updatedAt := timeNow().UTC().Format(time.RFC3339Nano)
 
 	rows, err := s.store.ResolveMCPTask(ctx, db.ResolveMCPTaskParams{
 		Status:    dbStatus,
 		Result:    resultPtr,
-		UpdatedAt: timeNow().UTC().Format(time.RFC3339Nano),
+		UpdatedAt: updatedAt,
 		ID:        task.ID,
 	})
 	if err != nil {
@@ -403,6 +411,15 @@ func (s *PollScheduler) finalize(ctx context.Context, task db.McpTask, dbStatus 
 	if rows == 0 {
 		return
 	}
+	// task, as pollOne/PollNow/Scan handed it in, is the pre-resolution
+	// snapshot they polled WITH — reflect the write that just won onto it
+	// before notify, so WithOnResolved's caller (TaskWaiter.OnResolved) sees
+	// the resolved Result rather than the nil it was polled with (issue #961
+	// review item 5: a completed task's answer must reach the waiter, not
+	// just the DB row).
+	task.Status = dbStatus
+	task.Result = resultPtr
+	task.UpdatedAt = updatedAt
 	s.notify(ctx, task, outcome)
 }
 
