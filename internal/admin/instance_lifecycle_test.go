@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/infra/event"
+	"github.com/felag-engineering/gleipnir/internal/plugin/lifecycle"
 )
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -318,6 +321,231 @@ func TestInstanceLifecycle_Activate(t *testing.T) {
 			t.Fatalf("Activate: unexpected error: %v", err)
 		}
 	})
+}
+
+// ─── kill switch: Deactivate/Activate drive the provisioner's desired state ──
+
+// recordingProvisioner is a test double for InstanceProvisioner that records
+// SetDesired calls; CreateForInstance and Remove are unused by these tests.
+type recordingProvisioner struct {
+	mu            sync.Mutex
+	setDesired    []recordedSetDesired
+	setDesiredErr error
+}
+
+type recordedSetDesired struct {
+	instanceID string
+	state      string
+}
+
+func (p *recordingProvisioner) CreateForInstance(context.Context, *db.Queries, string) (db.PluginContainer, error) {
+	return db.PluginContainer{}, nil
+}
+
+func (p *recordingProvisioner) Remove(context.Context, *db.Queries, string) error { return nil }
+
+func (p *recordingProvisioner) SetDesired(_ context.Context, _ *db.Queries, instanceID, state string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.setDesired = append(p.setDesired, recordedSetDesired{instanceID: instanceID, state: state})
+	return p.setDesiredErr
+}
+
+func (p *recordingProvisioner) calls() []recordedSetDesired {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]recordedSetDesired(nil), p.setDesired...)
+}
+
+func withProvisioner(p InstanceProvisioner) func(*InstanceLifecycleDeps) {
+	return func(d *InstanceLifecycleDeps) { d.Provisioner = p }
+}
+
+// capturePublisher is a test double for event.Publisher that records every
+// Publish call, so a test can assert not just THAT an event fired but WHEN
+// relative to other observable effects (e.g. a commit).
+type capturePublisher struct {
+	mu     sync.Mutex
+	events []capturedPublish
+}
+
+type capturedPublish struct {
+	eventType string
+	data      string
+}
+
+func (p *capturePublisher) Publish(eventType string, data json.RawMessage) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.events = append(p.events, capturedPublish{eventType: eventType, data: string(data)})
+}
+
+func (p *capturePublisher) all() []capturedPublish {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]capturedPublish(nil), p.events...)
+}
+
+func withPublisher(pub event.Publisher) func(*InstanceLifecycleDeps) {
+	return func(d *InstanceLifecycleDeps) { d.Publisher = pub }
+}
+
+func TestNewInstanceLifecycle_PanicsWhenProvisionerWithoutStore(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("NewInstanceLifecycle did not panic with Provisioner set and Store nil")
+		}
+	}()
+	NewInstanceLifecycle(InstanceLifecycleDeps{
+		Q:           newFakePluginQuerier(),
+		Provisioner: &recordingProvisioner{},
+	})
+}
+
+func TestInstanceLifecycle_Deactivate_CallsProvisionerSetDesired(t *testing.T) {
+	ctx := context.Background()
+	store := newPluginTestStore(t)
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
+	q.seed(db.PluginInstance{ID: "inst-1", PluginID: "plugin-1", InstanceName: "prod", HealthState: "healthy", Version: 0})
+	seedStorePlugin(t, store, "plugin-1", "p", nil)
+	seedStoreInstance(t, store, "inst-1", "plugin-1", "prod")
+
+	prov := &recordingProvisioner{}
+	m := newTestLifecycle(q, store, withProvisioner(prov))
+
+	if _, err := m.Deactivate(ctx, "plugin-1", "inst-1"); err != nil {
+		t.Fatalf("Deactivate: unexpected error: %v", err)
+	}
+
+	got := prov.calls()
+	want := []recordedSetDesired{{instanceID: "inst-1", state: lifecycle.DesiredStateStopped}}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Errorf("SetDesired calls = %+v, want %+v", got, want)
+	}
+
+	// The health-state write itself, made through the tx-scoped querier, must
+	// still have committed — the kill switch is additive, not a replacement.
+	if !storeHasInactiveHealth(t, store, "inst-1") {
+		t.Error("instance health state was not persisted to inactive")
+	}
+}
+
+func TestInstanceLifecycle_Activate_CallsProvisionerSetDesired(t *testing.T) {
+	ctx := context.Background()
+	store := newPluginTestStore(t)
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
+	q.seed(db.PluginInstance{ID: "inst-1", PluginID: "plugin-1", InstanceName: "prod", HealthState: "inactive", Version: 0})
+	seedStorePlugin(t, store, "plugin-1", "p", nil)
+	seedStoreInstanceWithHealth(t, store, "inst-1", "plugin-1", "prod", "inactive")
+
+	prov := &recordingProvisioner{}
+	m := newTestLifecycle(q, store, withProvisioner(prov))
+
+	if _, err := m.Activate(ctx, "plugin-1", "inst-1"); err != nil {
+		t.Fatalf("Activate: unexpected error: %v", err)
+	}
+
+	got := prov.calls()
+	want := []recordedSetDesired{{instanceID: "inst-1", state: lifecycle.DesiredStateRunning}}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Errorf("SetDesired calls = %+v, want %+v", got, want)
+	}
+}
+
+// TestInstanceLifecycle_Deactivate_ProvisionerErrorRollsBackHealthState proves
+// the kill switch is atomic: a provisioner failure must not leave the health
+// state flipped to inactive while the container keeps converging to running.
+func TestInstanceLifecycle_Deactivate_ProvisionerErrorRollsBackHealthState(t *testing.T) {
+	ctx := context.Background()
+	store := newPluginTestStore(t)
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
+	q.seed(db.PluginInstance{ID: "inst-1", PluginID: "plugin-1", InstanceName: "prod", HealthState: "healthy", Version: 0})
+	seedStorePlugin(t, store, "plugin-1", "p", nil)
+	seedStoreInstance(t, store, "inst-1", "plugin-1", "prod")
+
+	prov := &recordingProvisioner{setDesiredErr: errors.New("boom")}
+	m := newTestLifecycle(q, store, withProvisioner(prov))
+
+	if _, err := m.Deactivate(ctx, "plugin-1", "inst-1"); err == nil {
+		t.Fatal("Deactivate: want an error when the provisioner fails, got nil")
+	}
+
+	if storeHasInactiveHealth(t, store, "inst-1") {
+		t.Error("health state must not have committed when SetDesired failed")
+	}
+}
+
+// TestInstanceLifecycle_Deactivate_PublishesOnlyAfterCommit proves the
+// provisioner branch of setHealthAndDesired defers its plugin.health_changed
+// publish until after the transaction commits: pluginstate.SetHealthState is
+// called with a nil publisher inside the tx, and the publish itself happens
+// once, from InstanceLifecycle, with the exact same payload shape.
+func TestInstanceLifecycle_Deactivate_PublishesOnlyAfterCommit(t *testing.T) {
+	ctx := context.Background()
+	store := newPluginTestStore(t)
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
+	q.seed(db.PluginInstance{ID: "inst-1", PluginID: "plugin-1", InstanceName: "prod", HealthState: "healthy", Version: 0})
+	seedStorePlugin(t, store, "plugin-1", "p", nil)
+	seedStoreInstance(t, store, "inst-1", "plugin-1", "prod")
+
+	pub := &capturePublisher{}
+	prov := &recordingProvisioner{}
+	m := newTestLifecycle(q, store, withProvisioner(prov), withPublisher(pub))
+
+	if _, err := m.Deactivate(ctx, "plugin-1", "inst-1"); err != nil {
+		t.Fatalf("Deactivate: unexpected error: %v", err)
+	}
+
+	events := pub.all()
+	if len(events) != 1 {
+		t.Fatalf("published %d events, want exactly 1: %+v", len(events), events)
+	}
+	if events[0].eventType != "plugin.health_changed" {
+		t.Errorf("event type = %q, want %q", events[0].eventType, "plugin.health_changed")
+	}
+	var payload map[string]string
+	if err := json.Unmarshal([]byte(events[0].data), &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if payload["instance_id"] != "inst-1" || payload["plugin_id"] != "plugin-1" || payload["state"] != "inactive" {
+		t.Errorf("payload = %+v, want instance_id=inst-1 plugin_id=plugin-1 state=inactive", payload)
+	}
+
+	// The health-state write must have actually committed before the
+	// publish — otherwise a subscriber reacting to this event could read the
+	// pre-transition row.
+	if !storeHasInactiveHealth(t, store, "inst-1") {
+		t.Error("health state was not committed even though a publish fired")
+	}
+}
+
+// TestInstanceLifecycle_Deactivate_ProvisionerErrorPublishesNothing proves the
+// other half: a provisioner failure that rolls back the transaction must not
+// publish an event either — there is nothing true to tell a subscriber.
+func TestInstanceLifecycle_Deactivate_ProvisionerErrorPublishesNothing(t *testing.T) {
+	ctx := context.Background()
+	store := newPluginTestStore(t)
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
+	q.seed(db.PluginInstance{ID: "inst-1", PluginID: "plugin-1", InstanceName: "prod", HealthState: "healthy", Version: 0})
+	seedStorePlugin(t, store, "plugin-1", "p", nil)
+	seedStoreInstance(t, store, "inst-1", "plugin-1", "prod")
+
+	pub := &capturePublisher{}
+	prov := &recordingProvisioner{setDesiredErr: errors.New("boom")}
+	m := newTestLifecycle(q, store, withProvisioner(prov), withPublisher(pub))
+
+	if _, err := m.Deactivate(ctx, "plugin-1", "inst-1"); err == nil {
+		t.Fatal("Deactivate: want an error when the provisioner fails, got nil")
+	}
+
+	if events := pub.all(); len(events) != 0 {
+		t.Errorf("published %d events after a rolled-back transaction, want 0: %+v", len(events), events)
+	}
 }
 
 // ─── Delete ──────────────────────────────────────────────────────────────────

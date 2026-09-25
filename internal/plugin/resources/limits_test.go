@@ -98,6 +98,25 @@ func TestResolve_DefaultsAreRealLimits(t *testing.T) {
 	}
 }
 
+// TestResolve_ClampsToHardCeiling proves the backstop fires even for a value
+// that never went through FromManifestMiB's validation (e.g. a hypothetical
+// admin override constructed directly), so NanoCPUs() can never overflow and
+// no cgroup limit request is absurd regardless of how a Limits value was built.
+func TestResolve_ClampsToHardCeiling(t *testing.T) {
+	got := Resolve(Limits{}, Limits{MemoryBytes: 2 << 40, CPUMillicores: 999_999_999})
+	if got.CPUMillicores != 64_000 {
+		t.Errorf("CPUMillicores = %d, want the 64-core ceiling", got.CPUMillicores)
+	}
+	if got.MemoryBytes != maxPlausibleMemoryMiB<<20 {
+		t.Errorf("MemoryBytes = %d, want the 1 TiB ceiling", got.MemoryBytes)
+	}
+	// The ceiling clamp must not corrupt NanoCPUs() into a negative or
+	// implausible value the way an unclamped multiply-by-1e6 would have.
+	if nano := got.NanoCPUs(); nano <= 0 || nano != 64_000*1_000_000 {
+		t.Errorf("NanoCPUs() = %d, want a clamped, positive value", nano)
+	}
+}
+
 func TestEffective_NanoCPUs(t *testing.T) {
 	tests := []struct {
 		millicores int64
@@ -133,6 +152,8 @@ func TestFromManifestMiB(t *testing.T) {
 		{name: "negative memory", memoryMiB: -1, wantErr: true},
 		{name: "negative cpu", millicores: -1, wantErr: true},
 		{name: "implausibly large", memoryMiB: 1 << 21, wantErr: true},
+		{name: "at the cpu ceiling", millicores: 64_000, wantBytes: 0},
+		{name: "over the cpu ceiling", millicores: 64_001, wantErr: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

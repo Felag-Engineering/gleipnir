@@ -15,12 +15,28 @@ import (
 
 const defaultDebounce = 250 * time.Millisecond
 
-// installFunc is the install signature accepted by Watcher. Using a function
-// type rather than the concrete Installer keeps watcher_test.go stub-friendly.
-type installFunc func(ctx context.Context, tarPath string) error
+// BundleInstaller is the install seam Watcher dispatches settled tarballs
+// through. v1 wires this to the concrete *Installer directly (its Install
+// method already has this shape); the v2 assembly wires an OCI installer
+// adapter that satisfies the same interface (issue #952). Using an interface
+// rather than either concrete type keeps watcher_test.go stub-friendly and
+// lets the watcher outlive whichever install pipeline is behind it.
+type BundleInstaller interface {
+	Install(ctx context.Context, tarPath string) (pluginID string, err error)
+}
+
+// BundleInstallerFunc adapts a plain func to a BundleInstaller, mirroring
+// http.HandlerFunc, for callers and tests that would otherwise need a
+// dedicated named type just to hold one method.
+type BundleInstallerFunc func(ctx context.Context, tarPath string) (string, error)
+
+// Install calls f.
+func (f BundleInstallerFunc) Install(ctx context.Context, tarPath string) (string, error) {
+	return f(ctx, tarPath)
+}
 
 // Watcher watches a directory for plugin tarballs using fsnotify and dispatches
-// each settled file through an install function.
+// each settled file through a BundleInstaller.
 //
 // Design notes:
 //   - Debounce: tarball writes generate many Create/Write events as the file
@@ -32,10 +48,10 @@ type installFunc func(ctx context.Context, tarPath string) error
 //     already present so a server restart picks up tarballs that arrived while down.
 //   - inotify on bind-mounted /plugins is fine on Linux (the default deployment).
 type Watcher struct {
-	dir      string
-	debounce time.Duration
-	install  installFunc
-	logger   *slog.Logger
+	dir       string
+	debounce  time.Duration
+	installer BundleInstaller
+	logger    *slog.Logger
 
 	mu      sync.Mutex
 	pending map[string]*time.Timer
@@ -56,15 +72,15 @@ func WithDebounce(d time.Duration) WatcherOption {
 	return func(w *Watcher) { w.debounce = d }
 }
 
-// NewWatcher creates a Watcher for dir. The install function is called once per
+// NewWatcher creates a Watcher for dir. installer.Install is called once per
 // settled tarball. opts may include WithDebounce.
-func NewWatcher(dir string, install installFunc, opts ...WatcherOption) *Watcher {
+func NewWatcher(dir string, installer BundleInstaller, opts ...WatcherOption) *Watcher {
 	w := &Watcher{
-		dir:      dir,
-		debounce: defaultDebounce,
-		install:  install,
-		logger:   slog.Default(),
-		pending:  make(map[string]*time.Timer),
+		dir:       dir,
+		debounce:  defaultDebounce,
+		installer: installer,
+		logger:    slog.Default(),
+		pending:   make(map[string]*time.Timer),
 	}
 	for _, o := range opts {
 		o(w)
@@ -137,7 +153,7 @@ func (w *Watcher) Run(ctx context.Context, fw *fsnotify.Watcher) error {
 		for {
 			select {
 			case path := <-fire:
-				if err := w.install(ctx, path); err != nil {
+				if _, err := w.installer.Install(ctx, path); err != nil {
 					w.logger.Warn("plugin install failed", "path", path, "err", err)
 				}
 			case <-ctx.Done():
