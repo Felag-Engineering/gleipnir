@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
+	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
 	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 	"gopkg.in/yaml.v3"
 )
@@ -457,9 +458,11 @@ properties:
       type: string
 `
 
-// subscriptionManifest builds a Manifest with a SubscriptionSchema populated
-// from raw YAML.
-func subscriptionManifest(t *testing.T, schemaYAML string) *sdkmanifest.Manifest {
+// subscriptionManifest builds a version-neutral Snapshot with a
+// SubscriptionSchema populated from raw YAML, mirroring what
+// internal/plugin/manifest.Read produces for a v1 manifest declaring
+// subscription_schema.
+func subscriptionManifest(t *testing.T, schemaYAML string) pluginmanifest.Snapshot {
 	t.Helper()
 	var node yaml.Node
 	if err := yaml.Unmarshal([]byte(schemaYAML), &node); err != nil {
@@ -469,12 +472,9 @@ func subscriptionManifest(t *testing.T, schemaYAML string) *sdkmanifest.Manifest
 	if node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
 		inner = node.Content[0]
 	}
-	return &sdkmanifest.Manifest{
-		SchemaVersion:      "v1",
-		Name:               "test-trigger-plugin",
-		Version:            "1.0.0",
-		Services:           sdkmanifest.Services{Trigger: "v1"},
-		Auth:               sdkmanifest.AuthDecl{Mode: "instance_credentials", Strategy: "none"},
+	return pluginmanifest.Snapshot{
+		Version:            1,
+		Auth:               pluginmanifest.AuthDecl{Strategy: "none"},
 		SubscriptionSchema: inner,
 	}
 }
@@ -591,13 +591,7 @@ properties:
 func TestForSubscriptionScope_NilSchema_AcceptsAnything(t *testing.T) {
 	// A manifest with no SubscriptionSchema produces an empty-schema validator
 	// that accepts any value (mirrors ForInstanceConfig with nil ConfigSchema).
-	m := &sdkmanifest.Manifest{
-		SchemaVersion: "v1",
-		Name:          "test",
-		Version:       "1.0.0",
-		Services:      sdkmanifest.Services{Trigger: "v1"},
-		Auth:          sdkmanifest.AuthDecl{Mode: "instance_credentials", Strategy: "none"},
-	}
+	m := pluginmanifest.Snapshot{Version: 1, Auth: pluginmanifest.AuthDecl{Strategy: "none"}}
 	v, err := configvalidate.ForSubscriptionScope(m)
 	if err != nil {
 		t.Fatalf("ForSubscriptionScope with nil schema: %v", err)

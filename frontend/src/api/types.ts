@@ -864,6 +864,12 @@ export type PluginAuthStrategy =
   | 'oauth2_authcode'
   | 'oauth2_clientcred'
 
+// PluginManifestVersion is the manifest schema version internal/plugin/manifest.Read
+// reports for an installed plugin's snapshot: 1 or 2. 0 means the host could not
+// determine it (a Read failure the host fails closed on rather than reporting as
+// 1) — treat it as "unknown, worth a second look", not as an older version.
+export type PluginManifestVersion = 0 | 1 | 2
+
 // Matches internal/admin/plugin_handler.go → pluginListItemResponse (GET /api/v1/admin/plugins).
 export interface ApiPluginListItem {
   id: string
@@ -874,6 +880,7 @@ export interface ApiPluginListItem {
   services: string[] // e.g. ['tool', 'trigger']
   pubkey_fingerprint?: string
   has_sbom: boolean
+  manifest_version: PluginManifestVersion
   instance_count: number
   created_at: string
 }
@@ -893,6 +900,7 @@ export interface ApiPluginDetail {
   has_oauth_defaults: boolean
   pubkey_fingerprint?: string
   has_sbom: boolean
+  manifest_version: PluginManifestVersion
   created_at: string
 }
 

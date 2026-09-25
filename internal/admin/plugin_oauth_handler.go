@@ -14,8 +14,9 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
+	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
 	"github.com/felag-engineering/gleipnir/internal/plugin/oauth"
-	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/manifestv2"
 )
 
 // OAuthPluginQuerier is the narrow DB interface required by PluginOAuthHandler
@@ -112,14 +113,14 @@ func (h *PluginOAuthHandler) Begin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var m sdkmanifest.Manifest
-	if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &m); parseErr != nil {
+	snap, parseErr := pluginmanifest.Read([]byte(plugin.ManifestSnapshot))
+	if parseErr != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "corrupt manifest snapshot", parseErr.Error())
 		return
 	}
 
-	switch m.Auth.Strategy {
-	case sdkmanifest.AuthStrategyOAuth2Authcode:
+	switch snap.Auth.Strategy {
+	case manifestv2.AuthStrategyOAuth2Authcode:
 		if req.ReturnURL == "" {
 			httputil.WriteError(w, http.StatusBadRequest, "return_url is required for oauth2_authcode", "")
 			return
@@ -147,7 +148,7 @@ func (h *PluginOAuthHandler) Begin(w http.ResponseWriter, r *http.Request) {
 		}
 		httputil.WriteJSON(w, http.StatusOK, beginAuthcodeResponse{AuthorizeURL: authorizeURL})
 
-	case sdkmanifest.AuthStrategyOAuth2Clientcred:
+	case manifestv2.AuthStrategyOAuth2Clientcred:
 		if err := h.mgr.BeginClientcred(ctx, instanceID); err != nil {
 			slog.ErrorContext(ctx, "oauth begin clientcred failed", "instance_id", instanceID, "err", err)
 			if errors.Is(err, oauth.ErrConfigInvalid) {
@@ -164,7 +165,7 @@ func (h *PluginOAuthHandler) Begin(w http.ResponseWriter, r *http.Request) {
 
 	default:
 		httputil.WriteError(w, http.StatusBadRequest,
-			fmt.Sprintf("instance auth strategy %q is not an OAuth2 strategy", m.Auth.Strategy), "")
+			fmt.Sprintf("instance auth strategy %q is not an OAuth2 strategy", snap.Auth.Strategy), "")
 	}
 }
 

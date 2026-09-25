@@ -34,6 +34,7 @@ const FULL_PLUGIN: ApiPluginDetail = {
   has_oauth_defaults: true,
   pubkey_fingerprint: 'a1b2c3d4e5f60001',
   has_sbom: true,
+  manifest_version: 1,
   created_at: '2025-05-01T10:00:00Z',
 }
 

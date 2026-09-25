@@ -14,7 +14,8 @@ import (
 
 	"golang.org/x/oauth2"
 
-	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
+	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/manifestv2"
 )
 
 // StoredCredentials is the JSON blob written to
@@ -126,27 +127,27 @@ func (c StoredCredentials) Redact() RedactedCredentials {
 	r := RedactedCredentials{Strategy: c.Strategy}
 
 	switch c.Strategy {
-	case sdkmanifest.AuthStrategyStaticAPIKey:
+	case manifestv2.AuthStrategyStaticAPIKey:
 		if c.StaticAPIKey != nil {
 			r.HeaderName = c.StaticAPIKey.HeaderName
 			r.Scheme = c.StaticAPIKey.Scheme
 			r.HasAPIKey = c.StaticAPIKey.APIKey != ""
 		}
 
-	case sdkmanifest.AuthStrategyHeaderSet:
+	case manifestv2.AuthStrategyHeaderSet:
 		if c.HeaderSet != nil {
 			for _, h := range c.HeaderSet.Headers {
 				r.HeaderNames = append(r.HeaderNames, h.Name)
 			}
 		}
 
-	case sdkmanifest.AuthStrategyBasicAuth:
+	case manifestv2.AuthStrategyBasicAuth:
 		if c.BasicAuth != nil {
 			r.Username = c.BasicAuth.Username
 			r.HasPassword = c.BasicAuth.Password != ""
 		}
 
-	case sdkmanifest.AuthStrategyOAuth2Authcode, sdkmanifest.AuthStrategyOAuth2Clientcred:
+	case manifestv2.AuthStrategyOAuth2Authcode, manifestv2.AuthStrategyOAuth2Clientcred:
 		r.ClientID = c.ClientID
 		r.HasClientSecret = c.ClientSecret != ""
 		r.AuthorizationURL = c.AuthorizationURL
@@ -198,7 +199,7 @@ type InstanceConfigOverride struct {
 //
 // Resolve returns an error when the resulting credentials are missing mandatory
 // fields (ClientID, ClientSecret, TokenURL).
-func Resolve(authDecl sdkmanifest.AuthDecl, defaults *sdkmanifest.OAuthDefaultsDecl, override InstanceConfigOverride) (StoredCredentials, error) {
+func Resolve(authDecl pluginmanifest.AuthDecl, defaults *pluginmanifest.OAuthDefaultsDecl, override InstanceConfigOverride) (StoredCredentials, error) {
 	sc := StoredCredentials{Strategy: authDecl.Strategy}
 
 	if defaults != nil {
@@ -250,9 +251,9 @@ func Resolve(authDecl sdkmanifest.AuthDecl, defaults *sdkmanifest.OAuthDefaultsD
 // seedInstanceCredentials (#572): the credential blob is seeded with the
 // manifest's declared strategy + endpoints at creation, before any token
 // exchange.
-func BuildSeedCredentials(authDecl sdkmanifest.AuthDecl, defaults *sdkmanifest.OAuthDefaultsDecl) (StoredCredentials, bool) {
+func BuildSeedCredentials(authDecl pluginmanifest.AuthDecl, defaults *pluginmanifest.OAuthDefaultsDecl) (StoredCredentials, bool) {
 	switch authDecl.Strategy {
-	case sdkmanifest.AuthStrategyOAuth2Authcode, sdkmanifest.AuthStrategyOAuth2Clientcred:
+	case manifestv2.AuthStrategyOAuth2Authcode, manifestv2.AuthStrategyOAuth2Clientcred:
 		sc := StoredCredentials{Strategy: authDecl.Strategy}
 		if defaults != nil {
 			sc.AuthorizationURL = defaults.AuthorizationURL
@@ -261,10 +262,10 @@ func BuildSeedCredentials(authDecl sdkmanifest.AuthDecl, defaults *sdkmanifest.O
 		}
 		return sc, true
 
-	case sdkmanifest.AuthStrategyNone,
-		sdkmanifest.AuthStrategyStaticAPIKey,
-		sdkmanifest.AuthStrategyHeaderSet,
-		sdkmanifest.AuthStrategyBasicAuth:
+	case manifestv2.AuthStrategyNone,
+		manifestv2.AuthStrategyStaticAPIKey,
+		manifestv2.AuthStrategyHeaderSet,
+		manifestv2.AuthStrategyBasicAuth:
 		return StoredCredentials{Strategy: authDecl.Strategy}, true
 
 	default:

@@ -14,8 +14,9 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
+	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
 	pluginstate "github.com/felag-engineering/gleipnir/internal/plugin/state"
-	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/manifestv2"
 )
 
 // ─── Typed errors for InstanceConfig ─────────────────────────────────────────
@@ -172,15 +173,15 @@ func (m *InstanceConfig) PutSubscriptionScope(ctx context.Context, pluginID, ins
 		return InstanceConfigResult{}, &configInternalError{PublicMsg: "failed to get plugin", Err: err}
 	}
 
-	var manifest sdkmanifest.Manifest
-	if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &manifest); parseErr != nil {
+	manifest, parseErr := pluginmanifest.Read([]byte(plugin.ManifestSnapshot))
+	if parseErr != nil {
 		return InstanceConfigResult{}, CorruptManifestError{Detail: parseErr.Error()}
 	}
 	if manifest.SubscriptionSchema == nil {
 		return InstanceConfigResult{}, ErrNoSubscriptionSchema
 	}
 
-	validator, err := configvalidate.ForSubscriptionScope(&manifest)
+	validator, err := configvalidate.ForSubscriptionScope(manifest)
 	if err != nil {
 		return InstanceConfigResult{}, &configInternalError{
 			PublicMsg: "failed to build scope validator",
@@ -339,8 +340,8 @@ func (m *InstanceConfig) PutConfig(ctx context.Context, pluginID, instanceID str
 		return InstanceConfigResult{}, &configInternalError{PublicMsg: "failed to get plugin", Err: err}
 	}
 
-	var manifest sdkmanifest.Manifest
-	if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &manifest); parseErr != nil {
+	manifest, parseErr := pluginmanifest.Read([]byte(plugin.ManifestSnapshot))
+	if parseErr != nil {
 		return InstanceConfigResult{}, CorruptManifestError{Detail: parseErr.Error()}
 	}
 
@@ -356,7 +357,7 @@ func (m *InstanceConfig) PutConfig(ctx context.Context, pluginID, instanceID str
 
 	// ForInstanceConfig returns a validator that accepts anything when ConfigSchema
 	// is nil (per Q7 in the plan). Do NOT early-return on nil schema — it is valid.
-	validator, err := configvalidate.ForInstanceConfig(&manifest)
+	validator, err := configvalidate.ForInstanceConfig(manifest)
 	if err != nil {
 		return InstanceConfigResult{}, &configInternalError{
 			PublicMsg: "failed to build config validator",
@@ -464,7 +465,7 @@ func (m *InstanceConfig) PutConfig(ctx context.Context, pluginID, instanceID str
 	// so the admin UI tells the operator what's still missing. Best-effort —
 	// the config write has already committed; advanceInstanceReadiness logs
 	// failures internally.
-	m.advanceInstanceReadiness(ctx, updated, &manifest)
+	m.advanceInstanceReadiness(ctx, updated, manifest)
 	if refreshed, refetchErr := m.q.GetPluginInstanceByID(ctx, instanceID); refetchErr == nil {
 		updated = refreshed
 	}
@@ -517,8 +518,8 @@ func (m *InstanceConfig) PutConfigProperty(ctx context.Context, pluginID, instan
 		return InstanceConfigResult{}, &configInternalError{PublicMsg: "failed to get plugin", Err: err}
 	}
 
-	var manifest sdkmanifest.Manifest
-	if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &manifest); parseErr != nil {
+	manifest, parseErr := pluginmanifest.Read([]byte(plugin.ManifestSnapshot))
+	if parseErr != nil {
 		return InstanceConfigResult{}, CorruptManifestError{Detail: parseErr.Error()}
 	}
 
@@ -559,7 +560,7 @@ func (m *InstanceConfig) PutConfigProperty(ctx context.Context, pluginID, instan
 	cfg[property] = value
 
 	// Validate the full merged config against the schema.
-	validator, err := configvalidate.ForInstanceConfig(&manifest)
+	validator, err := configvalidate.ForInstanceConfig(manifest)
 	if err != nil {
 		return InstanceConfigResult{}, &configInternalError{
 			PublicMsg: "failed to build config validator",
@@ -684,7 +685,7 @@ func (m *InstanceConfig) PutConfigProperty(ctx context.Context, pluginID, instan
 // UpdatePluginInstanceHealth). Both InstanceConfig.q and PluginCredentialsHandler's
 // querier satisfy it, which is why this is a package-level helper rather than a
 // method — it lets both handlers share the same logic without a circular dep.
-func AdvanceInstanceReadiness(ctx context.Context, q pluginstate.Querier, pub event.Publisher, inst db.PluginInstance, manifest *sdkmanifest.Manifest) {
+func AdvanceInstanceReadiness(ctx context.Context, q pluginstate.Querier, pub event.Publisher, inst db.PluginInstance, manifest pluginmanifest.Snapshot) {
 	if model.PluginHealthState(inst.HealthState) != model.PluginHealthStateUnhealthy {
 		return
 	}
@@ -708,7 +709,7 @@ func AdvanceInstanceReadiness(ctx context.Context, q pluginstate.Querier, pub ev
 // advanceInstanceReadiness is the method-scoped thin forward to AdvanceInstanceReadiness
 // used by PutConfig (and PutConfigProperty which calls PutConfig indirectly).
 // Keeping the method preserves the existing PutConfig call site unchanged.
-func (m *InstanceConfig) advanceInstanceReadiness(ctx context.Context, inst db.PluginInstance, manifest *sdkmanifest.Manifest) {
+func (m *InstanceConfig) advanceInstanceReadiness(ctx context.Context, inst db.PluginInstance, manifest pluginmanifest.Snapshot) {
 	AdvanceInstanceReadiness(ctx, m.q, m.publisher, inst, manifest)
 }
 
@@ -721,7 +722,7 @@ func (m *InstanceConfig) advanceInstanceReadiness(ctx context.Context, inst db.P
 //
 // The returned string is empty when the instance has everything it needs and
 // is just waiting for the subprocess to come up healthy.
-func computeInstanceReadinessDetail(m *sdkmanifest.Manifest, configJSON string, credentialsPresent bool) string {
+func computeInstanceReadinessDetail(m pluginmanifest.Snapshot, configJSON string, credentialsPresent bool) string {
 	if configJSON == "" || configJSON == "{}" {
 		return "config_missing"
 	}
@@ -729,7 +730,7 @@ func computeInstanceReadinessDetail(m *sdkmanifest.Manifest, configJSON string, 
 	// "none" plugins (and unset strategy, which defaults to "none" in the parser)
 	// are config-only.
 	switch m.Auth.Strategy {
-	case "", sdkmanifest.AuthStrategyNone:
+	case "", manifestv2.AuthStrategyNone:
 		return "" // ready — subprocess will mark healthy on handshake
 	default:
 		if !credentialsPresent {

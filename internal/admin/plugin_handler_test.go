@@ -1200,6 +1200,17 @@ const (
 	// v2 manifest with a newly required config field.
 	v2ManifestWithRequiredField = "schema_version: v1\nname: test-plugin\nversion: 2.0.0\nservices:\n  tool: v2\nauth:\n  mode: instance_credentials\n  strategy: none\nconfig_schema:\n  type: object\n  properties:\n    api_key:\n      type: string\n  required:\n    - api_key\n"
 
+	// validSchemaVersion2ManifestYAML is a FULLY VALID manifest schema_version
+	// "2" (not to be confused with v2ManifestYAML above, whose "v2" refers to
+	// the plugin's own version string on a schema_version v1 manifest). #950
+	// security review: Read does not error on this — it decodes cleanly with
+	// Version 2 — so AcceptManifest/loadPendingManifest/ApprovePlugin must
+	// refuse it on snap.Version != 1, not merely on a Read error.
+	validSchemaVersion2ManifestYAML = "schema_version: \"2\"\nname: test-plugin\nversion: 1.0.0\n" +
+		"package:\n  registry_type: oci\n  identifier: ghcr.io/acme/test-plugin@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n" +
+		"  transport:\n    type: streamable-http\n    port: 8080\n" +
+		"gleipnir:\n  profiles:\n    tool_provider: {}\n"
+
 	// triggerManifestWithScope is a minimal TriggerService manifest with subscription_schema.
 	triggerManifestWithScope = "schema_version: v1\nname: trigger-plugin\nversion: 1.0.0\nservices:\n  trigger: v1\nauth:\n  mode: instance_credentials\n  strategy: none\nsubscription_schema:\n  type: object\n  additionalProperties: false\n  required:\n    - channels\n  properties:\n    channels:\n      type: array\n      items:\n        type: string\n"
 	// triggerManifestNoScope is a TriggerService manifest without subscription_schema.
@@ -1578,6 +1589,61 @@ func TestPluginHandler_AcceptManifest(t *testing.T) {
 		}
 		if payload["config_schema_unparseable"] != true {
 			t.Errorf("audit payload config_schema_unparseable = %v, want true", payload["config_schema_unparseable"])
+		}
+	})
+
+	// #950 security review, LOW follow-up: a VALID schema_version 2 manifest
+	// must be refused by both guards, not just an invalid one — Read does not
+	// error on it, so the guard must check snap.Version, not just err.
+	t.Run("existing manifest snapshot is a valid v2 manifest: refused, not silently diffed as v1", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{
+			ID:               "plugin-v2-existing",
+			Name:             "test-plugin",
+			ManifestSnapshot: validSchemaVersion2ManifestYAML,
+			PluginVersion:    "1.0.0",
+			Status:           "pending_review",
+			Version:          1,
+		})
+		q.seedPendingManifest("plugin-v2-existing", []byte(v1ManifestYAML), "1.0.0", "1.0.1")
+
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-v2-existing/accept-manifest", bytes.NewBufferString(`{}`))
+		req = withChiParams(req, map[string]string{"id": "plugin-v2-existing"})
+		rec := httptest.NewRecorder()
+		h.AcceptManifest(rec, req)
+
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500 refusing a v2 existing manifest snapshot; body: %s", rec.Code, rec.Body.String())
+		}
+		if q.plugins["plugin-v2-existing"].ManifestSnapshot != validSchemaVersion2ManifestYAML {
+			t.Error("manifest_snapshot must not be overwritten when the existing snapshot is refused")
+		}
+	})
+
+	t.Run("candidate manifest is a valid v2 manifest: refused, not silently diffed as v1", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{
+			ID:               "plugin-v2-candidate",
+			Name:             "test-plugin",
+			ManifestSnapshot: v1ManifestYAML,
+			PluginVersion:    "1.0.0",
+			Status:           "pending_review",
+			Version:          1,
+		})
+		q.seedPendingManifest("plugin-v2-candidate", []byte(validSchemaVersion2ManifestYAML), "1.0.0", "1.0.0")
+
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-v2-candidate/accept-manifest", bytes.NewBufferString(`{}`))
+		req = withChiParams(req, map[string]string{"id": "plugin-v2-candidate"})
+		rec := httptest.NewRecorder()
+		h.AcceptManifest(rec, req)
+
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422 refusing a v2 candidate manifest; body: %s", rec.Code, rec.Body.String())
+		}
+		if q.plugins["plugin-v2-candidate"].ManifestSnapshot != v1ManifestYAML {
+			t.Error("manifest_snapshot must not be overwritten when the candidate is refused")
 		}
 	})
 }
@@ -3002,6 +3068,48 @@ func TestApprovePlugin_AlreadyActive(t *testing.T) {
 
 	if rec.Code != http.StatusConflict {
 		t.Errorf("status = %d, want 409 for already-active plugin", rec.Code)
+	}
+}
+
+// TestApprovePlugin_V2ManifestRefused is the #950 security review LOW
+// follow-up: approval must refuse a manifest snapshot that is a FULLY VALID
+// schema_version 2 manifest, not just an invalid one -- Read does not error on
+// it (it decodes cleanly with Version 2), so the guard must check
+// snap.Version, not just err.
+func TestApprovePlugin_V2ManifestRefused(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-v2",
+		Name:             "test-plugin",
+		PluginVersion:    "1.0.0",
+		ManifestSnapshot: validSchemaVersion2ManifestYAML,
+		Status:           "pending_review",
+		Version:          0,
+	})
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-v2/approve", nil)
+	req = withChiParams(req, map[string]string{"id": "plugin-v2"})
+	rec := httptest.NewRecorder()
+	h.ApprovePlugin(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 refusing a v2 manifest; body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "v2 substrate") {
+		t.Errorf("body = %s, want it to say v2 plugins are approved through the v2 substrate", rec.Body.String())
+	}
+
+	// Must not have been approved.
+	updated := q.plugins["plugin-v2"]
+	if updated.Status != "pending_review" {
+		t.Errorf("plugin.Status = %q, want unchanged %q", updated.Status, "pending_review")
+	}
+	for _, ev := range q.auditEvents {
+		if ev.EventType == auditReviewApproved {
+			t.Error("plugin_review_approved must not be emitted for a refused v2 manifest")
+		}
 	}
 }
 

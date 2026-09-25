@@ -15,7 +15,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/infra/headervalidate"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	pluginstate "github.com/felag-engineering/gleipnir/internal/plugin/state"
-	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/manifestv2"
 )
 
 // Audit event types emitted by the store (spec §9.4).
@@ -382,8 +382,8 @@ func (s *DBStore) SetStaticAPIKey(ctx context.Context, instanceID, headerName, s
 			// operation against the manifest's declared strategy
 			// (requireOneOfStrategies), so seeding is safe. Mirrors SetOAuthClient /
 			// SeedOAuthToken, which non-OAuth strategies previously lacked (#572).
-			creds.Strategy = sdkmanifest.AuthStrategyStaticAPIKey
-		} else if creds.Strategy != sdkmanifest.AuthStrategyStaticAPIKey {
+			creds.Strategy = manifestv2.AuthStrategyStaticAPIKey
+		} else if creds.Strategy != manifestv2.AuthStrategyStaticAPIKey {
 			return StoredCredentials{}, auditSpec{}, ErrWrongStrategy
 		}
 		creds.StaticAPIKey = &StaticAPIKeyCreds{
@@ -420,8 +420,8 @@ func (s *DBStore) SetHeaderSetEntry(ctx context.Context, instanceID string, head
 		if creds.Strategy == "" {
 			// Seed the strategy on first write for a fresh instance (#572). The
 			// handler already validated it against the manifest. See SetStaticAPIKey.
-			creds.Strategy = sdkmanifest.AuthStrategyHeaderSet
-		} else if creds.Strategy != sdkmanifest.AuthStrategyHeaderSet {
+			creds.Strategy = manifestv2.AuthStrategyHeaderSet
+		} else if creds.Strategy != manifestv2.AuthStrategyHeaderSet {
 			return StoredCredentials{}, auditSpec{}, ErrWrongStrategy
 		}
 		// Replace existing entry by case-insensitive name, or append.
@@ -455,7 +455,7 @@ func (s *DBStore) SetHeaderSetEntry(ctx context.Context, instanceID string, head
 func (s *DBStore) DeleteHeaderSetEntry(ctx context.Context, instanceID, headerName string) error {
 	return s.withCASRetry(ctx, instanceID, "delete header set entry", func(creds StoredCredentials) (StoredCredentials, auditSpec, error) {
 		// Strict reject — no seed-if-empty: the instance must already be header_set.
-		if creds.Strategy != sdkmanifest.AuthStrategyHeaderSet {
+		if creds.Strategy != manifestv2.AuthStrategyHeaderSet {
 			return StoredCredentials{}, auditSpec{}, ErrWrongStrategy
 		}
 		// nil-init before slice ops so a fresh instance doesn't panic (B1).
@@ -489,8 +489,8 @@ func (s *DBStore) SetBasicAuth(ctx context.Context, instanceID, username, passwo
 		if creds.Strategy == "" {
 			// Seed the strategy on first write for a fresh instance (#572). The
 			// handler already validated it against the manifest. See SetStaticAPIKey.
-			creds.Strategy = sdkmanifest.AuthStrategyBasicAuth
-		} else if creds.Strategy != sdkmanifest.AuthStrategyBasicAuth {
+			creds.Strategy = manifestv2.AuthStrategyBasicAuth
+		} else if creds.Strategy != manifestv2.AuthStrategyBasicAuth {
 			return StoredCredentials{}, auditSpec{}, ErrWrongStrategy
 		}
 		creds.BasicAuth = &BasicAuthCreds{Username: username, Password: password}

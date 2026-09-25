@@ -38,12 +38,13 @@ type OptionsSpec struct {
 // properties key. The annotation value must be exactly the boolean true — the
 // string "true" and other non-boolean values are not included.
 //
-// This duplicates internal/plugin/configvalidate.SecretPropertyNames (the live
-// v1 redaction path, deliberately left unchanged pre-demo) rather than
-// replacing it; internal/plugin/manifest's TestAnnotationParity pins the two
-// implementations to identical output over a shared input table. #950 is
-// where configvalidate forwards to this implementation and that test is
-// deleted, once a v2-aware host reader has a caller.
+// This is the ADR-049 redaction path's implementation for both manifest
+// formats: internal/plugin/configvalidate.SecretPropertyNames forwards here
+// rather than re-implementing the same logic (#950). It lives in this v2-only
+// package, not a shared leaf package, because the two manifest formats are
+// kept as separate types on purpose (see the package doc) — this function
+// operates on a raw *yaml.Node schema fragment, which is version-neutral, so
+// there is nothing v1-specific for configvalidate's copy to diverge on.
 func SecretPropertyNames(schemaNode *yaml.Node) (map[string]bool, error) {
 	properties, err := schemaProperties(schemaNode)
 	if err != nil {
@@ -80,9 +81,8 @@ func SecretPropertyNames(schemaNode *yaml.Node) (map[string]bool, error) {
 //
 // Returns nil, nil when schemaNode is nil or declares no annotated properties.
 //
-// This duplicates internal/plugin/configvalidate.OptionsAnnotations for the
-// same reason SecretPropertyNames duplicates its v1 counterpart — see that
-// doc comment.
+// internal/plugin/configvalidate.OptionsAnnotations forwards here for the
+// same reason SecretPropertyNames does — see that doc comment.
 func OptionsAnnotations(schemaNode *yaml.Node) (map[string]OptionsSpec, error) {
 	properties, err := schemaProperties(schemaNode)
 	if err != nil {

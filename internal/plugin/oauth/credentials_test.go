@@ -8,6 +8,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
 	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 )
 
@@ -296,7 +297,7 @@ func TestBuildSeedCredentials(t *testing.T) {
 
 	for _, s := range strategies {
 		t.Run(s, func(t *testing.T) {
-			authDecl := sdkmanifest.AuthDecl{Strategy: s}
+			authDecl := pluginmanifest.AuthDecl{Strategy: s}
 			creds, ok := BuildSeedCredentials(authDecl, nil)
 			if !ok {
 				t.Fatalf("BuildSeedCredentials(%q): got ok=false, want true", s)
@@ -308,7 +309,7 @@ func TestBuildSeedCredentials(t *testing.T) {
 	}
 
 	t.Run("unknown strategy returns false", func(t *testing.T) {
-		authDecl := sdkmanifest.AuthDecl{Strategy: "unknown_strategy"}
+		authDecl := pluginmanifest.AuthDecl{Strategy: "unknown_strategy"}
 		_, ok := BuildSeedCredentials(authDecl, nil)
 		if ok {
 			t.Error("expected ok=false for unknown strategy")
@@ -316,8 +317,8 @@ func TestBuildSeedCredentials(t *testing.T) {
 	})
 
 	t.Run("oauth2_authcode with defaults", func(t *testing.T) {
-		authDecl := sdkmanifest.AuthDecl{Strategy: sdkmanifest.AuthStrategyOAuth2Authcode}
-		defaults := &sdkmanifest.OAuthDefaultsDecl{
+		authDecl := pluginmanifest.AuthDecl{Strategy: sdkmanifest.AuthStrategyOAuth2Authcode}
+		defaults := &pluginmanifest.OAuthDefaultsDecl{
 			AuthorizationURL: "https://provider/auth",
 			TokenURL:         "https://provider/token",
 			Scopes:           []string{"openid"},
@@ -333,4 +334,57 @@ func TestBuildSeedCredentials(t *testing.T) {
 			t.Errorf("TokenURL: got %q, want %q", creds.TokenURL, defaults.TokenURL)
 		}
 	})
+}
+
+// v2OAuthManifest is a v2 manifest declaring an oauth2_authcode strategy with
+// baked-in endpoint defaults — the v2 twin of what admin/plugin_handler.go's
+// seedInstanceCredentials feeds BuildSeedCredentials for a v1 manifest.
+// Nothing loads a v2 manifest in production yet (#950 DoD: a v2-snapshot test
+// proving strategy resolution works identically once something does).
+const v2OAuthManifest = `
+schema_version: "2"
+name: acme-notify
+version: 1.0.0
+package:
+  registry_type: oci
+  identifier: ghcr.io/acme/notify@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  transport:
+    type: streamable-http
+    port: 8080
+gleipnir:
+  profiles:
+    tool_provider: {}
+  auth:
+    strategy: oauth2_authcode
+    oauth_defaults:
+      authorization_url: https://acme.example.com/oauth/authorize
+      token_url: https://acme.example.com/oauth/token
+      scopes: [read, write]
+`
+
+// TestBuildSeedCredentials_V2Manifest proves BuildSeedCredentials resolves a
+// v2 manifest's Auth/OAuthDefaults (as internal/plugin/manifest.Read produces
+// them) the same way it resolves a v1 manifest's.
+func TestBuildSeedCredentials_V2Manifest(t *testing.T) {
+	snap, err := pluginmanifest.Read([]byte(v2OAuthManifest))
+	if err != nil {
+		t.Fatalf("Read(v2 manifest): %v", err)
+	}
+	if snap.Version != 2 {
+		t.Fatalf("snap.Version = %d, want 2", snap.Version)
+	}
+
+	creds, ok := BuildSeedCredentials(snap.Auth, snap.Auth.OAuthDefaults)
+	if !ok {
+		t.Fatal("BuildSeedCredentials: got ok=false, want true")
+	}
+	if creds.Strategy != sdkmanifest.AuthStrategyOAuth2Authcode {
+		t.Errorf("Strategy = %q, want %q", creds.Strategy, sdkmanifest.AuthStrategyOAuth2Authcode)
+	}
+	if creds.AuthorizationURL != "https://acme.example.com/oauth/authorize" {
+		t.Errorf("AuthorizationURL = %q", creds.AuthorizationURL)
+	}
+	if creds.TokenURL != "https://acme.example.com/oauth/token" {
+		t.Errorf("TokenURL = %q", creds.TokenURL)
+	}
 }

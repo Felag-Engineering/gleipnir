@@ -1193,6 +1193,21 @@ func TestReadManifest_Validation(t *testing.T) {
 			manifest:    base + "name: my-plugin\nversion: 1.0.0\n",
 			wantErrFrag: "",
 		},
+		{
+			// #950 security review: a v2-shaped manifest must never reach the
+			// v1 parse. Without this guard, plain yaml.Unmarshal into the v1
+			// Manifest struct would succeed (name/version are top-level in
+			// both formats) while silently leaving Auth/Tier2/ConfigSchema at
+			// their zero value -- installing what looks like an empty,
+			// harmless v1 plugin from bytes that fully declare v2 auth/tier2.
+			name: "v2-shaped manifest is rejected, not silently accepted as an empty v1 one",
+			manifest: "schema_version: \"2\"\nname: my-plugin\nversion: 1.0.0\n" +
+				"package:\n  registry_type: oci\n  identifier: ghcr.io/acme/my-plugin@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n" +
+				"  transport:\n    type: streamable-http\n    port: 8080\n" +
+				"gleipnir:\n  profiles:\n    tool_provider: {}\n" +
+				"  auth:\n    strategy: oauth2_authcode\n    oauth_defaults:\n      authorization_url: https://acme.example.com/authorize\n      token_url: https://acme.example.com/token\n      scopes: [read]\n",
+			wantErrFrag: "requires the v2 substrate",
+		},
 	}
 
 	for _, tc := range cases {
@@ -1215,6 +1230,45 @@ func TestReadManifest_Validation(t *testing.T) {
 				t.Errorf("readManifest error = %q, want substring %q", err.Error(), tc.wantErrFrag)
 			}
 		})
+	}
+}
+
+// TestInstall_V2Manifest_Rejected is the end-to-end proof for the readManifest
+// guard above: a fully-formed, validly-signed tarball whose manifest.yaml
+// declares schema_version 2 must be refused by the v1 Installer.Install, and
+// must leave no plugin row behind. This is the exact attack the #950 security
+// review flagged: without the guard, this manifest's real oauth2_authcode
+// auth/token_url would silently install as an apparently auth-less v1 plugin,
+// and host code reading the row through internal/plugin/manifest.Read (OAuth,
+// Tier-2, instance config) would then see the FULL v2 view -- bypassing
+// whatever the v1 install consent screen showed.
+func TestInstall_V2Manifest_Rejected(t *testing.T) {
+	q := openTestDB(t)
+	inst := newTestInstaller(t, q, false)
+
+	name := "v2-sneak-plugin"
+	manifestContent := []byte("schema_version: \"2\"\nname: " + name + "\nversion: 1.0.0\n" +
+		"package:\n  registry_type: oci\n  identifier: ghcr.io/acme/" + name + "@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n" +
+		"  transport:\n    type: streamable-http\n    port: 8080\n" +
+		"gleipnir:\n  profiles:\n    tool_provider: {}\n" +
+		"  auth:\n    strategy: oauth2_authcode\n    oauth_defaults:\n      authorization_url: https://acme.example.com/authorize\n      token_url: https://acme.example.com/token\n      scopes: [read]\n")
+	binaryContent := []byte("fake binary content for " + name)
+
+	pk, sk, err := signing.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	pubkeyBytes := signing.MarshalPublicKey(pk, "test key")
+	tarPath := buildSignedTarWithContent(t, name, manifestContent, binaryContent, pubkeyBytes, sk.SecretKey, sk.KeyID)
+
+	if _, err := inst.Install(context.Background(), tarPath); err == nil {
+		t.Fatal("Install: expected an error rejecting the v2 manifest, got nil")
+	} else if !strings.Contains(err.Error(), "requires the v2 substrate") {
+		t.Errorf("Install error = %q, want it to mention the v2 substrate", err.Error())
+	}
+
+	if _, err := q.GetPluginByName(context.Background(), name); err == nil {
+		t.Error("GetPluginByName: expected no row for a rejected v2 manifest, got one")
 	}
 }
 
