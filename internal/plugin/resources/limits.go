@@ -25,6 +25,21 @@ const (
 	nanoCPUsPerMillicore  int64 = 1_000_000
 	minEnforceableMemory  int64 = 6 << 20 // 6 MiB — below this the runtime refuses
 	maxPlausibleMemoryMiB int64 = 1 << 20 // 1 TiB, expressed in MiB
+
+	// maxCeilingCPUMillicores and maxCeilingMemoryBytes are hard backstops
+	// Resolve clamps every resolved value to, regardless of source (manifest,
+	// admin override, or host default).
+	//
+	// FromManifestMiB already REJECTS a manifest over these bounds at
+	// validation time — loud, not silent — which is what should actually stop
+	// an out-of-range manifest. This clamp exists only as defense in depth for
+	// a future caller that constructs Limits directly without going through
+	// that validation (e.g. an admin override path), and for the arithmetic
+	// itself: NanoCPUs() multiplies CPUMillicores by one million, and an
+	// unbounded value here would overflow int64 well before it became a
+	// plausible request.
+	maxCeilingCPUMillicores int64 = 64_000                      // 64 cores
+	maxCeilingMemoryBytes   int64 = maxPlausibleMemoryMiB << 20 // 1 TiB, matching FromManifestMiB's own ceiling
 )
 
 // Limits is one resource envelope. A zero field means "not specified at this
@@ -107,6 +122,15 @@ func Resolve(manifest, override Limits) Effective {
 		out.CPUMillicores = override.CPUMillicores
 		out.CPUSource = SourceOverride
 	}
+
+	// Hard backstop, independent of Source: nothing that reaches a container
+	// create call may exceed these, no matter which layer produced it.
+	if out.MemoryBytes > maxCeilingMemoryBytes {
+		out.MemoryBytes = maxCeilingMemoryBytes
+	}
+	if out.CPUMillicores > maxCeilingCPUMillicores {
+		out.CPUMillicores = maxCeilingCPUMillicores
+	}
 	return out
 }
 
@@ -132,6 +156,9 @@ func FromManifestMiB(memoryMiB, cpuMillicores int) (Limits, error) {
 				memoryMiB, minEnforceableMemory>>20)
 		}
 		out.MemoryBytes = bytes
+	}
+	if int64(cpuMillicores) > maxCeilingCPUMillicores {
+		return Limits{}, fmt.Errorf("resources: cpu_millicores=%d exceeds the plausible ceiling of %d", cpuMillicores, maxCeilingCPUMillicores)
 	}
 	out.CPUMillicores = int64(cpuMillicores)
 	return out, nil

@@ -346,15 +346,16 @@ func (f *fakePluginQuerier) seedPolicy(p db.Policy) {
 // testPluginHandlerConfig holds optional dependencies for newTestPluginHandler.
 // Zero-value is safe: all fields are nil-able and treated as no-op.
 type testPluginHandlerConfig struct {
-	store      *db.Store
-	procMgr    PluginProcessManager
-	trigger    TriggerRestarter
-	inflight   InflightCounter
-	unreg      ToolUnregistrar
-	pluginsDir string
-	installer  PluginInstaller
-	rssAgg     RSSAggregator
-	credSeeder CredentialSeeder
+	store       *db.Store
+	procMgr     PluginProcessManager
+	trigger     TriggerRestarter
+	inflight    InflightCounter
+	unreg       ToolUnregistrar
+	pluginsDir  string
+	installer   PluginInstaller
+	rssAgg      RSSAggregator
+	credSeeder  CredentialSeeder
+	provisioner InstanceProvisioner
 }
 
 // newTestPluginHandler builds InstanceLifecycle + InstanceConfig + PluginHandler
@@ -363,13 +364,14 @@ type testPluginHandlerConfig struct {
 // place, not 97.
 func newTestPluginHandler(q PluginQuerier, clock func() time.Time, cfg testPluginHandlerConfig) *PluginHandler {
 	lifecycle := NewInstanceLifecycle(InstanceLifecycleDeps{
-		Q:          q,
-		Store:      cfg.store,
-		ProcMgr:    cfg.procMgr,
-		Trigger:    cfg.trigger,
-		Inflight:   cfg.inflight,
-		Unreg:      cfg.unreg,
-		PluginsDir: cfg.pluginsDir,
+		Q:           q,
+		Store:       cfg.store,
+		ProcMgr:     cfg.procMgr,
+		Trigger:     cfg.trigger,
+		Inflight:    cfg.inflight,
+		Unreg:       cfg.unreg,
+		PluginsDir:  cfg.pluginsDir,
+		Provisioner: cfg.provisioner,
 	})
 	instanceConfig := NewInstanceConfig(InstanceConfigDeps{
 		Q:       q,
@@ -386,6 +388,8 @@ func newTestPluginHandler(q PluginQuerier, clock func() time.Time, cfg testPlugi
 		Lifecycle:        lifecycle,
 		Config:           instanceConfig,
 		CredentialSeeder: cfg.credSeeder,
+		Store:            cfg.store,
+		Provisioner:      cfg.provisioner,
 	})
 }
 
@@ -2950,6 +2954,42 @@ func seedStoreInstance(tb testing.TB, store *db.Store, instanceID, pluginID, ins
 	if err != nil {
 		tb.Fatalf("seedStoreInstance(%s): %v", instanceID, err)
 	}
+}
+
+// seedStoreInstanceWithHealth is seedStoreInstance with an explicit initial
+// health_state, for tests (e.g. Activate) that need something other than the
+// "healthy" default.
+func seedStoreInstanceWithHealth(tb testing.TB, store *db.Store, instanceID, pluginID, instanceName, healthState string) {
+	tb.Helper()
+	q := db.New(store.DB())
+	now := "2026-01-01T00:00:00Z"
+	_, err := q.CreatePluginInstance(context.Background(), db.CreatePluginInstanceParams{
+		ID:                    instanceID,
+		PluginID:              pluginID,
+		InstanceName:          instanceName,
+		ConfigJson:            "{}",
+		SubscriptionScopeJson: "{}",
+		HandshakeVersions:     "{}",
+		HealthState:           healthState,
+		CreatedAt:             now,
+		UpdatedAt:             now,
+	})
+	if err != nil {
+		tb.Fatalf("seedStoreInstanceWithHealth(%s): %v", instanceID, err)
+	}
+}
+
+// storeHasInactiveHealth returns true when the real store's instance row has
+// transitioned to health_state="inactive" — used to confirm the tx-scoped
+// write inside setHealthAndDesired actually committed (or rolled back).
+func storeHasInactiveHealth(tb testing.TB, store *db.Store, instanceID string) bool {
+	tb.Helper()
+	q := db.New(store.DB())
+	inst, err := q.GetPluginInstanceByID(context.Background(), instanceID)
+	if err != nil {
+		tb.Fatalf("storeHasInactiveHealth: %v", err)
+	}
+	return inst.HealthState == "inactive"
 }
 
 // storeHasPlugin returns true when the plugin row still exists in the real store.
