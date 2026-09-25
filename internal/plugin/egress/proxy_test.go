@@ -452,28 +452,31 @@ func TestGatewayRegistry(t *testing.T) {
 	}
 }
 
-func TestGatewayOf(t *testing.T) {
+// The reserved address is .2, deliberately one past .1 — the network's own
+// gateway, which belongs to the bridge itself and can never be assigned to
+// any container (#958 finding 4).
+func TestGleipnirAddrOf(t *testing.T) {
 	tests := []struct {
 		subnet string
 		want   string
 	}{
-		{"10.83.0.0/24", "10.83.0.1"},
-		{"10.83.7.0/24", "10.83.7.1"},
-		{"192.168.16.0/24", "192.168.16.1"},
+		{"10.83.0.0/24", "10.83.0.2"},
+		{"10.83.7.0/24", "10.83.7.2"},
+		{"192.168.16.0/24", "192.168.16.2"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.subnet, func(t *testing.T) {
-			got, err := GatewayOf(tc.subnet)
+			got, err := GleipnirAddrOf(tc.subnet)
 			if err != nil {
-				t.Fatalf("GatewayOf: %v", err)
+				t.Fatalf("GleipnirAddrOf: %v", err)
 			}
 			if got.String() != tc.want {
-				t.Errorf("GatewayOf(%s) = %s, want %s", tc.subnet, got, tc.want)
+				t.Errorf("GleipnirAddrOf(%s) = %s, want %s", tc.subnet, got, tc.want)
 			}
 		})
 	}
-	if _, err := GatewayOf("not a cidr"); err == nil {
-		t.Error("GatewayOf accepted a malformed subnet")
+	if _, err := GleipnirAddrOf("not a cidr"); err == nil {
+		t.Error("GleipnirAddrOf accepted a malformed subnet")
 	}
 }
 

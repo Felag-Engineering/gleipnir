@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -78,6 +79,46 @@ type Config struct {
 	// for the network lifecycle: without it the loop can converge containers
 	// on networks something else created, but cannot create one itself.
 	Subnets *SubnetAllocator
+
+	// SelfContainerID is the container ID Gleipnir resolved for itself
+	// (container.ResolveSelfContainerID), used to join and leave each
+	// instance's network so Gleipnir can reach it — under rootless Podman a
+	// host process can reach neither the network's gateway nor a container on
+	// it, which is why plugins are unsupported outside a container in the
+	// alpha. Empty means Gleipnir is not running in a container: the loop
+	// still converges containers and networks, it just never attempts a
+	// self-attach.
+	SelfContainerID container.ContainerID
+
+	// CheckForwardingDisabled gates self-attach on Gleipnir's own kernel
+	// having IP forwarding disabled on both stacks (#958 finding 2). Nil uses
+	// container.CheckForwardingDisabled, the real /proc read; tests inject a
+	// fixed answer so self-attach behavior does not depend on the sysctls of
+	// whatever host happens to run the test.
+	CheckForwardingDisabled func() error
+
+	// OperatorAPIGuarded gates self-attach on the operator-facing admin API
+	// listener having been wrapped by the network guard that refuses
+	// cross-instance traffic (netguard, PR #1029 — not merged as of #958's
+	// own landing, so this stays a plain bool rather than importing an
+	// opaque marker type from an unmerged package). Without that guard,
+	// Gleipnir joining every instance network while its own operator API
+	// remains reachable FROM those networks would hand a compromised plugin
+	// a path to the admin surface — self-attach's other checks (managed
+	// label, Internal, instance match, subnet containment, forwarding
+	// disabled) say nothing about that path, because it runs through
+	// Gleipnir's OWN container being multi-homed, not through a network
+	// Gleipnir joined incorrectly.
+	//
+	// The caller wiring the reconciler (#962, once it exists) must set this
+	// to true ONLY once the netguard listener wrapper is actually in front
+	// of the operator listener, never speculatively "because the code
+	// compiles" — a true value here that does not reflect a real guard is
+	// worse than leaving self-attach disabled, since it reads as an
+	// intentional decision instead of a gap. Defaults to false, so a
+	// caller that says nothing about it gets self-attach OFF, the same
+	// fail-closed default the forwarding check gets.
+	OperatorAPIGuarded bool
 
 	// Rotations is the generation-record store. Optional: nil disables
 	// generation tracking entirely, and the core loop falls back to plain,
@@ -166,6 +207,11 @@ type Reconciler struct {
 	publisher event.Publisher
 	subnets   *SubnetAllocator
 	networkFn func(db.PluginContainer) string
+
+	// selfAttacher joins/leaves instance networks on Gleipnir's own behalf.
+	// Nil when Config.SelfContainerID was empty — the loop then never plans
+	// or applies an attach/detach step at all.
+	selfAttacher *container.SelfAttacher
 
 	// egressEnv supplies the proxy environment a container is created with
 	// (ADR-056 §7 egress containment, #812). A hook rather than a direct
@@ -263,6 +309,57 @@ func New(cfg Config) (*Reconciler, error) {
 		gcNow = time.Now
 	}
 
+	var selfAttacher *container.SelfAttacher
+	if cfg.SelfContainerID != "" {
+		// Self-attach is refused outright, not just validated per-call,
+		// unless BOTH preconditions hold — each is a LOG, not a fatal New()
+		// error, since the core convergence loop still has containers to
+		// converge even when self-attach specifically cannot be enabled.
+		//
+		// 1. The operator API is guarded against cross-instance traffic
+		//    (#1021 review item 1): without this, Gleipnir joining every
+		//    instance network while its own admin surface remains reachable
+		//    FROM those networks is a path none of self-attach's other
+		//    checks (managed label, Internal, instance match, subnet
+		//    containment) can see, because it runs through Gleipnir's own
+		//    container being multi-homed, not through a network Gleipnir
+		//    joined incorrectly.
+		switch {
+		case !cfg.OperatorAPIGuarded:
+			slog.Error("reconciler: refusing to enable gleipnir self-attach; " +
+				"the operator API is not confirmed guarded against cross-instance traffic (Config.OperatorAPIGuarded)")
+
+		// 2. Gleipnir's own kernel has forwarding disabled on both stacks
+		//    (#958 finding 2): a container attached to two isolated instance
+		//    networks with forwarding enabled could route packets between
+		//    them, undoing east-west isolation through the one component
+		//    every instance network trusts enough to let in.
+		default:
+			checkForwarding := cfg.CheckForwardingDisabled
+			if checkForwarding == nil {
+				checkForwarding = container.CheckForwardingDisabled
+			}
+			if err := checkForwarding(); err != nil {
+				slog.Error("reconciler: refusing to enable gleipnir self-attach; "+
+					"a plugin container could otherwise be bridged to another instance's network through gleipnir's own container",
+					"err", err)
+			} else {
+				pool := netip.Prefix{}
+				if cfg.Subnets != nil {
+					pool = cfg.Subnets.Pool()
+				}
+				selfAttacher = container.NewSelfAttacher(container.SelfAttacherConfig{
+					Runtime:           cfg.Runtime,
+					ContainerID:       cfg.SelfContainerID,
+					ManagedLabelKey:   LabelManaged,
+					ManagedLabelValue: ManagedValue,
+					InstanceLabelKey:  LabelInstance,
+					Pool:              pool,
+				})
+			}
+		}
+	}
+
 	return &Reconciler{
 		runtime:         cfg.Runtime,
 		store:           cfg.Store,
@@ -273,6 +370,7 @@ func New(cfg Config) (*Reconciler, error) {
 		networkFn:       networkFn,
 		egressEnv:       cfg.EgressEnv,
 		hostEndpointEnv: cfg.HostEndpointEnv,
+		selfAttacher:    selfAttacher,
 		kick:            make(chan struct{}, 1),
 
 		rotations:         cfg.Rotations,
@@ -456,8 +554,31 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (PassResult, error) {
 		}
 	}
 
+	// A failed Inspect of Gleipnir's own container does not abort the whole
+	// pass (#958 finding 7): the core convergence loop still has containers
+	// to bring up, bring down, and orphans to clean up, none of which
+	// depend on self-attach succeeding this particular pass. It does NOT
+	// mean "self-attach disabled" though — self is marked Unknown rather
+	// than absent (#1021 review item 3b), which planFor treats differently
+	// from "not configured at all": an instance that would otherwise be
+	// CREATED is left alone instead, because creating it without knowing
+	// whether Gleipnir is already attached risks either a container nobody
+	// can reach yet, or a duplicate-attach the daemon would refuse. The next
+	// pass tries Inspect again.
+	self := selfInspect{Configured: r.selfAttacher != nil}
+	if self.Configured {
+		info, err := r.runtime.Inspect(ctx, r.selfAttacher.ContainerID())
+		if err != nil {
+			logctx.Logger(ctx).WarnContext(ctx, "reconciler: inspecting gleipnir's own container failed; self-attach status unknown for this pass",
+				"err", err)
+			self.Unknown = true
+		} else {
+			self.Info = &info
+		}
+	}
+
 	result := PassResult{Desired: len(desired), Observed: len(observed)}
-	for _, action := range planPass(desired, observed, networks, generations, r.rotations != nil) {
+	for _, action := range planPass(desired, observed, networks, generations, r.rotations != nil, self) {
 		if action.Kind == ActionNone {
 			continue
 		}
@@ -496,7 +617,16 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (PassResult, error) {
 // which is why it travels separately from the (necessarily empty, when
 // disabled) generations slice: an instance with tracking disabled must fall
 // back to the legacy create path, not be read as "no generation yet".
-func planPass(desired []db.PluginContainer, observed []container.ContainerInfo, networks []container.NetworkInfo, generations []db.PluginContainerGeneration, generationTrackingEnabled bool) []Action {
+//
+// self describes what this pass learned about Gleipnir's own self-attach
+// status — not configured at all, confirmed (with its most recent Inspect),
+// or configured but Unknown this pass (Inspect failed). Passing the whole
+// three-way state through here, rather than a bare pointer, is what lets
+// selfStateFor tell "no self-attach configured" apart from "configured but
+// this pass could not confirm it" — the two read identically as "not
+// attached" but planFor must react to them differently (#1021 review item
+// 3b).
+func planPass(desired []db.PluginContainer, observed []container.ContainerInfo, networks []container.NetworkInfo, generations []db.PluginContainerGeneration, generationTrackingEnabled bool, self selfInspect) []Action {
 	byInstance := make(map[string]*container.ContainerInfo, len(observed))
 	var unlabelled []container.ContainerInfo
 	for i := range observed {
@@ -525,7 +655,7 @@ func planPass(desired []db.PluginContainer, observed []container.ContainerInfo, 
 	for i := range desired {
 		row := &desired[i]
 		seen[row.PluginInstanceID] = true
-		_, hasNetwork := networkByInstance[row.PluginInstanceID]
+		net, hasNetwork := networkByInstance[row.PluginInstanceID]
 		gen := GenerationTrackingDisabled
 		if generationTrackingEnabled {
 			if hasLiveGeneration[row.PluginInstanceID] {
@@ -534,7 +664,7 @@ func planPass(desired []db.PluginContainer, observed []container.ContainerInfo, 
 				gen = GenerationMissing
 			}
 		}
-		actions = append(actions, planFor(row, byInstance[row.PluginInstanceID], hasNetwork, gen))
+		actions = append(actions, planFor(row, byInstance[row.PluginInstanceID], hasNetwork, gen, selfStateFor(self, net)))
 	}
 
 	// Everything managed that no desired row claims is an orphan. A container
@@ -543,28 +673,59 @@ func planPass(desired []db.PluginContainer, observed []container.ContainerInfo, 
 	// == nil short-circuits planFor before it is ever consulted.
 	for id, info := range byInstance {
 		if !seen[id] {
-			_, hasNetwork := networkByInstance[id]
-			actions = append(actions, planFor(nil, info, hasNetwork, GenerationTrackingDisabled))
+			net, hasNetwork := networkByInstance[id]
+			actions = append(actions, planFor(nil, info, hasNetwork, GenerationTrackingDisabled, selfStateFor(self, net)))
 		}
 	}
 	for i := range unlabelled {
-		actions = append(actions, planFor(nil, &unlabelled[i], false, GenerationTrackingDisabled))
+		actions = append(actions, planFor(nil, &unlabelled[i], false, GenerationTrackingDisabled, selfAttachState{}))
 	}
 
 	// A network whose instance has neither a desired row nor a container left
 	// is the second half of a teardown.
-	for id := range networkByInstance {
+	for id, net := range networkByInstance {
 		if seen[id] {
 			continue
 		}
 		if _, stillRunning := byInstance[id]; stillRunning {
 			continue
 		}
-		action := planFor(nil, nil, true, GenerationTrackingDisabled)
+		action := planFor(nil, nil, true, GenerationTrackingDisabled, selfStateFor(self, net))
 		action.InstanceID = id
 		actions = append(actions, action)
 	}
 	return actions
+}
+
+// selfInspect describes what one reconcile pass learned about Gleipnir's own
+// self-attach status, before that status is narrowed to a single instance's
+// network by selfStateFor.
+type selfInspect struct {
+	// Configured is true when Config.SelfContainerID was set and the
+	// preconditions checked at construction (operator API guard, forwarding
+	// disabled) passed — i.e. Reconciler.selfAttacher != nil. False means
+	// self-attach is not in play at all this run (host-process mode, or a
+	// precondition failure logged at New()).
+	Configured bool
+	// Info is the most recent Inspect result for Gleipnir's own container,
+	// or nil when Configured is false or the Inspect call failed this pass
+	// (Unknown distinguishes those two).
+	Info *container.ContainerInfo
+	// Unknown is true when Configured is true but this pass's Inspect call
+	// failed — status could not be confirmed, as opposed to confirmed absent.
+	Unknown bool
+}
+
+// selfStateFor reports what planFor needs to know about Gleipnir's own
+// self-attach to net.
+func selfStateFor(self selfInspect, net container.NetworkInfo) selfAttachState {
+	if !self.Configured {
+		return selfAttachState{}
+	}
+	if self.Unknown {
+		return selfAttachState{Enabled: true, Unknown: true}
+	}
+	return selfAttachState{Enabled: true, Attached: container.SelfAttached(*self.Info, net)}
 }
 
 // apply performs one action's socket write.
@@ -627,6 +788,12 @@ func (r *Reconciler) apply(ctx context.Context, action Action, desired []db.Plug
 	case ActionRemoveNetwork:
 		return r.removeNetwork(ctx, action.InstanceID)
 
+	case ActionAttachSelf:
+		return r.attachSelf(ctx, action.InstanceID)
+
+	case ActionDetachSelf:
+		return r.detachSelf(ctx, action.InstanceID)
+
 	case ActionRemove:
 		// force=false deliberately: a container this pass believes is stopped
 		// but the runtime still considers running means the two disagree, and
@@ -659,6 +826,17 @@ func (r *Reconciler) createNetwork(ctx context.Context, row db.PluginContainer) 
 		return fmt.Errorf("allocating subnet for instance %q: %w", row.PluginInstanceID, err)
 	}
 
+	// Dynamic allocation is confined to the upper half of the subnet (#1021
+	// review item 3): the lower half — including the network address, the
+	// gateway, and the address self-attach reserves for Gleipnir two below
+	// it — is never handed to a plugin container by the daemon's own IPAM,
+	// which is what makes the reservation actually hold rather than just
+	// being the address Gleipnir HAPPENS to grab first.
+	ipRange, err := upperHalfIPRange(subnet)
+	if err != nil {
+		return fmt.Errorf("computing dynamic-allocation range for instance %q: %w", row.PluginInstanceID, err)
+	}
+
 	name := r.networkFn(row)
 	id, err := r.runtime.CreateNetwork(ctx, container.NetworkOptions{
 		Name: name,
@@ -666,11 +844,18 @@ func (r *Reconciler) createNetwork(ctx context.Context, row db.PluginContainer) 
 			LabelManaged:  ManagedValue,
 			LabelInstance: row.PluginInstanceID,
 		},
-		Subnet: subnet.String(),
+		Subnet:  subnet.String(),
+		IPRange: ipRange.String(),
 		// Internal is the default-deny the egress-grants work builds on: a
 		// plugin container has no route off its own network until something
 		// deliberately gives it one.
 		Internal: true,
+		// EnableIPv6 is left at its zero value (false) deliberately (#1021
+		// review item V1): a plugin container has no legitimate use for a
+		// link-local fe80 address, and IPv6 on an instance network is a
+		// surface the operator-API guard (#1021) would otherwise also have to
+		// consider.
+		EnableIPv6: false,
 	})
 	if err != nil {
 		return fmt.Errorf("creating network %q for instance %q: %w", name, row.PluginInstanceID, err)
@@ -708,6 +893,93 @@ func (r *Reconciler) removeNetwork(ctx context.Context, instanceID string) error
 	return nil
 }
 
+// attachSelf joins Gleipnir's own container to instanceID's network, so it
+// can already reach the instance the moment its container starts. Looked up
+// by instance label rather than carried on the Action, the same pattern
+// removeNetwork uses — the pass that planned this step already confirmed
+// exactly one such network exists, and a crash between planning and applying
+// still finds it on retry.
+//
+// The address requested is ALWAYS the reserved, deterministic one
+// (egress.GleipnirAddrOf) — never left to the daemon to pick — so plugins and
+// the host endpoint can be told a single address to reach Gleipnir at,
+// regardless of attach order (#958 finding 4).
+func (r *Reconciler) attachSelf(ctx context.Context, instanceID string) error {
+	net, err := r.instanceNetwork(ctx, instanceID)
+	if err != nil {
+		return err
+	}
+	addr, err := egress.GleipnirAddrOf(net.Subnet)
+	if err != nil {
+		return fmt.Errorf("computing gleipnir's address on network %q for instance %q: %w", net.Name, instanceID, err)
+	}
+	target := container.AttachTarget{
+		Network:        net,
+		InstanceID:     instanceID,
+		ExpectedSubnet: r.expectedSubnetFor(ctx, instanceID),
+	}
+	if err := r.selfAttacher.Attach(ctx, target, addr); err != nil {
+		return fmt.Errorf("attaching gleipnir to network %q for instance %q: %w", net.Name, instanceID, err)
+	}
+	logctx.Logger(ctx).InfoContext(ctx, "reconciler: gleipnir joined instance network",
+		"instance_id", instanceID, "network", net.Name, "address", addr)
+	return nil
+}
+
+// detachSelf leaves instanceID's network, ahead of its removal.
+func (r *Reconciler) detachSelf(ctx context.Context, instanceID string) error {
+	net, err := r.instanceNetwork(ctx, instanceID)
+	if err != nil {
+		return err
+	}
+	target := container.AttachTarget{
+		Network:        net,
+		InstanceID:     instanceID,
+		ExpectedSubnet: r.expectedSubnetFor(ctx, instanceID),
+	}
+	if err := r.selfAttacher.Detach(ctx, target); err != nil {
+		return fmt.Errorf("detaching gleipnir from network %q for instance %q: %w", net.Name, instanceID, err)
+	}
+	logctx.Logger(ctx).InfoContext(ctx, "reconciler: gleipnir left instance network",
+		"instance_id", instanceID, "network", net.Name)
+	return nil
+}
+
+// expectedSubnetFor returns the subnet the database has recorded as allocated
+// to instanceID, or "" when unknown — no subnet allocator configured, no row
+// yet, or an unreadable one. SelfAttacher treats "" as "skip this specific
+// check" rather than a mismatch (#958 finding 5): a caller that does not know
+// the expected value is a different fact from one that knows it and disagrees.
+func (r *Reconciler) expectedSubnetFor(ctx context.Context, instanceID string) string {
+	if r.subnets == nil {
+		return ""
+	}
+	prefix, ok, err := r.subnets.Lookup(ctx, instanceID)
+	if err != nil || !ok {
+		return ""
+	}
+	return prefix.String()
+}
+
+// instanceNetwork looks up instanceID's dedicated network by label, the same
+// way removeNetwork does. More than one match refuses outright (#958 finding
+// 5) rather than picking the first: self-attach must know unambiguously which
+// network it is joining or leaving, and a duplicate-labelled network is a
+// state worth surfacing loudly rather than silently resolving one way.
+func (r *Reconciler) instanceNetwork(ctx context.Context, instanceID string) (container.NetworkInfo, error) {
+	networks, err := r.runtime.ListNetworksByLabel(ctx, LabelInstance, instanceID)
+	if err != nil {
+		return container.NetworkInfo{}, fmt.Errorf("listing networks for instance %q: %w", instanceID, err)
+	}
+	if len(networks) == 0 {
+		return container.NetworkInfo{}, fmt.Errorf("no network found for instance %q", instanceID)
+	}
+	if len(networks) > 1 {
+		return container.NetworkInfo{}, fmt.Errorf("%d networks are labelled for instance %q, want exactly one", len(networks), instanceID)
+	}
+	return networks[0], nil
+}
+
 // createOptions builds the create request for a desired row. Every field the
 // self-constraint cares about (no extra mounts, no privileges, an internal
 // per-instance network) is set here and validated inside Runtime.Create —
@@ -727,6 +999,19 @@ func (r *Reconciler) createOptions(row db.PluginContainer) container.CreateOptio
 			MountPath: instanceVolumeMountPath,
 		},
 		Network: r.networkFn(row),
+		// Every capability is dropped (#958 finding 2, tightened by #1021
+		// review item V2) — including NET_RAW, which lets a container craft
+		// raw/ICMP-adjacent packets and is the specific tool an east-west
+		// attack from inside a plugin's own container would reach for. An
+		// image whose entrypoint needs a capability (e.g. CHOWN to fix a
+		// mounted volume's ownership before dropping to non-root) is expected
+		// to do that at build time, not at container-create time.
+		CapDrop: []string{"ALL"},
+		// no-new-privileges closes the door CapDrop=[ALL] leaves open: with
+		// every capability already gone, a setuid-root binary shipped in the
+		// image is the remaining way a process inside the container could
+		// regain privilege.
+		SecurityOpt: []string{"no-new-privileges"},
 	}
 	// The desired row holds the ALREADY-RESOLVED envelope (manifest, then admin
 	// override, per resources.Resolve). A NULL here therefore means "nobody

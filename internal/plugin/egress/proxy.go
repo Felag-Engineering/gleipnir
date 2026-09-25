@@ -47,8 +47,10 @@ const (
 	DenyMalformed DenyReason = "malformed_request"
 )
 
-// Resolver maps the local (gateway) address a connection arrived on to the
-// instance that owns that network, and to its consented allowlist.
+// Resolver maps the local address a connection arrived on — the address
+// Gleipnir itself occupies on that instance's network (GleipnirAddrOf), NOT
+// the network's own gateway address — to the instance that owns that network,
+// and to its consented allowlist.
 //
 // The local address is the identity, not the peer address: the kernel picks it
 // from which interface the packet arrived on, so a plugin cannot claim another
@@ -56,8 +58,10 @@ const (
 // docs/developer/egress-containment.md.
 type Resolver interface {
 	// InstanceForGateway returns the instance ID and allowlist for the network
-	// whose gateway is localIP. ok is false when the address belongs to no
-	// managed network.
+	// on which localIP is Gleipnir's own occupied address. ok is false when
+	// the address belongs to no managed network. (Named "ForGateway" for
+	// historical reasons — see GleipnirAddrOf's doc for why the address
+	// itself is not actually the network's gateway.)
 	InstanceForGateway(localIP net.IP) (instanceID string, list Allowlist, ok bool)
 }
 
@@ -458,14 +462,16 @@ func (p *Proxy) Counters() (allowed int, denied map[DenyReason]int) {
 	return p.allowed, out
 }
 
-// ProxyEnv returns the environment entries that point a plugin container at the
-// proxy, given the gateway address of its network.
+// ProxyEnv returns the environment entries that point a plugin container at
+// the proxy, given the address Gleipnir occupies on that container's network
+// (GleipnirAddrOf) — NOT the network's own gateway address, which no
+// container (including Gleipnir's) can ever be assigned.
 //
 // NO_PROXY is set to the empty string deliberately rather than left unset: a
 // stray inherited value from a base image would be a hole in the containment,
 // and "" is the only value that means "nothing bypasses".
-func ProxyEnv(gateway net.IP, port int) []string {
-	url := fmt.Sprintf("http://%s", net.JoinHostPort(gateway.String(), fmt.Sprint(port)))
+func ProxyEnv(gleipnirAddr net.IP, port int) []string {
+	url := fmt.Sprintf("http://%s", net.JoinHostPort(gleipnirAddr.String(), fmt.Sprint(port)))
 	return []string{
 		"HTTP_PROXY=" + url,
 		"HTTPS_PROXY=" + url,

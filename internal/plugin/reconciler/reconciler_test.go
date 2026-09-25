@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/netip"
 	"strings"
 	"sync"
@@ -31,6 +32,8 @@ type countingRuntime struct {
 	netCreates   int
 	netRemoves   int
 	imageRemoves int
+	connects     int
+	disconnects  int
 
 	// lastCreateEnv records the most recent Create call's environment, so a
 	// test can recover a minted instance token the way a real container would
@@ -109,10 +112,29 @@ func (c *countingRuntime) ImageRemove(ctx context.Context, ref string) error {
 	return c.Runtime.ImageRemove(ctx, ref)
 }
 
+// ConnectNetwork and DisconnectNetwork are the self-attach writes (#958):
+// Gleipnir's own container joining or leaving an instance's network. Counted
+// alongside every other write here so the existing "manual posture performs
+// zero writes" assertions cover self-attach for free, without each of them
+// needing to know it exists.
+func (c *countingRuntime) ConnectNetwork(ctx context.Context, netID container.NetworkID, id container.ContainerID, pinnedIPv4 net.IP) error {
+	c.mu.Lock()
+	c.connects++
+	c.mu.Unlock()
+	return c.Runtime.ConnectNetwork(ctx, netID, id, pinnedIPv4)
+}
+
+func (c *countingRuntime) DisconnectNetwork(ctx context.Context, netID container.NetworkID, id container.ContainerID) error {
+	c.mu.Lock()
+	c.disconnects++
+	c.mu.Unlock()
+	return c.Runtime.DisconnectNetwork(ctx, netID, id)
+}
+
 func (c *countingRuntime) writes() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.creates + c.starts + c.stops + c.removes + c.netCreates + c.netRemoves + c.imageRemoves
+	return c.creates + c.starts + c.stops + c.removes + c.netCreates + c.netRemoves + c.imageRemoves + c.connects + c.disconnects
 }
 
 func (c *countingRuntime) createEnv() []string {
