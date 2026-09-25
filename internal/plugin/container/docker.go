@@ -351,7 +351,10 @@ func fromInspectResponse(resp dockercontainer.InspectResponse) ContainerInfo {
 		info.Hostname = resp.Config.Hostname
 	}
 	if resp.NetworkSettings != nil {
-		for _, ep := range resp.NetworkSettings.Networks {
+		for name, ep := range resp.NetworkSettings.Networks {
+			if name != "" {
+				info.NetworkNames = append(info.NetworkNames, name)
+			}
 			if ep != nil && ep.NetworkID != "" {
 				info.Networks = append(info.Networks, NetworkID(ep.NetworkID))
 			}

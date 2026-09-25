@@ -445,3 +445,32 @@ func TestPoolContains(t *testing.T) {
 		})
 	}
 }
+
+// Podman's compat inspect keys endpoints by network name and does not
+// reliably carry the network ID ListNetworksByLabel returns, so membership
+// must match on either — otherwise every pass re-issues a connect the daemon
+// refuses as "already connected" and the instance never converges.
+func TestSelfAttached(t *testing.T) {
+	instanceNet := NetworkInfo{ID: "net-id-1", Name: "gleipnir-inst-a"}
+	tests := []struct {
+		name string
+		self ContainerInfo
+		want bool
+	}{
+		{"matched by ID (docker)", ContainerInfo{Networks: []NetworkID{"net-id-1"}}, true},
+		{"matched by name only (podman)", ContainerInfo{NetworkNames: []string{"gleipnir-inst-a"}}, true},
+		{"podman with a foreign NetworkID", ContainerInfo{Networks: []NetworkID{"other"}, NetworkNames: []string{"gleipnir-inst-a"}}, true},
+		{"not a member", ContainerInfo{Networks: []NetworkID{"other"}, NetworkNames: []string{"gleipnir-inst-b"}}, false},
+		{"no memberships", ContainerInfo{}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := SelfAttached(tt.self, instanceNet); got != tt.want {
+				t.Errorf("SelfAttached = %v, want %v", got, tt.want)
+			}
+		})
+	}
+	if SelfAttached(ContainerInfo{NetworkNames: []string{""}}, NetworkInfo{ID: "x"}) {
+		t.Error("an empty network name must never match")
+	}
+}
