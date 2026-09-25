@@ -17,11 +17,19 @@ plugin-sdk/
   manifest/       — manifest builder types (code-first manifest authoring)
   manifestv2/     — manifest format for containerized plugins (ADR-053/ADR-056); separate
                     from manifest/, not a revision of it — see the package doc
+  mcpserver/      — composable modern-transport (2026-07-28) MCP server (ADR-053/ADR-060,
+                    mcp-realignment-spec.md §4/§5/§8): Server answers server/discover,
+                    tools/list, and tools/call, and composes any number of extensions
+                    (Mount) and streaming methods (MountStreaming, for events/listen) behind
+                    that one discover — the composition a managed plugin serving tools and an
+                    extension together needs, without hand-merging capabilities.extensions.
+                    Proto-free; no internal/* import. See the package doc.
   events/         — io.gleipnir/events server helper (ADR-054, #904): Kind + Handler
                     (server/discover, events/discover, events/listen — SSE framing,
                     heartbeat, resumable cursor) and Buffer (bounded in-memory ring by
                     default, or a Store-backed durable buffer) for plugin authors
-                    implementing the event_source profile
+                    implementing the event_source profile. Owns server/discover outright
+                    today; a future issue mounts it into mcpserver.Server instead.
   serve/          — plugin entry point: serve.Serve() + WithXHandler / WithXService options
   tool/           — tool.Service ergonomic interface (plain-Go tool handlers)
   channel/        — channel.Service ergonomic interface (Notify / Request handlers)
