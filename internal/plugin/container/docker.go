@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"time"
 
@@ -152,18 +153,9 @@ func (r *DockerRuntime) CreateNetwork(ctx context.Context, opts NetworkOptions) 
 		return "", err
 	}
 
-	createOpts := dockerclient.NetworkCreateOptions{
-		Internal: opts.Internal,
-		Labels:   opts.Labels,
-	}
-	if opts.Subnet != "" {
-		subnet, err := netip.ParsePrefix(opts.Subnet)
-		if err != nil {
-			return "", fmt.Errorf("container: create network %s: parse subnet %q: %w", opts.Name, opts.Subnet, err)
-		}
-		createOpts.IPAM = &dockernetwork.IPAM{
-			Config: []dockernetwork.IPAMConfig{{Subnet: subnet}},
-		}
+	createOpts, err := toDockerNetworkCreateArgs(opts)
+	if err != nil {
+		return "", fmt.Errorf("container: create network %s: %w", opts.Name, err)
 	}
 
 	resp, err := r.cli.NetworkCreate(ctx, opts.Name, createOpts)
@@ -176,6 +168,34 @@ func (r *DockerRuntime) CreateNetwork(ctx context.Context, opts NetworkOptions) 
 func (r *DockerRuntime) RemoveNetwork(ctx context.Context, id NetworkID) error {
 	if _, err := r.cli.NetworkRemove(ctx, string(id), dockerclient.NetworkRemoveOptions{}); err != nil {
 		return fmt.Errorf("container: remove network %s: %w", id, err)
+	}
+	return nil
+}
+
+func (r *DockerRuntime) ConnectNetwork(ctx context.Context, netID NetworkID, containerID ContainerID, pinnedIPv4 net.IP) error {
+	opts := dockerclient.NetworkConnectOptions{Container: string(containerID)}
+	if pinnedIPv4 != nil {
+		addr, ok := netip.AddrFromSlice(pinnedIPv4.To4())
+		if !ok {
+			return fmt.Errorf("container: connect %s to network %s: pinned address %q is not a valid IPv4 address", containerID, netID, pinnedIPv4)
+		}
+		opts.EndpointConfig = &dockernetwork.EndpointSettings{
+			IPAMConfig: &dockernetwork.EndpointIPAMConfig{IPv4Address: addr},
+		}
+	}
+	_, err := r.cli.NetworkConnect(ctx, string(netID), opts)
+	if err != nil {
+		return fmt.Errorf("container: connect %s to network %s: %w", containerID, netID, err)
+	}
+	return nil
+}
+
+func (r *DockerRuntime) DisconnectNetwork(ctx context.Context, netID NetworkID, containerID ContainerID) error {
+	_, err := r.cli.NetworkDisconnect(ctx, string(netID), dockerclient.NetworkDisconnectOptions{
+		Container: string(containerID),
+	})
+	if err != nil {
+		return fmt.Errorf("container: disconnect %s from network %s: %w", containerID, netID, err)
 	}
 	return nil
 }
@@ -196,6 +216,7 @@ func (r *DockerRuntime) ListNetworksByLabel(ctx context.Context, key, value stri
 			Name:     n.Name,
 			Labels:   n.Labels,
 			Internal: n.Internal,
+			Subnet:   firstSubnet(n.IPAM),
 		})
 	}
 	return out, nil
@@ -208,6 +229,54 @@ func (r *DockerRuntime) Close() error {
 	return nil
 }
 
+// firstSubnet returns the CIDR of a network's first IPAM config entry, or ""
+// when the network has none (an unlikely but not impossible daemon answer).
+// Gleipnir only ever creates one IPAM entry per network, so "first" is exact
+// for anything this package created; a network something else made with
+// several is not a case self-attach's validation needs to handle precisely.
+func firstSubnet(ipam dockernetwork.IPAM) string {
+	if len(ipam.Config) == 0 || !ipam.Config[0].Subnet.IsValid() {
+		return ""
+	}
+	return ipam.Config[0].Subnet.String()
+}
+
+// toDockerNetworkCreateArgs translates our typed NetworkOptions into the
+// client's NetworkCreateOptions. It is a pure function so tests can assert on
+// the translation without a socket.
+//
+// opts must have already passed ValidateCreateNetwork — this function does
+// not re-check self-constraint. EnableIPv6 is set to an explicit false
+// UNCONDITIONALLY rather than copying opts.EnableIPv6 (already false, having
+// passed validation): the client's field is a *bool specifically so nil means
+// "daemon decides", and a daemon-level default could still hand the network
+// IPv6 addressing if this left it nil (#1021 review item V1).
+func toDockerNetworkCreateArgs(opts NetworkOptions) (dockerclient.NetworkCreateOptions, error) {
+	createOpts := dockerclient.NetworkCreateOptions{
+		Internal:   opts.Internal,
+		Labels:     opts.Labels,
+		EnableIPv6: ptrTo(false),
+	}
+	if opts.Subnet != "" {
+		subnet, err := netip.ParsePrefix(opts.Subnet)
+		if err != nil {
+			return dockerclient.NetworkCreateOptions{}, fmt.Errorf("parse subnet %q: %w", opts.Subnet, err)
+		}
+		ipamConfig := dockernetwork.IPAMConfig{Subnet: subnet}
+		if opts.IPRange != "" {
+			ipRange, err := netip.ParsePrefix(opts.IPRange)
+			if err != nil {
+				return dockerclient.NetworkCreateOptions{}, fmt.Errorf("parse IPRange %q: %w", opts.IPRange, err)
+			}
+			ipamConfig.IPRange = ipRange
+		}
+		createOpts.IPAM = &dockernetwork.IPAM{
+			Config: []dockernetwork.IPAMConfig{ipamConfig},
+		}
+	}
+	return createOpts, nil
+}
+
 // toDockerCreateArgs translates our typed CreateOptions into the argument
 // structs the client's ContainerCreate expects. It is a pure function so
 // tests can assert on the translation without a socket.
@@ -216,6 +285,8 @@ func (r *DockerRuntime) Close() error {
 // re-check self-constraint, it only maps the (by-then-validated) fields that
 // self-constraint permits: Mounts/Privileged/CapAdd are never read here
 // because a validated CreateOptions never carries hostile values in them.
+// CapDrop IS read: unlike those three, a validated CreateOptions is required
+// to carry a non-empty value there, not forbidden from carrying one.
 func toDockerCreateArgs(opts CreateOptions) (*dockercontainer.Config, *dockercontainer.HostConfig, *dockernetwork.NetworkingConfig) {
 	cfg := &dockercontainer.Config{
 		Image:  opts.Image,
@@ -226,6 +297,8 @@ func toDockerCreateArgs(opts CreateOptions) (*dockercontainer.Config, *dockercon
 
 	hostCfg := &dockercontainer.HostConfig{
 		NetworkMode: dockercontainer.NetworkMode(opts.Network),
+		CapDrop:     opts.CapDrop,
+		SecurityOpt: opts.SecurityOpt,
 		Resources: dockercontainer.Resources{
 			Memory:   opts.Resources.MemoryBytes,
 			NanoCPUs: opts.Resources.NanoCPUs,
@@ -275,6 +348,17 @@ func fromInspectResponse(resp dockercontainer.InspectResponse) ContainerInfo {
 	if resp.Config != nil {
 		info.Image = resp.Config.Image
 		info.Labels = resp.Config.Labels
+		info.Hostname = resp.Config.Hostname
+	}
+	if resp.NetworkSettings != nil {
+		for name, ep := range resp.NetworkSettings.Networks {
+			if name != "" {
+				info.NetworkNames = append(info.NetworkNames, name)
+			}
+			if ep != nil && ep.NetworkID != "" {
+				info.Networks = append(info.Networks, NetworkID(ep.NetworkID))
+			}
+		}
 	}
 	return info
 }
@@ -304,6 +388,12 @@ func trimLeadingSlash(s string) string {
 	}
 	return s
 }
+
+// ptrTo returns a pointer to v. The moby client's option structs use *bool
+// for a handful of fields (EnableIPv6 among them) specifically so nil can
+// mean "let the daemon decide" — this is how a caller expresses an explicit
+// answer instead.
+func ptrTo[T any](v T) *T { return &v }
 
 // decodeStats reads a one-shot stats response body and computes the derived
 // CPU percentage using the same delta formula the Docker CLI uses

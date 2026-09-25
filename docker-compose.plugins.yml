@@ -1,0 +1,63 @@
+# Container substrate socket — OPT IN (ADR-056, mcp-realignment-spec.md §7).
+#
+# The stock docker-compose.yml mounts no container-runtime socket at all: by
+# default Gleipnir cannot create, start, or network plugin containers, and
+# posture detection simply finds nothing to talk to. Layer this file on top to
+# grant that socket:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.plugins.yml up
+#
+# SECURITY: the container-runtime socket is root-equivalent on the host for a
+# Docker socket, or equivalent to whichever user owns it for a rootless Podman
+# socket. Whoever can reach this socket can ask the daemon to create a
+# container with any bind mount, including the host root filesystem.
+# `internal/plugin/container.ValidateCreate` stops GLEIPNIR ITSELF from doing
+# that to a plugin container — it does nothing to protect the host once this
+# socket is mounted and something else gets in. Only add this file on a host
+# where you accept that trade-off, and prefer a rootless Podman socket over
+# the Docker socket where you can (its authority is your user's, not root's).
+#
+# Set GLEIPNIR_HOST_CONTAINER_SOCKET to the socket path on the HOST running
+# this compose file before using it, e.g.:
+#   rootless Podman: $XDG_RUNTIME_DIR/podman/podman.sock
+#   Docker:          /var/run/docker.sock
+#
+# GLEIPNIR_CONTAINER_RUNTIME_MODE is deliberately left UNSET here rather than
+# defaulted to any particular posture: `auto` (the default when unset) probes
+# standard socket locations and logs which one it found — including the
+# Docker-fallback root-equivalence warning when that is genuinely what it
+# found. Bind-mounting the host socket at the container's own conventional
+# /var/run/docker.sock is what makes `auto` find it regardless of which
+# daemon actually speaks on the other end (Podman's socket is Docker-API
+# compatible, per internal/plugin/container's own doc). Verifying that the
+# probed socket actually matches the daemon believed to be running is a
+# follow-up, not this file's job — set GLEIPNIR_CONTAINER_RUNTIME_MODE and
+# GLEIPNIR_CONTAINER_SOCKET explicitly if you need accurate posture logging
+# for a rootless Podman socket instead.
+#
+# GLEIPNIR_PLUGIN_NET_FORWARDING_NOTE: self-attach additionally refuses to
+# activate unless this container's own kernel has IP forwarding disabled on
+# both stacks, and IPv6 disabled outright (see the sysctls below) — a
+# container attached to two isolated instance networks with forwarding
+# enabled could route packets between them, undoing the east-west isolation
+# the per-instance topology exists to establish; a stray link-local IPv6
+# address on Gleipnir's own interfaces is a narrower version of the same
+# exposure. Do not remove the sysctls block.
+services:
+  api:
+    environment:
+      - GLEIPNIR_PLUGIN_SUBNET_POOL=${GLEIPNIR_PLUGIN_SUBNET_POOL:-10.83.0.0/16}
+    volumes:
+      - ${GLEIPNIR_HOST_CONTAINER_SOCKET:?Set GLEIPNIR_HOST_CONTAINER_SOCKET to your container-runtime socket path (e.g. $$XDG_RUNTIME_DIR/podman/podman.sock for rootless Podman, or /var/run/docker.sock for Docker) before using docker-compose.plugins.yml.}:/var/run/docker.sock
+    # Disabled forwarding and disabled IPv6 are preconditions self-attach
+    # checks at startup and refuses to proceed without
+    # (internal/plugin/container.CheckForwardingDisabled) — set here so the
+    # container Gleipnir runs in actually satisfies them, rather than
+    # depending on the host's own (unrelated) sysctls.
+    sysctls:
+      net.ipv4.ip_forward: 0
+      net.ipv4.conf.default.forwarding: 0
+      net.ipv6.conf.all.forwarding: 0
+      net.ipv6.conf.default.forwarding: 0
+      net.ipv6.conf.all.disable_ipv6: 1
+      net.ipv6.conf.default.disable_ipv6: 1

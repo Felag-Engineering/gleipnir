@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"time"
 )
 
@@ -73,6 +74,14 @@ func (r *ReadOnlyRuntime) CreateNetwork(context.Context, NetworkOptions) (Networ
 }
 
 func (r *ReadOnlyRuntime) RemoveNetwork(context.Context, NetworkID) error {
+	return ErrManualModeWrite
+}
+
+func (r *ReadOnlyRuntime) ConnectNetwork(context.Context, NetworkID, ContainerID, net.IP) error {
+	return ErrManualModeWrite
+}
+
+func (r *ReadOnlyRuntime) DisconnectNetwork(context.Context, NetworkID, ContainerID) error {
 	return ErrManualModeWrite
 }
 

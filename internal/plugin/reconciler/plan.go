@@ -66,6 +66,24 @@ const (
 	// instance.
 	ActionRemoveNetwork ActionKind = "remove_network"
 
+	// ActionAttachSelf joins Gleipnir's own container to an instance's
+	// network, once that network exists and before the plugin container
+	// itself is created (spec §7: Gleipnir must reach the instance's gateway
+	// and container IPs, which under rootless Podman it can only do from
+	// inside the network). It is its own step, after ActionCreateNetwork and
+	// before ActionCreate, for the same reason those two are split: a socket
+	// write whose result the next pass should observe independently.
+	ActionAttachSelf ActionKind = "attach_self"
+
+	// ActionDetachSelf leaves an instance's network before it is removed.
+	// Symmetric with ActionAttachSelf: it runs only once the instance's
+	// container is already gone, ahead of ActionRemoveNetwork — a network
+	// Gleipnir is still attached to is a network still in use, which the
+	// runtime would refuse to remove anyway, but detaching first keeps the
+	// two steps as independently-observable socket writes rather than
+	// hoping removal quietly detaches everything for us.
+	ActionDetachSelf ActionKind = "detach_self"
+
 	// ActionDriftDetected reports that a running container no longer matches
 	// its desired image digest or config hash. The core loop does NOT act on
 	// it: replacing a running container is a generation rotation
@@ -84,6 +102,26 @@ const (
 	// the rest of the way.
 	ActionBeginFirstGeneration ActionKind = "begin_first_generation"
 )
+
+// selfAttachState is what planFor needs to know about Gleipnir's own
+// self-attach to an instance's network, however that was determined.
+// Enabled is false when the reconciler has no self container ID configured
+// (Gleipnir is not running in a container) — in that case attach/detach is
+// never planned, which is also correct for host-process mode, since that mode
+// is unsupported once plugins are in play at all.
+type selfAttachState struct {
+	Enabled  bool
+	Attached bool
+	// Unknown is true when self-attach IS configured but this pass could not
+	// confirm attachment status — Gleipnir's own Inspect call failed (#1021
+	// review item 3b). Attached is always false alongside Unknown (there was
+	// no successful Inspect to set it from), but the two read differently to
+	// planFor: "not attached" says go ahead and attach; "unknown" says wait
+	// for a pass that can tell, because creating a plugin container — or
+	// re-issuing an attach the daemon might refuse as a duplicate — without
+	// knowing the real state risks either outcome.
+	Unknown bool
+}
 
 // Action is a planned step plus the container it applies to.
 type Action struct {
@@ -146,13 +184,16 @@ const (
 // must be created and then started takes two passes, and a running orphan
 // takes two more (stop, then remove) — the loop converges over N passes rather
 // than trying to drive a sequence to completion inside one.
-func planFor(desired *db.PluginContainer, observed *container.ContainerInfo, hasNetwork bool, gen GenerationState) Action {
+func planFor(desired *db.PluginContainer, observed *container.ContainerInfo, hasNetwork bool, gen GenerationState, self selfAttachState) Action {
 	switch {
 	case desired == nil && observed == nil:
 		// No container and no desired row. A network may still be left behind
 		// by an instance whose container is already gone — that is the second
 		// half of the teardown, and the only case this branch is reachable for.
 		if hasNetwork {
+			if self.Enabled && self.Attached {
+				return Action{Kind: ActionDetachSelf, Reason: "orphan: leaving this instance's network before it is removed"}
+			}
 			return Action{Kind: ActionRemoveNetwork, Reason: "orphan: no desired-state row for this network"}
 		}
 		return Action{Kind: ActionNone}
@@ -179,6 +220,33 @@ func planFor(desired *db.PluginContainer, observed *container.ContainerInfo, has
 		}
 
 	case gen == GenerationLive:
+		// ReconcileRotations owns this instance's container lifecycle end to
+		// end from here (create, start, health gate, switch, drain, retire),
+		// but network MEMBERSHIP is the core loop's job regardless of
+		// generation state (#958 combination review): rotation never
+		// touches self-attach, so an unconditional ActionNone here would
+		// mean a recreated Gleipnir (a fresh container ID, so Attached
+		// starts false again) never rejoins a live instance's network, and
+		// an operator-stopped live instance is never detached from. These
+		// are exactly planForExisting's own self-attach checks, applied
+		// before the lifecycle handoff rather than instead of it — a
+		// generation-tracked instance's desired row still carries the same
+		// DesiredRunning/DesiredStopped meaning planForExisting reads.
+		if desired.DesiredState == DesiredRunning {
+			if self.Enabled && !self.Unknown && !self.Attached {
+				return Action{
+					Kind:       ActionAttachSelf,
+					InstanceID: desired.PluginInstanceID,
+					Reason:     "gleipnir has not joined this instance's network yet",
+				}
+			}
+		} else if self.Enabled && self.Attached {
+			return Action{
+				Kind:       ActionDetachSelf,
+				InstanceID: desired.PluginInstanceID,
+				Reason:     "instance desired stopped; leaving its network",
+			}
+		}
 		return Action{Kind: ActionNone, InstanceID: desired.PluginInstanceID}
 
 	// Once generation tracking is enabled (the branch above already disposed
@@ -214,6 +282,15 @@ func planFor(desired *db.PluginContainer, observed *container.ContainerInfo, has
 		// container purely to leave it stopped would be a socket write with no
 		// converging effect.
 		if desired.DesiredState != DesiredRunning {
+			// A stopped instance is one Gleipnir has no need to be attached to
+			// (#958 finding 7) — independent of whether its container exists at
+			// all right now. Detaching here, rather than waiting for the
+			// desired row to disappear entirely, is what makes self-attach a
+			// property of "is this instance meant to be running", not of the
+			// container's own transient lifecycle.
+			if hasNetwork && self.Enabled && self.Attached {
+				return Action{Kind: ActionDetachSelf, InstanceID: desired.PluginInstanceID, Reason: "instance desired stopped; leaving its network"}
+			}
 			return Action{Kind: ActionNone, InstanceID: desired.PluginInstanceID}
 		}
 		// The network comes first — a container cannot attach to one that does
@@ -223,6 +300,35 @@ func planFor(desired *db.PluginContainer, observed *container.ContainerInfo, has
 				Kind:       ActionCreateNetwork,
 				InstanceID: desired.PluginInstanceID,
 				Reason:     "instance has no dedicated internal network yet",
+			}
+		}
+		// Gleipnir joins next, before the plugin container exists — it must be
+		// able to reach the instance the moment it starts, and under rootless
+		// Podman it can only do that from inside the network (spec §7). This
+		// also gates ActionBeginFirstGeneration below, not just ActionCreate:
+		// a generation's container lands on the same instance network, so the
+		// hold "don't create while self status is unknown" has to cover
+		// minting generation 1 too, or the very first container a tracked
+		// instance ever gets could still come up before Gleipnir can reach it.
+		if self.Enabled {
+			if self.Unknown {
+				// #1021 review item 3b: this pass could not confirm whether
+				// Gleipnir is already attached. Creating the container
+				// anyway could mean it comes up before Gleipnir can reach
+				// it, and attaching anyway could be a duplicate the daemon
+				// refuses — wait for a pass that can actually tell.
+				return Action{
+					Kind:       ActionNone,
+					InstanceID: desired.PluginInstanceID,
+					Reason:     "gleipnir's self-attach status is unknown this pass (inspect failed); retrying rather than creating without confirming attachment",
+				}
+			}
+			if !self.Attached {
+				return Action{
+					Kind:       ActionAttachSelf,
+					InstanceID: desired.PluginInstanceID,
+					Reason:     "gleipnir has not joined this instance's network yet",
+				}
 			}
 		}
 		if gen == GenerationMissing {
@@ -239,13 +345,37 @@ func planFor(desired *db.PluginContainer, observed *container.ContainerInfo, has
 		}
 
 	default:
-		return planForExisting(desired, observed)
+		return planForExisting(desired, observed, self)
 	}
 }
 
 // planForExisting handles the both-sides-present case.
-func planForExisting(desired *db.PluginContainer, observed *container.ContainerInfo) Action {
+func planForExisting(desired *db.PluginContainer, observed *container.ContainerInfo, self selfAttachState) Action {
 	act := Action{InstanceID: desired.PluginInstanceID, ContainerID: observed.ID}
+
+	// Self-attach/detach is independent of the container's own lifecycle
+	// (#958 finding 7), and checked before drift/lifecycle: a Gleipnir that
+	// was just recreated (a fresh container ID) must rejoin a network whose
+	// plugin is ALREADY running and fully converged, and an instance the
+	// operator stopped is one Gleipnir has no reason to stay attached to —
+	// neither of those is a fact about whether the plugin's own container
+	// needs a lifecycle action this pass.
+	if desired.DesiredState == DesiredRunning {
+		// Unknown skips the attach decision entirely rather than guessing
+		// either way (#1021 review item 3b) — the container already exists
+		// and needs no self-attach action to keep running, so falling
+		// through to ordinary lifecycle handling below is safe here in a way
+		// it is not for a container that does not exist yet.
+		if self.Enabled && !self.Unknown && !self.Attached {
+			act.Kind = ActionAttachSelf
+			act.Reason = "gleipnir has not joined this instance's network yet"
+			return act
+		}
+	} else if self.Enabled && self.Attached {
+		act.Kind = ActionDetachSelf
+		act.Reason = "instance desired stopped; leaving its network"
+		return act
+	}
 
 	// Drift is checked before lifecycle: a container running the wrong image
 	// is not "converged" just because it is running, and reporting it as
