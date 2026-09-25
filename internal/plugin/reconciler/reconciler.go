@@ -151,8 +151,12 @@ type Config struct {
 	// endpoint is configured, which is only correct before the reconciler is
 	// wired into main.go. The production implementation (#957, in the v2
 	// assembly that composes this package with internal/plugin/hostendpoint)
-	// builds the URL from the per-instance gateway address and
-	// DefaultHostEndpointPort; this Config field is only the hook. Applied,
+	// builds the URL from Gleipnir's reserved address on the instance network
+	// (egress.GleipnirAddrOf), never the gateway: under rootful Docker the
+	// gateway address is the host itself, and a URL pointed there would send
+	// a generation's bearer token straight to the host rather than through
+	// withGenerationEnv's NO_PROXY-scoped path to it. DefaultHostEndpointPort
+	// supplies the port; this Config field is only the hook. Applied,
 	// like EgressEnv, after StripProxyEnv — both share the same
 	// generation-container create path (createRotationContainer, used for the
 	// first generation and every later one alike), so this is the one place
@@ -1063,7 +1067,10 @@ func (r *Reconciler) withEgressEnv(ctx context.Context, opts container.CreateOpt
 // that mediates egress to the outside world would hand that token to
 // whatever the proxy is configured to reach, when the call must go straight
 // to the host instead.
-func (r *Reconciler) withGenerationEnv(ctx context.Context, opts container.CreateOptions, instanceID string) container.CreateOptions {
+//
+// An error here refuses the create outright rather than silently degrading:
+// see refuseHostEndpointAtGateway.
+func (r *Reconciler) withGenerationEnv(ctx context.Context, opts container.CreateOptions, instanceID string) (container.CreateOptions, error) {
 	var env []string
 	if r.egressEnv != nil {
 		env = append(env, r.egressEnv(ctx, instanceID)...)
@@ -1071,10 +1078,65 @@ func (r *Reconciler) withGenerationEnv(ctx context.Context, opts container.Creat
 	var hostEndpointEnv []string
 	if r.hostEndpointEnv != nil {
 		hostEndpointEnv = r.hostEndpointEnv(ctx, instanceID)
+		if err := r.refuseHostEndpointAtGateway(ctx, instanceID, hostEndpointEnv); err != nil {
+			return container.CreateOptions{}, err
+		}
 		env = append(env, hostEndpointEnv...)
 	}
 	env = scopeNoProxyToHostEndpoint(env, hostEndpointEnv)
-	return withStrippedEnv(opts, env)
+	return withStrippedEnv(opts, env), nil
+}
+
+// refuseHostEndpointAtGateway fails closed when hostEndpointEnv's
+// GLEIPNIR_HOST_ENDPOINT_URL names the instance network's gateway address
+// rather than Gleipnir's own reserved address on it (egress.GleipnirAddrOf).
+// Under rootful Docker the gateway IS the host, so a URL there would hand a
+// generation's bearer token straight to the host — bypassing the NO_PROXY
+// scoping above entirely, not merely routing around it (combination review
+// following #955/#958).
+//
+// Best-effort: an instance with no subnet allocator, or no allocated subnet
+// yet, skips the check rather than refusing every create on it — this is a
+// defense-in-depth guard against a misconfigured HostEndpointEnv hook, not
+// the mechanism that keeps the URL correct (that is the hook's own
+// production implementation, #957).
+func (r *Reconciler) refuseHostEndpointAtGateway(ctx context.Context, instanceID string, hostEndpointEnv []string) error {
+	if r.subnets == nil {
+		return nil
+	}
+	host, ok := hostEndpointHost(hostEndpointEnv)
+	if !ok {
+		return nil
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return nil
+	}
+	subnet, found, err := r.subnets.Lookup(ctx, instanceID)
+	if err != nil || !found {
+		return nil
+	}
+	gateway := subnetGatewayAddr(subnet)
+	if addr != gateway {
+		return nil
+	}
+	return fmt.Errorf(
+		"host endpoint URL for instance %q resolves to its network's gateway address %s; refusing to create its container rather than hand a bearer token to the gateway (want gleipnir's reserved address instead, egress.GleipnirAddrOf)",
+		instanceID, gateway,
+	)
+}
+
+// subnetGatewayAddr computes a subnet's gateway address — the first usable
+// address, e.g. .1 — for comparison in refuseHostEndpointAtGateway. Mirrors
+// internal/plugin/container's own gleipnirReservedAddr (base+2, Gleipnir's
+// reserved address one past the gateway); this is base+1, the gateway
+// itself. Duplicated rather than imported for the same reason that one is:
+// this package must not depend on internal/plugin/egress or vice versa.
+// Kept in sync by hand.
+func subnetGatewayAddr(subnet netip.Prefix) netip.Addr {
+	base := subnet.Masked().Addr().As4()
+	base[3]++
+	return netip.AddrFrom4(base)
 }
 
 // hostEndpointURLEnvVar names the environment variable Config.HostEndpointEnv
@@ -1127,6 +1189,29 @@ func addNoProxyHost(existing, host string) string {
 // GLEIPNIR_HOST_ENDPOINT_URL entry, or reports false when it set none (the
 // hook is unconfigured, or omitted the URL for a reason of its own).
 func hostEndpointHostPort(env []string) (string, bool) {
+	u, ok := parseHostEndpointURL(env)
+	if !ok {
+		return "", false
+	}
+	return u.Host, true
+}
+
+// hostEndpointHost extracts the bare host (no port) from
+// Config.HostEndpointEnv's GLEIPNIR_HOST_ENDPOINT_URL entry, for comparing
+// against a subnet's gateway address in refuseHostEndpointAtGateway — a
+// comparison that must ignore the port, since a gateway match is a gateway
+// match whatever the configured port.
+func hostEndpointHost(env []string) (string, bool) {
+	u, ok := parseHostEndpointURL(env)
+	if !ok {
+		return "", false
+	}
+	return u.Hostname(), true
+}
+
+// parseHostEndpointURL finds and parses Config.HostEndpointEnv's
+// GLEIPNIR_HOST_ENDPOINT_URL entry, or reports false when it set none.
+func parseHostEndpointURL(env []string) (*url.URL, bool) {
 	for _, kv := range env {
 		val, ok := strings.CutPrefix(kv, hostEndpointURLEnvVar+"=")
 		if !ok {
@@ -1134,11 +1219,11 @@ func hostEndpointHostPort(env []string) (string, bool) {
 		}
 		u, err := url.Parse(val)
 		if err != nil || u.Host == "" {
-			return "", false
+			return nil, false
 		}
-		return u.Host, true
+		return u, true
 	}
-	return "", false
+	return nil, false
 }
 
 // withStrippedEnv appends env to opts.Env after stripping any proxy variables

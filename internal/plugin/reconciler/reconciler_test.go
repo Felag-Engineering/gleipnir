@@ -14,6 +14,7 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/plugin/container"
+	"github.com/felag-engineering/gleipnir/internal/plugin/egress"
 	"github.com/felag-engineering/gleipnir/internal/plugin/resources"
 )
 
@@ -877,7 +878,10 @@ func TestReconciler_GenerationEnvScopesNoProxyToTheHostEndpoint(t *testing.T) {
 		// not survive.
 		Env: []string{"PATH=/usr/bin", "NO_PROXY=*", "http_proxy=http://attacker:3128"},
 	}
-	got := r.withGenerationEnv(context.Background(), opts, "inst-1")
+	got, err := r.withGenerationEnv(context.Background(), opts, "inst-1")
+	if err != nil {
+		t.Fatalf("withGenerationEnv: %v", err)
+	}
 
 	want := map[string]string{
 		"PATH":                       "/usr/bin",
@@ -900,6 +904,72 @@ func TestReconciler_GenerationEnvScopesNoProxyToTheHostEndpoint(t *testing.T) {
 		if value != wantValue {
 			t.Errorf("%s = %q, want %q", key, value, wantValue)
 		}
+	}
+}
+
+// A HostEndpointEnv hook that names the instance network's gateway address
+// rather than Gleipnir's own reserved address is refused outright: under
+// rootful Docker the gateway IS the host, so a generation's bearer token
+// would go straight to it rather than through the NO_PROXY-scoped path to
+// Gleipnir's own container.
+func TestReconciler_RefusesHostEndpointAtGateway(t *testing.T) {
+	ctx := context.Background()
+	subnets := testAllocator(t)
+	subnet, err := subnets.Allocate(ctx, "inst-1")
+	if err != nil {
+		t.Fatalf("Allocate: %v", err)
+	}
+	gateway := subnetGatewayAddr(subnet).String()
+
+	r, err := New(Config{
+		Runtime: container.NewFake(),
+		Store:   &fakeStore{},
+		Subnets: subnets,
+		HostEndpointEnv: func(_ context.Context, instanceID string) []string {
+			return []string{"GLEIPNIR_HOST_ENDPOINT_URL=http://" + gateway + ":8765"}
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = r.withGenerationEnv(ctx, container.CreateOptions{}, "inst-1")
+	if err == nil {
+		t.Fatal("withGenerationEnv succeeded, want a refusal — the URL points at the network gateway")
+	}
+	if !strings.Contains(err.Error(), gateway) {
+		t.Errorf("error = %q, want it to name the gateway address %s", err, gateway)
+	}
+}
+
+// Gleipnir's own reserved address (egress.GleipnirAddrOf, one past the
+// gateway) is accepted — only the gateway itself is refused.
+func TestReconciler_AllowsHostEndpointAtGleipnirsReservedAddr(t *testing.T) {
+	ctx := context.Background()
+	subnets := testAllocator(t)
+	subnet, err := subnets.Allocate(ctx, "inst-1")
+	if err != nil {
+		t.Fatalf("Allocate: %v", err)
+	}
+	reserved, err := egress.GleipnirAddrOf(subnet.String())
+	if err != nil {
+		t.Fatalf("GleipnirAddrOf: %v", err)
+	}
+
+	r, err := New(Config{
+		Runtime: container.NewFake(),
+		Store:   &fakeStore{},
+		Subnets: subnets,
+		HostEndpointEnv: func(_ context.Context, instanceID string) []string {
+			return []string{"GLEIPNIR_HOST_ENDPOINT_URL=http://" + reserved.String() + ":8765"}
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if _, err := r.withGenerationEnv(ctx, container.CreateOptions{}, "inst-1"); err != nil {
+		t.Fatalf("withGenerationEnv: %v, want gleipnir's own reserved address to be accepted", err)
 	}
 }
 

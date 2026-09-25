@@ -413,6 +413,57 @@ func TestPlanFor_SelfAttachGatesFirstGeneration(t *testing.T) {
 	}
 }
 
+// GenerationLive hands the container's own lifecycle to ReconcileRotations,
+// but network membership stays the core loop's job (#958 combination
+// review): otherwise a recreated Gleipnir would never rejoin a live
+// instance's network, and a live instance the operator stops would never be
+// detached from.
+func TestPlanFor_SelfAttachAppliesUnderGenerationLive(t *testing.T) {
+	tests := []struct {
+		name    string
+		desired *db.PluginContainer
+		self    selfAttachState
+		want    ActionKind
+	}{
+		{
+			name:    "not attached joins even though rotation owns the container",
+			desired: desiredRow("i1", DesiredRunning),
+			self:    selfAttachState{Enabled: true, Attached: false},
+			want:    ActionAttachSelf,
+		},
+		{
+			name:    "unknown status holds rather than guessing",
+			desired: desiredRow("i1", DesiredRunning),
+			self:    selfAttachState{Enabled: true, Unknown: true},
+			want:    ActionNone,
+		},
+		{
+			name:    "stopped and attached leaves the network",
+			desired: desiredRow("i1", DesiredStopped),
+			self:    selfAttachState{Enabled: true, Attached: true},
+			want:    ActionDetachSelf,
+		},
+		{
+			name:    "already attached is converged",
+			desired: desiredRow("i1", DesiredRunning),
+			self:    selfAttachState{Enabled: true, Attached: true},
+			want:    ActionNone,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// observed is nil here on purpose: a live generation can be
+			// `pending` with no container yet, and self-attach must not
+			// depend on one existing.
+			got := planFor(tc.desired, nil, true, GenerationLive, tc.self)
+			if got.Kind != tc.want {
+				t.Fatalf("planFor = %q (%s), want %q", got.Kind, got.Reason, tc.want)
+			}
+		})
+	}
+}
+
 // selfStateFor is planPass's own glue between a raw selfInspect and the
 // selfAttachState planFor consumes.
 func TestSelfStateFor(t *testing.T) {
