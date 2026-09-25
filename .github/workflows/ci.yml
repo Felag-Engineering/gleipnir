@@ -209,6 +209,14 @@ jobs:
       - name: Self-test (fixture must fail the lint)
         run: make lint-plugins-self-test
 
+  lint-secret-keys:
+    name: No committed private keys
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject tracked Minisign/PEM private keys (with self-test)
+        run: make lint-secret-keys
+
   lint:
     name: Lint (gofmt)
     if: github.event_name == 'pull_request'
