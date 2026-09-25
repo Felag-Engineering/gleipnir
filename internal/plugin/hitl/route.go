@@ -141,6 +141,12 @@ type Entry struct {
 	// Request mirrors the audience entry's request capability flag.
 	Request bool
 
+	// Notify mirrors the audience entry's notify capability flag
+	// (audience_entries.notify). Consulted by Notifier.Notify, not by Route —
+	// routing picks one entry to ask, Notify fans out to every entry that has
+	// this set.
+	Notify bool
+
 	// Target is where the message lands. Unused for in-app, which has exactly
 	// one destination: the operator looking at this Gleipnir.
 	Target mcp.ChannelTarget
