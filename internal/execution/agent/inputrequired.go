@@ -793,6 +793,11 @@ func (a *BoundAgent) callToolWithInputRounds(ctx context.Context, runID string, 
 		// of SEP-2243 x-mcp-header annotations, canonical when available.
 		Capabilities:      entry.tool.Capabilities,
 		HeaderParamSchema: entry.tool.SchemaForHeaderParams(),
+		// Attribution (issue #943) is set once, before the loop, and reused
+		// across every MRTR round below — a fresh span-id is drawn inside
+		// CallTool per round, since each round is its own HTTP request under
+		// the same trace-id. Host-owned values only; input never flows here.
+		Attribution: a.runAttribution(runID),
 	}
 
 	// The most recent answer, held for the replay path. Only the latest is

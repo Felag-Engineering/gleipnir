@@ -12,7 +12,9 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/execution/agent"
 	"github.com/felag-engineering/gleipnir/internal/execution/run"
+	"github.com/felag-engineering/gleipnir/internal/http/auth"
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
 	"github.com/felag-engineering/gleipnir/internal/llm"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
@@ -410,5 +412,76 @@ func TestManualTriggerHandler_EmptyBody(t *testing.T) {
 
 	if w.Code != http.StatusAccepted {
 		t.Errorf("status = %d, want %d; body: %s", w.Code, http.StatusAccepted, w.Body.String())
+	}
+}
+
+// TestManualTriggerHandler_PassesTriggeringUser is the trigger-level proof of
+// issue #943's D8 decision: the authenticated user on the request context
+// reaches agent.Config.TriggeredBy verbatim, via LaunchParams.TriggeredBy. An
+// unauthenticated request (no user in context) launches with TriggeredBy ""
+// rather than failing.
+func TestManualTriggerHandler_PassesTriggeringUser(t *testing.T) {
+	cases := []struct {
+		name            string
+		slug            string
+		withUser        bool
+		wantTriggeredBy string
+	}{
+		{name: "authenticated manual trigger", slug: "authenticated", withUser: true, wantTriggeredBy: "alice"},
+		{name: "no user in context", slug: "no-user", withUser: false, wantTriggeredBy: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := testutil.NewTestStore(t)
+			policyID := "mp-triggered-by-" + tc.slug
+			insertTestManualPolicy(t, store, policyID, minimalManualPolicy)
+
+			registry := mcp.NewRegistry(store.Queries())
+			resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
+			mgr := run.NewRunManager()
+			t.Cleanup(mgr.Wait)
+
+			var capturedTriggeredBy string
+			var capturedTriggeredBySet bool
+			launcher := run.NewRunLauncher(run.RunLauncherConfig{
+				Store:    store,
+				Resolver: run.NewDefaultToolResolver(registry, nil, nil),
+				Manager:  mgr,
+				AgentFactory: func(cfg agent.Config) (*agent.BoundAgent, error) {
+					capturedTriggeredBy = cfg.TriggeredBy
+					capturedTriggeredBySet = true
+					cfg.LLMClient = testutil.NewFakeClientOnly(
+						testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 10, 5),
+					)
+					return agent.New(cfg)
+				},
+				Publisher:              nil,
+				DefaultFeedbackTimeout: 0,
+				ModelResolver:          resolver,
+			})
+			h := trigger.NewManualTriggerHandler(store, launcher, resolver)
+
+			r := chi.NewRouter()
+			r.Use(httputil.BodySizeLimit(httputil.MaxRequestBodySize))
+			r.Post("/api/v1/policies/{policyID}/trigger", h.Handle)
+
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/policies/"+policyID+"/trigger", strings.NewReader(`{}`))
+			if tc.withUser {
+				req = req.WithContext(auth.WithUserContext(req.Context(), "u-alice", "alice", []string{"operator"}))
+			}
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			if w.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want %d; body: %s", w.Code, http.StatusAccepted, w.Body.String())
+			}
+			if !capturedTriggeredBySet {
+				t.Fatal("AgentFactory was never called")
+			}
+			if capturedTriggeredBy != tc.wantTriggeredBy {
+				t.Errorf("cfg.TriggeredBy = %q, want %q", capturedTriggeredBy, tc.wantTriggeredBy)
+			}
+		})
 	}
 }

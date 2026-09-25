@@ -176,10 +176,14 @@ Tools → Add MCP server:
 - CA certificate: paste `.dev-fleet/ca-cert.pem`
 - Call timeout: `120` seconds (Relay runs an approved Job synchronously inside the retried
   `tools/call`; the 30s default is too short for a fan-out)
+- Run attribution: `Relay preset` (sends `X-Relay-On-Behalf-Of`, `X-Relay-Session-Ref`,
+  `traceparent` on every tool call, so Relay's attribution screen shows which agent and run
+  asked)
 - Auth header: `Authorization` = `Bearer <contents of .dev-fleet/gleipnir-credential>`
 
-Expected: badge "Protocol 2026-07-28", eight tools, and Call timeout `120s` in the server's
-detail. If the badge reads "Legacy protocol" or "Protocol unknown", press Rediscover. A legacy
+Expected: badge "Protocol 2026-07-28", eight tools, Call timeout `120s`, and Run attribution
+`Relay preset` in the server's detail. If the badge reads "Legacy protocol" or "Protocol
+unknown", press Rediscover. A legacy
 pin means Relay's approval question never reaches a human
 ([gleipnir-relay#646](https://github.com/Felag-Engineering/gleipnir-relay/issues/646)). Then
 disable `raw_exec` and `approve_request` (recommended). Do this BEFORE Step 8, because `params`
@@ -226,7 +230,9 @@ Agents → fleet-reader → Run now, with a message. Questions that work on the 
 "Which Nodes run which Policy fingerprint, and which of them may restart nginx?"; after
 `make demo-fault`, "Which web Nodes are not serving on 127.0.0.1:8080?" (`file.read`
 `/proc/net/tcp`). Expected trace: `capability_snapshot` with exactly the five `relay.*` tools,
-then `list_nodes`, then `run_operation` fanned out, then a summary. One run.
+then `list_nodes`, then `run_operation` fanned out, then a summary. One run. On Relay's own
+attribution screen, this shows up on-behalf-of `fleet-reader (triggered by <you>)` — the
+manual trigger asserts the operator's username alongside the agent name.
 
 ## Step 10 — Fire the responder (responder acceptance)
 
@@ -246,7 +252,9 @@ Expected: `202` with a `run_id`. The trace shows `list_nodes` → a read → `ru
 `service.restart` `{unit: nginx}`, selector `node:role=web, node:env=prod` (fan-out 2). The run
 moves to `waiting_for_feedback`, and a "TOOL ASK" row attributed to `relay` appears in the
 attention queue. The approver approves on the run page, and Relay runs the Job in the same
-(retried) call. On the demo fleet each web Node then reports `failure: spawn systemctl: No such
+(retried) call. Relay's Job shows on-behalf-of `fleet-responder` and session ref
+`gleipnir run <run_id>` (plus the run's URL when `public_url` is set) — the asserted join back
+to this Gleipnir run. On the demo fleet each web Node then reports `failure: spawn systemctl: No such
 file or directory`. That is the busybox limit
 ([gleipnir-relay#626](https://github.com/Felag-Engineering/gleipnir-relay/issues/626), or an
 equivalent fix to the demo image), not a Gleipnir fault; say so. Resend with `status: 1` and
@@ -281,8 +289,9 @@ the approval to a Relay-authored plan hash.
 
 The CA and the token are both new. In Tools → relay: replace the CA (server detail → CA
 certificate), re-run Step 3, and replace the Authorization header value. No Gleipnir restart is
-needed, because the PEM and headers are part of the client cache key. Policies and the protocol
-pin survive.
+needed, because the PEM and headers are part of the client cache key. Policies, the protocol
+pin, and the Run attribution setting (it is on the Gleipnir row, not the Relay side) all
+survive.
 
 ## Troubleshooting
 
@@ -296,6 +305,7 @@ pin survive.
 | Agent reports `pending_approval` | The gate rule is out-of-band, or the Relay lacks #646. |
 | Approval answered but refused (not in audience / requester excluded) | The gate rule lacks audience `gleipnir` or `requester_allowed` true. |
 | Tool call times out after approval | The `relay` server's Call timeout is not `120s` (detail modal shows `Default (30s)`). Set it there; no restart needed. |
+| Relay shows no on-behalf-of / session ref | Run attribution is `Off` on the `relay` server's detail. Set it to `Relay preset`; no restart needed. |
 | Run fails with feedback timeout | Nobody with the `approver` role answered within `feedback.timeout`. |
 | `spawn systemctl` failure | The demo fleet's busybox limit. |
 | `data.warnings` about `params` | Server not discovered before the POST. |

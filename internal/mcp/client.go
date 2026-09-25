@@ -314,6 +314,14 @@ type Client struct {
 	// (wrapTLSVerificationError) to choose the more specific "wrong CA" vs.
 	// "unknown authority" diagnosis (issue #928).
 	pinnedCA bool
+
+	// attributionNames is this server's effective run attribution header
+	// names (issue #943), set once at build time and never mutated
+	// afterwards -- safe to share across the goroutines that hold this
+	// Client, exactly like authHeaders and protocolVersion above. The zero
+	// value sends nothing, regardless of what CallOptions.Attribution a
+	// caller supplies (see buildAttributionHeaders).
+	attributionNames AttributionHeaderNames
 }
 
 // ClientOption configures a Client. Options are applied sequentially after
@@ -373,6 +381,18 @@ func WithElicitationRateLimit(ratePerSec float64, burst int) ClientOption {
 	return func(cl *Client) {
 		cl.elicitationRateHz = ratePerSec
 		cl.elicitationBurst = burst
+	}
+}
+
+// WithRunAttributionHeaders configures this client to send run attribution
+// headers under n on every CallTool -- but only when the call's
+// CallOptions.Attribution is also non-zero (see buildAttributionHeaders):
+// this option sets the NAMES only, immutable for this Client's lifetime;
+// the per-call VALUES travel separately in CallOptions because the *Client
+// itself is shared across runs (cache.go).
+func WithRunAttributionHeaders(n AttributionHeaderNames) ClientOption {
+	return func(cl *Client) {
+		cl.attributionNames = n
 	}
 }
 
@@ -608,14 +628,16 @@ func (c *Client) isModernProtocol() bool {
 }
 
 // callWithSession sends body to the server, automatically handling session
-// initialization and a single re-init retry on HTTP 401.
-func (c *Client) callWithSession(ctx context.Context, body []byte) (*http.Response, error) {
+// initialization and a single re-init retry on HTTP 401. attribution rides
+// both the original attempt and the 401 re-init retry -- a 401 does not mean
+// the run's identity changed, only that the session did.
+func (c *Client) callWithSession(ctx context.Context, body []byte, attribution []attributionHeader) (*http.Response, error) {
 	sid, err := c.ensureSession(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := c.postRaw(ctx, body, sid)
+	resp, err := c.post(ctx, body, postOptions{sessionID: sid, attribution: attribution})
 	if err != nil {
 		var statusErr *HTTPStatusError
 		if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusUnauthorized {
@@ -625,7 +647,7 @@ func (c *Client) callWithSession(ctx context.Context, body []byte) (*http.Respon
 			if err != nil {
 				return nil, err
 			}
-			return c.postRaw(ctx, body, sid)
+			return c.post(ctx, body, postOptions{sessionID: sid, attribution: attribution})
 		}
 		return nil, err
 	}
@@ -649,15 +671,22 @@ func (c *Client) callWithSession(ctx context.Context, body []byte) (*http.Respon
 //
 // rpcName is "" for methods that address no named entity (tools/list,
 // server/discover); see the Mcp-Name decision in Key decisions.
-func (c *Client) sendRPC(ctx context.Context, body []byte, method, rpcName string, headerParams []headerParam) (*http.Response, error) {
+//
+// attribution is not era-gated the way headerParams is: run attribution is
+// plain HTTP, not an MCP feature (issue #943), so it rides both the legacy
+// and modern branches identically. Every caller but CallTool passes nil,
+// since discovery, probes, and the channel/tasks extensions have no run
+// context to attribute.
+func (c *Client) sendRPC(ctx context.Context, body []byte, method, rpcName string, headerParams []headerParam, attribution []attributionHeader) (*http.Response, error) {
 	if !c.isModernProtocol() {
-		return c.callWithSession(ctx, body)
+		return c.callWithSession(ctx, body, attribution)
 	}
 	return c.post(ctx, body, postOptions{
 		protocolVersion: c.protocolVersion,
 		rpcMethod:       method,
 		rpcName:         rpcName,
 		headerParams:    headerParams,
+		attribution:     attribution,
 	})
 }
 
@@ -699,7 +728,7 @@ func (c *Client) discoverToolsWithHint(ctx context.Context) ([]Tool, cacheHint, 
 		return nil, cacheHint{}, fmt.Errorf("marshal tools/list request: %w", err)
 	}
 
-	resp, err := c.sendRPC(ctx, body, methodToolsList, "", nil)
+	resp, err := c.sendRPC(ctx, body, methodToolsList, "", nil, nil)
 	if err != nil {
 		return nil, cacheHint{}, fmt.Errorf("post tools/list: %w", err)
 	}
@@ -753,6 +782,17 @@ type CallOptions struct {
 	// nothing to retry there.
 	InputResponses []InputResponse
 	RequestState   json.RawMessage
+
+	// Attribution carries the run-context values (issue #943) this call
+	// should be attributed to. Values come only from run context -- never
+	// from the model or tool arguments (see RunAttribution's doc); the
+	// header NAMES a server sends them under come from that server's own
+	// configuration (WithRunAttributionHeaders), not from here. The zero
+	// value means "no run to attribute this call to" and sends nothing,
+	// regardless of what names the Client is configured with -- poll and
+	// discovery pass the zero value. Sent on both transports, since
+	// attribution is plain HTTP, not an MCP feature.
+	Attribution RunAttribution
 }
 
 // CallTool invokes a named tool on the MCP server with the given input.
@@ -797,12 +837,18 @@ func (c *Client) CallTool(ctx context.Context, name string, input map[string]any
 	// works today.
 	var headerParams []headerParam
 	if c.isModernProtocol() {
-		headerParams, err = extractHeaderParams(opts.HeaderParamSchema, input, c.authHeaders)
+		headerParams, err = extractHeaderParams(opts.HeaderParamSchema, input, c.authHeaders, c.attributionNames.list())
 		if err != nil {
 			err = fmt.Errorf("resolving x-mcp-header parameters for tool %q: %w", name, err)
 			return
 		}
 	}
+
+	// Built from run context only, before the request body: buildAttributionHeaders
+	// takes no access to input, and a fresh span-id is drawn for every
+	// CallTool -- so an MRTR retry round (a separate HTTP request) gets a
+	// new span under the same run's trace-id.
+	attribution := buildAttributionHeaders(c.attributionNames, opts.Attribution, newSpanID())
 
 	params := toolsCallParams{Name: name, Arguments: input, Meta: c.requestMeta(opts.Capabilities)}
 	if c.isModernProtocol() && len(opts.InputResponses) > 0 {
@@ -832,7 +878,7 @@ func (c *Client) CallTool(ctx context.Context, name string, input map[string]any
 	}
 
 	var resp *http.Response
-	resp, err = c.sendRPC(ctx, body, methodToolsCall, name, headerParams)
+	resp, err = c.sendRPC(ctx, body, methodToolsCall, name, headerParams, attribution)
 	if err != nil {
 		err = fmt.Errorf("post tools/call: %w", err)
 		return
@@ -942,6 +988,11 @@ type postOptions struct {
 	rpcMethod       string        // Mcp-Method           (2026-07-28 transport)
 	rpcName         string        // Mcp-Name             (2026-07-28 transport; "" when the method targets no named entity)
 	headerParams    []headerParam // x-mcp-header tool-parameter headers (2026-07-28 transport)
+
+	// attribution is the resolved run attribution headers (issue #943),
+	// both transports. Not era-gated like headerParams: these are plain
+	// HTTP headers, not an MCP extension, so a legacy server gets them too.
+	attribution []attributionHeader
 }
 
 // post sends a JSON-RPC request body to c.serverURL and returns the HTTP
@@ -977,9 +1028,22 @@ type postOptions struct {
 //     collision resolve correctly; it cannot make an out-of-band or
 //     byte-different header name harmless.
 //  2. Content-Type and Accept (transport requirements)
-//  3. c.authHeaders (ADR-039 operator-configured, applied in registration
-//     order) — overrides 1.
-//  4. all client-managed headers (session, protocol version, method, name),
+//  3. o.attribution — run attribution headers (issue #943), host-asserted
+//     from run context. Overrides 1 and 2, so an attribution header always
+//     wins over a same-name x-mcp-header — but loses to 4 below, so an
+//     operator's auth header always wins over attribution. Two structural
+//     backstops back this up, because ordering alone cannot make an
+//     out-of-band or byte-different name collision safe: extractHeaderParams
+//     (headerparams.go) refuses an x-mcp-header annotation whose canonical
+//     name equals a configured attribution name, the same way it already
+//     refuses one colliding with an auth header; and newClientForServer
+//     (registry.go) drops any stored attribution name that collides with
+//     this server's decrypted auth headers before a Client is ever built, so
+//     auth wins even against a hand-edited row (a TOCTOU the write-path
+//     validation in mcp_handler.go cannot fully close on its own).
+//  4. c.authHeaders (ADR-039 operator-configured, applied in registration
+//     order) — overrides 1, 2, and 3.
+//  5. all client-managed headers (session, protocol version, method, name),
 //     each only when non-empty — set last so they always win, even if an
 //     operator configures a colliding auth header.
 //
@@ -999,6 +1063,12 @@ func (c *Client) post(ctx context.Context, body []byte, o postOptions) (*http.Re
 	// MCP streamable-HTTP transport requires the client to accept both JSON
 	// (for single-response calls) and SSE (for streaming responses).
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	// Run attribution (issue #943), host-asserted from run context. Set
+	// after Content-Type/Accept and BEFORE c.authHeaders, so an operator's
+	// auth header always wins on a same-name collision.
+	for _, h := range o.attribution {
+		req.Header.Set(h.Name, h.Value)
+	}
 	// Inject operator-configured auth headers before the client-managed
 	// headers so that the client-managed values always take precedence if an
 	// operator mistakenly configures a header with a colliding name.

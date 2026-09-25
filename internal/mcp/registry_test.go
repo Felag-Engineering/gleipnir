@@ -1992,3 +1992,66 @@ func TestLookupTool_DisabledToolStillExists(t *testing.T) {
 		t.Error("exists = false, want true — a disabled tool must still count as existing (enablement is a run-start gate, not a save gate)")
 	}
 }
+
+// TestDropUnsafeAttributionNames covers dropUnsafeAttributionNames's four
+// drop branches (reserved name, allowlist byte, denylist name, auth-header
+// collision) plus the pass-through and empty-field cases, in isolation from
+// newClientForServer -- issue #943's injection-time backstop for a
+// hand-edited or TOCTOU'd run_attribution row.
+func TestDropUnsafeAttributionNames(t *testing.T) {
+	authHeaders := []AuthHeader{{Name: "X-Api-Key", Value: "secret"}}
+
+	tests := []struct {
+		name        string
+		names       AttributionHeaderNames
+		authHeaders []AuthHeader
+		want        AttributionHeaderNames
+	}{
+		{
+			name:  "empty field stays empty",
+			names: AttributionHeaderNames{},
+			want:  AttributionHeaderNames{},
+		},
+		{
+			name:  "a safe name passes through unchanged",
+			names: AttributionHeaderNames{OnBehalfOf: "X-Actor", SessionRef: "X-Session", Traceparent: "traceparent"},
+			want:  AttributionHeaderNames{OnBehalfOf: "X-Actor", SessionRef: "X-Session", Traceparent: "traceparent"},
+		},
+		{
+			name:  "a reserved name is dropped",
+			names: AttributionHeaderNames{OnBehalfOf: "Mcp-Session-Id"},
+			want:  AttributionHeaderNames{},
+		},
+		{
+			name:  "a denylist name is dropped",
+			names: AttributionHeaderNames{SessionRef: "Authorization"},
+			want:  AttributionHeaderNames{},
+		},
+		{
+			name:  "a name with a byte outside the letters/digits/hyphen allowlist is dropped",
+			names: AttributionHeaderNames{Traceparent: "X_Actor"},
+			want:  AttributionHeaderNames{},
+		},
+		{
+			name:        "a name colliding with an auth header is dropped",
+			names:       AttributionHeaderNames{OnBehalfOf: "x-api-key"},
+			authHeaders: authHeaders,
+			want:        AttributionHeaderNames{},
+		},
+		{
+			name:        "each branch is independent: one bad field does not drop the others",
+			names:       AttributionHeaderNames{OnBehalfOf: "Mcp-Session-Id", SessionRef: "X-Session", Traceparent: "traceparent"},
+			authHeaders: authHeaders,
+			want:        AttributionHeaderNames{SessionRef: "X-Session", Traceparent: "traceparent"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := dropUnsafeAttributionNames(tc.names, tc.authHeaders, "srv-1", "test-server")
+			if got != tc.want {
+				t.Errorf("dropUnsafeAttributionNames(%+v) = %+v, want %+v", tc.names, got, tc.want)
+			}
+		})
+	}
+}

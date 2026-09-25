@@ -19,6 +19,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/policy"
+	"github.com/felag-engineering/gleipnir/internal/settings"
 	"github.com/felag-engineering/gleipnir/internal/testutil"
 )
 
@@ -1486,6 +1487,146 @@ func TestNewAgentFactory_ProviderLookup(t *testing.T) {
 				if err != nil && strings.Contains(err.Error(), "unknown LLM provider") {
 					t.Errorf("unexpected provider lookup error: %v", err)
 				}
+			}
+		})
+	}
+}
+
+// minimalManualPolicy is the smallest YAML that parses cleanly with trigger
+// type manual, shared by the run-attribution launcher tests below.
+const minimalManualPolicy = `
+name: test-manual-policy
+trigger:
+  type: manual
+agent:
+  model: claude-opus-4-5
+  task: "test task"
+`
+
+// TestLaunch_PassesTriggeredByAndPublicURL is the launcher-level proof of
+// issue #943's D8/D9 decisions: LaunchParams.TriggeredBy reaches
+// agent.Config.TriggeredBy verbatim, and Launch reads the system public_url
+// setting once per launch and snapshots it into agent.Config.PublicURL.
+func TestLaunch_PassesTriggeredByAndPublicURL(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	registry := mcp.NewRegistry(store.Queries())
+	manager := run.NewRunManager()
+	t.Cleanup(manager.Wait)
+
+	if err := store.Queries().UpsertSystemSetting(context.Background(), db.UpsertSystemSettingParams{
+		Key:       "public_url",
+		Value:     "https://g.example",
+		UpdatedAt: "2024-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("seed public_url setting: %v", err)
+	}
+	modelResolver := settings.NewService(store.Queries())
+
+	testutil.InsertPolicy(t, store, "p-attr", "policy-p-attr", "manual", minimalManualPolicy)
+	parsed, err := policy.Parse(minimalManualPolicy, "anthropic", "claude-sonnet-4-6")
+	if err != nil {
+		t.Fatalf("policy.Parse: %v", err)
+	}
+
+	var capturedTriggeredBy, capturedPublicURL string
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:    store,
+		Resolver: run.NewDefaultToolResolver(registry, nil, nil),
+		Manager:  manager,
+		AgentFactory: func(cfg agent.Config) (*agent.BoundAgent, error) {
+			capturedTriggeredBy = cfg.TriggeredBy
+			capturedPublicURL = cfg.PublicURL
+			cfg.LLMClient = testutil.NewFakeClientOnly(
+				testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 10, 5),
+			)
+			return agent.New(cfg)
+		},
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          modelResolver,
+	})
+
+	result, launchErr := launcher.Launch(context.Background(), run.LaunchParams{
+		PolicyID:       "p-attr",
+		TriggerType:    model.TriggerTypeManual,
+		TriggerPayload: `{}`,
+		ParsedPolicy:   parsed,
+		TriggeredBy:    "alice",
+	})
+	if launchErr != nil {
+		t.Fatalf("Launch() unexpected error: %v", launchErr)
+	}
+	if result.RunID == "" {
+		t.Fatal("Launch() returned empty RunID")
+	}
+
+	if capturedTriggeredBy != "alice" {
+		t.Errorf("cfg.TriggeredBy = %q, want %q", capturedTriggeredBy, "alice")
+	}
+	if capturedPublicURL != "https://g.example" {
+		t.Errorf("cfg.PublicURL = %q, want %q", capturedPublicURL, "https://g.example")
+	}
+}
+
+// TestLaunch_PublicURLUnsetOrResolverNilGivesEmptyString covers the two
+// never-fatal-to-launch fallbacks: no ModelResolver configured, and a
+// ModelResolver with no public_url setting stored.
+func TestLaunch_PublicURLUnsetOrResolverNilGivesEmptyString(t *testing.T) {
+	cases := []struct {
+		name          string
+		withResolver  bool
+		seedPublicURL bool
+	}{
+		{name: "nil ModelResolver", withResolver: false},
+		{name: "ModelResolver with no public_url setting", withResolver: true, seedPublicURL: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := testutil.NewTestStore(t)
+			registry := mcp.NewRegistry(store.Queries())
+			manager := run.NewRunManager()
+			t.Cleanup(manager.Wait)
+
+			testutil.InsertPolicy(t, store, "p-attr-"+tc.name, "policy-"+tc.name, "manual", minimalManualPolicy)
+			parsed, err := policy.Parse(minimalManualPolicy, "anthropic", "claude-sonnet-4-6")
+			if err != nil {
+				t.Fatalf("policy.Parse: %v", err)
+			}
+
+			var modelResolver *settings.Service
+			if tc.withResolver {
+				modelResolver = settings.NewService(store.Queries())
+			}
+
+			var capturedPublicURL string
+			launcher := run.NewRunLauncher(run.RunLauncherConfig{
+				Store:    store,
+				Resolver: run.NewDefaultToolResolver(registry, nil, nil),
+				Manager:  manager,
+				AgentFactory: func(cfg agent.Config) (*agent.BoundAgent, error) {
+					capturedPublicURL = cfg.PublicURL
+					cfg.LLMClient = testutil.NewFakeClientOnly(
+						testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 10, 5),
+					)
+					return agent.New(cfg)
+				},
+				Publisher:              nil,
+				DefaultFeedbackTimeout: 0,
+				ModelResolver:          modelResolver,
+			})
+
+			_, launchErr := launcher.Launch(context.Background(), run.LaunchParams{
+				PolicyID:       "p-attr-" + tc.name,
+				TriggerType:    model.TriggerTypeManual,
+				TriggerPayload: `{}`,
+				ParsedPolicy:   parsed,
+			})
+			if launchErr != nil {
+				t.Fatalf("Launch() unexpected error: %v", launchErr)
+			}
+			if capturedPublicURL != "" {
+				t.Errorf("cfg.PublicURL = %q, want empty string", capturedPublicURL)
 			}
 		})
 	}

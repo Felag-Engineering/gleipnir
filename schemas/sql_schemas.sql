@@ -56,7 +56,10 @@ CREATE TABLE mcp_servers (
     ca_cert_pem             TEXT,
     -- Nullable; per-server MCP call timeout in whole seconds (1..600), overriding
     -- GLEIPNIR_MCP_TIMEOUT for this server only. NULL = instance default (issue #939).
-    call_timeout_seconds    INTEGER
+    call_timeout_seconds    INTEGER,
+    -- Nullable; per-server run attribution setting as canonical JSON
+    -- {mode, *_header}; NULL = off (issue #943)
+    run_attribution         TEXT
 );
 -- Partial: every external row's NULL stays out of the index entirely. The row
 -- is per INSTANCE, not per generation -- a rotation updates url in place.

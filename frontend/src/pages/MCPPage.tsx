@@ -7,7 +7,7 @@ import { useAddMcpServer, useDeleteMcpServer, useDiscoverMcpServer } from '@/hoo
 import { useCurrentUser } from '@/hooks/queries/users'
 import { apiFetch } from '@/api/fetch'
 import { usePageTitle } from '@/hooks/usePageTitle'
-import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
+import type { ApiMcpServer, ApiMcpTool, RunAttributionRequest } from '@/api/types'
 import { QueryBoundary, SkeletonList } from '@/components/QueryBoundary'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
@@ -90,6 +90,7 @@ export default function MCPPage() {
     headers: HeaderRow[],
     caCertPem: string,
     callTimeoutSeconds: number | null,
+    runAttribution: RunAttributionRequest | null,
   ) {
     setAddDiscoveryWarning(null)
     addMutation.mutate(
@@ -99,6 +100,7 @@ export default function MCPPage() {
         auth_headers: headers.length > 0 ? headers : undefined,
         ca_cert_pem: caCertPem.trim() || undefined,
         call_timeout_seconds: callTimeoutSeconds ?? undefined,
+        run_attribution: runAttribution ?? undefined,
       },
       {
         onSuccess: (data) => {

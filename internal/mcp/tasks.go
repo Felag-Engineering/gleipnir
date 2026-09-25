@@ -231,7 +231,7 @@ func (c *Client) callTasksMethod(ctx context.Context, method, taskID string, par
 		return TaskStatus{}, fmt.Errorf("marshal %s request: %w", method, err)
 	}
 
-	resp, err := c.sendRPC(ctx, body, method, taskID, nil)
+	resp, err := c.sendRPC(ctx, body, method, taskID, nil, nil)
 	if err != nil {
 		return TaskStatus{}, fmt.Errorf("post %s: %w", method, err)
 	}

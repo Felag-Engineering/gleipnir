@@ -57,7 +57,7 @@ describe('AddServerModal', () => {
     fireEvent.submit(document.getElementById('add-server-form')!)
     expect(onSubmit).toHaveBeenCalledWith('my-server', 'http://localhost:8080', [
       { key: 'x-api-key', value: 'sk-secret' },
-    ], '', null)
+    ], '', null, null)
   })
 
   it('submit without headers passes empty array', () => {
@@ -75,7 +75,7 @@ describe('AddServerModal', () => {
     fireEvent.change(screen.getByLabelText(/url/i), { target: { value: 'http://localhost:8080' } })
 
     fireEvent.submit(document.getElementById('add-server-form')!)
-    expect(onSubmit).toHaveBeenCalledWith('my-server', 'http://localhost:8080', [], '', null)
+    expect(onSubmit).toHaveBeenCalledWith('my-server', 'http://localhost:8080', [], '', null, null)
   })
 
   it('passes the CA certificate textarea value to onSubmit', () => {
@@ -94,7 +94,7 @@ describe('AddServerModal', () => {
     fireEvent.change(screen.getByLabelText(/ca certificate/i), { target: { value: FAKE_CERT_PEM } })
 
     fireEvent.submit(document.getElementById('add-server-form')!)
-    expect(onSubmit).toHaveBeenCalledWith('my-server', 'https://localhost:8443', [], FAKE_CERT_PEM, null)
+    expect(onSubmit).toHaveBeenCalledWith('my-server', 'https://localhost:8443', [], FAKE_CERT_PEM, null, null)
   })
 
   it('submits the parsed call timeout when set', () => {
@@ -113,7 +113,7 @@ describe('AddServerModal', () => {
     fireEvent.change(screen.getByLabelText(/call timeout/i), { target: { value: '120' } })
 
     fireEvent.submit(document.getElementById('add-server-form')!)
-    expect(onSubmit).toHaveBeenCalledWith('my-server', 'http://localhost:8080', [], '', 120)
+    expect(onSubmit).toHaveBeenCalledWith('my-server', 'http://localhost:8080', [], '', 120, null)
   })
 
   it('shows an inline error and blocks submit for an out-of-range call timeout', () => {
@@ -183,6 +183,67 @@ describe('AddServerModal', () => {
     // Remove it.
     fireEvent.click(screen.getByRole('button', { name: /remove header 1/i }))
     expect(screen.queryByLabelText(/header name 1/i)).not.toBeInTheDocument()
+  })
+
+  it('run attribution defaults to Off and calls onSubmit with null', () => {
+    const onSubmit = vi.fn()
+    render(
+      <AddServerModal
+        onClose={noop}
+        onSubmit={onSubmit}
+        isPending={false}
+        error={null}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText(/name/i), { target: { value: 'my-server' } })
+    fireEvent.change(screen.getByLabelText(/url/i), { target: { value: 'http://localhost:8080' } })
+
+    fireEvent.submit(document.getElementById('add-server-form')!)
+    const [, , , , , runAttribution] = onSubmit.mock.calls[0]
+    expect(runAttribution).toBeNull()
+  })
+
+  it('selecting Relay gives {mode: "relay"}', () => {
+    const onSubmit = vi.fn()
+    render(
+      <AddServerModal
+        onClose={noop}
+        onSubmit={onSubmit}
+        isPending={false}
+        error={null}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText(/name/i), { target: { value: 'my-server' } })
+    fireEvent.change(screen.getByLabelText(/url/i), { target: { value: 'http://localhost:8080' } })
+    fireEvent.change(screen.getByLabelText(/run attribution/i), { target: { value: 'relay' } })
+
+    fireEvent.submit(document.getElementById('add-server-form')!)
+    const [, , , , , runAttribution] = onSubmit.mock.calls[0]
+    expect(runAttribution).toEqual({ mode: 'relay' })
+  })
+
+  it('Custom with an invalid name disables submit', () => {
+    const onSubmit = vi.fn()
+    render(
+      <AddServerModal
+        onClose={noop}
+        onSubmit={onSubmit}
+        isPending={false}
+        error={null}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText(/name/i), { target: { value: 'my-server' } })
+    fireEvent.change(screen.getByLabelText(/url/i), { target: { value: 'http://localhost:8080' } })
+    fireEvent.change(screen.getByLabelText(/run attribution/i), { target: { value: 'custom' } })
+    fireEvent.change(screen.getByLabelText(/on-behalf-of header name/i), { target: { value: 'X_Actor' } })
+
+    expect(screen.getByRole('button', { name: /add mcp server/i })).toBeDisabled()
+
+    fireEvent.submit(document.getElementById('add-server-form')!)
+    expect(onSubmit).not.toHaveBeenCalled()
   })
 
   it('calls onClose when Cancel is clicked', () => {

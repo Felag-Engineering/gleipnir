@@ -104,6 +104,13 @@ type LaunchParams struct {
 	TriggerType    model.TriggerType
 	TriggerPayload string // valid JSON string
 	ParsedPolicy   *model.ParsedPolicy
+	// TriggeredBy is the authenticated username for a manual run, set by
+	// ManualTriggerHandler (issue #943). In-memory only, not persisted: the
+	// runs table has no triggered_by column, and trigger_queue (DrainQueue's
+	// source for a re-launched queued run) has no column for it either, so a
+	// queued manual run degrades to the bare agent name on relaunch. That is
+	// a documented limitation, not a bug.
+	TriggeredBy string
 }
 
 // LaunchResult carries the output of a Launch or LaunchWithConcurrency call.
@@ -222,6 +229,23 @@ func (l *RunLauncher) LaunchWithConcurrency(ctx context.Context, params LaunchPa
 	// Propagate it so HTTP adapters can deep-link to the failed run row via
 	// WriteLaunchError — matches the pre-refactor behavior.
 	return LaunchResult{RunID: res.RunID, Outcome: OutcomeLaunched}, err
+}
+
+// publicURLForAttribution returns the system public_url setting, for
+// snapshotting into agent.Config.PublicURL (issue #943). A nil modelResolver
+// or a lookup error both give "" — a run attribution session-ref just omits
+// the URL parenthetical (mcp.RunAttribution's own doc) — and the run still
+// launches either way; this is never fatal to a launch.
+func (l *RunLauncher) publicURLForAttribution(ctx context.Context) string {
+	if l.modelResolver == nil {
+		return ""
+	}
+	url, err := l.modelResolver.GetPublicURL(ctx)
+	if err != nil {
+		slog.Warn("failed to read public_url setting; run attribution session-ref will omit the URL", "err", err)
+		return ""
+	}
+	return url
 }
 
 // drainResolveDefaults fetches the system default model for the drain path.
@@ -376,6 +400,8 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 		ApprovalDispatcher:     l.approvalDispatcher,
 		FeedbackDispatcher:     l.feedbackDispatcher,
 		AudienceID:             audienceID,
+		TriggeredBy:            params.TriggeredBy,
+		PublicURL:              l.publicURLForAttribution(ctx),
 	})
 	if err != nil {
 		// context.Background(): the HTTP request context that produced ctx may

@@ -134,6 +134,29 @@ out=$(scope "$(printf 'frontend/src/x.tsx\ninternal/schemanorm/normalize.go')")
 	printf '%s' "$(field "$out" CI_LOCAL_GO_PKGS)" | grep -q "$mod/internal/schemanorm"
 check "a mixed diff selects every affected lane" $?
 
+# 8. The relaysmoke lane (issue #931) is never selected — its build tag
+#    excludes it from every default lane, so unlike the substrate lane there
+#    is no CI_LOCAL_RUN_RELAYSMOKE flag to check: ci-local-lint's
+#    lint-relaysmoke-build target vet-compiles it unconditionally instead. A
+#    relaysmoke change must still narrow (never widen) the gate, and must
+#    never end up as a Go package the race lane tries to test — every file in
+#    the package carries the `relaysmoke` tag, so `go list ./...` cannot see
+#    it at all.
+out=$(scope "internal/relaysmoke/relaysmoke_test.go")
+[ "$(field "$out" CI_LOCAL_SCOPE)" = "scoped" ]
+check "a relaysmoke change does not widen the gate" $?
+! printf '%s' "$(field "$out" CI_LOCAL_GO_PKGS)" | grep -q "internal/relaysmoke"
+check "a relaysmoke change selects no relaysmoke Go package to race" $?
+
+out=$(scope "internal/relaysmoke/testdata/approval-gates.json")
+[ "$(field "$out" CI_LOCAL_SCOPE)" = "scoped" ]
+check "a relaysmoke testdata change does not widen the gate" $?
+! printf '%s' "$(field "$out" CI_LOCAL_GO_PKGS)" | grep -q "internal/relaysmoke"
+check "a relaysmoke testdata change selects no relaysmoke Go package to race" $?
+
+[ "$(GOWORK=off go list ./... 2>/dev/null | grep -c internal/relaysmoke)" -eq 0 ]
+check "the default 'go list ./...' cannot see internal/relaysmoke at all" $?
+
 echo
 if [ "$failures" -ne 0 ]; then
 	echo "ci-local-scope self-test FAILED ($failures)" >&2

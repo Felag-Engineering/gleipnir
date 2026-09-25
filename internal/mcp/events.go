@@ -290,7 +290,7 @@ func (c *Client) DiscoverEventKinds(ctx context.Context) ([]EventKind, error) {
 
 	// rpcName is "" — events/discover addresses no single named entity, the
 	// same reasoning tools/list and server/discover apply (sendRPC's doc).
-	resp, err := c.sendRPC(ctx, body, methodEventsDiscover, "", nil)
+	resp, err := c.sendRPC(ctx, body, methodEventsDiscover, "", nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("post %s: %w", methodEventsDiscover, err)
 	}

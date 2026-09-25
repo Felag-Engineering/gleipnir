@@ -232,6 +232,28 @@ func insertTestMCPServerWithCallTimeout(t *testing.T, s *db.Store, name, url str
 	return id
 }
 
+// insertTestMCPServerWithRunAttribution is insertTestMCPServer's sibling for
+// tests that need a pre-existing run_attribution column value (issue #943)
+// -- the same separate-helper rationale as insertTestMCPServerWithCACert
+// above. runAttribution is the raw stored column value: already-canonical
+// JSON for the ordinary cases, or a hand-edited value (e.g. a reserved name)
+// to exercise the "absent leaves it unchanged, not re-validated" case.
+func insertTestMCPServerWithRunAttribution(t *testing.T, s *db.Store, name, url string, runAttribution *string) string {
+	t.Helper()
+	id := model.NewULID()
+	_, err := s.CreateMCPServer(context.Background(), db.CreateMCPServerParams{
+		ID:             id,
+		Name:           name,
+		Url:            url,
+		CreatedAt:      "2024-01-01T00:00:00Z",
+		RunAttribution: runAttribution,
+	})
+	if err != nil {
+		t.Fatalf("insertTestMCPServerWithRunAttribution %s: %v", name, err)
+	}
+	return id
+}
+
 // makeFakeMCPTLSServer is makeFakeMCPServer's HTTPS sibling: a real TLS
 // listener presenting cert, so CA-pin tests can drive real certificate-chain
 // verification. Never sets InsecureSkipVerify anywhere (issue #928) — a test
@@ -3284,6 +3306,12 @@ type mcpServerResponseForTest struct {
 	DiscoveryError              *string `json:"discovery_error"`
 	CallTimeoutSeconds          *int64  `json:"call_timeout_seconds"`
 	EffectiveCallTimeoutSeconds int64   `json:"effective_call_timeout_seconds"`
+	RunAttribution              struct {
+		Mode              string `json:"mode"`
+		OnBehalfOfHeader  string `json:"on_behalf_of_header"`
+		SessionRefHeader  string `json:"session_ref_header"`
+		TraceparentHeader string `json:"traceparent_header"`
+	} `json:"run_attribution"`
 }
 
 // TestMCPServerCACert_Create covers issue #928's write-path validation on
@@ -3965,6 +3993,566 @@ func TestMCPServerCallTimeout_Update(t *testing.T) {
 		}
 		if after.CallTimeoutSeconds != nil {
 			t.Error("a call_timeout_seconds override was written to a managed endpoint")
+		}
+	})
+}
+
+// TestMCPServerRunAttribution_Create covers issue #943's POST /servers
+// run_attribution wire semantics: absent means off, relay and custom store
+// and echo the effective names, and every validation failure is a 400 with
+// no server row created.
+func TestMCPServerRunAttribution_Create(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       map[string]any
+		wantStatus int
+		wantErr    string
+		wantDetail string // substring; "" skips the check
+		wantMode   string
+		// wantNames is {on_behalf_of_header, session_ref_header, traceparent_header};
+		// only checked when wantStatus is 201.
+		wantNames [3]string
+	}{
+		{
+			name:       "absent means off",
+			body:       map[string]any{"name": "srv-absent", "url": "https://example.invalid"},
+			wantStatus: http.StatusCreated,
+			wantMode:   "off",
+		},
+		{
+			name:       "explicit mode off",
+			body:       map[string]any{"name": "srv-off", "url": "https://example.invalid", "run_attribution": map[string]any{"mode": "off"}},
+			wantStatus: http.StatusCreated,
+			wantMode:   "off",
+		},
+		{
+			name:       "relay",
+			body:       map[string]any{"name": "srv-relay", "url": "https://example.invalid", "run_attribution": map[string]any{"mode": "relay"}},
+			wantStatus: http.StatusCreated,
+			wantMode:   "relay",
+			wantNames:  [3]string{"X-Relay-On-Behalf-Of", "X-Relay-Session-Ref", "traceparent"},
+		},
+		{
+			name: "custom valid",
+			body: map[string]any{
+				"name": "srv-custom", "url": "https://example.invalid",
+				"run_attribution": map[string]any{"mode": "custom", "on_behalf_of_header": "X-Actor"},
+			},
+			wantStatus: http.StatusCreated,
+			wantMode:   "custom",
+			wantNames:  [3]string{"X-Actor", "", ""},
+		},
+		{
+			name: "custom with a reserved name is rejected",
+			body: map[string]any{
+				"name": "srv-reserved", "url": "https://example.invalid",
+				"run_attribution": map[string]any{"mode": "custom", "on_behalf_of_header": "Mcp-Session-Id"},
+			},
+			wantStatus: http.StatusBadRequest,
+			wantErr:    "invalid run_attribution",
+			wantDetail: "reserved",
+		},
+		{
+			name: "custom with a denylist name is rejected",
+			body: map[string]any{
+				"name": "srv-denied", "url": "https://example.invalid",
+				"run_attribution": map[string]any{"mode": "custom", "on_behalf_of_header": "Authorization"},
+			},
+			wantStatus: http.StatusBadRequest,
+			wantErr:    "invalid run_attribution",
+			wantDetail: "not permitted for run attribution",
+		},
+		{
+			name: "custom with a duplicate name across fields is rejected",
+			body: map[string]any{
+				"name": "srv-dup", "url": "https://example.invalid",
+				"run_attribution": map[string]any{"mode": "custom", "on_behalf_of_header": "X-A", "session_ref_header": "x-a"},
+			},
+			wantStatus: http.StatusBadRequest,
+			wantErr:    "invalid run_attribution",
+			wantDetail: "must be distinct",
+		},
+		{
+			name: "custom colliding with a same-body auth header is rejected",
+			body: map[string]any{
+				"name": "srv-collide", "url": "https://example.invalid",
+				"auth_headers":    []map[string]string{{"key": "X-Api-Key", "value": "secret"}},
+				"run_attribution": map[string]any{"mode": "custom", "on_behalf_of_header": "x-api-key"},
+			},
+			wantStatus: http.StatusBadRequest,
+			wantErr:    "invalid run_attribution",
+			wantDetail: "collides with this server's auth headers",
+		},
+		{
+			name: "relay colliding with a same-body auth header is rejected (security review)",
+			body: map[string]any{
+				"name": "srv-relay-collide", "url": "https://example.invalid",
+				"auth_headers":    []map[string]string{{"key": "traceparent", "value": "whatever"}},
+				"run_attribution": map[string]any{"mode": "relay"},
+			},
+			wantStatus: http.StatusBadRequest,
+			wantErr:    "invalid run_attribution",
+			wantDetail: "collides with this server's auth headers",
+		},
+		{
+			name: "unknown mode is rejected",
+			body: map[string]any{
+				"name": "srv-unknown", "url": "https://example.invalid",
+				"run_attribution": map[string]any{"mode": "bogus"},
+			},
+			wantStatus: http.StatusBadRequest,
+			wantErr:    "invalid run_attribution",
+			wantDetail: "unknown mode",
+		},
+		{
+			name: `wrong-case mode "Off" is rejected, not case-insensitively matched`,
+			body: map[string]any{
+				"name": "srv-wrongcase", "url": "https://example.invalid",
+				"run_attribution": map[string]any{"mode": "Off"},
+			},
+			wantStatus: http.StatusBadRequest,
+			wantErr:    "invalid run_attribution",
+			wantDetail: "unknown mode",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := testutil.NewTestStore(t)
+			registry := mcp.NewRegistry(store.Queries())
+			// An encryption key is provided so a case with auth_headers can
+			// actually reach 201; cases expecting a 400 hit
+			// resolveRunAttributionField before the encryption step and are
+			// unaffected either way.
+			srv := httptest.NewServer(newMCPRouter(store, registry, testEncKey(t)))
+			t.Cleanup(srv.Close)
+
+			body, _ := json.Marshal(tc.body)
+			resp, err := http.Post(srv.URL+"/servers", "application/json", bytes.NewReader(body))
+			if err != nil {
+				t.Fatalf("POST /servers: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != tc.wantStatus {
+				b, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status = %d, want %d; body = %s", resp.StatusCode, tc.wantStatus, b)
+			}
+
+			if tc.wantStatus != http.StatusCreated {
+				var envelope struct {
+					Error  string `json:"error"`
+					Detail string `json:"detail"`
+				}
+				if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+					t.Fatalf("decode response: %v", err)
+				}
+				if envelope.Error != tc.wantErr {
+					t.Errorf("error = %q, want %q", envelope.Error, tc.wantErr)
+				}
+				if tc.wantDetail != "" && !strings.Contains(envelope.Detail, tc.wantDetail) {
+					t.Errorf("detail = %q, want it to contain %q", envelope.Detail, tc.wantDetail)
+				}
+				rows, err := store.ListMCPServers(context.Background())
+				if err != nil {
+					t.Fatalf("ListMCPServers: %v", err)
+				}
+				if len(rows) != 0 {
+					t.Errorf("expected no MCP server rows after a rejected create, got %d", len(rows))
+				}
+				return
+			}
+
+			var envelope struct {
+				Data mcpServerResponseForTest `json:"data"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if envelope.Data.RunAttribution.Mode != tc.wantMode {
+				t.Errorf("run_attribution.mode = %q, want %q", envelope.Data.RunAttribution.Mode, tc.wantMode)
+			}
+			got := [3]string{
+				envelope.Data.RunAttribution.OnBehalfOfHeader,
+				envelope.Data.RunAttribution.SessionRefHeader,
+				envelope.Data.RunAttribution.TraceparentHeader,
+			}
+			if got != tc.wantNames {
+				t.Errorf("run_attribution names = %+v, want %+v", got, tc.wantNames)
+			}
+		})
+	}
+}
+
+// TestMCPServerRunAttribution_Update covers issue #943's PUT /servers/:id
+// run_attribution absent/{mode:off}/value semantics, mirroring
+// TestMCPServerCallTimeout_Update.
+func TestMCPServerRunAttribution_Update(t *testing.T) {
+	t.Run("absent leaves an existing setting unchanged, even one that would now fail validation", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		// Hand-stored: a reserved name ValidateRunAttribution would now
+		// reject on a fresh write. Proves absent inherits VERBATIM, with no
+		// re-validation of the inherited value.
+		stored := `{"mode":"custom","on_behalf_of_header":"Mcp-Session-Id"}`
+		id := insertTestMCPServerWithRunAttribution(t, store, "srv1", "https://example.invalid", &stored)
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()))
+
+		body := `{"name":"srv1-renamed","url":"https://example.invalid"}`
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/servers/"+id, strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), id)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if after.RunAttribution == nil || *after.RunAttribution != stored {
+			t.Errorf("run_attribution = %v, want it preserved verbatim (%q)", after.RunAttribution, stored)
+		}
+	})
+
+	t.Run("an explicit null preserves the existing setting", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		stored := `{"mode":"relay"}`
+		id := insertTestMCPServerWithRunAttribution(t, store, "srv1", "https://example.invalid", &stored)
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()))
+
+		body := `{"name":"srv1","url":"https://example.invalid","run_attribution":null}`
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/servers/"+id, strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), id)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if after.RunAttribution == nil || *after.RunAttribution != stored {
+			t.Errorf("run_attribution = %v, want it preserved (%q)", after.RunAttribution, stored)
+		}
+	})
+
+	t.Run(`{"mode":"off"} clears the setting`, func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		stored := `{"mode":"relay"}`
+		id := insertTestMCPServerWithRunAttribution(t, store, "srv1", "https://example.invalid", &stored)
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()))
+
+		body := `{"name":"srv1","url":"https://example.invalid","run_attribution":{"mode":"off"}}`
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/servers/"+id, strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), id)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if after.RunAttribution != nil {
+			t.Errorf("run_attribution = %v, want NULL after clearing", *after.RunAttribution)
+		}
+	})
+
+	t.Run("relay replaces the existing setting", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		id := insertTestMCPServer(t, store, "srv1", "https://example.invalid")
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()))
+
+		body := `{"name":"srv1","url":"https://example.invalid","run_attribution":{"mode":"relay"}}`
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/servers/"+id, strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		}
+
+		var envelope struct {
+			Data mcpServerResponseForTest `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if envelope.Data.RunAttribution.Mode != "relay" || envelope.Data.RunAttribution.OnBehalfOfHeader != "X-Relay-On-Behalf-Of" {
+			t.Errorf("run_attribution = %+v, want the relay preset", envelope.Data.RunAttribution)
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), id)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if after.RunAttribution == nil || *after.RunAttribution != `{"mode":"relay"}` {
+			t.Errorf("stored run_attribution = %v, want the canonical relay object", after.RunAttribution)
+		}
+	})
+
+	t.Run("relay with junk supplied names still stores the canonical bare object", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		id := insertTestMCPServer(t, store, "srv1", "https://example.invalid")
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()))
+
+		body := `{"name":"srv1","url":"https://example.invalid","run_attribution":{"mode":"relay","on_behalf_of_header":"X-Junk"}}`
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/servers/"+id, strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), id)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if after.RunAttribution == nil || *after.RunAttribution != `{"mode":"relay"}` {
+			t.Errorf("stored run_attribution = %v, want the canonical bare relay object", after.RunAttribution)
+		}
+	})
+
+	t.Run("custom replaces the existing setting", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		id := insertTestMCPServer(t, store, "srv1", "https://example.invalid")
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()))
+
+		body := `{"name":"srv1","url":"https://example.invalid","run_attribution":{"mode":"custom","on_behalf_of_header":"X-Actor"}}`
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/servers/"+id, strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), id)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		want := `{"mode":"custom","on_behalf_of_header":"X-Actor"}`
+		if after.RunAttribution == nil || *after.RunAttribution != want {
+			t.Errorf("stored run_attribution = %v, want %q", after.RunAttribution, want)
+		}
+	})
+
+	t.Run("a bad value is a 400 and leaves the row unchanged", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		stored := `{"mode":"relay"}`
+		id := insertTestMCPServerWithRunAttribution(t, store, "srv1", "https://example.invalid", &stored)
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()))
+
+		body := `{"name":"srv1","url":"https://example.invalid","run_attribution":{"mode":"custom","on_behalf_of_header":"Authorization"}}`
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/servers/"+id, strings.NewReader(body)))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), id)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if after.RunAttribution == nil || *after.RunAttribution != stored {
+			t.Errorf("run_attribution = %v, want it unchanged (%q) after a rejected update", after.RunAttribution, stored)
+		}
+	})
+
+	t.Run("collision with an existing (encrypted) auth header is a 400", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		encKey := testEncKey(t)
+		id := insertTestMCPServerWithHeaders(t, store, "srv1", "https://example.invalid", encKey, []map[string]string{
+			{"key": "X-Actor", "value": "secret"},
+		})
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()), encKey)
+
+		body := `{"name":"srv1","url":"https://example.invalid","run_attribution":{"mode":"custom","on_behalf_of_header":"x-actor"}}`
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/servers/"+id, strings.NewReader(body)))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), id)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if after.RunAttribution != nil {
+			t.Error("a colliding custom run_attribution setting was written")
+		}
+	})
+
+	t.Run("relay colliding with an existing (encrypted) auth header is a 400 (security review)", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		encKey := testEncKey(t)
+		id := insertTestMCPServerWithHeaders(t, store, "srv1", "https://example.invalid", encKey, []map[string]string{
+			{"key": "traceparent", "value": "whatever"},
+		})
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()), encKey)
+
+		body := `{"name":"srv1","url":"https://example.invalid","run_attribution":{"mode":"relay"}}`
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/servers/"+id, strings.NewReader(body)))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), id)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if after.RunAttribution != nil {
+			t.Error("a colliding relay run_attribution setting was written")
+		}
+	})
+
+	t.Run("a managed row refuses with 409 even when run_attribution is set", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		seedManagedServer(t, store)
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()))
+
+		body := `{"name":"slack-main","url":"https://elsewhere.example.com/mcp","run_attribution":{"mode":"relay"}}`
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, withAdminUser(httptest.NewRequest(http.MethodPut, "/servers/srv-managed", strings.NewReader(body))))
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("status = %d, want 409; body = %s", rec.Code, rec.Body.String())
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), "srv-managed")
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if after.RunAttribution != nil {
+			t.Error("a run_attribution setting was written to a managed endpoint")
+		}
+	})
+
+	t.Run("a nil encryption key with stored auth headers and a non-off mode returns 503", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		seedKey := testEncKey(t)
+		id := insertTestMCPServerWithHeaders(t, store, "srv1", "https://example.invalid", seedKey, []map[string]string{
+			{"key": "X-Api-Key", "value": "secret"},
+		})
+		// Router built WITHOUT an encryption key: decryptHeaders cannot read
+		// the existing (encrypted) auth headers to check for a collision.
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()))
+
+		body := `{"name":"srv1","url":"https://example.invalid","run_attribution":{"mode":"relay"}}`
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/servers/"+id, strings.NewReader(body)))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503; body = %s", rec.Code, rec.Body.String())
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), id)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if after.RunAttribution != nil {
+			t.Error("a run_attribution setting was written despite the 503")
+		}
+	})
+
+	t.Run("a run-attribution-only update leaves call_timeout_seconds alone", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		override := int64(120)
+		serverID := insertTestMCPServerWithCallTimeout(t, store, "srv1", "https://example.invalid", &override)
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()))
+
+		body := `{"name":"srv1","url":"https://example.invalid","run_attribution":{"mode":"relay"}}`
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/servers/"+serverID, strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), serverID)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if after.CallTimeoutSeconds == nil || *after.CallTimeoutSeconds != 120 {
+			t.Errorf("call_timeout_seconds = %v, want it unchanged (120) after a run-attribution-only update", after.CallTimeoutSeconds)
+		}
+	})
+}
+
+// TestSetAuthHeader_RejectsRunAttributionCollision covers PUT
+// /servers/:id/headers/:name's reverse-direction check (issue #943, D4): a
+// new auth header must never be able to claim a name the host itself
+// asserts run attribution under.
+func TestSetAuthHeader_RejectsRunAttributionCollision(t *testing.T) {
+	putHeader := func(t *testing.T, router http.Handler, id, headerName string) *httptest.ResponseRecorder {
+		t.Helper()
+		body, _ := json.Marshal(map[string]string{"value": "v"})
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/servers/"+id+"/headers/"+headerName, bytes.NewReader(body)))
+		return rec
+	}
+
+	t.Run("a server in relay mode: PUT headers/traceparent gives 400", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		encKey := testEncKey(t)
+		stored := `{"mode":"relay"}`
+		id := insertTestMCPServerWithRunAttribution(t, store, "srv1", "https://example.invalid", &stored)
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()), encKey)
+
+		rec := putHeader(t, router, id, "traceparent")
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+		}
+
+		after, err := store.Queries().GetMCPServer(context.Background(), id)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if after.AuthHeadersEncrypted != nil {
+			t.Error("an auth header colliding with the run attribution setting was written")
+		}
+	})
+
+	t.Run("a server in relay mode: PUT headers/TRACEPARENT (different case) still gives 400", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		encKey := testEncKey(t)
+		stored := `{"mode":"relay"}`
+		id := insertTestMCPServerWithRunAttribution(t, store, "srv1", "https://example.invalid", &stored)
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()), encKey)
+
+		rec := putHeader(t, router, id, "TRACEPARENT")
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("a server in custom mode: PUT headers/<the configured name> gives 400", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		encKey := testEncKey(t)
+		stored := `{"mode":"custom","on_behalf_of_header":"X-Actor"}`
+		id := insertTestMCPServerWithRunAttribution(t, store, "srv1", "https://example.invalid", &stored)
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()), encKey)
+
+		rec := putHeader(t, router, id, "X-Actor")
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("a server in off mode gives 200", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		encKey := testEncKey(t)
+		id := insertTestMCPServer(t, store, "srv1", "https://example.invalid")
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()), encKey)
+
+		rec := putHeader(t, router, id, "traceparent")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("a non-colliding name still succeeds against a relay-mode server", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		encKey := testEncKey(t)
+		stored := `{"mode":"relay"}`
+		id := insertTestMCPServerWithRunAttribution(t, store, "srv1", "https://example.invalid", &stored)
+		router := newMCPRouter(store, mcp.NewRegistry(store.Queries()), encKey)
+
+		rec := putHeader(t, router, id, "X-Api-Key")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 		}
 	})
 }

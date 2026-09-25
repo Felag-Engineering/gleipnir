@@ -192,6 +192,33 @@ export interface ApiMcpServer {
   // existing fixtures without these fields still type-check.
   call_timeout_seconds?: number | null
   effective_call_timeout_seconds?: number
+
+  // run_attribution is the effective run attribution setting (issue #943):
+  // always present server-side, optional here (like the two fields above)
+  // so existing fixtures without it still type-check.
+  run_attribution?: ApiRunAttribution
+}
+
+export type RunAttributionMode = 'off' | 'relay' | 'custom'
+
+// Matches api/mcp_handler.go → runAttributionResponse. Always present with
+// all four keys server-side: mode "off" shows every header name as "",
+// mode "relay" shows the Relay preset's constants, mode "custom" shows the
+// configured names.
+export interface ApiRunAttribution {
+  mode: RunAttributionMode
+  on_behalf_of_header: string
+  session_ref_header: string
+  traceparent_header: string
+}
+
+// Matches api/mcp_handler.go → runAttributionPayload, the request shape for
+// Create/Update. Header name fields are only meaningful for mode 'custom'.
+export interface RunAttributionRequest {
+  mode: RunAttributionMode
+  on_behalf_of_header?: string
+  session_ref_header?: string
+  traceparent_header?: string
 }
 
 // Matches mcp_handler.go → mcpServerCreateResponse (POST /api/v1/mcp/servers)
@@ -414,6 +441,8 @@ export interface AddMcpServerRequest {
   ca_cert_pem?: string
   // absent or 0 = no override (1..600 sets it)
   call_timeout_seconds?: number
+  // absent or null = off (issue #943)
+  run_attribution?: RunAttributionRequest
 }
 
 // Matches api/mcp_handler.go → Update body (PUT /api/v1/mcp/servers/:id)
@@ -425,6 +454,9 @@ export interface UpdateMcpServerRequest {
   ca_cert_pem?: string
   // absent = unchanged, 0 = clear to the instance default, 1–600 sets it
   call_timeout_seconds?: number
+  // absent = unchanged, {mode:'off'} = clear, relay/custom replace it
+  // (issue #943)
+  run_attribution?: RunAttributionRequest
 }
 
 // Matches api/mcp_handler.go → SetAuthHeader body (PUT /api/v1/mcp/servers/:id/headers/:name)

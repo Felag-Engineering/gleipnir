@@ -49,7 +49,8 @@ MCP servers page (set it in the server's detail if it shows `Default (30s)`) —
 retry runs the Job synchronously inside one `tools/call`, and the 30s default is tight for a
 fan-out restart. Confirm the Relay server shows `protocol_version 2026-07-28` on Gleipnir's
 MCP servers page before act two: a legacy pin means the approval in act two never reaches a
-human at all (relay#646).
+human at all (relay#646). Also confirm Run attribution reads `Relay preset` on the Relay
+server's detail — that is what puts the agent and run on Relay's own screen for the close.
 
 ---
 
@@ -233,8 +234,10 @@ is not yet its own filed issue.
 
 Relay Console, activity. One screen for the Job from act two: who asked (the agent's machine
 Account, **verified**), on whose behalf (**asserted** — the caller said so, nothing checked
-it), who approved (**verified** human), what dispatched, what each Node returned, including
-the Node that refused.
+it: the asserted lane now reads `fleet-responder` and `gleipnir run <run_id>` with a trace ID,
+so this Job joins back to the Gleipnir run on screen — these are claims Gleipnir makes, not
+credentials Relay verified; #944/#945 are the verified levels), who approved (**verified**
+human), what dispatched, what each Node returned, including the Node that refused.
 
 > "Every layer you just saw is independent, and every one of them writes down what
 > happened. That is the difference between trusting an AI and being able to audit one."
@@ -277,7 +280,7 @@ realignment cutover or Relay's `v0.1.0-beta` real-hardware work.
 |---|---|
 | [#932](https://github.com/Felag-Engineering/gleipnir/issues/932) legible fan-out results | both persuasive beats are readings of a result set |
 | [relay#454](https://github.com/Felag-Engineering/gleipnir-relay/issues/454) refusal legibility | act three is four refusals; each must explain itself to the caller |
-| [relay#455](https://github.com/Felag-Engineering/gleipnir-relay/issues/455) attribution on one screen | the closing beat, and it has never been verified end to end |
+| [relay#455](https://github.com/Felag-Engineering/gleipnir-relay/issues/455) / [#943](https://github.com/felag-engineering/gleipnir/issues/943) attribution on one screen | the closing beat, and it has never been verified end to end |
 | [#933](https://github.com/Felag-Engineering/gleipnir/issues/933) + [relay#456](https://github.com/Felag-Engineering/gleipnir-relay/issues/456) runbooks | reset, timings, pre-flight, and the recorded fallback |
 
 ### D2 — cut if time is short

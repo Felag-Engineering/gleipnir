@@ -112,14 +112,15 @@ func TestParseCacheHint(t *testing.T) {
 }
 
 // TestClientForServer_ReusesUntilConfigChanges verifies clientForServer's
-// invalidation-by-content-comparison over the four serverConfig columns: an
+// invalidation-by-content-comparison over the serverConfig columns: an
 // unchanged row always returns the identical *Client, and a change to any
-// one of the four columns forces a rebuild.
+// one column forces a rebuild.
 func TestClientForServer_ReusesUntilConfigChanges(t *testing.T) {
 	protoA := "2026-07-28"
 	authA := "ciphertext-a"
 	caPEM := testutil.NewTestCA(t).PEM
 	callTimeoutA := int64(120)
+	relayJSON := `{"mode":"relay"}`
 
 	tests := []struct {
 		name   string
@@ -131,6 +132,7 @@ func TestClientForServer_ReusesUntilConfigChanges(t *testing.T) {
 		{"auth_headers_encrypted", func(s db.McpServer) db.McpServer { s.AuthHeadersEncrypted = &authA; return s }},
 		{"ca_cert_pem", func(s db.McpServer) db.McpServer { s.CaCertPem = &caPEM; return s }},
 		{"call_timeout_seconds", func(s db.McpServer) db.McpServer { s.CallTimeoutSeconds = &callTimeoutA; return s }},
+		{"run_attribution", func(s db.McpServer) db.McpServer { s.RunAttribution = &relayJSON; return s }},
 	}
 
 	for _, tc := range tests {

@@ -130,6 +130,14 @@ export const WithCACert: Story = {
       // state.
       call_timeout_seconds: 120,
       effective_call_timeout_seconds: 120,
+      // And the Relay preset (#943), so this story exercises all three
+      // per-server settings together.
+      run_attribution: {
+        mode: 'relay' as const,
+        on_behalf_of_header: 'X-Relay-On-Behalf-Of',
+        session_ref_header: 'X-Relay-Session-Ref',
+        traceparent_header: 'traceparent',
+      },
     },
   },
 }
