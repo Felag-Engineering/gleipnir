@@ -17,6 +17,7 @@ const slackPlugin: ApiPluginDetail = {
   has_oauth_defaults: true,
   pubkey_fingerprint: 'a1b2c3d4e5f60001',
   has_sbom: true,
+  manifest_version: 1,
   created_at: '2025-05-01T10:00:00Z',
 }
 
@@ -31,6 +32,7 @@ const githubPlugin: ApiPluginDetail = {
   has_oauth_defaults: false,
   pubkey_fingerprint: 'deadbeef00000001',
   has_sbom: false,
+  manifest_version: 1,
   created_at: '2025-05-02T11:00:00Z',
 }
 
@@ -43,6 +45,7 @@ const minimalPlugin: ApiPluginDetail = {
   auth_strategy: 'none',
   has_oauth_defaults: false,
   has_sbom: false,
+  manifest_version: 1,
   created_at: '2025-05-03T09:00:00Z',
 }
 

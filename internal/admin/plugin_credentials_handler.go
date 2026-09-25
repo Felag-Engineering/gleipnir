@@ -15,8 +15,9 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	"github.com/felag-engineering/gleipnir/internal/infra/headervalidate"
+	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
 	"github.com/felag-engineering/gleipnir/internal/plugin/oauth"
-	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/manifestv2"
 )
 
 // PluginCredentialsHandler manages write-only credential endpoints for the
@@ -122,7 +123,7 @@ func (h *PluginCredentialsHandler) SetStaticAPIKey(w http.ResponseWriter, r *htt
 		return
 	}
 
-	if _, ok := h.requireOneOfStrategies(w, r, pluginID, sdkmanifest.AuthStrategyStaticAPIKey); !ok {
+	if _, ok := h.requireOneOfStrategies(w, r, pluginID, manifestv2.AuthStrategyStaticAPIKey); !ok {
 		return
 	}
 
@@ -162,7 +163,7 @@ func (h *PluginCredentialsHandler) SetHeader(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if _, ok := h.requireOneOfStrategies(w, r, pluginID, sdkmanifest.AuthStrategyHeaderSet); !ok {
+	if _, ok := h.requireOneOfStrategies(w, r, pluginID, manifestv2.AuthStrategyHeaderSet); !ok {
 		return
 	}
 
@@ -187,7 +188,7 @@ func (h *PluginCredentialsHandler) DeleteHeader(w http.ResponseWriter, r *http.R
 
 	name := chi.URLParam(r, "name")
 
-	if _, ok := h.requireOneOfStrategies(w, r, pluginID, sdkmanifest.AuthStrategyHeaderSet); !ok {
+	if _, ok := h.requireOneOfStrategies(w, r, pluginID, manifestv2.AuthStrategyHeaderSet); !ok {
 		return
 	}
 
@@ -231,7 +232,7 @@ func (h *PluginCredentialsHandler) SetBasicAuth(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	if _, ok := h.requireOneOfStrategies(w, r, pluginID, sdkmanifest.AuthStrategyBasicAuth); !ok {
+	if _, ok := h.requireOneOfStrategies(w, r, pluginID, manifestv2.AuthStrategyBasicAuth); !ok {
 		return
 	}
 
@@ -283,19 +284,19 @@ func (h *PluginCredentialsHandler) requireOneOfStrategies(w http.ResponseWriter,
 		return "", false
 	}
 
-	var m sdkmanifest.Manifest
-	if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &m); parseErr != nil {
+	snap, parseErr := pluginmanifest.Read([]byte(plugin.ManifestSnapshot))
+	if parseErr != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "corrupt manifest snapshot", parseErr.Error())
 		return "", false
 	}
 
 	for _, s := range strategies {
-		if m.Auth.Strategy == s {
+		if snap.Auth.Strategy == s {
 			return s, true
 		}
 	}
 	httputil.WriteError(w, http.StatusBadRequest,
-		fmt.Sprintf("instance auth strategy is %q, this endpoint requires one of: %v", m.Auth.Strategy, strategies), "")
+		fmt.Sprintf("instance auth strategy is %q, this endpoint requires one of: %v", snap.Auth.Strategy, strategies), "")
 	return "", false
 }
 
@@ -332,8 +333,8 @@ func (h *PluginCredentialsHandler) SetOAuthClient(w http.ResponseWriter, r *http
 	}
 
 	strategy, ok := h.requireOneOfStrategies(w, r, pluginID,
-		sdkmanifest.AuthStrategyOAuth2Authcode,
-		sdkmanifest.AuthStrategyOAuth2Clientcred,
+		manifestv2.AuthStrategyOAuth2Authcode,
+		manifestv2.AuthStrategyOAuth2Clientcred,
 	)
 	if !ok {
 		return
@@ -387,8 +388,8 @@ func (h *PluginCredentialsHandler) SetOAuthToken(w http.ResponseWriter, r *http.
 	}
 
 	strategy, ok := h.requireOneOfStrategies(w, r, pluginID,
-		sdkmanifest.AuthStrategyOAuth2Authcode,
-		sdkmanifest.AuthStrategyOAuth2Clientcred,
+		manifestv2.AuthStrategyOAuth2Authcode,
+		manifestv2.AuthStrategyOAuth2Clientcred,
 	)
 	if !ok {
 		return
@@ -442,12 +443,12 @@ func (h *PluginCredentialsHandler) advanceReadiness(ctx context.Context, pluginI
 		return
 	}
 
-	var manifest sdkmanifest.Manifest
-	if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &manifest); parseErr != nil {
+	snap, parseErr := pluginmanifest.Read([]byte(plugin.ManifestSnapshot))
+	if parseErr != nil {
 		slog.WarnContext(ctx, "credentials: advanceReadiness: corrupt manifest snapshot",
 			"plugin_id", pluginID, "err", parseErr)
 		return
 	}
 
-	AdvanceInstanceReadiness(ctx, h.q, h.publisher, inst, &manifest)
+	AdvanceInstanceReadiness(ctx, h.q, h.publisher, inst, snap)
 }

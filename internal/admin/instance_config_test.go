@@ -283,6 +283,89 @@ func TestInstanceConfig_PutConfig(t *testing.T) {
 	})
 }
 
+// instanceConfigManifestV2WithSecret is a v2 twin of instanceConfigManifestWithSecret
+// (#950 DoD: a v2-snapshot test proving the manifest.Read-routed path in this
+// file works for either schema version). Nothing loads a v2 manifest in
+// production yet, so this exists purely to exercise the reader dispatch.
+const instanceConfigManifestV2WithSecret = `
+schema_version: "2"
+name: test-plugin
+version: 1.0.0
+package:
+  registry_type: oci
+  identifier: ghcr.io/acme/test-plugin@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  transport:
+    type: streamable-http
+    port: 8080
+gleipnir:
+  profiles:
+    tool_provider: {}
+  config_schema:
+    type: object
+    properties:
+      app_level_token:
+        type: string
+        x-gleipnir-secret: true
+    required:
+      - app_level_token
+`
+
+// TestInstanceConfig_PutConfig_V2Manifest proves PutConfig's manifest.Read
+// routing behaves identically for a v2 manifest: schema validation, secret
+// redaction, and the sentinel-rejection rule all key off snap.ConfigSchema,
+// which readV2 populates the same way readV1 does.
+func TestInstanceConfig_PutConfig_V2Manifest(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("schema violation still reports configValidationError", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestV2WithSecret})
+		q.seed(db.PluginInstance{ID: "inst-1", PluginID: "plugin-1", InstanceName: "prod", HealthState: "healthy", Version: 0})
+		m := newTestInstanceConfig(q)
+		// app_level_token is required but missing.
+		_, err := m.PutConfig(ctx, "plugin-1", "inst-1", map[string]any{"other_field": "x"}, 0)
+		var valErr configValidationError
+		if !errors.As(err, &valErr) {
+			t.Errorf("err = %v, want configValidationError", err)
+		}
+	})
+
+	t.Run("happy path: secret redacted in response", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestV2WithSecret})
+		q.seed(db.PluginInstance{
+			ID:           "inst-1",
+			PluginID:     "plugin-1",
+			InstanceName: "prod",
+			HealthState:  "healthy",
+			Version:      0,
+			UpdatedAt:    "2026-05-01T00:00:00Z",
+		})
+		m := newTestInstanceConfig(q)
+		result, err := m.PutConfig(ctx, "plugin-1", "inst-1", map[string]any{"app_level_token": "xoxb-real"}, 0)
+		if err != nil {
+			t.Fatalf("PutConfig: unexpected error: %v", err)
+		}
+		if result.Response.ConfigJson == `{"app_level_token":"xoxb-real"}` {
+			t.Error("secret field must be redacted in response")
+		}
+	})
+
+	t.Run("sentinel rejected on submit", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestV2WithSecret})
+		q.seed(db.PluginInstance{ID: "inst-1", PluginID: "plugin-1", InstanceName: "prod", HealthState: "healthy", Version: 0})
+		m := newTestInstanceConfig(q)
+		_, err := m.PutConfig(ctx, "plugin-1", "inst-1", map[string]any{
+			"app_level_token": configvalidate.RedactionSentinel,
+		}, 0)
+		var sentErr SentinelRejectedError
+		if !errors.As(err, &sentErr) {
+			t.Errorf("err = %v, want SentinelRejectedError", err)
+		}
+	})
+}
+
 // ─── PutConfigProperty ───────────────────────────────────────────────────────
 
 func TestInstanceConfig_PutConfigProperty(t *testing.T) {

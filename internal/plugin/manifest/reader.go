@@ -1,13 +1,15 @@
 // reader.go gives host code ONE type to read a plugin manifest snapshot
 // through, whichever schema version wrote it. Three host subsystems —
-// OAuth/credentials, Tier-2 gating, and event/config/subscription consumers —
-// currently read v1's plugin-sdk/manifest fields directly. plugin-sdk/manifestv2
-// gained the equivalent auth and tier2_capabilities fields in the same change
-// that added this reader, but no host code reads them through it yet — routing
-// those three call sites through Read is issue #950. Until v1 is deleted, both
-// formats are live at once, and a call site that switches on version itself is
-// a call site that will forget to when the next field is added. Read is that
-// single seam.
+// OAuth/credentials (internal/plugin/oauth, the admin OAuth/credentials
+// handlers), Tier-2 gating (internal/plugin/hostendpoint), and instance
+// config/subscription-scope consumers (internal/admin/instance_config.go, and
+// the two configvalidate schema-validator constructors it calls) — read
+// through Read as of #950. Audience/channel validation and event-kind trigger
+// binding remain on v1's plugin-sdk/manifest directly: the audience/channel
+// concept has no v2 shape yet, and event/trigger consumers move to #951.
+// Until v1 is deleted, both formats are live at once, and a call site that
+// switches on version itself is a call site that will forget to when the next
+// field is added. Read is that single seam for the subsystems routed through it.
 package manifest
 
 import (
@@ -102,6 +104,19 @@ func Read(snapshot []byte) (Snapshot, error) {
 }
 
 func readV1(data []byte) (Snapshot, error) {
+	// Defence in depth, redundant with Read's own dispatch above: readV1 must
+	// never produce a Snapshot from v2 bytes. sdkmanifest.Unmarshal is a plain
+	// (non-strict) yaml.Unmarshal — it has no `gleipnir:`-nested fields to
+	// decode into, so it would otherwise succeed on v2 bytes and silently
+	// return an empty-looking Snapshot (no Auth, no Tier2Capabilities, no
+	// ConfigSchema) for a manifest that actually declares all three under v2's
+	// shape. A caller that got here some way other than through Read (or a
+	// future refactor of Read's dispatch) must still fail closed instead of
+	// misreporting a v2 manifest as an empty v1 one.
+	if manifestv2.IsV2(data) {
+		return Snapshot{}, fmt.Errorf("manifest reader: refusing to read schema_version %s bytes as v1", manifestv2.SchemaVersion)
+	}
+
 	var m sdkmanifest.Manifest
 	if err := sdkmanifest.Unmarshal(data, &m); err != nil {
 		return Snapshot{}, fmt.Errorf("manifest reader: parse v1 manifest: %w", err)

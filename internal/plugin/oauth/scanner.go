@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
-	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/manifestv2"
 )
 
 // ScannerQuerier is the narrow DB interface used by RefreshScanner.
@@ -97,7 +97,7 @@ func (rs *RefreshScanner) scan(ctx context.Context) {
 		// For authcode instances, the public_url must be set because it is
 		// embedded in the oauth2.Config.RedirectURL. Client credentials flows
 		// do not make a redirect URL — they can be refreshed without it.
-		if creds.Strategy == sdkmanifest.AuthStrategyOAuth2Authcode && publicURL == "" {
+		if creds.Strategy == manifestv2.AuthStrategyOAuth2Authcode && publicURL == "" {
 			if !skippedAuthcode {
 				slog.WarnContext(ctx, "oauth scanner: public_url not configured; skipping authcode refresh for this tick")
 				skippedAuthcode = true

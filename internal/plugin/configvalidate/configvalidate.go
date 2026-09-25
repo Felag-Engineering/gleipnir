@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"strings"
 
+	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
 	"github.com/felag-engineering/gleipnir/internal/plugin/schemautil"
 	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
@@ -61,9 +62,10 @@ func ForChannelAudience(m *sdkmanifest.Manifest) (*Validator, error) {
 }
 
 // ForInstanceConfig returns a Validator for the per-instance config schema
-// declared in m.ConfigSchema.
-func ForInstanceConfig(m *sdkmanifest.Manifest) (*Validator, error) {
-	jsonBytes, err := schemautil.ToJSON(m.ConfigSchema)
+// declared in snap.ConfigSchema. snap is version-neutral (internal/plugin/manifest.Read)
+// so this validates equally against a v1 or a v2 manifest's config_schema.
+func ForInstanceConfig(snap pluginmanifest.Snapshot) (*Validator, error) {
+	jsonBytes, err := schemautil.ToJSON(snap.ConfigSchema)
 	if err != nil {
 		return nil, fmt.Errorf("configvalidate: marshal instance config_schema: %w", err)
 	}
@@ -71,10 +73,11 @@ func ForInstanceConfig(m *sdkmanifest.Manifest) (*Validator, error) {
 }
 
 // ForSubscriptionScope returns a Validator for the instance-level subscription
-// scope schema declared in m.SubscriptionSchema. A nil SubscriptionSchema
-// produces a validator that accepts any object (empty schema).
-func ForSubscriptionScope(m *sdkmanifest.Manifest) (*Validator, error) {
-	jsonBytes, err := schemautil.ToJSON(m.SubscriptionSchema)
+// scope schema declared in snap.SubscriptionSchema. A nil SubscriptionSchema
+// produces a validator that accepts any object (empty schema). snap is
+// version-neutral (internal/plugin/manifest.Read).
+func ForSubscriptionScope(snap pluginmanifest.Snapshot) (*Validator, error) {
+	jsonBytes, err := schemautil.ToJSON(snap.SubscriptionSchema)
 	if err != nil {
 		return nil, fmt.Errorf("configvalidate: marshal subscription_schema: %w", err)
 	}

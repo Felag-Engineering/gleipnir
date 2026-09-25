@@ -33,6 +33,7 @@ const PENDING_PLUGIN: ApiPluginListItem = {
   status: 'pending_review',
   services: ['tool'],
   has_sbom: false,
+  manifest_version: 1,
   instance_count: 0,
   created_at: new Date().toISOString(),
 }
@@ -45,6 +46,7 @@ const ACTIVE_PLUGIN_NO_INSTANCES: ApiPluginListItem = {
   status: 'active',
   services: ['tool'],
   has_sbom: false,
+  manifest_version: 1,
   instance_count: 0,
   created_at: new Date().toISOString(),
 }

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sort"
 
-	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/manifestv2"
 	"gopkg.in/yaml.v3"
 )
 
@@ -17,62 +17,20 @@ const RedactionSentinel = "***"
 // SecretPropertyNames returns the set of top-level property names in the
 // manifest's ConfigSchema that are marked with x-gleipnir-secret: true.
 //
-// It decodes the properties sub-node of schemaNode directly rather than
-// routing through nodeToJSON, which is reserved for the schema-compiler path.
 // Only the root properties map is inspected; nested object secrets are out of
-// scope for v1 (ADR-049).
+// scope (ADR-049). Returns a nil map (not an error) when schemaNode is nil or
+// declares no properties key. The boolean value of the annotation must be
+// exactly true — the string "true" and non-boolean values are not included.
 //
-// Returns a nil map (not an error) when schemaNode is nil or declares no
-// properties key. The boolean value of the annotation must be exactly true —
-// the string "true" and non-boolean values are not included.
-//
-// plugin-sdk/manifestv2.SecretPropertyNames duplicates this logic for v2
-// manifests rather than importing it (the two manifest packages stay
-// separate — see plugin-sdk/manifestv2's package doc). This is the LIVE
-// implementation behind the ADR-049 redaction path and is deliberately left
-// unchanged pre-demo; internal/plugin/manifest's TestAnnotationParity pins
-// both implementations to identical output. #950 is where configvalidate
-// forwards to plugin-sdk/manifestv2's copy and that parity test is deleted.
+// This is the LIVE implementation behind the ADR-049 redaction path. It
+// forwards to plugin-sdk/manifestv2's copy of the same logic rather than
+// re-implementing it: the two lived as independent, test-pinned duplicates
+// until #950 consolidated them (see manifestv2.SecretPropertyNames's doc for
+// why a v2-only manifest package carries this logic at all).
 func SecretPropertyNames(schemaNode *yaml.Node) (map[string]bool, error) {
-	if schemaNode == nil {
-		return nil, nil
-	}
-
-	// Decode the entire node into a generic map so we can walk properties.
-	var schema map[string]any
-	if err := schemaNode.Decode(&schema); err != nil {
-		return nil, fmt.Errorf("configvalidate: decode config_schema node: %w", err)
-	}
-
-	propertiesRaw, ok := schema["properties"]
-	if !ok {
-		return nil, nil
-	}
-	propertiesMap, ok := propertiesRaw.(map[string]any)
-	if !ok {
-		return nil, nil
-	}
-
-	secrets := make(map[string]bool)
-	for name, propRaw := range propertiesMap {
-		propMap, ok := propRaw.(map[string]any)
-		if !ok {
-			continue
-		}
-		annotationVal, exists := propMap[sdkmanifest.SecretAnnotationKey]
-		if !exists {
-			continue
-		}
-		// Only a true boolean value counts. The string "true" is not accepted
-		// because JSON Schema consumers distinguish boolean from string literals,
-		// and accepting strings would widen the surface unintentionally.
-		if boolVal, isBool := annotationVal.(bool); isBool && boolVal {
-			secrets[name] = true
-		}
-	}
-
-	if len(secrets) == 0 {
-		return nil, nil
+	secrets, err := manifestv2.SecretPropertyNames(schemaNode)
+	if err != nil {
+		return nil, fmt.Errorf("configvalidate: %w", err)
 	}
 	return secrets, nil
 }

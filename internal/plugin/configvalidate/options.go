@@ -3,7 +3,7 @@ package configvalidate
 import (
 	"fmt"
 
-	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/manifestv2"
 	"gopkg.in/yaml.v3"
 )
 
@@ -27,54 +27,20 @@ type OptionsSpec struct {
 //
 // Returns nil, nil when schemaNode is nil or declares no annotated properties.
 //
-// plugin-sdk/manifestv2.OptionsAnnotations duplicates this logic for v2
-// manifests — see SecretPropertyNames's doc comment for why, and for the
-// parity test that pins the two to identical output.
+// This forwards to plugin-sdk/manifestv2's copy of the same logic — see
+// SecretPropertyNames's doc comment for why a v2-only manifest package carries
+// this logic, and for the consolidation history (#950).
 func OptionsAnnotations(schemaNode *yaml.Node) (map[string]OptionsSpec, error) {
-	if schemaNode == nil {
+	specs, err := manifestv2.OptionsAnnotations(schemaNode)
+	if err != nil {
+		return nil, fmt.Errorf("configvalidate: %w", err)
+	}
+	if specs == nil {
 		return nil, nil
 	}
-
-	var schema map[string]any
-	if err := schemaNode.Decode(&schema); err != nil {
-		return nil, fmt.Errorf("configvalidate: decode schema node for options annotations: %w", err)
-	}
-
-	propertiesRaw, ok := schema["properties"]
-	if !ok {
-		return nil, nil
-	}
-	propertiesMap, ok := propertiesRaw.(map[string]any)
-	if !ok {
-		return nil, nil
-	}
-
-	result := make(map[string]OptionsSpec)
-	for name, propRaw := range propertiesMap {
-		propMap, ok := propRaw.(map[string]any)
-		if !ok {
-			continue
-		}
-		annotationRaw, exists := propMap[sdkmanifest.OptionsAnnotationKey]
-		if !exists {
-			continue
-		}
-		// The annotation must be a map with at least a "source" key.
-		annotationMap, ok := annotationRaw.(map[string]any)
-		if !ok {
-			continue
-		}
-		source, _ := annotationMap["source"].(string)
-		if source == "" {
-			// Annotation exists but has no usable source — skip.
-			continue
-		}
-		multi, _ := annotationMap["multi"].(bool)
-		result[name] = OptionsSpec{Source: source, Multi: multi}
-	}
-
-	if len(result) == 0 {
-		return nil, nil
+	result := make(map[string]OptionsSpec, len(specs))
+	for name, spec := range specs {
+		result[name] = OptionsSpec{Source: spec.Source, Multi: spec.Multi}
 	}
 	return result, nil
 }

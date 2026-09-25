@@ -3,6 +3,7 @@ package admin
 import (
 	"testing"
 
+	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
 	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 )
 
@@ -71,7 +72,7 @@ func TestComputeInstanceReadinessDetail(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			m := &sdkmanifest.Manifest{Auth: sdkmanifest.AuthDecl{Strategy: tc.strategy}}
+			m := pluginmanifest.Snapshot{Auth: pluginmanifest.AuthDecl{Strategy: tc.strategy}}
 			got := computeInstanceReadinessDetail(m, tc.configJSON, tc.credsSet)
 			if got != tc.want {
 				t.Errorf("computeInstanceReadinessDetail = %q, want %q", got, tc.want)

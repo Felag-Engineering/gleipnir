@@ -8,7 +8,7 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
 
-	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/manifestv2"
 )
 
 // OAuthConfig builds an *oauth2.Config from StoredCredentials and the
@@ -154,7 +154,7 @@ func (ts *persistingTokenSource) init() error {
 	}
 
 	switch creds.Strategy {
-	case sdkmanifest.AuthStrategyOAuth2Authcode:
+	case manifestv2.AuthStrategyOAuth2Authcode:
 		cfg, err := OAuthConfig(creds, ts.callbackURL)
 		if err != nil {
 			return fmt.Errorf("token source init: %w", err)
@@ -163,7 +163,7 @@ func (ts *persistingTokenSource) init() error {
 		// when Valid() returns false — i.e. it does not refresh more than needed.
 		ts.inner = cfg.TokenSource(ts.ctx, creds.Token)
 
-	case sdkmanifest.AuthStrategyOAuth2Clientcred:
+	case manifestv2.AuthStrategyOAuth2Clientcred:
 		cfg := ClientCredConfig(creds)
 		ts.inner = cfg.TokenSource(ts.ctx)
 

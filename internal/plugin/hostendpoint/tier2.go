@@ -12,7 +12,8 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/model"
-	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
+	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/manifestv2"
 )
 
 // Tier-2 methods (spec §8.2), ported from internal/plugin/hostsvc's gRPC
@@ -81,16 +82,32 @@ func (d Tier2Deps) resolveInstance(ctx context.Context) (db.PluginInstance, erro
 // hasTier2Capability checks whether the manifest for inst's parent plugin
 // declares the given Tier-2 capability. It reads manifest_snapshot fresh per
 // call — no caching — so hot-reload invalidation (spec §5.4) is automatic.
+// Routed through the version-dispatching reader (internal/plugin/manifest.Read)
+// so a v2 manifest's tier2_capabilities gate identically to v1's.
+//
+// This MUST read the same view of the row that the admin consent screen shows
+// (internal/admin/plugin_handler.go's GetPluginDetail/ListPlugins Tier2Capabilities
+// field, also sourced from Read as of the #950 security review): the gate and
+// the screen disagreeing about what a plugin declared is exactly the bug that
+// review found, where the v1 loader could accept schema_version-2 bytes as an
+// apparently-empty v1 manifest while this gate — reading the same bytes
+// through Read — saw the full v2 tier2_capabilities list. Do not special-case
+// or bypass Read here even for a "trusted" caller.
 func (d Tier2Deps) hasTier2Capability(ctx context.Context, inst db.PluginInstance, capability string) (bool, *ToolError) {
 	plugin, err := d.Querier.GetPluginByID(ctx, inst.PluginID)
 	if err != nil {
 		return false, &ToolError{Code: "internal", Message: fmt.Sprintf("fetch plugin: %v", err)}
 	}
-	var m sdkmanifest.Manifest
-	if err := yaml.Unmarshal([]byte(plugin.ManifestSnapshot), &m); err != nil {
+	snap, err := pluginmanifest.Read([]byte(plugin.ManifestSnapshot))
+	if err != nil {
 		return false, &ToolError{Code: "internal", Message: fmt.Sprintf("parse manifest snapshot: %v", err)}
 	}
-	return m.HasTier2(capability), nil
+	for _, c := range snap.Tier2Capabilities {
+		if c == capability {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // requireTier2Capability enforces the Tier-2 gate (spec §8.2). When the
@@ -140,7 +157,7 @@ func (d Tier2Deps) runHistoryRead(ctx context.Context, args json.RawMessage) (an
 	if err != nil {
 		return nil, err
 	}
-	if te := d.requireTier2Capability(ctx, inst, sdkmanifest.Tier2RunHistoryRead, ToolRunHistoryRead); te != nil {
+	if te := d.requireTier2Capability(ctx, inst, manifestv2.Tier2RunHistoryRead, ToolRunHistoryRead); te != nil {
 		return nil, te
 	}
 
@@ -294,7 +311,7 @@ func (d Tier2Deps) userDirectoryRead(ctx context.Context, args json.RawMessage) 
 	if err != nil {
 		return nil, err
 	}
-	if te := d.requireTier2Capability(ctx, inst, sdkmanifest.Tier2UserDirectoryRead, ToolUserDirectoryRead); te != nil {
+	if te := d.requireTier2Capability(ctx, inst, manifestv2.Tier2UserDirectoryRead, ToolUserDirectoryRead); te != nil {
 		return nil, te
 	}
 

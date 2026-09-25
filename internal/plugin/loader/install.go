@@ -20,6 +20,7 @@ import (
 	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
 	pluginstate "github.com/felag-engineering/gleipnir/internal/plugin/state"
 	manifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/manifestv2"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/signing"
 )
 
@@ -327,6 +328,24 @@ func readManifest(bundleDir string) (*manifest.Manifest, []byte, error) {
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read manifest.yaml: %w", err)
+	}
+
+	// A v2 (containerized) manifest must never reach the v1 parse below: the
+	// v1 Manifest struct has no `gleipnir:`-nested fields, so plain YAML
+	// unmarshal of v2 bytes would succeed while silently leaving Auth, Tier2,
+	// ConfigSchema, EventKinds and Tools all at their zero value -- installing
+	// what LOOKS like an empty, harmless v1 plugin from bytes that fully
+	// validate as a v2 manifest carrying real auth/tier2/config. Any host code
+	// that later reads the row through the version-dispatching reader
+	// (internal/plugin/manifest.Read, wired into OAuth/credentials, the Tier-2
+	// gate, and instance config as of #950) would then see the FULL v2 view --
+	// bypassing whatever the v1 consent screen and the v1 material-change diff
+	// (which only ever saw the empty v1 view) showed at install/hot-reload
+	// time. Checked by content, not by requiring "v1": existing v1 manifests
+	// use the literal string "v1", but a manifest that omits schema_version
+	// entirely must still install.
+	if manifestv2.IsV2(data) {
+		return nil, nil, fmt.Errorf("manifest schema_version %s requires the v2 substrate, not the v1 plugin loader", manifestv2.SchemaVersion)
 	}
 
 	var m manifest.Manifest

@@ -504,6 +504,33 @@ func (h *PluginHandler) AcceptManifest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Route through the version-dispatching reader FIRST, as a guard rather
+	// than for its Snapshot: if plugin.ManifestSnapshot is ever something
+	// other than the v1 manifest this whole handler assumes, AcceptManifest
+	// refuses here instead of silently letting the v1-only diff below run a
+	// lenient, wrong parse of it. This is what makes staying on
+	// ConfigSchemaNewlyRequiredFields's v1-only *sdkmanifest.Manifest diff
+	// safe: the v1 loader (internal/plugin/loader.readManifest) already
+	// refuses to ever write v2-shaped bytes into plugins.manifest_snapshot or
+	// plugin_pending_manifests.candidate_manifest (both flow through it), and
+	// loadPendingManifest above applies the identical Read guard to the
+	// candidate side — so by the time both guards pass, oldManifest and
+	// newManifest are both known-v1, and the two-decoders-one-row split this
+	// endpoint has (Read to gate, sdkmanifest.Unmarshal to get the concrete
+	// type diff.go needs) cannot disagree about which schema version it is.
+	//
+	// The check is Version != 1, not just err != nil: Read only errors on
+	// bytes that fail to parse or fail v2 validation — a manifest that is
+	// fully valid schema_version 2 decodes through Read without error and
+	// reports Version == 2. Checking the error alone would let a VALID v2
+	// manifest slip past this guard.
+	if snap, err := pluginmanifest.Read([]byte(plugin.ManifestSnapshot)); err != nil || snap.Version != 1 {
+		if err == nil {
+			err = fmt.Errorf("manifest schema_version %d is not supported here; this endpoint is v1-only", snap.Version)
+		}
+		httputil.WriteError(w, http.StatusInternalServerError, "corrupt manifest snapshot", err.Error())
+		return
+	}
 	var oldManifest sdkmanifest.Manifest
 	if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &oldManifest); parseErr != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "corrupt manifest snapshot", parseErr.Error())
@@ -628,6 +655,25 @@ func (h *PluginHandler) loadPendingManifest(ctx context.Context, pluginID string
 	}
 
 	candidateBytes := []byte(row.CandidateManifest)
+
+	// Guard via the version-dispatching reader before the v1-only parse below
+	// — see AcceptManifest's comment on its oldManifest guard for why this
+	// pairing is what keeps the v1-only ConfigSchemaNewlyRequiredFields diff
+	// safe, and for why the check is Version != 1 rather than err != nil
+	// alone (Read does not error on a VALID v2 manifest). In practice this
+	// should never fire: the candidate bytes came from
+	// internal/plugin/loader.readManifest, which already refuses to write
+	// v2-shaped bytes here.
+	if snap, err := pluginmanifest.Read(candidateBytes); err != nil || snap.Version != 1 {
+		if err == nil {
+			err = fmt.Errorf("manifest schema_version %d is not supported here; this endpoint is v1-only", snap.Version)
+		}
+		return db.PluginPendingManifest{}, nil, sdkmanifest.Manifest{}, &candidateLookupError{
+			status: http.StatusUnprocessableEntity,
+			msg:    "candidate manifest: parse failed",
+			detail: err.Error(),
+		}
+	}
 	var m sdkmanifest.Manifest
 	if parseErr := sdkmanifest.Unmarshal(candidateBytes, &m); parseErr != nil {
 		return db.PluginPendingManifest{}, nil, sdkmanifest.Manifest{}, &candidateLookupError{
@@ -1093,8 +1139,8 @@ func (h *PluginHandler) writeInstanceResponseWithRedactionForPlugin(
 	plugin db.Plugin,
 	inst db.PluginInstance,
 ) bool {
-	var m sdkmanifest.Manifest
-	if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &m); parseErr != nil {
+	m, parseErr := pluginmanifest.Read([]byte(plugin.ManifestSnapshot))
+	if parseErr != nil {
 		// Fail-closed: we must not return unredacted config (ADR-049, ADR-001).
 		httputil.WriteError(w, http.StatusInternalServerError, "corrupt manifest snapshot", parseErr.Error())
 		return false
@@ -1272,6 +1318,12 @@ func (h *PluginHandler) Install(w http.ResponseWriter, r *http.Request) {
 			// Layout failure: manifest.yaml missing both at the tarball root
 			// and under a single top-level directory.
 			httputil.WriteError(w, http.StatusBadRequest, "invalid bundle layout", msg)
+		case strings.Contains(msg, "requires the v2 substrate"):
+			// Order matters: this must come before "read manifest" (it is
+			// wrapped inside "read manifest from %q: %w") so a v2-shaped
+			// manifest gets its own precise message instead of the generic
+			// "missing or unreadable" one below.
+			httputil.WriteError(w, http.StatusBadRequest, "manifest.yaml declares a v2 schema_version; install it through the v2 substrate", msg)
 		case strings.Contains(msg, "parse manifest"):
 			// Order matters: "parse manifest" is wrapped inside "read manifest
 			// from %q: %w" so this case must come first.
@@ -1464,8 +1516,8 @@ func (h *PluginHandler) seedInstanceCredentials(ctx context.Context, instanceID,
 		return false
 	}
 
-	var m sdkmanifest.Manifest
-	if err := sdkmanifest.Unmarshal([]byte(manifestSnapshot), &m); err != nil {
+	m, err := pluginmanifest.Read([]byte(manifestSnapshot))
+	if err != nil {
 		slog.WarnContext(ctx, "credential seed: corrupt manifest snapshot; skipping",
 			"instance_id", instanceID, "err", err)
 		return false
@@ -1643,7 +1695,13 @@ type pluginDetailResponse struct {
 	HasOAuthDefaults  bool     `json:"has_oauth_defaults"`
 	PubkeyFingerprint string   `json:"pubkey_fingerprint,omitempty"`
 	HasSBOM           bool     `json:"has_sbom"`
-	CreatedAt         string   `json:"created_at"`
+	// ManifestVersion is the manifest schema version this plugin's installed
+	// snapshot declares, as internal/plugin/manifest.Read reports it: 1 or 2.
+	// 0 means Read could not determine it (fail-closed on a manifest.Read
+	// error, e.g. schema_version 2 bytes that a lenient v1 parse otherwise
+	// accepted) — never silently reported as 1. Used by #1000.
+	ManifestVersion int    `json:"manifest_version"`
+	CreatedAt       string `json:"created_at"`
 }
 
 // pluginListItemResponse is the JSON shape for a single entry in the ListPlugins response.
@@ -1656,8 +1714,13 @@ type pluginListItemResponse struct {
 	Services          []string `json:"services"`
 	PubkeyFingerprint string   `json:"pubkey_fingerprint,omitempty"`
 	HasSBOM           bool     `json:"has_sbom"`
-	InstanceCount     int      `json:"instance_count"`
-	CreatedAt         string   `json:"created_at"`
+	// ManifestVersion is the manifest schema version this plugin's installed
+	// snapshot declares, as internal/plugin/manifest.Read reports it: 1 or 2.
+	// 0 means Read could not determine it — see pluginDetailResponse's field
+	// of the same name for why that must not default to 1. Used by #1000.
+	ManifestVersion int    `json:"manifest_version"`
+	InstanceCount   int    `json:"instance_count"`
+	CreatedAt       string `json:"created_at"`
 }
 
 // manifestServices derives the list of declared service names from a manifest.
@@ -1698,6 +1761,59 @@ func (h *PluginHandler) GetPluginDetail(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// The consent/detail security fields (tier2 capabilities, auth strategy,
+	// whether OAuth defaults are baked in) come from the version-dispatching
+	// reader, NOT from the raw v1 parse above — this is the #950 security-
+	// review fix: those three fields are exactly what the OAuth/credentials
+	// handlers and the Tier-2 gate also read through Read, and this consent
+	// screen must show the same view they enforce, not a second, independently
+	// parsed one that could silently disagree. Unlike AcceptManifest/
+	// loadPendingManifest, this handler is intentionally version-generic: a
+	// snap.Version of 2 is not itself an error condition here (there is no
+	// v1-only diff downstream that requires the row to be v1), so a genuine
+	// v2 plugin, once the v2 install path exists, would show its own real
+	// tier2/auth via snap and ManifestVersion 2.
+	//
+	// For a genuine v1 manifest, sourcing from snap changes nothing: readV1
+	// builds Tier2Capabilities/Auth from the identical sdkmanifest.Unmarshal
+	// call `m` above already made, field for field, so
+	// snap.Tier2Capabilities/snap.Auth.Strategy/snap.Auth.OAuthDefaults are
+	// byte-identical to m.Tier2/m.Auth.Strategy/m.Auth.OAuthDefaults whenever
+	// snapErr is nil and snap.Version == 1.
+	//
+	// snapErr is non-nil only when plugin.ManifestSnapshot sniffs as
+	// schema_version 2 (so Read dispatched to readV2) but fails readV2's
+	// stricter validation — Read does NOT error on a valid v2 manifest, it
+	// returns Version 2 with no error, which is the normal case above. An
+	// invalid-v2 snapshot getting this far is a state the v1 loader now
+	// refuses to ever write (internal/plugin/loader.readManifest rejects any
+	// IsV2 bytes outright, valid or not) — if it somehow still happens, fall
+	// back to the raw v1 view rather than hiding the row, and flag
+	// ManifestVersion as unknown so an admin has a reason to look twice at a
+	// plugin whose two readers disagree.
+	//
+	// Services/Description/Author/License/SBOM stay sourced from the raw v1
+	// parse: they have no v2 equivalent in Snapshot yet (out of #950's three-
+	// subsystem scope), and none of them gate a capability the way tier2/auth
+	// do.
+	snap, snapErr := pluginmanifest.Read([]byte(plugin.ManifestSnapshot))
+	tier2 := m.Tier2
+	authStrategy := m.Auth.Strategy
+	hasOAuthDefaults := m.Auth.OAuthDefaults != nil
+	// manifestVersion is 0 ("unknown") rather than defaulting to 1 on a Read
+	// failure — a false "1" would tell the consent screen this is an ordinary,
+	// fully-understood v1 plugin exactly when it is the one case that is not.
+	manifestVersion := 0
+	if snapErr == nil {
+		manifestVersion = snap.Version
+		tier2 = snap.Tier2Capabilities
+		authStrategy = snap.Auth.Strategy
+		hasOAuthDefaults = snap.Auth.OAuthDefaults != nil
+	} else {
+		slog.WarnContext(ctx, "plugin detail: manifest.Read disagreed with the v1 parse; showing the v1 view with manifest_version=0",
+			"plugin_id", pluginID, "err", snapErr)
+	}
+
 	// A service is present when its version string is non-empty.
 	services := manifestServices(&m)
 
@@ -1717,11 +1833,12 @@ func (h *PluginHandler) GetPluginDetail(w http.ResponseWriter, r *http.Request) 
 		License:           m.License,
 		Status:            plugin.Status,
 		Services:          services,
-		Tier2Capabilities: m.Tier2,
-		AuthStrategy:      m.Auth.Strategy,
-		HasOAuthDefaults:  m.Auth.OAuthDefaults != nil,
+		Tier2Capabilities: tier2,
+		AuthStrategy:      authStrategy,
+		HasOAuthDefaults:  hasOAuthDefaults,
 		PubkeyFingerprint: fingerprint,
 		HasSBOM:           m.SBOM != "",
+		ManifestVersion:   manifestVersion,
 		CreatedAt:         plugin.CreatedAt,
 	})
 }
@@ -1750,6 +1867,18 @@ func (h *PluginHandler) ListPlugins(w http.ResponseWriter, r *http.Request) {
 
 		services := manifestServices(&m)
 
+		// manifest_version comes from the version-dispatching reader — see the
+		// comment in GetPluginDetail for why the rest of this loop stays on the
+		// v1-only parse above, and for why a Read failure reports 0 ("unknown")
+		// rather than defaulting to 1.
+		manifestVersion := 0
+		if snap, snapErr := pluginmanifest.Read([]byte(p.ManifestSnapshot)); snapErr == nil {
+			manifestVersion = snap.Version
+		} else {
+			slog.WarnContext(ctx, "list plugins: manifest.Read disagreed with the v1 parse; reporting manifest_version=0",
+				"plugin_id", p.ID, "err", snapErr)
+		}
+
 		fingerprint := ""
 		if p.TrustedPubkey != "" {
 			fingerprint = fmt.Sprintf("%x", deriveFingerprint([]byte(p.TrustedPubkey)))
@@ -1774,6 +1903,7 @@ func (h *PluginHandler) ListPlugins(w http.ResponseWriter, r *http.Request) {
 			Services:          services,
 			PubkeyFingerprint: fingerprint,
 			HasSBOM:           m.SBOM != "",
+			ManifestVersion:   manifestVersion,
 			InstanceCount:     instanceCount,
 			CreatedAt:         p.CreatedAt,
 		})
@@ -1809,6 +1939,26 @@ func (h *PluginHandler) ApprovePlugin(w http.ResponseWriter, r *http.Request) {
 
 	if plugin.Status != "pending_review" {
 		httputil.WriteError(w, http.StatusConflict, "plugin is not in pending_review status", plugin.Status)
+		return
+	}
+
+	// #950 security review: approval is a v1-only admin action (there is no
+	// v2 install/approve path yet — internal/plugin/loader.readManifest
+	// already refuses to ever write a v2-shaped manifest.snapshot, valid or
+	// not). Guard here anyway, by the same Version != 1 check as
+	// AcceptManifest/loadPendingManifest, rather than trusting that upstream
+	// refusal alone: an admin clicking "approve" is exactly the moment a
+	// mis-provenanced v2 row would be waved through as an ordinary v1 plugin.
+	// Read does not error on a VALID v2 manifest — it decodes cleanly with
+	// Version 2 — so the check must be on snap.Version, not just on err.
+	if snap, snapErr := pluginmanifest.Read([]byte(plugin.ManifestSnapshot)); snapErr != nil || snap.Version != 1 {
+		if snapErr == nil {
+			snapErr = fmt.Errorf("manifest schema_version %d", snap.Version)
+		}
+		slog.WarnContext(ctx, "approve plugin: refusing non-v1 manifest snapshot",
+			"plugin_id", pluginID, "err", snapErr)
+		httputil.WriteError(w, http.StatusConflict,
+			"plugin manifest is not schema_version 1; v2 plugins are approved through the v2 substrate", snapErr.Error())
 		return
 	}
 

@@ -12,7 +12,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	pluginstate "github.com/felag-engineering/gleipnir/internal/plugin/state"
-	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/manifestv2"
 )
 
 // ErrConfigInvalid is returned by BeginAuthcode when operator configuration is
@@ -100,8 +100,8 @@ func (m *Manager) BeginAuthcode(ctx context.Context, instanceID, returnURL strin
 	if err != nil {
 		return "", fmt.Errorf("oauth begin: load credentials: %w", err)
 	}
-	if creds.Strategy != sdkmanifest.AuthStrategyOAuth2Authcode {
-		return "", fmt.Errorf("oauth begin: instance strategy is %q, want %q", creds.Strategy, sdkmanifest.AuthStrategyOAuth2Authcode)
+	if creds.Strategy != manifestv2.AuthStrategyOAuth2Authcode {
+		return "", fmt.Errorf("oauth begin: instance strategy is %q, want %q", creds.Strategy, manifestv2.AuthStrategyOAuth2Authcode)
 	}
 
 	callbackURL := publicURL + callbackPath
@@ -253,8 +253,8 @@ func (m *Manager) BeginClientcred(ctx context.Context, instanceID string) error 
 	if err != nil {
 		return fmt.Errorf("oauth clientcred: load credentials: %w", err)
 	}
-	if creds.Strategy != sdkmanifest.AuthStrategyOAuth2Clientcred {
-		return fmt.Errorf("oauth clientcred: instance strategy is %q, want %q", creds.Strategy, sdkmanifest.AuthStrategyOAuth2Clientcred)
+	if creds.Strategy != manifestv2.AuthStrategyOAuth2Clientcred {
+		return fmt.Errorf("oauth clientcred: instance strategy is %q, want %q", creds.Strategy, manifestv2.AuthStrategyOAuth2Clientcred)
 	}
 
 	cfg := ClientCredConfig(creds)

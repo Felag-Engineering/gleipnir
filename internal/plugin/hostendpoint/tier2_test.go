@@ -183,6 +183,34 @@ func policyYAMLWithTool(toolName string) string {
 	return "task: do something\ncapabilities:\n  tools:\n    - tool: " + toolName + "\n"
 }
 
+// manifestWithTier2V2 is the v2 twin of manifestWithTier2 (#950 DoD: a
+// v2-snapshot test proving the Tier-2 gate reads tier2_capabilities
+// identically regardless of manifest schema version). Nothing installs a v2
+// manifest in production yet.
+func manifestWithTier2V2(caps ...string) string {
+	base := `schema_version: "2"
+name: myplugin
+version: 1.0.0
+package:
+  registry_type: oci
+  identifier: ghcr.io/acme/myplugin@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  transport:
+    type: streamable-http
+    port: 8080
+gleipnir:
+  profiles:
+    tool_provider: {}
+`
+	if len(caps) == 0 {
+		return base
+	}
+	capYAML := ""
+	for _, c := range caps {
+		capYAML += "\n    - " + c
+	}
+	return base + "  tier2_capabilities:" + capYAML + "\n"
+}
+
 // ── tests: the capability gate ────────────────────────────────────────────
 
 func TestTier2_CapabilityGate(t *testing.T) {
@@ -247,6 +275,35 @@ func TestTier2_CapabilityGranted_NoAudit(t *testing.T) {
 	isErr, _ = f.callTool(t, "inst-1", ToolUserDirectoryRead, nil)
 	if isErr {
 		t.Fatalf("user_directory_read should succeed once declared")
+	}
+	if len(f.q.audits) != 0 {
+		t.Errorf("audit rows = %d, want 0 for a granted call", len(f.q.audits))
+	}
+}
+
+func TestTier2_CapabilityGate_V2Manifest(t *testing.T) {
+	f := newTier2Fixture(t)
+	f.q.instances["inst-1"] = db.PluginInstance{ID: "inst-1", PluginID: "plug-1", InstanceName: "myplugin"}
+	f.q.plugins["plug-1"] = db.Plugin{ID: "plug-1", ManifestSnapshot: manifestWithTier2V2()} // no tier2 declared
+
+	isErr, text := f.callTool(t, "inst-1", ToolRunHistoryRead, nil)
+	if !isErr || !strings.Contains(text, "unauthorized_tier2_call") {
+		t.Fatalf("isError=%v text=%q, want unauthorized_tier2_call", isErr, text)
+	}
+}
+
+func TestTier2_CapabilityGranted_V2Manifest_NoAudit(t *testing.T) {
+	f := newTier2Fixture(t)
+	f.q.instances["inst-1"] = db.PluginInstance{ID: "inst-1", PluginID: "plug-1", InstanceName: "myplugin"}
+	f.q.plugins["plug-1"] = db.Plugin{ID: "plug-1", ManifestSnapshot: manifestWithTier2V2("run_history_read", "user_directory_read")}
+
+	isErr, _ := f.callTool(t, "inst-1", ToolRunHistoryRead, nil)
+	if isErr {
+		t.Fatalf("run_history_read should succeed once declared in a v2 manifest")
+	}
+	isErr, _ = f.callTool(t, "inst-1", ToolUserDirectoryRead, nil)
+	if isErr {
+		t.Fatalf("user_directory_read should succeed once declared in a v2 manifest")
 	}
 	if len(f.q.audits) != 0 {
 		t.Errorf("audit rows = %d, want 0 for a granted call", len(f.q.audits))
