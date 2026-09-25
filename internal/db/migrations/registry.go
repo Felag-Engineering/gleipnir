@@ -48,5 +48,6 @@ func All() []Migration {
 		&AddMCPServerCACert{},
 		&AddToolInputCancelledStatus{},
 		&AddMCPServerCallTimeout{},
+		&AddMCPServerRunAttribution{},
 	}
 }

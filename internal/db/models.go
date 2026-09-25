@@ -52,6 +52,7 @@ type McpServer struct {
 	PluginInstanceID     *string `json:"plugin_instance_id"`
 	CaCertPem            *string `json:"ca_cert_pem"`
 	CallTimeoutSeconds   *int64  `json:"call_timeout_seconds"`
+	RunAttribution       *string `json:"run_attribution"`
 }
 
 type McpTask struct {

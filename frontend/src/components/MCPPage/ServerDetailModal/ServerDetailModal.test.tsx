@@ -118,6 +118,11 @@ describe('ServerDetailModal', () => {
     expect(screen.getByText('Default (30s)')).toBeInTheDocument()
   })
 
+  it('renders the run attribution section (issue #943)', () => {
+    renderWithClient(<ServerDetailModal {...defaultProps} />)
+    expect(screen.getByText('Run attribution')).toBeInTheDocument()
+  })
+
   it('calls onClose when close button is clicked', () => {
     const onClose = vi.fn()
     renderWithClient(<ServerDetailModal {...defaultProps} onClose={onClose} />)

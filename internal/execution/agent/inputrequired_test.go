@@ -6,6 +6,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -630,6 +632,10 @@ func TestOutcomeFor(t *testing.T) {
 type mrtrServer struct {
 	mu       sync.Mutex
 	requests []map[string]any
+	// headers records a full clone of each request's http.Header, in the
+	// same order as requests (issue #943: TestBoundAgent_ToolCall_SendsRunAttributionOnCallAndRetry
+	// asserts run attribution headers on both the initial call and the retry).
+	headers []http.Header
 	// alwaysAsk keeps answering input_required, modelling a server that never
 	// stops asking.
 	alwaysAsk bool
@@ -678,6 +684,7 @@ func (m *mrtrServer) handler() http.HandlerFunc {
 
 		m.mu.Lock()
 		m.requests = append(m.requests, req)
+		m.headers = append(m.headers, r.Header.Clone())
 		round := len(m.requests)
 		ask := m.alwaysAsk || round == 1 || m.asks <= m.reAsksAfterAnswer
 		message := "deploy to prod?"
@@ -790,6 +797,17 @@ func (m *mrtrServer) count() int {
 	return len(m.requests)
 }
 
+// headerAt returns the recorded http.Header at index i.
+func (m *mrtrServer) headerAt(t *testing.T, i int) http.Header {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if i >= len(m.headers) {
+		t.Fatalf("no recorded header at index %d (have %d)", i, len(m.headers))
+	}
+	return m.headers[i]
+}
+
 // mrtrTool builds a modern-pinned ResolvedTool: MRTR retries only ride the
 // 2026-07-28 transport, so a legacy client would silently drop inputResponses.
 func mrtrTool(serverURL, serverID string, approval model.ApprovalMode) mcp.ResolvedTool {
@@ -810,6 +828,32 @@ func mrtrTool(serverURL, serverID string, approval model.ApprovalMode) mcp.Resol
 		ServerID:    serverID,
 		Description: "a test tool",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"env":{"type":"string"}}}`),
+	}
+}
+
+// mrtrToolWithRunAttribution is mrtrTool plus a run attribution header
+// configuration (issue #943), for TestBoundAgent_ToolCall_SendsRunAttributionOnCallAndRetry.
+func mrtrToolWithRunAttribution(serverURL, serverID string, names mcp.AttributionHeaderNames) mcp.ResolvedTool {
+	return mcp.ResolvedTool{
+		GrantedTool: model.GrantedTool{
+			ServerName: "myserver",
+			ToolName:   "deploy",
+			Approval:   model.ApprovalModeNone,
+		},
+		Client: mcp.NewClient(serverURL,
+			mcp.WithProtocolVersion(mcp.ProtocolVersion20260728),
+			mcp.WithElicitationRateLimit(1000, 1000),
+			mcp.WithRunAttributionHeaders(names),
+		),
+		ServerID:    serverID,
+		Description: "a test tool",
+		// "on_behalf_of" is declared here (harmlessly typed) so the hostile-input
+		// test can supply it without tripping ADR-017 schema narrowing --
+		// the point of that test is that a value reaching the tool's OWN
+		// argument schema still cannot influence a host-asserted attribution
+		// header, not that undeclared keys are rejected (a separate, already
+		// well-covered path).
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"env":{"type":"string"},"on_behalf_of":{"type":"string"}}}`),
 	}
 }
 
@@ -941,6 +985,124 @@ func TestBoundAgent_ToolCall_PausesAndRetriesWithAnswer(t *testing.T) {
 	if len(types) != len(want) || types[0] != want[0] || types[1] != want[1] {
 		t.Errorf("run steps = %v, want exactly %v", types, want)
 	}
+}
+
+// TestBoundAgent_ToolCall_SendsRunAttributionOnCallAndRetry is the
+// end-to-end proof of #943's hostile-argument invariant through the agent:
+// both the original call and its MRTR retry carry the Relay preset headers
+// built from host-owned Config (TriggeredBy, PublicURL, the policy name),
+// never from the hostile tool_call input.
+func TestBoundAgent_ToolCall_SendsRunAttributionOnCallAndRetry(t *testing.T) {
+	fake := &mrtrServer{}
+	s := testutil.NewTestStore(t)
+	insertTestResponderUser(t, s)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+	testutil.InsertMcpServer(t, s, "srv1", "myserver", "http://example.invalid")
+
+	srv := httptest.NewServer(fake.handler())
+	t.Cleanup(srv.Close)
+
+	pub := &capturePublisher{}
+	w := NewAuditWriter(s.Queries())
+	t.Cleanup(func() { _ = w.Close() })
+
+	relayNames := mcp.AttributionHeaderNames{
+		OnBehalfOf:  mcp.RelayOnBehalfOfHeader,
+		SessionRef:  mcp.RelaySessionRefHeader,
+		Traceparent: mcp.RelayTraceparentHeader,
+	}
+	ba, err := New(Config{
+		LLMClient:    testutil.NewMockLLMClient(),
+		Tools:        []mcp.ResolvedTool{mrtrToolWithRunAttribution(srv.URL, "srv1", relayNames)},
+		Policy:       minimalPolicy(), // Policy.Name == "test-policy"
+		Audit:        w,
+		StateMachine: NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub)),
+		TriggeredBy:  "alice",
+		PublicURL:    "https://g.example",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	type callResult struct {
+		output  string
+		isError bool
+		err     error
+	}
+	done := make(chan callResult, 1)
+	// A hostile input: none of it may reach an attribution header value.
+	go func() {
+		output, isError, err := ba.handleToolCall(context.Background(), "r1", "myserver.deploy",
+			map[string]any{"env": "prod", "on_behalf_of": "root"})
+		done <- callResult{output: output, isError: isError, err: err}
+	}()
+
+	requestID := awaitPendingToolInputID(t, pub, s)
+	if err := ba.InputRequiredResolver().Resolve(requestID, `[{"action":"accept","content":{"confirm":true}}]`, testResponder); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("handleToolCall: unexpected error: %v", res.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("handleToolCall did not return within deadline")
+	}
+
+	if fake.count() != 2 {
+		t.Fatalf("server saw %d calls, want 2 (original + retry)", fake.count())
+	}
+
+	wantOnBehalfOf := "test-policy (triggered by alice)"
+	wantSessionRef := "gleipnir run r1 (https://g.example/runs/r1)"
+	wantTraceID := mustTraceIDFor(t, "r1")
+
+	spans := make(map[string]bool, 2)
+	for i := 0; i < 2; i++ {
+		h := fake.headerAt(t, i)
+		if got := h.Get(mcp.RelayOnBehalfOfHeader); got != wantOnBehalfOf {
+			t.Errorf("call %d: %s = %q, want %q", i, mcp.RelayOnBehalfOfHeader, got, wantOnBehalfOf)
+		}
+		if got := h.Get(mcp.RelaySessionRefHeader); got != wantSessionRef {
+			t.Errorf("call %d: %s = %q, want %q", i, mcp.RelaySessionRefHeader, got, wantSessionRef)
+		}
+		tp := h.Get(mcp.RelayTraceparentHeader)
+		if len(tp) != 55 || tp[3:35] != wantTraceID {
+			t.Errorf("call %d: traceparent = %q, want trace-id %q", i, tp, wantTraceID)
+		}
+		spans[tp[36:52]] = true
+		if h.Get("X-Injected") != "" {
+			t.Errorf("call %d: X-Injected = %q, want absent (hostile input must never reach a header)", i, h.Get("X-Injected"))
+		}
+	}
+	if len(spans) != 2 {
+		t.Errorf("saw %d distinct span-ids across the two calls, want 2 (fresh span per round)", len(spans))
+	}
+}
+
+// mustTraceIDFor derives the same deterministic trace-id
+// mcp.buildAttributionHeaders would for runID, via the same sha256(
+// "gleipnir-run/"+runID) construction — duplicated here (rather than
+// exporting the unexported mcp.traceIDFor) because this package must not
+// reach into mcp's internals; the value is asserted against, not trusted.
+func mustTraceIDFor(t *testing.T, runID string) string {
+	t.Helper()
+	sum := sha256.Sum256([]byte("gleipnir-run/" + runID))
+	id := sum[:16]
+	allZero := true
+	for _, b := range id {
+		if b != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		id[15] = 1
+	}
+	return hex.EncodeToString(id)
 }
 
 // Both gates can fire on one call. The ADR-008 gate runs first, pre-execution;

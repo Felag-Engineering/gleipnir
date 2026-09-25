@@ -4,8 +4,15 @@ import { ModalFooter } from '@/components/ModalFooter'
 import { Button } from '@/components/Button/Button'
 import { useTestMcpConnection } from '@/hooks/mutations/servers'
 import type { ApiError } from '@/api/fetch'
+import type { RunAttributionMode, RunAttributionRequest } from '@/api/types'
 import { ErrorBanner } from '@/components/form/ErrorBanner'
 import { parseCallTimeoutInput } from '../callTimeout'
+import {
+  MODE_LABELS,
+  buildRunAttributionRequest,
+  validateCustomHeaderNames,
+  type CustomHeaderNames,
+} from '../runAttribution'
 import styles from './AddServerModal.module.css'
 import formStyles from '@/styles/forms.module.css'
 import alertStyles from '@/styles/alerts.module.css'
@@ -13,6 +20,13 @@ import alertStyles from '@/styles/alerts.module.css'
 interface HeaderRow {
   key: string
   value: string
+}
+
+const RUN_ATTRIBUTION_MODE_OPTIONS = Object.keys(MODE_LABELS) as RunAttributionMode[]
+const EMPTY_CUSTOM_NAMES: CustomHeaderNames = {
+  onBehalfOfHeader: '',
+  sessionRefHeader: '',
+  traceparentHeader: '',
 }
 
 interface Props {
@@ -23,6 +37,8 @@ interface Props {
     headers: HeaderRow[],
     caCertPem: string,
     callTimeoutSeconds: number | null,
+    // null means Off (issue #943).
+    runAttribution: RunAttributionRequest | null,
   ) => void
   isPending: boolean
   error: ApiError | null
@@ -35,16 +51,23 @@ export function AddServerModal({ onClose, onSubmit, isPending, error, discoveryW
   const [headers, setHeaders] = useState<HeaderRow[]>([])
   const [caCertPem, setCaCertPem] = useState('')
   const [callTimeout, setCallTimeout] = useState('')
+  const [runAttributionMode, setRunAttributionMode] = useState<RunAttributionMode>('off')
+  const [runAttributionNames, setRunAttributionNames] = useState<CustomHeaderNames>(EMPTY_CUSTOM_NAMES)
   const testMutation = useTestMcpConnection()
 
   const { value: parsedCallTimeout, error: callTimeoutError } = parseCallTimeoutInput(callTimeout)
+  const runAttributionError = validateCustomHeaderNames(runAttributionMode, runAttributionNames)
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
-    if (name.trim() && url.trim() && !callTimeoutError) {
+    if (name.trim() && url.trim() && !callTimeoutError && !runAttributionError) {
       // Filter out rows where both key and value are empty.
       const nonEmpty = headers.filter((h) => h.key.trim() || h.value.trim())
-      onSubmit(name.trim(), url.trim(), nonEmpty, caCertPem.trim(), parsedCallTimeout)
+      const runAttribution =
+        runAttributionMode === 'off'
+          ? null
+          : buildRunAttributionRequest(runAttributionMode, runAttributionNames)
+      onSubmit(name.trim(), url.trim(), nonEmpty, caCertPem.trim(), parsedCallTimeout, runAttribution)
     }
   }
 
@@ -97,7 +120,7 @@ export function AddServerModal({ onClose, onSubmit, isPending, error, discoveryW
       isLoading={isPending}
       submitLabel="Add MCP server"
       loadingLabel="Adding…"
-      submitDisabled={!name.trim() || !url.trim() || !!callTimeoutError}
+      submitDisabled={!name.trim() || !url.trim() || !!callTimeoutError || !!runAttributionError}
     />
   )
 
@@ -205,7 +228,64 @@ export function AddServerModal({ onClose, onSubmit, isPending, error, discoveryW
             Leave blank to use the instance default. Raise it for servers whose tool calls
             legitimately run long (1–600 seconds).
           </p>
-          {callTimeoutError && <div className={styles.callTimeoutError}>{callTimeoutError}</div>}
+          {callTimeoutError && <div className={styles.fieldError}>{callTimeoutError}</div>}
+        </div>
+
+        <div className={formStyles.field}>
+          <label htmlFor="server-run-attribution" className={formStyles.labelMono}>
+            Run attribution <span className={styles.optionalLabel}>(optional)</span>
+          </label>
+          <select
+            id="server-run-attribution"
+            className={styles.input}
+            value={runAttributionMode}
+            onChange={(e) => setRunAttributionMode(e.target.value as RunAttributionMode)}
+          >
+            {RUN_ATTRIBUTION_MODE_OPTIONS.map((mode) => (
+              <option key={mode} value={mode}>
+                {MODE_LABELS[mode]}
+              </option>
+            ))}
+          </select>
+          {runAttributionMode === 'custom' && (
+            <div className={styles.headerRow}>
+              <input
+                type="text"
+                className={styles.headerKeyInput}
+                placeholder="On-behalf-of header, e.g. X-Actor"
+                value={runAttributionNames.onBehalfOfHeader}
+                onChange={(e) =>
+                  setRunAttributionNames((n) => ({ ...n, onBehalfOfHeader: e.target.value }))
+                }
+                aria-label="On-behalf-of header name"
+              />
+              <input
+                type="text"
+                className={styles.headerKeyInput}
+                placeholder="Session-ref header, e.g. X-Session"
+                value={runAttributionNames.sessionRefHeader}
+                onChange={(e) =>
+                  setRunAttributionNames((n) => ({ ...n, sessionRefHeader: e.target.value }))
+                }
+                aria-label="Session-ref header name"
+              />
+              <input
+                type="text"
+                className={styles.headerKeyInput}
+                placeholder="Traceparent header, e.g. traceparent"
+                value={runAttributionNames.traceparentHeader}
+                onChange={(e) =>
+                  setRunAttributionNames((n) => ({ ...n, traceparentHeader: e.target.value }))
+                }
+                aria-label="Traceparent header name"
+              />
+            </div>
+          )}
+          <p className={styles.fieldHint}>
+            Sends the agent name, run ID and a trace ID on each tool call. The server records them
+            as claims; they are not credentials.
+          </p>
+          {runAttributionError && <div className={styles.fieldError}>{runAttributionError}</div>}
         </div>
 
         <div className={formStyles.field}>

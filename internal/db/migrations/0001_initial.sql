@@ -52,7 +52,10 @@ CREATE TABLE mcp_servers (
     ca_cert_pem             TEXT,
     -- Nullable; per-server MCP call timeout in whole seconds (1..600), overriding
     -- GLEIPNIR_MCP_TIMEOUT for this server only. NULL = instance default (issue #939).
-    call_timeout_seconds    INTEGER
+    call_timeout_seconds    INTEGER,
+    -- Nullable; per-server run attribution setting as canonical JSON
+    -- {mode, *_header}; NULL = off (issue #943)
+    run_attribution         TEXT
 );
 CREATE UNIQUE INDEX idx_mcp_servers_plugin_instance
     ON mcp_servers(plugin_instance_id) WHERE plugin_instance_id IS NOT NULL;
