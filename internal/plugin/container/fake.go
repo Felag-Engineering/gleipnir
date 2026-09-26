@@ -29,6 +29,18 @@ type Fake struct {
 	// lets tests simulate a socket-level failure after validation passes.
 	CreateErr error
 
+	// StartErr, when non-nil, is returned by Start instead of succeeding —
+	// lets a test simulate a container that was created but never came up
+	// (e.g. the #955 security review's "create succeeds, start fails" case),
+	// leaving the container behind in ContainerStateCreated.
+	StartErr error
+
+	// RemoveErr, when non-nil, is returned by Remove instead of succeeding —
+	// lets a test simulate the socket refusing a removal, to prove a caller
+	// revoked the token and marked the row terminal BEFORE attempting the
+	// removal (#955 security review round 2 item 3) rather than after.
+	RemoveErr error
+
 	// images is what ImageInspect answers from, keyed by every reference an
 	// image answers to (ID, tags, repo digests).
 	images map[string]ImageInfo
@@ -101,6 +113,9 @@ func (f *Fake) Start(_ context.Context, id ContainerID) error {
 	if !ok {
 		return fmt.Errorf("container: fake: no such container %q", id)
 	}
+	if f.StartErr != nil {
+		return f.StartErr
+	}
 	c.info.State = ContainerStateRunning
 	return nil
 }
@@ -122,6 +137,9 @@ func (f *Fake) Remove(_ context.Context, id ContainerID, force bool) error {
 	c, ok := f.containers[id]
 	if !ok {
 		return fmt.Errorf("container: fake: no such container %q", id)
+	}
+	if f.RemoveErr != nil {
+		return f.RemoveErr
 	}
 	if c.info.State == ContainerStateRunning && !force {
 		return fmt.Errorf("container: fake: container %q is running; stop it or pass force", id)

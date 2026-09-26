@@ -3,8 +3,10 @@ package reconciler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +25,15 @@ import (
 // took no action.
 const EventPassCompleted = "container.reconcile_pass"
 
+// EventRotationPassCompleted is published after every rotation pass, mirroring
+// EventPassCompleted for ReconcileOnce. It fires strictly AFTER
+// EventPassCompleted within one runPass call (#955 security re-review round 2
+// item 1): the two passes are serialized in that order, and a test or caller
+// synchronizing on EventPassCompleted alone would observe the core loop's
+// half of a cycle before rotation — which may depend on what the core loop
+// just wrote (a freshly minted `pending` generation, for instance) — has run.
+const EventRotationPassCompleted = "container.reconcile_rotation_pass"
+
 // defaultInterval is the periodic pass cadence when none is configured. The
 // loop is level-triggered, so this is a safety net for drift nobody announced
 // — the kick channel is what makes an intentional change converge promptly.
@@ -30,6 +41,15 @@ const defaultInterval = 30 * time.Second
 
 // stopTimeout bounds a graceful container stop before the runtime kills it.
 const stopTimeout = 10 * time.Second
+
+// DefaultHostEndpointPort is the port a plugin's host-endpoint URL (#875)
+// points at. A constant rather than an env var: host configuration lives in
+// the app, not in environment variables — the env var this issue's
+// Config.HostEndpointEnv hook injects is the plugin-side contract (what a
+// container is TOLD), which is a different thing from how the host itself is
+// configured. If this ever needs to be operator-configurable, it becomes a
+// system_settings value, not an env var (#957).
+const DefaultHostEndpointPort = 8765
 
 // Store is the narrow read side of the desired state this loop needs.
 // *db.Queries satisfies it; nothing here writes to the desired-state tables,
@@ -59,8 +79,13 @@ type Config struct {
 	// on networks something else created, but cannot create one itself.
 	Subnets *SubnetAllocator
 
-	// Rotations is the generation-record store. Required only for
-	// ReconcileRotations; the core convergence loop does not touch it.
+	// Rotations is the generation-record store. Optional: nil disables
+	// generation tracking entirely, and the core loop falls back to plain,
+	// tokenless container create/start/stop (the legacy behavior this package
+	// had before generation minting existed). Configured, it also drives the
+	// core loop's first-boot step (ActionBeginFirstGeneration mints an
+	// instance's generation 1 ahead of its first container) in addition to
+	// ReconcileRotations.
 	Rotations RotationStore
 
 	// HealthGateTimeout and DrainTimeout bound the two rotation waits. Zero
@@ -78,6 +103,20 @@ type Config struct {
 	// internal-only network that means the instance reaches nothing — which is
 	// the correct default, not a degraded one.
 	EgressEnv func(ctx context.Context, instanceID string) []string
+
+	// HostEndpointEnv returns the environment entries pointing a generation's
+	// container at the host endpoint (#875) — the URL a plugin's SDK client
+	// needs for server→host callbacks. Optional: absent means no host
+	// endpoint is configured, which is only correct before the reconciler is
+	// wired into main.go. The production implementation (#957, in the v2
+	// assembly that composes this package with internal/plugin/hostendpoint)
+	// builds the URL from the per-instance gateway address and
+	// DefaultHostEndpointPort; this Config field is only the hook. Applied,
+	// like EgressEnv, after StripProxyEnv — both share the same
+	// generation-container create path (createRotationContainer, used for the
+	// first generation and every later one alike), so this is the one place
+	// either variable is wired in.
+	HostEndpointEnv func(ctx context.Context, instanceID string) []string
 
 	// GC is the cleanup store. Required only for ReconcileGC; neither the core
 	// convergence loop nor rotation touches it.
@@ -136,9 +175,25 @@ type Reconciler struct {
 	// means the instance reaches nothing.
 	egressEnv func(ctx context.Context, instanceID string) []string
 
+	// hostEndpointEnv supplies the host-endpoint URL a generation's container
+	// is created with (#875, #955). Same hook pattern as egressEnv, and for
+	// the same reason: the reconciler converges containers, it does not own
+	// where the host endpoint listens.
+	hostEndpointEnv func(ctx context.Context, instanceID string) []string
+
 	rotations         RotationStore
 	healthGateTimeout time.Duration
 	drainTimeout      time.Duration
+
+	// rotationMu serializes every rotation pass — runPass (the run loop's own
+	// combined ReconcileOnce+ReconcileRotations cycle) and a direct call to
+	// the exported ReconcileRotations alike (#955 security re-review round 3
+	// item 4). sweepOrphanedGenerationContainers treats "list the world, then
+	// act on it" as one logical step; two rotation passes running
+	// concurrently would each act on their own stale snapshot of the same
+	// generations and containers, which the sweep's correctness depends on
+	// not happening.
+	rotationMu sync.Mutex
 
 	// gc and its bounds back ReconcileGC (#818). Nil gc means the cleanup pass
 	// is not configured; it refuses rather than silently doing nothing, since
@@ -157,6 +212,16 @@ type Reconciler struct {
 	// authenticate.
 	tokenMu sync.Mutex
 	tokens  map[string]string
+
+	// restarts tracks per-generation crash-loop bookkeeping (#955 security
+	// review item 5) for an active generation whose container has died:
+	// consecutive restart attempts and the earliest instant the next one may
+	// run. In memory only, like tokens, and for the same reason — a process
+	// restart forgives the count, which only ever means a freshly restarted
+	// host gives a crashing plugin one more immediate attempt before backing
+	// off again.
+	restartMu sync.Mutex
+	restarts  map[string]*restartState
 
 	// kick carries a nudge from a desired-state write. Buffered at 1 and sent
 	// non-blocking: a burst of writes coalesces into one extra pass, which is
@@ -199,20 +264,22 @@ func New(cfg Config) (*Reconciler, error) {
 	}
 
 	return &Reconciler{
-		runtime:   cfg.Runtime,
-		store:     cfg.Store,
-		posture:   cfg.Posture,
-		interval:  interval,
-		publisher: cfg.Publisher,
-		subnets:   cfg.Subnets,
-		networkFn: networkFn,
-		egressEnv: cfg.EgressEnv,
-		kick:      make(chan struct{}, 1),
+		runtime:         cfg.Runtime,
+		store:           cfg.Store,
+		posture:         cfg.Posture,
+		interval:        interval,
+		publisher:       cfg.Publisher,
+		subnets:         cfg.Subnets,
+		networkFn:       networkFn,
+		egressEnv:       cfg.EgressEnv,
+		hostEndpointEnv: cfg.HostEndpointEnv,
+		kick:            make(chan struct{}, 1),
 
 		rotations:         cfg.Rotations,
 		healthGateTimeout: cfg.HealthGateTimeout,
 		drainTimeout:      cfg.DrainTimeout,
 		tokens:            make(map[string]string),
+		restarts:          make(map[string]*restartState),
 
 		gc:             cfg.GC,
 		tokenRetention: tokenRetention,
@@ -245,7 +312,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	r.rootCancel = rootCancel
 	r.mu.Unlock()
 
-	if _, err := r.ReconcileOnce(rootCtx); err != nil {
+	if err := r.runPass(rootCtx); err != nil {
 		rootCancel()
 		return fmt.Errorf("boot convergence pass: %w", err)
 	}
@@ -256,6 +323,48 @@ func (r *Reconciler) Start(ctx context.Context) error {
 		r.loop(rootCtx)
 	}()
 	return nil
+}
+
+// runPass performs one full convergence cycle: ReconcileOnce, then — in the
+// same goroutine, strictly after it, never concurrently with it — a rotation
+// pass via ReconcileRotations when generation tracking is configured (#955
+// security re-review round 2 item 1: the run loop never called
+// ReconcileRotations at all; only tests did). The two are not independent:
+// rotation reads what the core loop just wrote in this SAME pass — a freshly
+// minted `pending` generation from ActionBeginFirstGeneration, most notably —
+// so running them out of step, or on separate goroutines that could race,
+// would leave first boot, a desired stop, or an instance-teardown sweep
+// waiting for a tick that never specifically does the next step.
+//
+// ReconcileRotations runs even when ReconcileOnce fails (#955 security
+// re-review round 3 finding 2): the two converge different things — a
+// container toward its row, a generation row SET toward stopped/desired —
+// and a transient failure reading one side (the core loop's own network
+// list, say) must not withhold an operator-requested stop, which lives
+// entirely on the rotation side, until the NEXT tick happens to find the
+// core loop's read healthy again. Both errors are reported via errors.Join
+// rather than either one being silently dropped.
+//
+// Holds rotationMu across both halves (#955 security re-review round 3 item
+// 4), calling the unexported reconcileRotationsLocked rather than the
+// exported ReconcileRotations so the lock is taken exactly once per pass —
+// see ReconcileRotations' doc comment for why the sweep needs this
+// exclusion at all.
+func (r *Reconciler) runPass(ctx context.Context) error {
+	r.rotationMu.Lock()
+	defer r.rotationMu.Unlock()
+
+	_, onceErr := r.ReconcileOnce(ctx)
+
+	if r.rotations == nil {
+		return onceErr
+	}
+
+	result, rotErr := r.reconcileRotationsLocked(ctx)
+	if rotErr == nil {
+		r.publishRotationPass(result)
+	}
+	return errors.Join(onceErr, rotErr)
 }
 
 // Kick nudges the loop to run a pass now. Safe to call from any goroutine and
@@ -299,7 +408,7 @@ func (r *Reconciler) loop(ctx context.Context) {
 		case <-r.kick:
 		}
 
-		if _, err := r.ReconcileOnce(ctx); err != nil {
+		if err := r.runPass(ctx); err != nil {
 			// Never fatal. The loop's whole contract is that the next pass
 			// reads the world fresh, so a failed pass costs latency, not
 			// correctness.
@@ -334,8 +443,21 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (PassResult, error) {
 		return PassResult{}, fmt.Errorf("listing managed networks: %w", err)
 	}
 
+	// Generation tracking is optional (r.rotations may be nil, the legacy
+	// fallback); when it is configured, the core loop needs to know which
+	// instances already have a live generation so it mints exactly one
+	// (ActionBeginFirstGeneration) rather than creating a tokenless container
+	// itself.
+	var generations []db.PluginContainerGeneration
+	if r.rotations != nil {
+		generations, err = r.rotations.ListLiveContainerGenerations(ctx)
+		if err != nil {
+			return PassResult{}, fmt.Errorf("listing live generations: %w", err)
+		}
+	}
+
 	result := PassResult{Desired: len(desired), Observed: len(observed)}
-	for _, action := range planPass(desired, observed, networks) {
+	for _, action := range planPass(desired, observed, networks, generations, r.rotations != nil) {
 		if action.Kind == ActionNone {
 			continue
 		}
@@ -367,7 +489,14 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (PassResult, error) {
 // with no instance label cannot be matched to any desired row, so it is
 // planned as an orphan — which is the correct reading: Gleipnir labelled it as
 // managed, and nothing claims it.
-func planPass(desired []db.PluginContainer, observed []container.ContainerInfo, networks []container.NetworkInfo) []Action {
+//
+// generations is the instance's live (non-terminal) generation rows, and
+// generationTrackingEnabled says whether this Reconciler has a Rotations
+// store configured at all — a reconciler-wide mode, not a per-instance fact,
+// which is why it travels separately from the (necessarily empty, when
+// disabled) generations slice: an instance with tracking disabled must fall
+// back to the legacy create path, not be read as "no generation yet".
+func planPass(desired []db.PluginContainer, observed []container.ContainerInfo, networks []container.NetworkInfo, generations []db.PluginContainerGeneration, generationTrackingEnabled bool) []Action {
 	byInstance := make(map[string]*container.ContainerInfo, len(observed))
 	var unlabelled []container.ContainerInfo
 	for i := range observed {
@@ -386,26 +515,40 @@ func planPass(desired []db.PluginContainer, observed []container.ContainerInfo, 
 		}
 	}
 
+	hasLiveGeneration := make(map[string]bool, len(generations))
+	for _, gen := range generations {
+		hasLiveGeneration[gen.PluginInstanceID] = true
+	}
+
 	actions := make([]Action, 0, len(desired)+len(observed)+len(networks))
 	seen := make(map[string]bool, len(desired))
 	for i := range desired {
 		row := &desired[i]
 		seen[row.PluginInstanceID] = true
 		_, hasNetwork := networkByInstance[row.PluginInstanceID]
-		actions = append(actions, planFor(row, byInstance[row.PluginInstanceID], hasNetwork))
+		gen := GenerationTrackingDisabled
+		if generationTrackingEnabled {
+			if hasLiveGeneration[row.PluginInstanceID] {
+				gen = GenerationLive
+			} else {
+				gen = GenerationMissing
+			}
+		}
+		actions = append(actions, planFor(row, byInstance[row.PluginInstanceID], hasNetwork, gen))
 	}
 
 	// Everything managed that no desired row claims is an orphan. A container
 	// goes first; its network is torn down on a later pass, once the container
-	// is actually gone.
+	// is actually gone. Generation state is irrelevant to an orphan — desired
+	// == nil short-circuits planFor before it is ever consulted.
 	for id, info := range byInstance {
 		if !seen[id] {
 			_, hasNetwork := networkByInstance[id]
-			actions = append(actions, planFor(nil, info, hasNetwork))
+			actions = append(actions, planFor(nil, info, hasNetwork, GenerationTrackingDisabled))
 		}
 	}
 	for i := range unlabelled {
-		actions = append(actions, planFor(nil, &unlabelled[i], false))
+		actions = append(actions, planFor(nil, &unlabelled[i], false, GenerationTrackingDisabled))
 	}
 
 	// A network whose instance has neither a desired row nor a container left
@@ -417,7 +560,7 @@ func planPass(desired []db.PluginContainer, observed []container.ContainerInfo, 
 		if _, stillRunning := byInstance[id]; stillRunning {
 			continue
 		}
-		action := planFor(nil, nil, true)
+		action := planFor(nil, nil, true, GenerationTrackingDisabled)
 		action.InstanceID = id
 		actions = append(actions, action)
 	}
@@ -427,6 +570,25 @@ func planPass(desired []db.PluginContainer, observed []container.ContainerInfo, 
 // apply performs one action's socket write.
 func (r *Reconciler) apply(ctx context.Context, action Action, desired []db.PluginContainer) error {
 	switch action.Kind {
+	case ActionBeginFirstGeneration:
+		row, ok := findDesired(desired, action.InstanceID)
+		if !ok {
+			return fmt.Errorf("no desired row for instance %q", action.InstanceID)
+		}
+		if r.rotations == nil {
+			// Unreachable: planFor only emits this action when ReconcileOnce
+			// found a rotation store to pass it. Checked anyway rather than
+			// left to panic inside beginRotation.
+			return fmt.Errorf("reconciler: no rotation store configured; cannot mint instance %q's first generation", action.InstanceID)
+		}
+		now := rotationTimeNow().UTC().Format(time.RFC3339Nano)
+		// beginRotation mints "latest + 1" for the instance, which is 1 when
+		// no generation has ever existed — first boot needs nothing beyond
+		// that rotation does not already do. From here, ReconcileRotations
+		// carries the new pending generation through create, health gate, and
+		// switch to active exactly as it would for any later rotation.
+		return r.beginRotation(ctx, RotationAction{InstanceID: action.InstanceID, Reason: action.Reason}, row, now)
+
 	case ActionCreate:
 		row, ok := findDesired(desired, action.InstanceID)
 		if !ok {
@@ -598,7 +760,108 @@ func (r *Reconciler) withEgressEnv(ctx context.Context, opts container.CreateOpt
 	if r.egressEnv == nil {
 		return opts
 	}
-	env := r.egressEnv(ctx, instanceID)
+	return withStrippedEnv(opts, r.egressEnv(ctx, instanceID))
+}
+
+// withGenerationEnv composes the environment a per-generation container is
+// created with: the egress proxy pointer (#812) and the host endpoint URL
+// (#875, #955), both appended after any inherited proxy variables are
+// stripped. It is the counterpart to withEgressEnv for createRotationContainer
+// — the one create path shared by an instance's first generation and every
+// later one — so this is the single place either variable is wired into a
+// generation's container.
+//
+// The host endpoint's own host:port is then added to NO_PROXY (#955 security
+// review finding 3) — the one deliberate exception to egress.ProxyEnv's own
+// "NO_PROXY is empty" rule. A server→host callback carries the generation's
+// bearer token in every request; routing it through the same forward proxy
+// that mediates egress to the outside world would hand that token to
+// whatever the proxy is configured to reach, when the call must go straight
+// to the host instead.
+func (r *Reconciler) withGenerationEnv(ctx context.Context, opts container.CreateOptions, instanceID string) container.CreateOptions {
+	var env []string
+	if r.egressEnv != nil {
+		env = append(env, r.egressEnv(ctx, instanceID)...)
+	}
+	var hostEndpointEnv []string
+	if r.hostEndpointEnv != nil {
+		hostEndpointEnv = r.hostEndpointEnv(ctx, instanceID)
+		env = append(env, hostEndpointEnv...)
+	}
+	env = scopeNoProxyToHostEndpoint(env, hostEndpointEnv)
+	return withStrippedEnv(opts, env)
+}
+
+// hostEndpointURLEnvVar names the environment variable Config.HostEndpointEnv
+// is expected to set. Duplicated here rather than imported from
+// plugin-sdk/hostclient (which reads it under the exported
+// HostEndpointURLEnvVar) for the same reason plugin-sdk/serve and
+// plugin-sdk/hostclient each carry their own copy of InstanceTokenEnvVar: an
+// internal package must not pull in plugin-sdk just to share one string
+// constant. Keep the two literals equal by hand.
+const hostEndpointURLEnvVar = "GLEIPNIR_HOST_ENDPOINT_URL"
+
+// scopeNoProxyToHostEndpoint adds the host endpoint's own host:port to every
+// NO_PROXY variable already present in env. hostEndpointEnv is the raw
+// entries Config.HostEndpointEnv returned, read only for the URL's host:port
+// — nothing else about it feeds back into env. A no-op when no NO_PROXY
+// variable is present at all (EgressEnv unset means nothing routes through a
+// proxy in the first place, so there is nothing to scope an exception into).
+func scopeNoProxyToHostEndpoint(env, hostEndpointEnv []string) []string {
+	hostport, ok := hostEndpointHostPort(hostEndpointEnv)
+	if !ok {
+		return env
+	}
+	out := make([]string, len(env))
+	copy(out, env)
+	for i, entry := range out {
+		key, value, found := strings.Cut(entry, "=")
+		if !found || !strings.EqualFold(key, "no_proxy") {
+			continue
+		}
+		out[i] = key + "=" + addNoProxyHost(value, hostport)
+	}
+	return out
+}
+
+// addNoProxyHost appends host to a NO_PROXY value, comma-joined per the
+// variable's conventional format, unless it is already there.
+func addNoProxyHost(existing, host string) string {
+	if existing == "" {
+		return host
+	}
+	for _, part := range strings.Split(existing, ",") {
+		if strings.TrimSpace(part) == host {
+			return existing
+		}
+	}
+	return existing + "," + host
+}
+
+// hostEndpointHostPort extracts the host:port from Config.HostEndpointEnv's
+// GLEIPNIR_HOST_ENDPOINT_URL entry, or reports false when it set none (the
+// hook is unconfigured, or omitted the URL for a reason of its own).
+func hostEndpointHostPort(env []string) (string, bool) {
+	for _, kv := range env {
+		val, ok := strings.CutPrefix(kv, hostEndpointURLEnvVar+"=")
+		if !ok {
+			continue
+		}
+		u, err := url.Parse(val)
+		if err != nil || u.Host == "" {
+			return "", false
+		}
+		return u.Host, true
+	}
+	return "", false
+}
+
+// withStrippedEnv appends env to opts.Env after stripping any proxy variables
+// the image or an earlier layer already set, so neither caller can leave a
+// bypass in place while every other line still looks correct. A no-op when
+// env is empty, so an unconfigured hook leaves the environment untouched
+// rather than paying for a strip that changes nothing.
+func withStrippedEnv(opts container.CreateOptions, env []string) container.CreateOptions {
 	if len(env) == 0 {
 		return opts
 	}
@@ -660,4 +923,23 @@ func (r *Reconciler) publishPass(result PassResult) {
 		return
 	}
 	r.publisher.Publish(EventPassCompleted, data)
+}
+
+// publishRotationPass emits EventRotationPassCompleted, mirroring publishPass.
+// Best-effort for the same reason: a publisher failure must never affect
+// convergence, and a marshal failure is a logging problem.
+func (r *Reconciler) publishRotationPass(result RotationPassResult) {
+	if r.publisher == nil {
+		return
+	}
+	payload := struct {
+		RotationPassResult
+		ActionCount int `json:"action_count"`
+	}{RotationPassResult: result, ActionCount: len(result.Actions)}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		slog.Warn("reconciler: marshalling rotation pass event failed", "err", err)
+		return
+	}
+	r.publisher.Publish(EventRotationPassCompleted, data)
 }

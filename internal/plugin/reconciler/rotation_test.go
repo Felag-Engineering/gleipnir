@@ -59,6 +59,14 @@ func rotDesired(digest, config string) db.PluginContainer {
 	}
 }
 
+// rotStopped is rotDesired with desired_state=stopped, for the operator-stop
+// scenarios (#955 security review finding 2).
+func rotStopped(digest, config string) db.PluginContainer {
+	row := rotDesired(digest, config)
+	row.DesiredState = DesiredStopped
+	return row
+}
+
 // The whole rotation, one step per pass, plus every state a crash can leave
 // behind. Each row is a complete world state — desired row, generation rows,
 // observed containers — and asserts the single step that world implies.
@@ -74,12 +82,14 @@ func TestPlanRotation(t *testing.T) {
 	)
 
 	tests := []struct {
-		name       string
-		desired    db.PluginContainer
-		gens       []db.PluginContainerGeneration
-		observed   map[int64]container.ContainerInfo
-		wantKind   RotationKind
-		wantGenNum int64
+		name            string
+		desired         db.PluginContainer
+		gens            []db.PluginContainerGeneration
+		observed        map[int64]container.ContainerInfo
+		restartAttempts int
+		wantKind        RotationKind
+		wantGenNum      int64
+		wantFromStatus  string
 	}{
 		{
 			name:     "converged: active generation matches desired",
@@ -311,21 +321,120 @@ func TestPlanRotation(t *testing.T) {
 			observed: nil,
 			wantKind: RotationNone,
 		},
+		{
+			// Security review (#955 finding 2): desired_state=stopped was
+			// previously ignored once a generation went live. planRotation
+			// reports it as ONE action for the whole instance (round 3
+			// finding 1) -- the actual per-generation revoke/stop work is
+			// exercised at the ReconcileRotations level in
+			// rotation_apply_test.go, since a pure plan step no longer names
+			// a single generation to act on.
+			name:    "desired stopped with an active generation stops the instance",
+			desired: rotStopped(oldDigest, cfg),
+			gens: []db.PluginContainerGeneration{
+				gen("g1", 1, GenActive, oldDigest, cfg, time.Hour),
+			},
+			observed: map[int64]container.ContainerInfo{1: ctr(1, container.ContainerStateRunning, healthHealthy)},
+			wantKind: RotationStopInstance,
+		},
+		{
+			// Security review round 2, item 2: a stop is checked BEFORE the
+			// pending branch, and a pending generation never gets the chance
+			// to create a container at all -- still ONE action, though: a
+			// stop is never gated on there being an active generation.
+			name:    "desired stopped with only a pending generation stops the instance",
+			desired: rotStopped(newDigest, cfg),
+			gens: []db.PluginContainerGeneration{
+				gen("g2", 2, GenPending, newDigest, cfg, time.Second),
+			},
+			observed: nil,
+			wantKind: RotationStopInstance,
+		},
+		{
+			// Mid-rotation, both a draining old generation and a starting new
+			// one are live. Still one action -- stopInstance (the applier)
+			// revokes and terminalizes both, then stops whichever still has a
+			// running container, all in the same pass (round 3 finding 1).
+			name:    "desired stopped mid-rotation stops the whole instance in one action",
+			desired: rotStopped(newDigest, cfg),
+			gens: []db.PluginContainerGeneration{
+				gen("g1", 1, GenDraining, oldDigest, cfg, time.Second),
+				gen("g2", 2, GenStarting, newDigest, cfg, time.Second),
+			},
+			observed: map[int64]container.ContainerInfo{
+				1: ctr(1, container.ContainerStateRunning, healthHealthy),
+				2: ctr(2, container.ContainerStateRunning, healthStarting),
+			},
+			wantKind: RotationStopInstance,
+		},
+		{
+			// Nothing live at all: a stop converges to nothing rather than
+			// producing an empty-handed action.
+			name:     "desired stopped with nothing live does nothing",
+			desired:  rotStopped(oldDigest, cfg),
+			gens:     nil,
+			observed: nil,
+			wantKind: RotationNone,
+		},
+		{
+			// Security review (#955 finding 2): a dead active container --
+			// not superseded by anything, just crashed on its own -- was
+			// previously never restarted, because generationDrift only
+			// compares image digest and config hash.
+			name:    "a dead active generation is restarted",
+			desired: rotDesired(oldDigest, cfg),
+			gens: []db.PluginContainerGeneration{
+				gen("g1", 1, GenActive, oldDigest, cfg, time.Hour),
+			},
+			observed:   map[int64]container.ContainerInfo{1: ctr(1, container.ContainerStateExited, "")},
+			wantKind:   RotationRestartActive,
+			wantGenNum: 1,
+		},
+		{
+			// Crash-loop bound (item 5): past the attempt cap, restarting the
+			// same container gives up in favor of a fresh generation.
+			name:    "a dead active generation past the restart cap mints a fresh generation instead",
+			desired: rotDesired(oldDigest, cfg),
+			gens: []db.PluginContainerGeneration{
+				gen("g1", 1, GenActive, oldDigest, cfg, time.Hour),
+			},
+			observed:        map[int64]container.ContainerInfo{1: ctr(1, container.ContainerStateExited, "")},
+			restartAttempts: maxRestartAttempts,
+			wantKind:        RotationBegin,
+			wantGenNum:      1,
+		},
+		{
+			// A container removed by something outside the reconciler cannot
+			// be restarted at all -- straight to a fresh generation,
+			// regardless of restart history.
+			name:    "an active generation whose container vanished entirely mints a fresh generation",
+			desired: rotDesired(oldDigest, cfg),
+			gens: []db.PluginContainerGeneration{
+				gen("g1", 1, GenActive, oldDigest, cfg, time.Hour),
+			},
+			observed:   nil,
+			wantKind:   RotationBegin,
+			wantGenNum: 1,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := planRotation(RotationInputs{
-				Desired:     tc.desired,
-				Generations: tc.gens,
-				Observed:    tc.observed,
-				Now:         rotNow,
+				Desired:         tc.desired,
+				Generations:     tc.gens,
+				Observed:        tc.observed,
+				Now:             rotNow,
+				RestartAttempts: tc.restartAttempts,
 			})
 			if got.Kind != tc.wantKind {
 				t.Fatalf("kind = %q (%s), want %q", got.Kind, got.Reason, tc.wantKind)
 			}
 			if tc.wantGenNum != 0 && got.Generation != tc.wantGenNum {
 				t.Errorf("generation = %d, want %d", got.Generation, tc.wantGenNum)
+			}
+			if tc.wantFromStatus != "" && got.FromStatus != tc.wantFromStatus {
+				t.Errorf("fromStatus = %q, want %q", got.FromStatus, tc.wantFromStatus)
 			}
 			if got.Kind != RotationNone && got.InstanceID != "inst-1" {
 				t.Errorf("instance = %q, want inst-1", got.InstanceID)
@@ -466,6 +575,29 @@ func TestGateExpired_UnreadableTimestampDoesNotAbort(t *testing.T) {
 	g := db.PluginContainerGeneration{UpdatedAt: "nonsense"}
 	if gateExpired(g, rotNow, time.Minute) {
 		t.Error("an unreadable timestamp expired the health gate; a storage oddity must not abort an upgrade")
+	}
+}
+
+// terminalStatusForStop draws the same "never took over serving" line
+// planHealthGate's abort already draws: pending/starting/healthy read as
+// failed, draining/active read as stopped.
+func TestTerminalStatusForStop(t *testing.T) {
+	tests := []struct {
+		status string
+		want   string
+	}{
+		{GenPending, GenFailed},
+		{GenStarting, GenFailed},
+		{GenHealthy, GenFailed},
+		{GenDraining, GenStopped},
+		{GenActive, GenStopped},
+	}
+	for _, tc := range tests {
+		t.Run(tc.status, func(t *testing.T) {
+			if got := terminalStatusForStop(tc.status); got != tc.want {
+				t.Errorf("terminalStatusForStop(%q) = %q, want %q", tc.status, got, tc.want)
+			}
+		})
 	}
 }
 

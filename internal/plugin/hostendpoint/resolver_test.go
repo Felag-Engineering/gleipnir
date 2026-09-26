@@ -85,6 +85,25 @@ func TestGenerationTokenResolver(t *testing.T) {
 		}
 	})
 
+	t.Run("a failed generation's unrevoked token still rejects — defense in depth", func(t *testing.T) {
+		// #955 security review finding 1c: the status filter is a second,
+		// independent check alongside token_revoked_at IS NULL. A generation
+		// that failed before its own revocation write landed (or a caller
+		// that forgot to revoke) must not authenticate just because nothing
+		// has explicitly rejected its token hash yet.
+		seedGeneration(t, q, "inst-failed", "tok-failed", "failed")
+		if _, ok, err := resolver.ResolveToken(ctx, "tok-failed"); err != nil || ok {
+			t.Fatalf("a failed generation's token resolved; ok=%v err=%v", ok, err)
+		}
+	})
+
+	t.Run("a stopped generation's unrevoked token still rejects — defense in depth", func(t *testing.T) {
+		seedGeneration(t, q, "inst-stopped-unrevoked", "tok-stopped-unrevoked", "stopped")
+		if _, ok, err := resolver.ResolveToken(ctx, "tok-stopped-unrevoked"); err != nil || ok {
+			t.Fatalf("a stopped generation's token resolved; ok=%v err=%v", ok, err)
+		}
+	})
+
 	t.Run("an unknown token rejects without error", func(t *testing.T) {
 		if _, ok, err := resolver.ResolveToken(ctx, "never-minted"); err != nil || ok {
 			t.Fatalf("unknown token: ok=%v err=%v, want (false, nil)", ok, err)

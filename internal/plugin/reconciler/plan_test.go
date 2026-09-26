@@ -47,6 +47,16 @@ func observedContainer(instanceID string, state container.ContainerState) *conta
 	}
 }
 
+// generationContainer is a per-generation container as ReconcileRotations
+// creates it (LabelGeneration set), for exercising the core loop's
+// never-adopt-a-generation-container rule.
+func generationContainer(instanceID string, generation int64, state container.ContainerState) *container.ContainerInfo {
+	c := observedContainer(instanceID, state)
+	c.Name = generationContainerName(instanceID, generation)
+	c.Labels[LabelGeneration] = itoa64(generation)
+	return c
+}
+
 // The convergence table: one step per (desired, observed) pair, and never more
 // than one — a divergence needing several steps converges over several passes.
 func TestPlanFor(t *testing.T) {
@@ -55,6 +65,7 @@ func TestPlanFor(t *testing.T) {
 		desired   *db.PluginContainer
 		observed  *container.ContainerInfo
 		noNetwork bool // the instance's network does not exist yet
+		gen       GenerationState
 		want      ActionKind
 	}{
 		{
@@ -156,11 +167,62 @@ func TestPlanFor(t *testing.T) {
 			name: "a network with no desired row and no container is removed",
 			want: ActionRemoveNetwork,
 		},
+		{
+			// Generation tracking enabled, nothing minted yet: the core loop
+			// mints generation 1 before it ever tries to create a container.
+			name:    "generation tracking enabled with no live generation mints the first one",
+			desired: desiredRow("i1", DesiredRunning),
+			gen:     GenerationMissing,
+			want:    ActionBeginFirstGeneration,
+		},
+		{
+			// A live generation already owns this instance's container
+			// lifecycle. The core loop backs off entirely -- even though
+			// nothing is observed and the desired row asks for a running
+			// container, ReconcileRotations is the one creating it.
+			name:    "generation tracking enabled with a live generation defers to rotation",
+			desired: desiredRow("i1", DesiredRunning),
+			gen:     GenerationLive,
+			want:    ActionNone,
+		},
+		{
+			// The defer-to-rotation rule holds even when the core loop can
+			// see a container: two containers can carry the same instance
+			// label mid-rotation, and the core loop cannot tell which is
+			// which, so it must not act on either.
+			name:     "a live generation is left alone even with a container observed",
+			desired:  desiredRow("i1", DesiredRunning),
+			observed: observedContainer("i1", container.ContainerStateExited),
+			gen:      GenerationLive,
+			want:     ActionNone,
+		},
+		{
+			// Security review (#955 finding 1): a generation-labelled
+			// container with NO live generation is a leftover from a failed
+			// attempt (lost token, health-gate abort before the container
+			// was claimed), never something to adopt. Running, it is stopped
+			// first.
+			name:     "a running generation-labelled container with no live generation is an orphan",
+			desired:  desiredRow("i1", DesiredRunning),
+			observed: generationContainer("i1", 1, container.ContainerStateRunning),
+			gen:      GenerationMissing,
+			want:     ActionStop,
+		},
+		{
+			// Stopped, it is removed outright -- never started, which is what
+			// planForExisting would otherwise do with a plain created/exited
+			// container.
+			name:     "a stopped generation-labelled container with no live generation is removed",
+			desired:  desiredRow("i1", DesiredRunning),
+			observed: generationContainer("i1", 1, container.ContainerStateExited),
+			gen:      GenerationMissing,
+			want:     ActionRemove,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := planFor(tc.desired, tc.observed, !tc.noNetwork)
+			got := planFor(tc.desired, tc.observed, !tc.noNetwork, tc.gen)
 			if got.Kind != tc.want {
 				t.Fatalf("planFor = %q (%s), want %q", got.Kind, got.Reason, tc.want)
 			}
@@ -197,7 +259,7 @@ func TestPlanFor_Drift(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			observed := observedContainer("i1", container.ContainerStateRunning)
 			tc.mutate(observed)
-			if got := planFor(desiredRow("i1", DesiredRunning), observed, true); got.Kind != tc.want {
+			if got := planFor(desiredRow("i1", DesiredRunning), observed, true, GenerationTrackingDisabled); got.Kind != tc.want {
 				t.Fatalf("planFor = %q (%s), want %q", got.Kind, got.Reason, tc.want)
 			}
 		})
@@ -210,7 +272,7 @@ func TestPlanFor_DriftBeatsLifecycle(t *testing.T) {
 	observed := observedContainer("i1", container.ContainerStateExited)
 	observed.Labels[LabelImageDigest] = "sha256:bbbb"
 
-	if got := planFor(desiredRow("i1", DesiredRunning), observed, true); got.Kind != ActionDriftDetected {
+	if got := planFor(desiredRow("i1", DesiredRunning), observed, true, GenerationTrackingDisabled); got.Kind != ActionDriftDetected {
 		t.Fatalf("planFor = %q, want drift_detected — a stopped container running the wrong image must not just be started", got.Kind)
 	}
 }
@@ -225,7 +287,7 @@ func TestPlanPass_UnlabelledManagedContainerIsAnOrphan(t *testing.T) {
 		Labels: map[string]string{LabelManaged: ManagedValue},
 	}}
 
-	actions := planPass(nil, observed, nil)
+	actions := planPass(nil, observed, nil, nil, false)
 	if len(actions) != 1 || actions[0].Kind != ActionRemove {
 		t.Fatalf("actions = %+v, want a single remove", actions)
 	}
@@ -251,7 +313,7 @@ func TestPlanPass_OneActionPerInstance(t *testing.T) {
 	}
 
 	byInstance := map[string]ActionKind{}
-	for _, a := range planPass(desired, observed, networks) {
+	for _, a := range planPass(desired, observed, networks, nil, false) {
 		if prev, dup := byInstance[a.InstanceID]; dup {
 			t.Fatalf("instance %s planned twice: %q then %q", a.InstanceID, prev, a.Kind)
 		}

@@ -73,6 +73,16 @@ const (
 	// issue. Reporting it keeps the drift visible instead of silently
 	// tolerated.
 	ActionDriftDetected ActionKind = "drift_detected"
+
+	// ActionBeginFirstGeneration mints an instance's generation 1 (a pending
+	// row with a fresh instance token) ahead of its very first container.
+	// It is the core loop's ONLY generation-aware step: everything from the
+	// container's create-and-start through its health gate and its switch to
+	// active is ReconcileRotations' job, because that is exactly the sequence
+	// a later rotation needs too (rotation.go's package doc) — first boot
+	// gets it for free by minting the row rotation already knows how to carry
+	// the rest of the way.
+	ActionBeginFirstGeneration ActionKind = "begin_first_generation"
 )
 
 // Action is a planned step plus the container it applies to.
@@ -94,18 +104,49 @@ const (
 	DesiredStopped = "stopped"
 )
 
+// GenerationState is what planFor needs to know about an instance's
+// generation tracking, without touching the database itself.
+type GenerationState int
+
+const (
+	// GenerationTrackingDisabled means this Reconciler has no Rotations store
+	// configured — the legacy fallback some callers (and most of this
+	// package's own tests) still use. planFor behaves exactly as it did
+	// before generation minting existed: a missing container is a plain
+	// ActionCreate, and an existing one is planForExisting's business as
+	// usual. ActionBeginFirstGeneration is never reachable in this state.
+	GenerationTrackingDisabled GenerationState = iota
+
+	// GenerationMissing means tracking is enabled and this instance has no
+	// live generation yet: its very first container must not be created
+	// until generation 1 exists to authenticate it.
+	GenerationMissing
+
+	// GenerationLive means tracking is enabled and a live generation already
+	// exists. ReconcileRotations owns this instance's container lifecycle end
+	// to end from here — create, start, health gate, switch, drain, retire —
+	// and the core loop must not act on it at all, whatever `observed` shows.
+	// That is not merely tidy separation: during a rotation two containers
+	// can carry the same instance label at once (the superseded generation
+	// draining alongside the new one starting), and the core loop's
+	// single-container-per-instance bookkeeping has no way to tell which is
+	// which.
+	GenerationLive
+)
+
 // planFor decides the one step to take for a single instance. It is a pure
-// function of (desired row, observed container, network present) so the whole
-// convergence table is testable without a runtime: desired == nil means no
-// desired-state row exists (an orphan), observed == nil means no container
-// carries this instance's label, and hasNetwork reports whether the instance's
-// dedicated internal network already exists.
+// function of (desired row, observed container, network present, generation
+// state) so the whole convergence table is testable without a runtime or a
+// store: desired == nil means no desired-state row exists (an orphan),
+// observed == nil means no container carries this instance's label, and
+// hasNetwork reports whether the instance's dedicated internal network
+// already exists.
 //
 // Exactly one step is returned even when several are needed. A container that
 // must be created and then started takes two passes, and a running orphan
 // takes two more (stop, then remove) — the loop converges over N passes rather
 // than trying to drive a sequence to completion inside one.
-func planFor(desired *db.PluginContainer, observed *container.ContainerInfo, hasNetwork bool) Action {
+func planFor(desired *db.PluginContainer, observed *container.ContainerInfo, hasNetwork bool, gen GenerationState) Action {
 	switch {
 	case desired == nil && observed == nil:
 		// No container and no desired row. A network may still be left behind
@@ -119,7 +160,9 @@ func planFor(desired *db.PluginContainer, observed *container.ContainerInfo, has
 	case desired == nil:
 		// An orphan: a container we manage with no desired-state row behind
 		// it. Stop it before removing it — a running container removed by
-		// force gets no chance to shut down cleanly.
+		// force gets no chance to shut down cleanly. Whatever generation it
+		// belonged to is gone along with the instance, so generation state
+		// plays no part here.
 		if isRunning(observed.State) {
 			return Action{
 				Kind:        ActionStop,
@@ -133,6 +176,37 @@ func planFor(desired *db.PluginContainer, observed *container.ContainerInfo, has
 			InstanceID:  observed.Labels[LabelInstance],
 			ContainerID: observed.ID,
 			Reason:      "orphan: no desired-state row for this container",
+		}
+
+	case gen == GenerationLive:
+		return Action{Kind: ActionNone, InstanceID: desired.PluginInstanceID}
+
+	// Once generation tracking is enabled (the branch above already disposed
+	// of the case where a live generation exists), the core loop must NEVER
+	// adopt a container carrying a generation label -- ownership of every
+	// such container belongs to ReconcileRotations end to end, never to this
+	// loop's plain start/stop bookkeeping (security review, #955 finding 1).
+	// With no live generation for this instance, a generation-labelled
+	// container here is a leftover from an attempt that never became live: a
+	// create that succeeded but whose generation then failed (lost token,
+	// health-gate abort) before anything claimed the container. It is an
+	// orphan exactly like a desired-row-less container is -- stop it, then
+	// remove it -- and once it is gone, ActionBeginFirstGeneration mints the
+	// next attempt rather than this loop mistaking it for something to start.
+	case gen != GenerationTrackingDisabled && observed != nil && observed.Labels[LabelGeneration] != "":
+		if isRunning(observed.State) {
+			return Action{
+				Kind:        ActionStop,
+				InstanceID:  desired.PluginInstanceID,
+				ContainerID: observed.ID,
+				Reason:      "orphaned generation container: no live generation claims it",
+			}
+		}
+		return Action{
+			Kind:        ActionRemove,
+			InstanceID:  desired.PluginInstanceID,
+			ContainerID: observed.ID,
+			Reason:      "orphaned generation container: no live generation claims it",
 		}
 
 	case observed == nil:
@@ -149,6 +223,13 @@ func planFor(desired *db.PluginContainer, observed *container.ContainerInfo, has
 				Kind:       ActionCreateNetwork,
 				InstanceID: desired.PluginInstanceID,
 				Reason:     "instance has no dedicated internal network yet",
+			}
+		}
+		if gen == GenerationMissing {
+			return Action{
+				Kind:       ActionBeginFirstGeneration,
+				InstanceID: desired.PluginInstanceID,
+				Reason:     "instance has no generation yet; minting generation 1",
 			}
 		}
 		return Action{
