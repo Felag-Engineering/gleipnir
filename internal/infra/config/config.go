@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"os"
 	"strconv"
 	"time"
@@ -80,6 +81,18 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	// Validated here — before run() constructs the plugin runtime, starts any
+	// trigger loop, or binds a socket — so a malformed pool fails the process
+	// immediately with a plain error instead of after side effects have
+	// already started (#1021). This only checks the pool's own shape; whether
+	// it overlaps a live network interface can't be known until the process
+	// is actually running, and is checked separately, later, in main.go via
+	// netguard.CheckPoolOverlap.
+	pluginSubnetPool := envOrDefault("GLEIPNIR_PLUGIN_SUBNET_POOL", "10.83.0.0/16")
+	if err := validatePluginSubnetPool(pluginSubnetPool); err != nil {
+		return Config{}, err
+	}
+
 	return Config{
 		DBPath:                    envOrDefault("GLEIPNIR_DB_PATH", "/data/gleipnir.db"),
 		ListenAddr:                envOrDefault("GLEIPNIR_LISTEN_ADDR", ":8080"),
@@ -103,7 +116,7 @@ func Load() (Config, error) {
 		LLMRetryMaxAttempts:       envInt("GLEIPNIR_LLM_RETRY_MAX_ATTEMPTS", 4),
 		LLMRetryInitialBackoff:    envDuration("GLEIPNIR_LLM_RETRY_INITIAL_BACKOFF", 1*time.Second),
 		LLMRetryMaxBackoff:        envDuration("GLEIPNIR_LLM_RETRY_MAX_BACKOFF", 30*time.Second),
-		PluginSubnetPool:          envOrDefault("GLEIPNIR_PLUGIN_SUBNET_POOL", "10.83.0.0/16"),
+		PluginSubnetPool:          pluginSubnetPool,
 
 		ElicitationMaxRequestStateBytes: envInt("GLEIPNIR_ELICITATION_MAX_REQUEST_STATE_BYTES", 16<<10),
 		ElicitationMaxRequests:          envInt("GLEIPNIR_ELICITATION_MAX_REQUESTS", 8),
@@ -140,6 +153,55 @@ func validateEncryptionKey(raw string) error {
 		)
 	}
 
+	return nil
+}
+
+// minPluginSubnetPoolBits is the narrowest prefix length (i.e. the widest
+// address range) GLEIPNIR_PLUGIN_SUBNET_POOL may declare. A pool wider than a
+// /8 — or 0.0.0.0/0 itself — covers such a large share of address space that
+// it is far more likely to be a typo than an intentional choice, and it makes
+// the startup interface-overlap check (netguard.CheckPoolOverlap, run later
+// from main.go once the process is up) almost certain to fire on a normal
+// host.
+const minPluginSubnetPoolBits = 8
+
+// maxPluginSubnetPoolBits is the widest prefix length (i.e. the narrowest
+// address range) GLEIPNIR_PLUGIN_SUBNET_POOL may declare: it must leave room
+// for at least one per-instance /24. This mirrors the reconciler's own
+// subnetBits constant (internal/plugin/reconciler/subnet.go); it is
+// duplicated here, as a literal, rather than imported, because config is a
+// stdlib-only leaf package and the reconciler is not — if that constant ever
+// changes, this one needs to change with it.
+const maxPluginSubnetPoolBits = 24
+
+// validatePluginSubnetPool checks that GLEIPNIR_PLUGIN_SUBNET_POOL is a
+// well-formed, IPv4 CIDR between /8 and /24 inclusive. It only validates
+// shape: it cannot know whether the pool overlaps a real network interface,
+// since that depends on the host this process is actually running on, not on
+// the value of an environment variable — see netguard.CheckPoolOverlap for
+// that check.
+func validatePluginSubnetPool(raw string) error {
+	prefix, err := netip.ParsePrefix(raw)
+	if err != nil {
+		return fmt.Errorf("GLEIPNIR_PLUGIN_SUBNET_POOL %q is not a valid CIDR: %w", raw, err)
+	}
+	if !prefix.Addr().Is4() {
+		return fmt.Errorf("GLEIPNIR_PLUGIN_SUBNET_POOL %q must be IPv4; IPv6 plugin networks are not supported", raw)
+	}
+	if prefix.Bits() < minPluginSubnetPoolBits {
+		return fmt.Errorf(
+			"GLEIPNIR_PLUGIN_SUBNET_POOL %q is wider than /%d, which is too large to be an intentional choice; "+
+				"pick a narrower pool (the default /16 holds 256 plugin instances)",
+			raw, minPluginSubnetPoolBits,
+		)
+	}
+	if prefix.Bits() > maxPluginSubnetPoolBits {
+		return fmt.Errorf(
+			"GLEIPNIR_PLUGIN_SUBNET_POOL %q is narrower than /%d, which leaves no room for even one "+
+				"per-instance /24 allocation; pick a wider pool",
+			raw, maxPluginSubnetPoolBits,
+		)
+	}
 	return nil
 }
 
