@@ -27,3 +27,9 @@ func MakeConcurrencyCheckErrorForTest(err error) error {
 func MakeEnqueueErrorForTest(err error) error {
 	return &enqueueError{err: err}
 }
+
+// DecodeApprovalOptionIDForTest exposes decodeApprovalOptionID so external
+// tests can pin its strict approve/reject mapping directly.
+func DecodeApprovalOptionIDForTest(optionID string) (bool, error) {
+	return decodeApprovalOptionID(optionID)
+}

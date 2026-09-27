@@ -255,6 +255,59 @@ func TestPollScheduler_Cancel_PropagatesToServerAndResolvesRow(t *testing.T) {
 	}
 }
 
+// TestPollScheduler_Scan_OnResolvedSeesResult proves issue #961 review item
+// 5: a completed task's Result reaches WithOnResolved's hook, not just the
+// DB row. finalize's own task argument is the pre-resolution snapshot Scan
+// polled with (Result == nil); before this fix OnResolved would have
+// received that stale snapshot instead of the answer the server just sent.
+func TestPollScheduler_Scan_OnResolvedSeesResult(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	newSchedulerTestTask(t, s, "channel_request", "remote-task-1", "")
+
+	const wantResult = `{"optionId":"approve","actorExternalId":"U1"}`
+	fake := &tasksFakeResponder{
+		respond: func(method, taskID string, params json.RawMessage) (any, int, string) {
+			return map[string]any{
+				"taskId": taskID,
+				"status": "completed",
+				"result": json.RawMessage(wantResult),
+			}, 0, ""
+		},
+	}
+	srv := httptest.NewServer(fake)
+	t.Cleanup(srv.Close)
+
+	var resolvedTask db.McpTask
+	sched := NewPollScheduler(s.Queries(), fakeClientResolver{client: newModernClient(srv)},
+		WithOnResolved(func(ctx context.Context, task db.McpTask, err error) {
+			resolvedTask = task
+		}),
+	)
+
+	if err := sched.Scan(context.Background()); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	if resolvedTask.Status != "complete" {
+		t.Errorf("resolvedTask.Status = %q, want complete", resolvedTask.Status)
+	}
+	if resolvedTask.Result == nil {
+		t.Fatal("resolvedTask.Result is nil, want the completed task's answer")
+	}
+	if *resolvedTask.Result != wantResult {
+		t.Errorf("resolvedTask.Result = %q, want %q", *resolvedTask.Result, wantResult)
+	}
+
+	// The DB row itself must agree — this is not just an in-memory patch.
+	row, err := s.Queries().GetMCPTask(context.Background(), "task1")
+	if err != nil {
+		t.Fatalf("GetMCPTask: %v", err)
+	}
+	if row.Result == nil || *row.Result != wantResult {
+		t.Errorf("stored row.Result = %v, want %q", row.Result, wantResult)
+	}
+}
+
 // TestPollScheduler_TTLExpiry_IsADistinctTypedFailure proves spec §6.3/§6.5:
 // a task whose server-declared TTL has elapsed is resolved as "expired" — a
 // status distinct from "failed" — and OnResolved receives ErrTaskExpired,

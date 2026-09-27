@@ -159,6 +159,14 @@ type PollHint interface {
 type AuthorizeActorQuerier interface {
 	GetPluginInstanceByID(ctx context.Context, id string) (db.PluginInstance, error)
 	InsertPluginAuditEvent(ctx context.Context, arg db.InsertPluginAuditEventParams) (db.PluginAuditEvent, error)
+
+	// GetMCPServerByPluginInstance and GetMCPTaskByServerAndTaskID resolve
+	// the caller's own Tasks-extension task id to the mcp_tasks row
+	// PollHint.PollNow expects (issue #961 review item 6) — see
+	// resolveTaskRowID's doc comment for why both steps, and why the second
+	// one is scoped to the first.
+	GetMCPServerByPluginInstance(ctx context.Context, pluginInstanceID *string) (db.McpServer, error)
+	GetMCPTaskByServerAndTaskID(ctx context.Context, arg db.GetMCPTaskByServerAndTaskIDParams) (db.McpTask, error)
 }
 
 // AuthorizeActorDeps carries the collaborators host/authorize_actor needs.
@@ -216,12 +224,15 @@ type authorizeActorArgs struct {
 // authorizeActor is the host/authorize_actor handler.
 //
 // request_id identifies the pending ask to the caller — the plugin's own
-// Tasks-extension task id, the one value it holds at click time — and is
-// forwarded to PollHint verbatim. Resolving it to a concrete mcp_tasks row
-// is deliberately NOT this handler's job (see the package-level doc comment
-// above): AuthorizeActor authorizes the actor and hints the poll, and
-// settlement — including whatever identifier translation the poll-now path
-// needs — stays with the task/CAS machinery on the other side of PollHint.
+// Tasks-extension task id, the one value it holds at click time. This is
+// NOT mcp_tasks.id (the host's own row identifier, what PollHint.PollNow
+// actually expects — internal/mcp/tasks_scheduler.go's PollNow, GetTask, and
+// Cancel all key on that row id, not the server's task_id), so it cannot be
+// forwarded to PollHint verbatim: resolveTaskRowID translates it first,
+// scoped to the calling instance's own mcp_servers row so one instance's
+// task_id string can never resolve to a different instance's row. Settlement
+// itself is still NOT this handler's job (see the package-level doc comment
+// above) — only enough resolution to name the right row for the hint.
 //
 // An unauthorized actor is a NON-error result, mirroring the WriteAuditStep
 // precedent exactly: the RPC succeeds, the result carries
@@ -260,17 +271,48 @@ func (d AuthorizeActorDeps) authorizeActor(ctx context.Context, args json.RawMes
 	}
 
 	if d.PollHint != nil {
-		if pollErr := d.PollHint.PollNow(ctx, a.RequestID); pollErr != nil {
+		rowID, resolveErr := d.resolveTaskRowID(ctx, inst.ID, a.RequestID)
+		if resolveErr != nil {
+			// Same best-effort posture as a failed PollNow below: the
+			// request still resolves at the next scheduled poll tick.
+			slog.WarnContext(ctx, "host/authorize_actor: resolving task row for poll-now hint failed",
+				"request_id", a.RequestID, "instance", inst.ID, "err", resolveErr)
+		} else if pollErr := d.PollHint.PollNow(ctx, rowID); pollErr != nil {
 			// Best-effort: a failed hint must not turn a correct
 			// authorization into a refusal — the request is still resolvable
 			// at the next scheduled poll tick, so this is a latency
 			// regression, not a correctness one.
 			slog.WarnContext(ctx, "host/authorize_actor: poll-now hint failed",
-				"request_id", a.RequestID, "instance", inst.ID, "err", pollErr)
+				"request_id", a.RequestID, "row_id", rowID, "instance", inst.ID, "err", pollErr)
 		}
 	}
 
 	return map[string]any{"authorized": true, "user_id": resolution.UserID}, nil
+}
+
+// resolveTaskRowID translates a plugin's own Tasks-extension task id into the
+// mcp_tasks row PollHint.PollNow needs (issue #961 review item 6). Two steps,
+// both required: GetMCPServerByPluginInstance names the CALLING instance's
+// own mcp_servers row, and GetMCPTaskByServerAndTaskID looks up taskID
+// scoped to exactly that row. Scoping to the caller's own server is not
+// optional — mcp_tasks.task_id is only unique WITHIN one server
+// (UNIQUE(server_id, task_id)), so looking it up unscoped could resolve to a
+// different instance's task that happens to share the same server-assigned
+// id string, letting one plugin's click hint at (and, via PollNow's poll,
+// read the current state of) a task it does not own.
+func (d AuthorizeActorDeps) resolveTaskRowID(ctx context.Context, instanceID, taskID string) (string, error) {
+	srv, err := d.Querier.GetMCPServerByPluginInstance(ctx, &instanceID)
+	if err != nil {
+		return "", fmt.Errorf("resolve mcp server for instance %s: %w", instanceID, err)
+	}
+	task, err := d.Querier.GetMCPTaskByServerAndTaskID(ctx, db.GetMCPTaskByServerAndTaskIDParams{
+		ServerID: &srv.ID,
+		TaskID:   taskID,
+	})
+	if err != nil {
+		return "", fmt.Errorf("resolve mcp_tasks row for server %s task %s: %w", srv.ID, taskID, err)
+	}
+	return task.ID, nil
 }
 
 // writeAuditEvent inserts a plugin_audit_events row, non-fatally: an audit

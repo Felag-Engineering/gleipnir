@@ -126,6 +126,55 @@ func TestApprovalHandler_Wait_Rejected(t *testing.T) {
 	}
 }
 
+// TestApprovalHandler_Wait_DrainsStaleBufferedValue is issue #961 review R2:
+// a value already sitting in approvalCh before a SECOND (or later) gate opens
+// (left over from a PREVIOUS gate — SendApproval's non-blocking send landing
+// after that gate's own Wait had already returned via a timeout, for
+// instance) must never be read as the answer to the NEW gate.
+//
+// Gate 1 legitimately consumes its own prefilled value and resolves
+// normally — this is the same "prefill before the first Wait call" shape
+// every other test in this file uses, and it must keep working, since
+// nothing can be stale before a handler's very first gate (see Wait's own
+// comment). Only once gate 1 has closed do we inject a genuinely stale value
+// and open gate 2 on the SAME handler: the short handler timeout below is
+// what proves the drain happened — if the stale value were consumed instead
+// of drained, gate 2 would resolve immediately instead of timing out.
+func TestApprovalHandler_Wait_DrainsStaleBufferedValue(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	approvalCh := make(chan bool, 1)
+	approvalCh <- true // gate 1's own answer
+
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
+	w := NewAuditWriter(s.Queries())
+	defer w.Close() //nolint:errcheck
+
+	h := NewApprovalHandler(w, sm, (<-chan bool)(approvalCh))
+
+	if err := h.Wait(context.Background(), "run1", approvalEntry(0), "my-server.do_thing", map[string]any{}); err != nil {
+		t.Fatalf("gate 1 Wait: unexpected error: %v", err)
+	}
+	if sm.Current() != model.RunStatusRunning {
+		t.Fatalf("after gate 1, run status = %s, want running", sm.Current())
+	}
+
+	approvalCh <- false // stale value left over from gate 1's own timing window; nothing is waiting to consume it
+
+	err := h.Wait(context.Background(), "run1", approvalEntry(50*time.Millisecond), "my-server.do_thing", map[string]any{})
+	if err == nil {
+		t.Fatal("gate 2: expected a timeout error — the stale buffered value must not have decided this gate")
+	}
+	if !strings.Contains(err.Error(), "approval timeout") {
+		t.Errorf("gate 2: error = %q, want to contain 'approval timeout'", err.Error())
+	}
+	if sm.Current() == model.RunStatusRunning {
+		t.Error("gate 2: run status = running, want NOT running — a stale value must never approve a new gate")
+	}
+}
+
 // TestApprovalHandler_Wait_Timeout_HandlerWins verifies that when the timeout fires
 // and the handler wins the rows==1 race against the scanner, an error step is
 // written and a non-nil error is returned.
@@ -261,13 +310,26 @@ func TestApprovalHandler_Wait_Timeout_ScannerWins(t *testing.T) {
 }
 
 // mockApprovalDispatcher implements ApprovalChannelDispatcher for tests.
+// settleCalls records every Settle(won) invocation so a test can assert
+// whether ApprovalHandler told the dispatcher its decision actually won the
+// race with the timeout scanner.
 type mockApprovalDispatcher struct {
 	approved bool
 	err      error
+
+	settleCalls []bool
 }
 
-func (m *mockApprovalDispatcher) DispatchApproval(_ context.Context, _ ApprovalDispatchRequest) (bool, error) {
-	return m.approved, m.err
+func (m *mockApprovalDispatcher) DispatchApproval(_ context.Context, _ ApprovalDispatchRequest) (ApprovalSettlement, error) {
+	if m.err != nil {
+		return ApprovalSettlement{}, m.err
+	}
+	return ApprovalSettlement{
+		Approved: m.approved,
+		Settle: func(_ context.Context, won bool) {
+			m.settleCalls = append(m.settleCalls, won)
+		},
+	}, nil
 }
 
 // TestApprovalHandler_Wait_PluginApproved verifies the happy path when a plugin
@@ -443,6 +505,143 @@ func TestApprovalHandler_Wait_PluginDenied(t *testing.T) {
 	if !hasError {
 		t.Error("expected error step written on plugin denial")
 	}
+}
+
+// TestApprovalHandler_Wait_PluginApproved_LostToScanner is the plugin-channel
+// half of issue #961 review item 1c (the in-app half lives in
+// internal/execution/run's runs_handler_test.go, since that CAS ordering is
+// resolveRequest's own): a dispatcher that resolves "approved" AFTER the
+// timeout scanner has already claimed the approval_requests row must never
+// run the tool. The mock simulates the race directly — it claims the row
+// itself, standing in for the scanner, before returning its own answer — so
+// resolveApprovalRecord's CAS is guaranteed to see rows==0.
+func TestApprovalHandler_Wait_PluginApproved_LostToScanner(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	approvalCh := make(chan bool, 1)
+
+	pub := &capturePublisher{}
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
+	w := NewAuditWriter(s.Queries())
+	defer w.Close() //nolint:errcheck
+
+	mock := &raceWinningApprovalDispatcher{queries: s.Queries(), approved: true}
+	h := NewApprovalHandler(w, sm, (<-chan bool)(approvalCh),
+		WithApprovalChannelDispatch(mock, "audience-1", "p1"),
+	)
+
+	err := h.Wait(context.Background(), "run1", approvalEntry(0), "my-server.do_thing", map[string]any{})
+	if err == nil {
+		t.Fatal("expected an error: this decision lost the race with the timeout scanner")
+	}
+	if !strings.Contains(err.Error(), "already closed") {
+		t.Errorf("error = %q, want to contain 'already closed'", err.Error())
+	}
+
+	// The tool must never have been allowed to run.
+	if sm.Current() == model.RunStatusRunning {
+		t.Error("run status = running, want NOT running — a lost decision must never resume the run")
+	}
+
+	if len(mock.settleCalls) != 1 || mock.settleCalls[0] != false {
+		t.Errorf("settleCalls = %v, want [false] — the dispatcher must be told this decision lost", mock.settleCalls)
+	}
+
+	// The row must still read "timeout" — resolveApprovalRecord's own CAS
+	// loss must not have clobbered the scanner's write.
+	var status string
+	if err := s.DB().QueryRow(`SELECT status FROM approval_requests WHERE run_id = ?`, "run1").Scan(&status); err != nil {
+		t.Fatalf("querying approval_requests: %v", err)
+	}
+	if status != "timeout" {
+		t.Errorf("approval_requests.status = %q, want timeout", status)
+	}
+}
+
+// TestApprovalHandler_Wait_PluginApproved_DBWriteErrorFailsClosed is issue
+// #961 review R3: a DB write error inside resolveApprovalRecord must fail
+// closed (won=false) for the plugin-channel path, never running the tool on
+// a write it cannot confirm succeeded. The mock closes the store itself,
+// from inside DispatchApproval, so the SUBSEQUENT resolveApprovalRecord call
+// is guaranteed to hit a real "database is closed" error rather than a
+// contrived stub.
+func TestApprovalHandler_Wait_PluginApproved_DBWriteErrorFailsClosed(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	approvalCh := make(chan bool, 1)
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
+	w := NewAuditWriter(s.Queries())
+	defer w.Close() //nolint:errcheck
+
+	mock := &dbClosingApprovalDispatcher{store: s}
+	h := NewApprovalHandler(w, sm, (<-chan bool)(approvalCh),
+		WithApprovalChannelDispatch(mock, "audience-1", "p1"),
+	)
+
+	err := h.Wait(context.Background(), "run1", approvalEntry(0), "my-server.do_thing", map[string]any{})
+	if err == nil {
+		t.Fatal("expected an error: the CAS write failed, so this must fail closed")
+	}
+
+	// The tool must never have been allowed to run.
+	if sm.Current() == model.RunStatusRunning {
+		t.Error("run status = running, want NOT running — an unconfirmed write must never resume the run")
+	}
+}
+
+// dbClosingApprovalDispatcher simulates a DB write failure at exactly the
+// point resolveApprovalRecord needs it: it closes the store itself from
+// inside DispatchApproval, so the write ApprovalHandler.Wait attempts
+// immediately afterward genuinely fails, rather than a stub merely claiming
+// it would have.
+type dbClosingApprovalDispatcher struct {
+	store *db.Store
+}
+
+func (m *dbClosingApprovalDispatcher) DispatchApproval(_ context.Context, _ ApprovalDispatchRequest) (ApprovalSettlement, error) {
+	if err := m.store.Close(); err != nil {
+		return ApprovalSettlement{}, fmt.Errorf("closing store: %w", err)
+	}
+	return ApprovalSettlement{Approved: true}, nil
+}
+
+// raceWinningApprovalDispatcher simulates the timeout scanner beating a
+// plugin-routed approval to the CAS: DispatchApproval claims the run's own
+// pending approval_requests row as "timeout" itself (standing in for the
+// scanner) before returning its own decision, so
+// ApprovalHandler.resolveApprovalRecord's subsequent CAS attempt is
+// guaranteed to see rows==0.
+type raceWinningApprovalDispatcher struct {
+	queries  *db.Queries
+	approved bool
+
+	settleCalls []bool
+}
+
+func (m *raceWinningApprovalDispatcher) DispatchApproval(ctx context.Context, req ApprovalDispatchRequest) (ApprovalSettlement, error) {
+	pending, err := m.queries.GetPendingApprovalRequestsByRun(ctx, req.RunID)
+	if err != nil {
+		return ApprovalSettlement{}, fmt.Errorf("look up pending approval: %w", err)
+	}
+	if len(pending) != 1 {
+		return ApprovalSettlement{}, fmt.Errorf("expected exactly one pending approval, got %d", len(pending))
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := m.queries.UpdateApprovalRequestStatus(ctx, db.UpdateApprovalRequestStatusParams{
+		Status: "timeout", DecidedAt: &now, ID: pending[0].ID,
+	}); err != nil {
+		return ApprovalSettlement{}, fmt.Errorf("claim the row as the scanner would: %w", err)
+	}
+	return ApprovalSettlement{
+		Approved: m.approved,
+		Settle: func(_ context.Context, won bool) {
+			m.settleCalls = append(m.settleCalls, won)
+		},
+	}, nil
 }
 
 // TestApprovalHandler_Wait_PluginFallbackToInApp verifies that when the dispatcher

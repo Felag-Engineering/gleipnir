@@ -450,6 +450,13 @@ func (h *RunsHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 // resolveSpec carries the request-kind-specific behaviour for resolveRequest.
 // Approval and feedback share identical orchestration; only the data differs.
 type resolveSpec struct {
+	// waitingRunStatus is the run status this gate expects to still be in.
+	// The scanner transitions the run OUT of it the moment it claims a
+	// timeout (runstate.TransitionRunFailed, internal/timeout/scanner.go),
+	// so a run no longer in this status is resolveRequest's cheapest and
+	// most reliable "this gate is already gone" signal — see the early
+	// check in resolveRequest below.
+	waitingRunStatus   model.RunStatus
 	sendToGate         func() error
 	gateErrorMsg       string
 	fetchPending       func(ctx context.Context) (string, error)
@@ -464,10 +471,42 @@ type resolveSpec struct {
 }
 
 // resolveRequest is the shared orchestration path for SubmitApproval and
-// SubmitFeedback. It executes: GetRun → sendToGate → fetchPending →
-// updateStatus → SSE publish → 202 response.
+// SubmitFeedback. It executes: GetRun → run-status check → fetchPending →
+// updateStatus → sendToGate → SSE publish → 202 response.
 //
-// updateStatus is called only when fetchPending returns a non-empty requestID.
+// Every step before sendToGate is a gatekeeper that can refuse outright, and
+// sendToGate is called ONLY after every one of them has confirmed there is a
+// live, in-app-answerable gate to wake — none of fetchPending returning "",
+// fetchPending erroring, updateStatus erroring, or updateStatus losing its
+// CAS (rows==0) fall through to sendToGate anymore (issue #961 review R1):
+// the pre-fix code treated an empty or failed fetchPending as "nothing to
+// check, proceed anyway", which is exactly the gap that let a decision for
+// an already-resolved gate still reach the agent.
+//
+//   - The run-status check runs first, right after confirming the run
+//     exists. If the scanner (or any other writer) has already moved the
+//     run out of waitingRunStatus, there is no live gate left to answer,
+//     full stop — refused before ever touching fetchPending, updateStatus,
+//     or sendToGate. This is what catches a decision arriving for a gate
+//     the scanner has ALREADY failed the run over.
+//   - fetchPending returning "" (no error) means no PENDING row exists for
+//     this run — either this gate never existed, or it has already been
+//     resolved by someone else (the scanner claimed it before failing the
+//     run, or a previous submission already consumed it). Both read as
+//     "already resolved" from this caller's side, so this refuses with
+//     alreadyResolvedMsg rather than falling through.
+//   - fetchPending or updateStatus returning a genuine error is an
+//     infrastructure fault, not a resolved-gate signal, and is refused with
+//     500 rather than silently treated as "proceed anyway".
+//   - updateStatus succeeding with rows==0 is the narrower live race: a
+//     nominally-pending row existed a moment before, but the scanner's own
+//     CAS won a beat later. CAS-then-send makes the CAS the sole gatekeeper
+//     for whether the agent ever sees this decision at all — if it loses,
+//     sendToGate is never called. Go's memory model guarantees the CAS's
+//     effect is visible to the agent goroutine by the time it wakes from
+//     the channel receive, since the write happens-before the send in this
+//     same goroutine, which happens-before the receive completes.
+//
 // SSE publish errors are silently swallowed to match the pre-refactor behaviour.
 // resolveRequest intentionally does NOT call any runstate.* function; the runs
 // table transition out of waiting_for_* is performed by the agent goroutine
@@ -475,7 +514,8 @@ type resolveSpec struct {
 func (h *RunsHandler) resolveRequest(w http.ResponseWriter, r *http.Request, runID string, spec resolveSpec) {
 	ctx := r.Context()
 
-	if _, err := h.store.GetRun(ctx, runID); errors.Is(err, sql.ErrNoRows) {
+	run, err := h.store.GetRun(ctx, runID)
+	if errors.Is(err, sql.ErrNoRows) {
 		httputil.WriteError(w, http.StatusNotFound, "run not found", "")
 		return
 	} else if err != nil {
@@ -483,30 +523,46 @@ func (h *RunsHandler) resolveRequest(w http.ResponseWriter, r *http.Request, run
 		httputil.WriteError(w, http.StatusInternalServerError, "internal server error", "")
 		return
 	}
-
-	if err := spec.sendToGate(); err != nil {
+	if spec.waitingRunStatus != "" && run.Status != string(spec.waitingRunStatus) {
+		// Reuses gateErrorMsg rather than a distinct message: "the run left
+		// its waiting status" and "there is no active gate" are the same
+		// fact from the caller's side, whether the gate never existed or
+		// has already been resolved by someone else.
 		httputil.WriteError(w, http.StatusConflict, spec.gateErrorMsg, "")
 		return
 	}
 
-	// Update the pending request record. Best-effort after the channel send —
-	// DB consistency is secondary to unblocking the agent.
 	requestID, err := spec.fetchPending(ctx)
 	if err != nil {
-		slog.Warn(spec.logTagPending, "run_id", runID, "err", err)
+		slog.Error(spec.logTagPending, "run_id", runID, "err", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal server error", "")
+		return
+	}
+	if requestID == "" {
+		// No pending record to CAS — either this gate never existed, or it
+		// has already been resolved. Refuse rather than fall through to
+		// sendToGate: there is nothing left here confirming a live gate.
+		httputil.WriteError(w, http.StatusConflict, spec.alreadyResolvedMsg, "")
+		return
 	}
 
-	if requestID != "" {
-		rows, err := spec.updateStatus(ctx, requestID)
-		if err != nil {
-			slog.Warn(spec.logTagUpdate, spec.sseRequestIDKey, requestID, "run_id", runID, "err", err)
-			// proceed — best-effort semantics match the pre-refactor code
-		} else if rows == 0 {
-			// The scanner already resolved this request (e.g. timeout raced with
-			// the operator's decision). Return 409 so the caller knows it's too late.
-			httputil.WriteError(w, http.StatusConflict, spec.alreadyResolvedMsg, requestID)
-			return
-		}
+	rows, err := spec.updateStatus(ctx, requestID)
+	if err != nil {
+		slog.Error(spec.logTagUpdate, spec.sseRequestIDKey, requestID, "run_id", runID, "err", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal server error", "")
+		return
+	}
+	if rows == 0 {
+		// The scanner already resolved this request (e.g. timeout raced with
+		// the operator's decision). Return 409 and never wake the agent —
+		// this decision lost.
+		httputil.WriteError(w, http.StatusConflict, spec.alreadyResolvedMsg, requestID)
+		return
+	}
+
+	if err := spec.sendToGate(); err != nil {
+		httputil.WriteError(w, http.StatusConflict, spec.gateErrorMsg, "")
+		return
 	}
 
 	if h.publisher != nil {
@@ -552,8 +608,9 @@ func (h *RunsHandler) SubmitApproval(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.resolveRequest(w, r, runID, resolveSpec{
-		sendToGate:   func() error { return h.manager.SendApproval(runID, approved) },
-		gateErrorMsg: "no active approval gate for this run",
+		waitingRunStatus: model.RunStatusWaitingForApproval,
+		sendToGate:       func() error { return h.manager.SendApproval(runID, approved) },
+		gateErrorMsg:     "no active approval gate for this run",
 		fetchPending: func(ctx context.Context) (string, error) {
 			pendingApprovals, err := h.store.GetPendingApprovalRequestsByRun(ctx, runID)
 			if err != nil {

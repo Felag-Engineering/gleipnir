@@ -19,13 +19,25 @@ import (
 )
 
 // mockFeedbackDispatcher is a simple mock for FeedbackChannelDispatcher.
+// settleCalls mirrors mockApprovalDispatcher's — records every Settle(won)
+// invocation.
 type mockFeedbackDispatcher struct {
 	response string
 	err      error
+
+	settleCalls []bool
 }
 
-func (m *mockFeedbackDispatcher) DispatchFeedback(_ context.Context, _ FeedbackDispatchRequest) (string, error) {
-	return m.response, m.err
+func (m *mockFeedbackDispatcher) DispatchFeedback(_ context.Context, _ FeedbackDispatchRequest) (FeedbackSettlement, error) {
+	if m.err != nil {
+		return FeedbackSettlement{}, m.err
+	}
+	return FeedbackSettlement{
+		Response: m.response,
+		Settle: func(_ context.Context, won bool) {
+			m.settleCalls = append(m.settleCalls, won)
+		},
+	}, nil
 }
 
 // awaitPendingFeedbackID blocks until the state machine publishes feedback.created

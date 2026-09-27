@@ -57,6 +57,17 @@ func (q *contractQuerier) GetPluginInstanceByID(_ context.Context, id string) (d
 	return inst, nil
 }
 
+// GetMCPServerByPluginInstance and GetMCPTaskByServerAndTaskID back
+// AuthorizeActor's poll-hint task resolution. The contract suite wires no
+// PollHint, so there is never a task row to resolve.
+func (q *contractQuerier) GetMCPServerByPluginInstance(_ context.Context, _ *string) (db.McpServer, error) {
+	return db.McpServer{}, sql.ErrNoRows
+}
+
+func (q *contractQuerier) GetMCPTaskByServerAndTaskID(_ context.Context, _ db.GetMCPTaskByServerAndTaskIDParams) (db.McpTask, error) {
+	return db.McpTask{}, sql.ErrNoRows
+}
+
 func (q *contractQuerier) GetRun(_ context.Context, id string) (db.Run, error) {
 	run, ok := q.runs[id]
 	if !ok {

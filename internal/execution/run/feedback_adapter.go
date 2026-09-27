@@ -35,12 +35,15 @@ func NewFeedbackChannelAdapter(d feedbackChannelRequester) *FeedbackChannelAdapt
 // DispatchFeedback routes a feedback request through the plugin channel and
 // blocks until the operator replies, the timeout fires, or ctx is cancelled.
 //
-//   - Returns (responseJSON, nil) when the operator replied; the caller must call
-//     parseFeedbackResponse to extract the text from the JSON envelope.
-//   - Returns ("", agent.ErrFeedbackRouteToInApp) when the audience resolves to
+//   - Returns (Settlement{Response: responseJSON}, nil) when the operator
+//     replied; the caller must call parseFeedbackResponse to extract the text
+//     from the JSON envelope.
+//   - Returns (_, agent.ErrFeedbackRouteToInApp) when the audience resolves to
 //     the synthetic in-app entry — the caller falls through to the waiter path.
-//   - Returns ("", err) on any other dispatch or wait failure.
-func (a *FeedbackChannelAdapter) DispatchFeedback(ctx context.Context, req agent.FeedbackDispatchRequest) (string, error) {
+//   - Returns (_, err) on any other dispatch or wait failure.
+//
+// Settle is always nil: this v1 adapter has no decision-record concept.
+func (a *FeedbackChannelAdapter) DispatchFeedback(ctx context.Context, req agent.FeedbackDispatchRequest) (agent.FeedbackSettlement, error) {
 	// Derive the Wait timeout from ExpiresAt.  The caller computes ExpiresAt
 	// once; the adapter owns the derivation so the API surface stays minimal.
 	var waitTimeout time.Duration
@@ -64,17 +67,17 @@ func (a *FeedbackChannelAdapter) DispatchFeedback(ctx context.Context, req agent
 	reqID, outcome, err := a.d.Request(ctx, req.AudienceID, rc, req.Prompt, req.ExpiresAt)
 	if err != nil {
 		if errors.Is(err, dispatch.ErrNoRequestCapableEntry) {
-			return "", agent.ErrFeedbackRouteToInApp
+			return agent.FeedbackSettlement{}, agent.ErrFeedbackRouteToInApp
 		}
-		return "", fmt.Errorf("channel request: %w", err)
+		return agent.FeedbackSettlement{}, fmt.Errorf("channel request: %w", err)
 	}
 	if outcome == dispatch.RouteToInApp {
-		return "", agent.ErrFeedbackRouteToInApp
+		return agent.FeedbackSettlement{}, agent.ErrFeedbackRouteToInApp
 	}
 
 	responseJSON, err := a.d.Wait(ctx, reqID, waitTimeout)
 	if err != nil {
-		return "", fmt.Errorf("waiting for feedback response: %w", err)
+		return agent.FeedbackSettlement{}, fmt.Errorf("waiting for feedback response: %w", err)
 	}
-	return responseJSON, nil
+	return agent.FeedbackSettlement{Response: responseJSON}, nil
 }

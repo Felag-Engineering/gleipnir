@@ -102,6 +102,42 @@ func (q *Queries) GetMCPTask(ctx context.Context, id string) (McpTask, error) {
 	return i, err
 }
 
+const getMCPTaskByServerAndTaskID = `-- name: GetMCPTaskByServerAndTaskID :one
+SELECT id, run_id, server_id, task_id, kind, poll_interval_ms, server_ttl, status, result, created_at, updated_at FROM mcp_tasks WHERE server_id = ?1 AND task_id = ?2
+`
+
+type GetMCPTaskByServerAndTaskIDParams struct {
+	ServerID *string `json:"server_id"`
+	TaskID   string  `json:"task_id"`
+}
+
+// GetMCPTaskByServerAndTaskID resolves a task by the SERVER's own task_id,
+// scoped to one mcp_servers row (the UNIQUE(server_id, task_id) constraint
+// this table already carries). Used by host/authorize_actor's poll-now hint
+// (internal/plugin/hostendpoint/authorize.go, issue #961 review item 6): a
+// plugin's AuthorizeActor call names the task by ITS OWN id, not by
+// mcp_tasks.id, and scoping the lookup to the calling instance's own server
+// row is what stops one instance's task_id string from ever resolving to a
+// different instance's row.
+func (q *Queries) GetMCPTaskByServerAndTaskID(ctx context.Context, arg GetMCPTaskByServerAndTaskIDParams) (McpTask, error) {
+	row := q.db.QueryRowContext(ctx, getMCPTaskByServerAndTaskID, arg.ServerID, arg.TaskID)
+	var i McpTask
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.ServerID,
+		&i.TaskID,
+		&i.Kind,
+		&i.PollIntervalMs,
+		&i.ServerTtl,
+		&i.Status,
+		&i.Result,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const listResumableMCPTasks = `-- name: ListResumableMCPTasks :many
 SELECT id, run_id, server_id, task_id, kind, poll_interval_ms, server_ttl, status, result, created_at, updated_at FROM mcp_tasks WHERE status IN ('working', 'input_required')
 `
