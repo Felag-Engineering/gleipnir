@@ -14,6 +14,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,8 +82,15 @@ func TestBootV2ServesHealthWithNoPluginMachinery(t *testing.T) {
 		t.Fatalf("config.Load: %v", err)
 	}
 
+	// main() parses and overlap-checks the pool before calling run; config.Load
+	// has already validated its shape, so a parse failure here is a test bug.
+	pool, err := netip.ParsePrefix(cfg.PluginSubnetPool)
+	if err != nil {
+		t.Fatalf("parsing plugin subnet pool %q: %v", cfg.PluginSubnetPool, err)
+	}
+
 	errCh := make(chan error, 1)
-	go func() { errCh <- run(cfg) }()
+	go func() { errCh <- run(cfg, pool) }()
 
 	if !waitForHealth(t, addr, 10*time.Second) {
 		t.Fatalf("server on %s never became healthy", addr)
