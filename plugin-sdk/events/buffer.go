@@ -35,11 +35,13 @@ type StoredEvent struct {
 // the stream after a gap.
 //
 // Implement Store to back events/listen with real durability (a database,
-// an append-only log, ...) across restarts. A Store implementation MUST
-// preserve insertion order and MUST itself detect and report an
-// unsatisfiable resume point via ErrCursorUnknown — Buffer does not
-// re-derive gap detection for a Store-backed buffer beyond what Since
-// reports.
+// an append-only log, ...) across restarts — or use FileStore
+// (filestore.go), this package's own file-backed implementation for the
+// plugin's instance volume, which most plugins can reach for directly. A
+// Store implementation MUST preserve insertion order and MUST itself
+// detect and report an unsatisfiable resume point via ErrCursorUnknown —
+// Buffer does not re-derive gap detection for a Store-backed buffer beyond
+// what Since reports.
 type Store interface {
 	// Append persists e. Called once per published event, in ascending Seq
 	// order, while the Buffer's own publish lock is held — an

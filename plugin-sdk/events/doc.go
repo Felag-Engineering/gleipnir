@@ -28,7 +28,12 @@
 //     zero-cost default (NewBuffer) is a bounded in-memory ring: honest
 //     about restart (it holds nothing across one), and a resume cursor it
 //     cannot satisfy comes back as ErrCursorUnknown rather than a silent
-//     gap. Implement Store and use NewBufferWithStore for real durability.
+//     gap. FileStore is this package's ready-made durable Store — an
+//     append-only segment log on the plugin's instance volume that
+//     survives a container restart — for a plugin that needs
+//     events/listen to stay resumable across one; hand it to
+//     NewBufferWithStore. Implement Store directly only if FileStore's
+//     shape (local disk, time-based retention) does not fit.
 //   - Handler is the http.Handler a plugin's main() serves: it wires
 //     server/discover, events/discover, and events/listen together over
 //     one Buffer.
