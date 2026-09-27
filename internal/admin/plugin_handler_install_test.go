@@ -3,6 +3,7 @@ package admin
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/plugin/lifecycle"
 	"github.com/felag-engineering/gleipnir/internal/plugin/oauth"
 )
 
@@ -684,4 +686,239 @@ services:
 			t.Errorf("response version = %d, want 0 (seed failed)", resp.Version)
 		}
 	})
+}
+
+// TestPluginHandler_CreateInstance_ProvisionsContainer_AndDeleteRemoves is the
+// #952 DoD test for the v2 admin path: with a real *lifecycle.DesiredState
+// wired as the InstanceProvisioner, creating an instance for a v2 plugin
+// yields exactly one plugin_containers row carrying the manifest's pinned
+// digest and resolved limits, and deleting the instance removes it.
+func TestPluginHandler_CreateInstance_ProvisionsContainer_AndDeleteRemoves(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC) }
+	store := newPluginTestStore(t)
+	ctx := context.Background()
+
+	const pluginID = "plugin-v2"
+	const digest = "sha256:0a666c9d2a6e22855c3a96c6d3de6e9f5223f5c70375999d1bc32fade6d4ebbb"
+	const manifest = `schema_version: "2"
+name: v2-tool
+version: "1.0.0"
+package:
+  registry_type: oci
+  identifier: ghcr.io/acme/v2-tool@` + digest + `
+  transport:
+    type: streamable-http
+    port: 8080
+gleipnir:
+  profiles:
+    tool_provider: {}
+  resources:
+    memory_mb: 64
+    cpu_millicores: 100
+`
+
+	now := fixedClock().UTC().Format(time.RFC3339Nano)
+	if _, err := store.Queries().CreatePlugin(ctx, db.CreatePluginParams{
+		ID:               pluginID,
+		Name:             "v2-tool",
+		PluginVersion:    "1.0.0",
+		ManifestSnapshot: manifest,
+		TrustedPubkey:    "",
+		Status:           "active",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}); err != nil {
+		t.Fatalf("seed plugin: %v", err)
+	}
+
+	h := newTestPluginHandler(store.Queries(), fixedClock, testPluginHandlerConfig{
+		store:       store,
+		provisioner: lifecycle.NewDesiredState(fixedClock),
+	})
+
+	rec := serveCreateInstance(h, pluginID, []byte(`{"instance_name":"inst1"}`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body: %s", rec.Code, rec.Body.String())
+	}
+	var resp createInstanceResponse
+	if err := json.Unmarshal(parseDataResponse(t, rec), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	row, err := store.Queries().GetPluginContainerByInstance(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("GetPluginContainerByInstance: %v", err)
+	}
+	if row.ImageDigest != digest {
+		t.Errorf("ImageDigest = %q, want %q", row.ImageDigest, digest)
+	}
+	wantMemory := int64(64) << 20
+	if row.MemoryLimitBytes == nil || *row.MemoryLimitBytes != wantMemory {
+		t.Errorf("MemoryLimitBytes = %v, want %d", row.MemoryLimitBytes, wantMemory)
+	}
+	if row.CpuLimitMillicores == nil || *row.CpuLimitMillicores != 100 {
+		t.Errorf("CpuLimitMillicores = %v, want 100", row.CpuLimitMillicores)
+	}
+	if row.DesiredState != lifecycle.DesiredStateRunning {
+		t.Errorf("DesiredState = %q, want %q", row.DesiredState, lifecycle.DesiredStateRunning)
+	}
+
+	rec = serveDeleteInstance(h, pluginID, resp.ID)
+	if rec.Code != http.StatusNoContent && rec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, want 200 or 204; body: %s", rec.Code, rec.Body.String())
+	}
+
+	if _, err := store.Queries().GetPluginContainerByInstance(ctx, resp.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("GetPluginContainerByInstance after delete: err = %v, want sql.ErrNoRows", err)
+	}
+}
+
+// TestPluginHandler_CreateInstance_PluginNotActive_Returns409 proves
+// CreateInstance maps lifecycle.ErrPluginNotActive to 409 and creates neither
+// row: the reconciler converges any plugin_containers row it finds, so a
+// pending_review plugin must never get one.
+func TestPluginHandler_CreateInstance_PluginNotActive_Returns409(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC) }
+	store := newPluginTestStore(t)
+	ctx := context.Background()
+
+	const pluginID = "plugin-pending"
+	const digest = "sha256:0a666c9d2a6e22855c3a96c6d3de6e9f5223f5c70375999d1bc32fade6d4ebbb"
+	const manifest = `schema_version: "2"
+name: pending-tool
+version: "1.0.0"
+package:
+  registry_type: oci
+  identifier: ghcr.io/acme/pending-tool@` + digest + `
+  transport:
+    type: streamable-http
+    port: 8080
+gleipnir:
+  profiles:
+    tool_provider: {}
+`
+
+	now := fixedClock().UTC().Format(time.RFC3339Nano)
+	if _, err := store.Queries().CreatePlugin(ctx, db.CreatePluginParams{
+		ID:               pluginID,
+		Name:             "pending-tool",
+		PluginVersion:    "1.0.0",
+		ManifestSnapshot: manifest,
+		TrustedPubkey:    "",
+		Status:           "pending_review",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}); err != nil {
+		t.Fatalf("seed plugin: %v", err)
+	}
+
+	h := newTestPluginHandler(store.Queries(), fixedClock, testPluginHandlerConfig{
+		store:       store,
+		provisioner: lifecycle.NewDesiredState(fixedClock),
+	})
+
+	rec := serveCreateInstance(h, pluginID, []byte(`{"instance_name":"inst1"}`))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body: %s", rec.Code, rec.Body.String())
+	}
+
+	// Neither row was created.
+	instances, err := store.Queries().ListPluginInstancesByPlugin(ctx, pluginID)
+	if err != nil {
+		t.Fatalf("ListPluginInstancesByPlugin: %v", err)
+	}
+	if len(instances) != 0 {
+		t.Errorf("instances = %+v, want none created", instances)
+	}
+}
+
+// TestNewPluginHandler_PanicsWhenProvisionerWithoutStore proves the
+// Provisioner+Store invariant is enforced at construction, not silently
+// fallen back from — a Provisioner with no Store to open a transaction in
+// would let a plugin_instances row and its plugin_containers row drift apart.
+func TestNewPluginHandler_PanicsWhenProvisionerWithoutStore(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("NewPluginHandler did not panic with Provisioner set and Store nil")
+		}
+	}()
+	NewPluginHandler(PluginHandlerDeps{
+		Q:           newFakePluginQuerier(),
+		Provisioner: &recordingProvisioner{},
+	})
+}
+
+// TestPluginHandler_ActivateInstance_PluginNotActive_Returns409 is the
+// review's follow-up on the status gate: a plugin approved when an instance
+// was created and deactivated can be removed before the operator re-activates
+// it. Activate's SetDesired(running) must re-check plugin.Status and refuse,
+// mapped to 409 — the same 409 CreateInstance already returns for the same
+// underlying reason.
+func TestPluginHandler_ActivateInstance_PluginNotActive_Returns409(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC) }
+	store := newPluginTestStore(t)
+	ctx := context.Background()
+
+	const pluginID = "plugin-v2-reactivate"
+	const digest = "sha256:0a666c9d2a6e22855c3a96c6d3de6e9f5223f5c70375999d1bc32fade6d4ebbb"
+	const manifest = `schema_version: "2"
+name: reactivate-tool
+version: "1.0.0"
+package:
+  registry_type: oci
+  identifier: ghcr.io/acme/reactivate-tool@` + digest + `
+  transport:
+    type: streamable-http
+    port: 8080
+gleipnir:
+  profiles:
+    tool_provider: {}
+`
+
+	now := fixedClock().UTC().Format(time.RFC3339Nano)
+	if _, err := store.Queries().CreatePlugin(ctx, db.CreatePluginParams{
+		ID:               pluginID,
+		Name:             "reactivate-tool",
+		PluginVersion:    "1.0.0",
+		ManifestSnapshot: manifest,
+		TrustedPubkey:    "",
+		Status:           "active",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}); err != nil {
+		t.Fatalf("seed plugin: %v", err)
+	}
+
+	h := newTestPluginHandler(store.Queries(), fixedClock, testPluginHandlerConfig{
+		store:       store,
+		provisioner: lifecycle.NewDesiredState(fixedClock),
+	})
+
+	rec := serveCreateInstance(h, pluginID, []byte(`{"instance_name":"inst1"}`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201; body: %s", rec.Code, rec.Body.String())
+	}
+	var created createInstanceResponse
+	if err := json.Unmarshal(parseDataResponse(t, rec), &created); err != nil {
+		t.Fatalf("unmarshal create response: %v", err)
+	}
+
+	if rec := serveDeactivateInstance(h, pluginID, created.ID); rec.Code != http.StatusOK {
+		t.Fatalf("deactivate status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	// The plugin is removed while the instance sits inactive.
+	if _, err := store.Queries().UpdatePluginStatus(ctx, db.UpdatePluginStatusParams{
+		ID:              pluginID,
+		Status:          "removed",
+		UpdatedAt:       now,
+		ExpectedVersion: 0,
+	}); err != nil {
+		t.Fatalf("UpdatePluginStatus: %v", err)
+	}
+
+	rec = serveActivateInstance(h, pluginID, created.ID)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("activate status = %d, want 409; body: %s", rec.Code, rec.Body.String())
+	}
 }

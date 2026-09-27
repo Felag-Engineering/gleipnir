@@ -23,6 +23,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
+	"github.com/felag-engineering/gleipnir/internal/plugin/lifecycle/desiredstate"
 	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
 	"github.com/felag-engineering/gleipnir/internal/plugin/oauth"
 	pluginstate "github.com/felag-engineering/gleipnir/internal/plugin/state"
@@ -209,6 +210,41 @@ type CredentialSeeder interface {
 	SaveCredentials(ctx context.Context, instanceID string, creds oauth.StoredCredentials, expectedVersion int64) error
 }
 
+// InstanceProvisioner is the narrow interface for creating and removing a v2
+// plugin instance's container desired-state row (internal/plugin/lifecycle.
+// DesiredState implements it). Kept as an interface here so the admin package
+// does not import the full internal/plugin/lifecycle package — which pulls in
+// internal/plugin/loader and, transitively, internal/plugin/container for its
+// OCI-install adapter — merely to reference this contract (package boundary).
+// v1 stays exactly as it is today with a nil provisioner: no plugin_containers
+// row is ever created, removed, or paused for a v1 (subprocess) instance.
+//
+// The desiredstate leaf package (internal/plugin/lifecycle/desiredstate) is
+// where the two small pieces this file DOES need — ErrPluginNotActive and the
+// Running/Stopped constants — actually live; internal/plugin/lifecycle
+// aliases the same values rather than redeclaring them, so this package can
+// import desiredstate directly without ever importing lifecycle itself.
+//
+// All three methods take q rather than opening their own transaction, so the
+// caller can run the write in the same transaction as the plugin_instances
+// row it is paired with — a container desired-state row must never exist (or
+// fail to exist) independently of the instance row it belongs to.
+type InstanceProvisioner interface {
+	// CreateForInstance writes the plugin_containers row for a freshly created
+	// instance. Returns desiredstate.ErrPluginNotActive (checked via errors.Is)
+	// when the owning plugin has not passed admin review, or has been
+	// removed — CreateInstance maps that to 409.
+	CreateForInstance(ctx context.Context, q *db.Queries, instanceID string) (db.PluginContainer, error)
+	// Remove deletes the plugin_containers row for a deleted instance.
+	Remove(ctx context.Context, q *db.Queries, instanceID string) error
+	// SetDesired flips the container's desired_state (desiredstate.Running /
+	// desiredstate.Stopped) — the kill switch Deactivate/Activate use so a
+	// deactivated instance's container actually stops converging to "running".
+	// Returns desiredstate.ErrPluginNotActive for Running when the owning
+	// plugin is no longer active; Activate maps that to 409 too.
+	SetDesired(ctx context.Context, q *db.Queries, instanceID, state string) error
+}
+
 // PluginHandlerDeps holds all constructor-injected dependencies for PluginHandler.
 // This replaces the 8 SetXxx late-bind setters (compile-checked per issue #504).
 //
@@ -229,6 +265,14 @@ type PluginHandlerDeps struct {
 	// nil (e.g. no encryption key configured) skips seeding — the row is still
 	// created, the operator can set credentials later via the credentials API.
 	CredentialSeeder CredentialSeeder
+	// Store, together with Provisioner, opens the transaction CreateInstance
+	// runs the row insert and the provisioner hook inside. nil in v1 — or when
+	// Provisioner is also nil — CreateInstance falls back to the plain
+	// non-transactional insert it has always done.
+	Store *db.Store
+	// Provisioner is nil in v1: CreateInstance never provisions a container,
+	// and DeleteInstance never removes one.
+	Provisioner InstanceProvisioner
 }
 
 // PluginHandler handles plugin-related admin endpoints.
@@ -243,11 +287,22 @@ type PluginHandler struct {
 	lifecycle      *InstanceLifecycle   // owns Deactivate/Activate/Delete/Uninstall
 	config         *InstanceConfig      // owns PutSubscriptionScope/PutConfig/PutConfigProperty
 	credSeeder     CredentialSeeder     // nil means skip credential seeding on create
+	store          *db.Store            // nil (or a nil provisioner) skips the create-instance provisioning tx
+	provisioner    InstanceProvisioner  // nil in v1: CreateInstance/DeleteInstance skip container provisioning
 }
 
 // NewPluginHandler constructs a PluginHandler from the given deps struct.
 // clock defaults to time.Now when nil. All other nil-able deps are nil-safe.
 func NewPluginHandler(deps PluginHandlerDeps) *PluginHandler {
+	if deps.Provisioner != nil && deps.Store == nil {
+		// A container desired-state write must commit or roll back together
+		// with the plugin_instances row it belongs to (issue #349's lesson);
+		// that only holds if CreateInstance can open a transaction. A
+		// Provisioner with no Store to open one is a wiring bug, not a runtime
+		// condition — it must never reach a silent, non-transactional fallback
+		// that would let the two rows drift apart.
+		panic("admin: PluginHandlerDeps.Provisioner requires Store to be set")
+	}
 	clk := deps.Clock
 	if clk == nil {
 		clk = time.Now
@@ -263,6 +318,8 @@ func NewPluginHandler(deps PluginHandlerDeps) *PluginHandler {
 		lifecycle:      deps.Lifecycle,
 		config:         deps.Config,
 		credSeeder:     deps.CredentialSeeder,
+		store:          deps.Store,
+		provisioner:    deps.Provisioner,
 	}
 }
 
@@ -982,6 +1039,11 @@ func (h *PluginHandler) mapLifecycleError(w http.ResponseWriter, err error) {
 		httputil.WriteError(w, http.StatusConflict, "instance is already deactivated", "")
 	case errors.Is(err, ErrRefetchFailed):
 		httputil.WriteError(w, http.StatusInternalServerError, "state transition succeeded but re-fetch failed", "")
+	case errors.Is(err, desiredstate.ErrPluginNotActive):
+		// v2 only: Activate's SetDesired(running) re-checks the owning
+		// plugin's status, since a plugin approved when the instance was
+		// created can be removed later. Never reachable in v1 (nil provisioner).
+		httputil.WriteError(w, http.StatusConflict, "plugin is not active", "")
 	default:
 		var termErr TerminalStateError
 		if errors.As(err, &termErr) {
@@ -1429,7 +1491,7 @@ func (h *PluginHandler) CreateInstance(w http.ResponseWriter, r *http.Request) {
 	nowStr := h.clock().UTC().Format(time.RFC3339Nano)
 	healthDetail := "config_missing"
 
-	inst, err := h.q.CreatePluginInstance(ctx, db.CreatePluginInstanceParams{
+	params := db.CreatePluginInstanceParams{
 		ID:                    instanceID,
 		PluginID:              pluginID,
 		InstanceName:          instanceName,
@@ -1443,12 +1505,25 @@ func (h *PluginHandler) CreateInstance(w http.ResponseWriter, r *http.Request) {
 		LastOauthCallbackUrl:  nil,
 		CreatedAt:             nowStr,
 		UpdatedAt:             nowStr,
-	})
+	}
+
+	var inst db.PluginInstance
+	if h.store != nil && h.provisioner != nil {
+		inst, err = h.createInstanceWithProvisioner(ctx, params)
+	} else {
+		inst, err = h.q.CreatePluginInstance(ctx, params)
+	}
 	if err != nil {
-		// Race after pre-check: UNIQUE constraint triggered by concurrent insert.
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		switch {
+		case errors.Is(err, desiredstate.ErrPluginNotActive):
+			// The plugin has not passed admin review (or was removed) — the
+			// provisioner refused to write a container desired-state row for
+			// it, and the instance was never created either (same tx).
+			httputil.WriteError(w, http.StatusConflict, "plugin is not active", "")
+		case strings.Contains(err.Error(), "UNIQUE constraint failed"):
+			// Race after pre-check: UNIQUE constraint triggered by concurrent insert.
 			httputil.WriteError(w, http.StatusConflict, "instance_name already exists for this plugin", "")
-		} else {
+		default:
 			httputil.WriteError(w, http.StatusInternalServerError, "failed to create instance", "")
 		}
 		return
@@ -1495,6 +1570,37 @@ func (h *PluginHandler) CreateInstance(w http.ResponseWriter, r *http.Request) {
 			slog.WarnContext(context.Background(), "post-create spawn failed", "plugin_id", pluginID, "err", err)
 		}
 	}
+}
+
+// createInstanceWithProvisioner inserts the plugin_instances row and calls the
+// v2 InstanceProvisioner hook inside one transaction, so a plugin_instances
+// row can never exist without its plugin_containers desired-state row, or vice
+// versa — a failure on either side leaves neither behind. Only called when
+// both h.store and h.provisioner are non-nil; the plain (non-transactional)
+// insert above is what v1 keeps using.
+func (h *PluginHandler) createInstanceWithProvisioner(ctx context.Context, params db.CreatePluginInstanceParams) (db.PluginInstance, error) {
+	tx, err := h.store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return db.PluginInstance{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() {
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			slog.ErrorContext(ctx, "create instance: rollback failed", "err", rbErr)
+		}
+	}()
+
+	q := db.New(tx)
+	inst, err := q.CreatePluginInstance(ctx, params)
+	if err != nil {
+		return db.PluginInstance{}, err
+	}
+	if _, err := h.provisioner.CreateForInstance(ctx, q, inst.ID); err != nil {
+		return db.PluginInstance{}, fmt.Errorf("provision container for instance %q: %w", inst.ID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return db.PluginInstance{}, fmt.Errorf("commit: %w", err)
+	}
+	return inst, nil
 }
 
 // seedInstanceCredentials initializes the credential blob for a newly created

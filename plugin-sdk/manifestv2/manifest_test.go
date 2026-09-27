@@ -317,6 +317,13 @@ func TestParse_Rejections(t *testing.T) {
 			wantField: "gleipnir.resources.memory_mb",
 		},
 		{
+			name: "cpu_millicores over the 64-core ceiling",
+			mutate: func(s string) string {
+				return s + "  resources:\n    cpu_millicores: 64001\n"
+			},
+			wantField: "gleipnir.resources.cpu_millicores",
+		},
+		{
 			name: "unknown elicitation kind",
 			mutate: func(s string) string {
 				return s + "  tools:\n    - name: deploy\n      elicitation_kind: urgent\n"
