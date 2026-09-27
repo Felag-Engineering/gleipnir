@@ -595,16 +595,22 @@ func nodeOrNil(n yaml.Node) *yaml.Node {
 	return &n
 }
 
-// digestSeparator splits a digest-pinned image reference into its repository
-// and digest halves.
-const digestSeparator = "@"
+// pinMarker is the delimiter that marks a digest-pinned image reference,
+// shared with validatePackage in parse.go so the two never disagree about
+// where the pin starts. It is deliberately "@sha256:", not a bare "@": a
+// repository component can itself legally contain '@' (rare, but the
+// reference grammar does not forbid it), so splitting on the first bare '@'
+// in "repo@extra@sha256:<hex>" would hand Repository() "repo" and Digest()
+// the garbage "extra@sha256:<hex>" — even though Validate, searching for
+// "@sha256:" the same way this does, accepts the value as correctly pinned.
+const pinMarker = "@sha256:"
 
 // Repository returns the repository half of a digest-pinned Identifier
 // ("ghcr.io/acme/plugin" from "ghcr.io/acme/plugin@sha256:..."), or the whole
 // Identifier when it carries no digest. Callers that need a validated
 // manifest should Validate first — this accessor parses, it does not judge.
 func (p Package) Repository() string {
-	if i := strings.Index(p.Identifier, digestSeparator); i >= 0 {
+	if i := strings.Index(p.Identifier, pinMarker); i >= 0 {
 		return p.Identifier[:i]
 	}
 	return p.Identifier
@@ -615,8 +621,8 @@ func (p Package) Repository() string {
 // the whole point of forbidding tags is that this value, not a mutable
 // pointer, decides what runs.
 func (p Package) Digest() string {
-	if i := strings.Index(p.Identifier, digestSeparator); i >= 0 {
-		return p.Identifier[i+len(digestSeparator):]
+	if i := strings.Index(p.Identifier, pinMarker); i >= 0 {
+		return p.Identifier[i+1:] // everything from the '@' onward: "sha256:<hex>"
 	}
 	return ""
 }

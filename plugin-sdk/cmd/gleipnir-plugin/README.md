@@ -15,11 +15,11 @@ go build ./cmd/gleipnir-plugin
 | Command | Purpose | Issue |
 |---------|---------|-------|
 | `new` | Scaffold a new plugin | #169 |
-| `validate` | Validate manifest + binary | #169 |
-| `gen-manifest` | Emit deterministic manifest YAML | #169 |
+| `validate` | Validate manifest + binary (v1) or manifest alone (v2) | #169, #970 |
+| `gen-manifest` | Emit deterministic manifest YAML (v1 only) | #169 |
 | `keygen` | Generate a Minisign keypair | #170 |
 | `sign` | Sign a binary + manifest | #170 |
-| `package` | Build, sign, and tar a release bundle | #170 |
+| `package` | Build, sign, and tar a release bundle (v1 binary or v2 OCI image) | #170, #970 |
 | `run` | Non-interactive dev mode against a fake host (scenario/capture/replay) | #171 |
 
 ## Usage
@@ -55,6 +55,11 @@ Each scaffold writes `main.go`, `manifest.go`, `service.go`, `service_test.go`
 
 ### `gleipnir-plugin gen-manifest`
 
+**v1 (gRPC-subprocess) manifests only.** A v2 (containerized) manifest has no
+generating binary to invoke — see [`v2 (containerized) packaging`](#v2-containerized-packaging)
+below — and `gen-manifest` does not apply to it. #1009 removes this command
+when v1 `--binary` packaging is deleted.
+
 Invoke `<binary> --emit-manifest` and write canonical YAML. `--out` writes to a
 file; when omitted, the YAML is written to stdout:
 
@@ -75,13 +80,26 @@ Go declarations produces byte-identical output (required for signing).
 
 ### `gleipnir-plugin validate`
 
-Check that `manifest.yaml` matches the binary's current declarations:
+For a v1 manifest, checks that `manifest.yaml` matches the binary's current
+declarations:
 
 ```bash
 gleipnir-plugin validate --binary ./myplugin --manifest manifest.yaml
 ```
 
 Exits 0 on match, 1 with a diff on mismatch. Run `gen-manifest` to fix drift.
+
+For a v2 (containerized) manifest, `--binary` is omitted — there is no binary
+to compare against — and `validate` instead parses and validates the manifest
+against every rule the host will enforce at install time (profiles, egress,
+resources, auth, tier2):
+
+```bash
+gleipnir-plugin validate --manifest manifest.yaml
+```
+
+`validate` picks the mode from the manifest's own `schema_version` field; no
+flag selects it.
 
 ### `gleipnir-plugin keygen`
 
@@ -148,7 +166,12 @@ The `.minisig` defaults to `<binary-basename>.minisig` in the current directory.
 
 ### `gleipnir-plugin package`
 
-Build a signed release tarball:
+The manifest's `schema_version` picks the mode: v1 (`--binary`, a
+gRPC-subprocess plugin) or v2 (`--image-archive`/`--image`, a containerized
+plugin). Supplying the wrong flag for the manifest's version is an error —
+`--binary` and `--image-archive`/`--image` are mutually exclusive.
+
+**v1 (gRPC-subprocess) packaging:**
 
 ```bash
 gleipnir-plugin package --binary ./myplugin
@@ -174,6 +197,77 @@ Both the binary and the `.minisig` filename derive from `manifest.Name`, not the
 source binary's basename — the host locates the binary at `<bundle>/<manifest.Name>`
 to hash and verify it.
 
+#### v2 (containerized) packaging
+
+A `schema_version: "2"` manifest packages a container image instead of a
+binary. Exactly one of `--image-archive`/`--image` is required:
+
+```bash
+# From a pre-saved archive (docker save / podman save, either OCI or Docker
+# legacy layout):
+gleipnir-plugin package --manifest manifest.yaml --image-archive image.tar \
+    --key ./keys/signing.key --pubkey ./keys/signing.pub
+
+# Or let the CLI save the image itself (shells out to docker, then podman):
+gleipnir-plugin package --manifest manifest.yaml --image ghcr.io/acme/myplugin@sha256:...
+```
+
+**Package-time digest check:** before anything is signed, the archive is read
+once into memory and its image config digest — the classic image ID (what
+`docker inspect --format '{{.Id}}'` reports), *not* the manifest digest or a
+registry repo digest — is computed from those same bytes via
+[`plugin-sdk/imagearchive`](../../imagearchive) and compared against the
+manifest's `package.identifier` digest pin. A mismatch fails the command,
+naming both digests, rather than producing a bundle `internal/plugin/loader`'s
+`OCIInstaller` would reject at install time — the same comparison it makes
+after loading the image into the runtime (spec §7). Every digest
+`imagearchive` reports is recomputed from the referenced bytes and hashed, not
+trusted from a JSON field: an OCI-layout manifest blob is checked against
+`index.json`'s own descriptor digest, and the config blob it names is checked
+against that digest, before either is believed.
+
+`imagearchive` is its own exported `plugin-sdk` package, not CLI-internal
+code, specifically so the host's install-time verification can import the
+exact same computation (#1032) instead of re-deriving it — the package-time
+and install-time checks must never become two implementations that could
+quietly drift apart.
+
+> **containerd-image-store caveat (tracked in #1032, not solved here):** the
+> digest this command checks is the config digest read out of the *archive*.
+> A container engine using the containerd image store may report a different
+> value (e.g. a manifest or index digest) as a loaded image's own ID for some
+> archive shapes. The host-side comparison against `package.identifier` — done
+> after loading the image into whatever runtime is configured, not from the
+> archive — needs to account for that; this package-time check does not
+> attempt to, since it only ever looks at the archive itself.
+
+`gleipnir-plugin package` also warns (without failing the build) when:
+- the archive is tagged with a repository other than the manifest's own
+  (`RepoTags` for a Docker-legacy archive, or the OCI manifest descriptor's
+  `org.opencontainers.image.ref.name` annotation) — a possible sign of
+  packaging the wrong image; and
+- the finished bundle's total uncompressed size exceeds the host's tarball
+  extraction cap (100 MiB, `internal/plugin/loader/extract.go`) — the bundle
+  will build, but the host will refuse to extract it.
+
+**Bundle layout** (must match `ociManifestFilename`/`ociImageArchiveName` in
+`internal/plugin/loader/ocibundle.go` — the SDK cannot import `internal/*` to
+share those constants):
+
+```
+<name>-<version>.tar.gz
+  <name>-<version>/
+    image.tar                 (mode 0644, the OCI/Docker image archive)
+    manifest.yaml             (mode 0644)
+    <manifest.Name>.minisig   (mode 0644)
+    signing.pub               (mode 0644)
+    sbom.cyclonedx.json       (mode 0644, optional)
+```
+
+The signed payload is `sha256(image.tar) || sha256(manifest.yaml)` — the same
+`sha256(artifact) || sha256(manifest)` shape v1 uses, with the image archive
+standing in for the binary. `--unsigned` behaves exactly as it does for v1.
+
 **Unsigned bundles:**
 
 Use `--unsigned` to produce a bundle without `.minisig`/`signing.pub`. The host
@@ -185,8 +279,10 @@ permissive mode, signed plugins are fully verified. See spec §5.5.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--binary` | (required) | Path to plugin binary |
+| `--binary` | (none) | Path to plugin binary (v1 manifests only) |
 | `--manifest` | `manifest.yaml` | Path to manifest.yaml |
+| `--image-archive` | (none) | Path to a pre-saved image archive (v2 manifests only) |
+| `--image` | (none) | Image reference to save via docker/podman (v2 manifests only) |
 | `--key` | `~/.config/gleipnir-plugin/keys/signing.key` | Secret key path |
 | `--key-stdin` | false | Read .key from stdin (CI) |
 | `--pubkey` | sibling of .key | Public key path for bundle |
@@ -196,6 +292,12 @@ permissive mode, signed plugins are fully verified. See spec §5.5.
 
 **Deterministic tarballs:** Entry order is sorted; `SOURCE_DATE_EPOCH` env var
 sets the mtime for reproducible builds.
+
+**`--image` hardening:** a ref starting with `-` is rejected outright (it
+would otherwise be shelled out to `docker`/`podman save` as an argument this
+CLI does not further inspect); the ref is additionally passed after a `--`
+argument so both tools treat it as positional even if some future ref shape
+slips past that check.
 
 ## Environment variables
 
@@ -347,6 +449,7 @@ and `§7.5` for the trigger-payload sharp edge that capture/replay addresses.
 
 ## See also
 
-`docs/developer/plugin-system-spec.md §14.5` for the full subcommand reference
-and bundle layout. `docs/developer/plugin-system-spec.md §5.2` for the signing
-scheme.
+`docs/developer/plugin-system-spec.md §14.5` for the full v1 subcommand
+reference and bundle layout, and `§5.2` for the signing scheme.
+`docs/developer/mcp-realignment-spec.md §7` for the v2 (containerized) bundle
+format `package`/`validate` implement.

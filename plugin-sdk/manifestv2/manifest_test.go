@@ -231,6 +231,87 @@ func TestMarshal_IsCanonical(t *testing.T) {
 	}
 }
 
+// TestPackage_RepositoryAndDigest pins Repository()/Digest() to split on the
+// SAME occurrence Validate looks for (pinMarker, "@sha256:"), not merely the
+// first bare '@'. Before this was fixed, an Identifier containing an extra
+// '@' ahead of its real pin — "a@b@sha256:<hex>" — passed Validate (which
+// scans for "@sha256:" wherever it occurs) while Repository()/Digest() split
+// on the first '@' and produced a garbage digest ("b@sha256:<hex>") the host
+// would never match against a real image. Validate itself now rejects this
+// shape outright (TestParse_RejectsAtInRepositoryAheadOfPin) — these accessors
+// are still pinned to agree with each other for a Package a caller builds
+// directly without going through Validate first, which is the case these
+// tests exercise.
+func TestPackage_RepositoryAndDigest(t *testing.T) {
+	hex64 := strings.Repeat("0123456789abcdef", 4)
+
+	tests := []struct {
+		name           string
+		identifier     string
+		wantRepository string
+		wantDigest     string
+	}{
+		{
+			name:           "ordinary digest-pinned identifier",
+			identifier:     "ghcr.io/acme/plugin@sha256:" + hex64,
+			wantRepository: "ghcr.io/acme/plugin",
+			wantDigest:     "sha256:" + hex64,
+		},
+		{
+			name:           "unpinned identifier has no digest",
+			identifier:     "ghcr.io/acme/plugin:latest",
+			wantRepository: "ghcr.io/acme/plugin:latest",
+			wantDigest:     "",
+		},
+		{
+			// The regression case: an '@' inside the repository component,
+			// ahead of the real pin.
+			name:           "extra '@' ahead of the real pin",
+			identifier:     "a@b@sha256:" + hex64,
+			wantRepository: "a@b",
+			wantDigest:     "sha256:" + hex64,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := Package{Identifier: tt.identifier}
+			if got := p.Repository(); got != tt.wantRepository {
+				t.Errorf("Repository() = %q, want %q", got, tt.wantRepository)
+			}
+			if got := p.Digest(); got != tt.wantDigest {
+				t.Errorf("Digest() = %q, want %q", got, tt.wantDigest)
+			}
+		})
+	}
+}
+
+// TestParse_RejectsAtInRepositoryAheadOfPin proves Validate closes the
+// regression case above at its source rather than merely tolerating it
+// consistently: "a@b@sha256:<hex>" is not a value any accessor should have to
+// make sense of in the first place, since the repository component of a
+// digest-pinned identifier must not itself contain '@'.
+func TestParse_RejectsAtInRepositoryAheadOfPin(t *testing.T) {
+	hex64 := strings.Repeat("0123456789abcdef", 4)
+	identifier := "a@b@sha256:" + hex64
+	manifestYAML := strings.Replace(minimalManifest, "ghcr.io/example/weather"+digest, identifier, 1)
+
+	_, err := Parse([]byte(manifestYAML))
+	var verr *ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("Parse: want a *ValidationError for identifier %q, got %v", identifier, err)
+	}
+	found := false
+	for _, issue := range verr.Issues {
+		if issue.Field == "package.identifier" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("ValidationError issues = %v, want one for package.identifier", verr.Issues)
+	}
+}
+
 // Every rejection path. The manifest is a consent surface, so each of these is
 // something an admin would otherwise have approved without it being true.
 func TestParse_Rejections(t *testing.T) {
@@ -264,6 +345,26 @@ func TestParse_Rejections(t *testing.T) {
 		{
 			name:      "malformed digest",
 			mutate:    func(s string) string { return strings.Replace(s, digest, "@sha256:notahexdigest", 1) },
+			wantField: "package.identifier",
+		},
+		{
+			// "repo@extra@sha256:<hex>" is digest-pinned by the letter of the
+			// "@sha256:" check, but its repository component embeds its own
+			// '@' — a shape Repository()/Digest() must never be asked to make
+			// sense of.
+			name: "repository contains '@' ahead of the digest pin",
+			mutate: func(s string) string {
+				return strings.Replace(s, "ghcr.io/example/weather"+digest, "a@b"+digest, 1)
+			},
+			wantField: "package.identifier",
+		},
+		{
+			// Digests are canonically lowercase; an uppercase one must not
+			// silently validate as equal to its lowercase form.
+			name: "uppercase hex digest",
+			mutate: func(s string) string {
+				return strings.Replace(s, digest, "@sha256:"+strings.ToUpper("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"), 1)
+			},
 			wantField: "package.identifier",
 		},
 		{

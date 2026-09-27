@@ -44,6 +44,13 @@ plugin-sdk/
                     today, until the #883 cutover.
   hostwire/       — go-plugin handshake config and gRPC wiring shared by serve/
   signing/        — bundled Minisign sign/verify library (ADR-043)
+  imagearchive/   — inspects OCI/Docker image archives (docker save / podman save
+                    output) to recover an image's config digest (the classic image
+                    ID) and embedded tags, hashing every digest it reports rather
+                    than trusting a declared one. Used by `gleipnir-plugin package`'s
+                    v2 (containerized) digest check; exported (not CLI-internal) so
+                    the host's install-time verification can import the identical
+                    computation (#1032) instead of re-deriving it.
   testing/        — fake host for unit tests (NewFakeHost)
   examples/       — end-to-end examples
   cmd/
