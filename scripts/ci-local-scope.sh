@@ -100,20 +100,52 @@ root_go_changed=""
 # unreferenced is one the daemon will actually delete.
 #
 # Listed by directory prefix rather than derived from the import graph on
-# purpose. The suite imports internal/plugin/{container,reconciler} directly, so
-# a graph-derived set would be exactly these two — but the lane also has to fire
-# for egress and resources, whose behaviour it depends on WITHOUT importing (the
-# proxy env a container is created with, the cgroup caps it is created under).
-# A rule that only followed imports would silently stop covering them.
+# purpose. `go list -tags substrate -deps -test ./internal/plugin/substrate/...`
+# confirms the suite directly imports internal/plugin/{container,reconciler}
+# and internal/db/migrations (it stands up a real on-disk, migrated DB) — but
+# the lane also has to fire for packages it depends on WITHOUT importing them:
+#   - egress, resources: behaviour the suite asserts on (the proxy env a
+#     container is created with, the cgroup caps it is created under) without
+#     the suite ever importing either package.
+#   - loader, hostendpoint: not wired into the reconciler yet, but the
+#     host-endpoint URL/port config it injects into every instance container
+#     (issue #982's M8-15/M7-11 tracking) makes the reconciler's
+#     substrate-facing behaviour depend on both once that lands — added now
+#     so the lane does not silently stop covering it the week that seam ships.
+#   - internal/plugin/assembly: the v2 startup seam that composes and drives
+#     the reconciler; its start/quiesce/shutdown wiring is exactly what this
+#     suite proves still works, once the package exists.
+#   - plugins/ntfy, plugin-sdk/examples/conformance-stub: the DooD suite
+#     exercises the substrate against these as real installed workloads, so a
+#     regression in either is a regression this lane would otherwise miss.
+# A rule that only followed today's import graph would miss all of the above.
 substrate_dirs="
 internal/plugin/substrate
 internal/plugin/container
 internal/plugin/reconciler
 internal/plugin/egress
 internal/plugin/resources
+internal/plugin/loader
+internal/plugin/hostendpoint
+internal/plugin/assembly
+internal/db/migrations
+plugins/ntfy
+plugin-sdk/examples/conformance-stub
 "
 
 while IFS= read -r f; do
+	# Substrate membership is checked first and does NOT `continue`, so it still
+	# fires for a file the routing below claims with its own `continue` — plugins/
+	# ntfy and plugin-sdk/examples/conformance-stub are both in substrate_dirs
+	# AND routed to the plugin/SDK lanes, and need both, not whichever matches
+	# first.
+	while IFS= read -r d; do
+		[ -z "$d" ] && continue
+		case "$f" in
+		"$d"/*) run_substrate=1 ;;
+		esac
+	done <<<"$substrate_dirs"
+
 	case "$f" in
 	frontend/*)
 		run_frontend=1
@@ -139,16 +171,9 @@ while IFS= read -r f; do
 		continue
 		;;
 	esac
-	# Substrate membership is by prefix and does NOT `continue`: these are
-	# ordinary root-module packages that must still be raced like any other.
-	# The lane is additive, never a substitute for the unit coverage.
-	while IFS= read -r d; do
-		[ -z "$d" ] && continue
-		case "$f" in
-		"$d"/*) run_substrate=1 ;;
-		esac
-	done <<<"$substrate_dirs"
-
+	# Ordinary root-module packages under a substrate_dirs prefix must still be
+	# raced like any other package — the lane above is additive, never a
+	# substitute for the unit coverage.
 	root_go_changed="$root_go_changed$f"$'\n'
 done <<<"$changed_files"
 

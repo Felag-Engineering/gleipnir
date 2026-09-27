@@ -111,6 +111,34 @@ for d in internal/plugin/egress internal/plugin/resources; do
 	check "a change under $d selects the substrate lane (depended on, not imported)" $?
 done
 
+# loader, hostendpoint and assembly (issue #982) are forward-provisioned ahead
+# of the reconciler wiring that will make them real dependencies — added now so
+# the lane does not silently stop covering the seam the week it lands.
+for d in internal/plugin/loader internal/plugin/hostendpoint internal/plugin/assembly; do
+	out=$(scope "$d/x.go")
+	[ "$(field "$out" CI_LOCAL_RUN_SUBSTRATE)" = "1" ]
+	check "a change under $d selects the substrate lane (forward-provisioned, issue #982)" $?
+done
+
+# internal/db/migrations is a real, verified dependency: the suite stands up a
+# real on-disk, migrated DB (`go list -tags substrate -deps -test` confirms it).
+out=$(scope "internal/db/migrations/0099_synthetic.sql")
+[ "$(field "$out" CI_LOCAL_RUN_SUBSTRATE)" = "1" ]
+check "a change under internal/db/migrations selects the substrate lane" $?
+
+# plugins/ntfy and plugin-sdk/examples/conformance-stub are the DooD suite's
+# real installed workloads (issue #982) — each must select the substrate lane
+# IN ADDITION TO its own plugin/SDK lane, not instead of it, since the two
+# `continue` branches that route them elsewhere would otherwise shadow the
+# substrate check entirely.
+out=$(scope "plugins/ntfy/main.go")
+[ "$(field "$out" CI_LOCAL_RUN_SUBSTRATE)" = "1" ] && [ "$(field "$out" CI_LOCAL_PLUGIN_DIRS)" = "plugins/ntfy" ]
+check "a change under plugins/ntfy selects the substrate lane as well as its own plugin lane" $?
+
+out=$(scope "plugin-sdk/examples/conformance-stub/main.go")
+[ "$(field "$out" CI_LOCAL_RUN_SUBSTRATE)" = "1" ] && [ "$(field "$out" CI_LOCAL_RUN_SDK)" = "1" ]
+check "a change under plugin-sdk/examples/conformance-stub selects the substrate lane as well as the SDK lane" $?
+
 out=$(scope "internal/schemanorm/normalize.go")
 [ "$(field "$out" CI_LOCAL_RUN_SUBSTRATE)" = "0" ]
 check "an unrelated package change does not select the substrate lane" $?
