@@ -15,13 +15,16 @@ import (
 // discipline — the same posture container.ValidateCreate takes for the
 // self-constrained create calls. A wildcard bind would expose every host
 // tool on every interface the host has, including the operator API's.
-var ErrWildcardAddr = errors.New("hostendpoint: refusing wildcard bind address — the host endpoint binds only to a specific per-instance network gateway address")
+var ErrWildcardAddr = errors.New("hostendpoint: refusing wildcard bind address — the host endpoint binds only to Gleipnir's reserved address on a specific per-instance network")
 
 // ListenerSet serves one Server on one listener per plugin instance. The
 // reconciler drives it as instance networks come and go: Add when an
 // instance's network exists, Remove when it is torn down. Nothing starts it
-// globally — there is no "the" host-endpoint port, only the per-network
-// gateway addresses, which is itself half of the host-plane invariant.
+// globally — there is no "the" host-endpoint port, only Gleipnir's reserved
+// address on each per-instance network (egress.GleipnirAddrOf), never that
+// network's gateway address: under rootful Docker the gateway is the host
+// itself, and binding there would hand every plugin a route straight to the
+// host rather than to Gleipnir's own container.
 //
 // All listeners share the one handler; which instance is calling is
 // established per-request by the token middleware (#876), not by which

@@ -25,8 +25,11 @@ import (
 	"testing"
 	"time"
 
+	dockerclient "github.com/moby/moby/client"
+
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/plugin/container"
+	"github.com/felag-engineering/gleipnir/internal/plugin/egress"
 	"github.com/felag-engineering/gleipnir/internal/plugin/reconciler"
 	"github.com/felag-engineering/gleipnir/internal/testutil"
 )
@@ -69,10 +72,11 @@ const convergeBudget = 90 * time.Second
 // --- harness ----------------------------------------------------------------
 
 type harness struct {
-	rt    container.Runtime
-	store *db.Store
-	rec   *reconciler.Reconciler
-	runID string
+	rt         container.Runtime
+	store      *db.Store
+	rec        *reconciler.Reconciler
+	runID      string
+	socketPath string
 }
 
 // newHarness dials the real socket and builds a reconciler over it.
@@ -100,7 +104,7 @@ func newHarness(t *testing.T) *harness {
 	}
 
 	runID := fmt.Sprintf("t%d", time.Now().UnixNano()%1e9)
-	h := &harness{rt: rt, store: testutil.NewTestStore(t), runID: runID}
+	h := &harness{rt: rt, store: testutil.NewTestStore(t), runID: runID, socketPath: result.SocketPath}
 
 	// Cleanup is registered before anything is created, and removes by LABEL
 	// rather than by a list of ids the test accumulated — an id list is exactly
@@ -464,6 +468,22 @@ func TestSubstrate_EastWestIsolation(t *testing.T) {
 	} else {
 		t.Logf("cross-network dial to %s failed as required: %v", target, err)
 	}
+
+	// #1021 review item 4: isolation must also hold for the SPECIFIC address
+	// Gleipnir itself reserves on Y's network (self-attach's pinned .2), not
+	// just an arbitrary address in Y's subnet — a compromised plugin on X
+	// must not be able to reach where Gleipnir would be, either.
+	gleipnirAddrY, err := egress.GleipnirAddrOf(subnetY.String())
+	if err != nil {
+		t.Fatalf("GleipnirAddrOf(%s): %v", subnetY, err)
+	}
+	out, err = h.runProbe(ctx, "inst-x-probe-gleipnir", h.networkName("inst-x"), ref, gleipnirAddrY.String())
+	if err == nil {
+		t.Errorf("a container on inst-x's network reached gleipnir's reserved address %s on inst-y's network\noutput: %s",
+			gleipnirAddrY, out)
+	} else {
+		t.Logf("cross-network dial to gleipnir's reserved address %s failed as required: %v", gleipnirAddrY, err)
+	}
 }
 
 // assertStaysRunning re-checks an instance shortly after it first reported
@@ -516,6 +536,13 @@ func (h *harness) runProbe(ctx context.Context, name, network, image, addr strin
 		Network: network,
 		Labels:  map[string]string{labelRun: h.runID},
 		Command: []string{"sh", "-c", fmt.Sprintf("nc -w 3 -z %s 8080; echo exit=$?", addr)},
+		// Self-constraint requires these on every create (#1021 review item
+		// V2) — without them the probe fails at CREATE, which reads
+		// identically to "the isolation held" to a caller checking only
+		// err != nil. Setting them here is what makes a probe failure mean
+		// what the isolation tests need it to mean: the dial itself failed.
+		CapDrop:     []string{"ALL"},
+		SecurityOpt: []string{"no-new-privileges"},
 	})
 	if err != nil {
 		return "", fmt.Errorf("creating probe: %w", err)
@@ -652,4 +679,181 @@ func TestSubstrate_TeardownReleasesTheNetworkAndSubnet(t *testing.T) {
 	if _, err := h.store.Queries().GetContainerSubnetByInstance(context.Background(), instance); err == nil {
 		t.Errorf("subnet %s was not released after the network came down", subnet)
 	}
+}
+
+// --- self-attach (#958) ------------------------------------------------------
+
+// TestSubstrate_SelfAttachPinsAddressAndDetachesOnTeardown answers the two
+// questions a Fake cannot: whether the real daemon actually assigns the
+// PINNED address self-attach requests (rather than silently ignoring the
+// pin), and whether DisconnectNetwork actually removes the membership at the
+// daemon rather than only in Gleipnir's own bookkeeping.
+//
+// This suite's own test process is not itself a container, so
+// container.ResolveSelfContainerID resolves nothing here — that unspoofable-
+// source parsing is exercised entirely offline in
+// internal/plugin/container/self_test.go. Here, a throwaway container stands
+// in for "Gleipnir's own container": what matters is that SelfAttacher
+// operates on a REAL container ID against a REAL socket.
+func TestSubstrate_SelfAttachPinsAddressAndDetachesOnTeardown(t *testing.T) {
+	h := newHarness(t)
+	ref := requireProbeImage(t, h.rt)
+	ctx, cancel := context.WithTimeout(context.Background(), convergeBudget)
+	defer cancel()
+
+	// The stand-in gets its own throwaway network rather than "bridge":
+	// rootless Podman has no network by that name (its default is "podman"),
+	// and any Internal network is enough for "a real container that
+	// self-attach then connects to instance networks".
+	selfNetName := "gleipnir-substrate-" + h.runID + "-selfnet"
+	if _, err := h.rt.CreateNetwork(ctx, container.NetworkOptions{
+		Name:     selfNetName,
+		Labels:   map[string]string{labelRun: h.runID},
+		Internal: true,
+	}); err != nil {
+		t.Fatalf("creating self stand-in network: %v", err)
+	}
+
+	selfID, err := h.rt.Create(ctx, container.CreateOptions{
+		Name:    "gleipnir-substrate-" + h.runID + "-self",
+		Image:   ref,
+		Network: selfNetName,
+		Labels:  map[string]string{labelRun: h.runID},
+		CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"},
+	})
+	if err != nil {
+		t.Fatalf("creating self stand-in container: %v", err)
+	}
+	if err := h.rt.Start(ctx, selfID); err != nil {
+		t.Fatalf("starting self stand-in container: %v", err)
+	}
+
+	instance := "inst-self"
+	alloc, err := reconciler.NewSubnetAllocator(h.store.Queries(), h.pool(), nil)
+	if err != nil {
+		t.Fatalf("NewSubnetAllocator: %v", err)
+	}
+	rec, err := reconciler.New(reconciler.Config{
+		Runtime:            h.rt,
+		Store:              h.store.Queries(),
+		Subnets:            alloc,
+		Posture:            container.PostureRootlessPodman,
+		SelfContainerID:    selfID,
+		OperatorAPIGuarded: true,
+		// The runner's own host forwarding sysctls are not this test's
+		// concern — internal/plugin/container/forwarding_test.go covers that
+		// check in isolation, with an injectable seam of its own.
+		CheckForwardingDisabled: func() error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("reconciler.New: %v", err)
+	}
+
+	h.seedInstance(t, instance, ref, "")
+	t.Cleanup(func() { h.adoptForCleanup(t, instance) })
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), convergeBudget)
+		defer cancel()
+		_ = h.rt.Remove(cleanupCtx, selfID, true)
+	})
+
+	convergeCustom(t, rec, "instance running with self attached and pinned", func(ctx context.Context) bool {
+		info, ok := h.managedContainer(ctx, instance)
+		if !ok || info.State != container.ContainerStateRunning {
+			return false
+		}
+		self, err := h.rt.Inspect(ctx, selfID)
+		return err == nil && len(self.Networks) > 0
+	})
+
+	nets, err := h.rt.ListNetworksByLabel(ctx, reconciler.LabelInstance, instance)
+	if err != nil || len(nets) != 1 {
+		t.Fatalf("networks = %v (err %v), want exactly one", nets, err)
+	}
+	wantAddr, err := egress.GleipnirAddrOf(nets[0].Subnet)
+	if err != nil {
+		t.Fatalf("GleipnirAddrOf(%s): %v", nets[0].Subnet, err)
+	}
+
+	gotAddr := inspectEndpointAddress(t, h.socketPath, selfID, nets[0].Name)
+	if gotAddr != wantAddr.String() {
+		t.Errorf("the daemon assigned self %s on network %q, want the pinned address %s",
+			gotAddr, nets[0].Name, wantAddr)
+	}
+
+	// Teardown: the instance is uninstalled. Self must actually leave the
+	// network at the daemon, not just in Gleipnir's own bookkeeping.
+	if err := h.store.Queries().DeletePluginContainer(ctx, "pc-"+instance); err != nil {
+		t.Fatalf("DeletePluginContainer: %v", err)
+	}
+
+	convergeCustom(t, rec, "self is detached before the network is removed", func(ctx context.Context) bool {
+		self, err := h.rt.Inspect(ctx, selfID)
+		if err != nil {
+			return false
+		}
+		for _, n := range self.Networks {
+			if n == nets[0].ID {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+// convergeCustom mirrors harness.converge but drives a caller-supplied
+// reconciler rather than h.rec — this test's SelfContainerID/
+// CheckForwardingDisabled config differs per instance's needs from the shared
+// harness reconciler every other substrate test uses.
+func convergeCustom(t *testing.T, rec *reconciler.Reconciler, what string, want func(context.Context) bool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), convergeBudget)
+	defer cancel()
+
+	for pass := 1; ; pass++ {
+		result, err := rec.ReconcileOnce(ctx)
+		if err != nil {
+			t.Fatalf("%s: reconcile pass %d: %v", what, pass, err)
+		}
+		if want(ctx) {
+			t.Logf("%s: converged after %d pass(es)", what, pass)
+			return
+		}
+		if result.Errors > 0 {
+			t.Logf("%s: pass %d had %d action error(s); retrying", what, pass, result.Errors)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("%s: did not converge within %s", what, convergeBudget)
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+// inspectEndpointAddress dials the same socket independently of
+// container.Runtime (whose ContainerInfo deliberately does not expose an IP —
+// that is #956's territory) purely to read back what address the daemon
+// actually assigned an endpoint. Test-only: production code never needs this.
+func inspectEndpointAddress(t *testing.T, socketPath string, id container.ContainerID, networkName string) string {
+	t.Helper()
+	cli, err := dockerclient.New(dockerclient.WithHost("unix://" + socketPath))
+	if err != nil {
+		t.Fatalf("dialing %s for verification: %v", socketPath, err)
+	}
+	defer cli.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), convergeBudget)
+	defer cancel()
+	resp, err := cli.ContainerInspect(ctx, string(id), dockerclient.ContainerInspectOptions{})
+	if err != nil {
+		t.Fatalf("ContainerInspect(%s): %v", id, err)
+	}
+	if resp.Container.NetworkSettings == nil {
+		t.Fatalf("container %s has no NetworkSettings", id)
+	}
+	ep, ok := resp.Container.NetworkSettings.Networks[networkName]
+	if !ok || ep == nil {
+		t.Fatalf("container %s has no endpoint on network %q", id, networkName)
+	}
+	return ep.IPAddress.String()
 }

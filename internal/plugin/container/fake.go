@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"strconv"
 	"strings"
 	"sync"
@@ -71,6 +72,11 @@ type Fake struct {
 type fakeContainer struct {
 	info ContainerInfo
 	logs string
+
+	// pinnedAddrs records the pinned IPv4 address requested for each network
+	// this container joined, keyed by network ID. Test-only introspection via
+	// PinnedAddress — production self-attach never reads its own pin back.
+	pinnedAddrs map[NetworkID]net.IP
 }
 
 // NewFake returns an empty Fake runtime.
@@ -205,6 +211,7 @@ func (f *Fake) CreateNetwork(_ context.Context, opts NetworkOptions) (NetworkID,
 		Name:     opts.Name,
 		Labels:   opts.Labels,
 		Internal: opts.Internal,
+		Subnet:   opts.Subnet,
 	}
 	return id, nil
 }
@@ -216,6 +223,84 @@ func (f *Fake) RemoveNetwork(_ context.Context, id NetworkID) error {
 		return fmt.Errorf("container: fake: no such network %q", id)
 	}
 	delete(f.networks, id)
+	return nil
+}
+
+// ConnectNetwork records the join on the container's own ContainerInfo, which
+// is what lets a test built on Fake exercise the same idempotency the
+// reconciler relies on in production: Inspect reflects the membership
+// immediately, with no separate bookkeeping to keep in sync.
+//
+// A second connect to a network already joined ERRORS, matching the real
+// daemon's "endpoint ... already exists in network" refusal — a planner that
+// asks to attach an already-attached container has a bug, and a test double
+// that quietly tolerated it would let that bug pass unnoticed here while the
+// real daemon still rejects it in production.
+func (f *Fake) ConnectNetwork(_ context.Context, netID NetworkID, id ContainerID, pinnedIPv4 net.IP) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.containers[id]
+	if !ok {
+		return fmt.Errorf("container: fake: no such container %q", id)
+	}
+	if _, ok := f.networks[netID]; !ok {
+		return fmt.Errorf("container: fake: no such network %q", netID)
+	}
+	for _, n := range c.info.Networks {
+		if n == netID {
+			return fmt.Errorf("container: fake: endpoint for container %q already exists in network %q", id, netID)
+		}
+	}
+	c.info.Networks = append(c.info.Networks, netID)
+	if pinnedIPv4 != nil {
+		if c.pinnedAddrs == nil {
+			c.pinnedAddrs = make(map[NetworkID]net.IP)
+		}
+		c.pinnedAddrs[netID] = pinnedIPv4
+	}
+	return nil
+}
+
+// PinnedAddress returns the address ConnectNetwork was asked to pin for id on
+// netID, or ok=false when no pin was requested. Test-only introspection — this
+// is what a self-attach test asserts against to confirm the reconciler
+// actually requested the deterministic address rather than an unpinned one.
+func (f *Fake) PinnedAddress(id ContainerID, netID NetworkID) (net.IP, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.containers[id]
+	if !ok {
+		return nil, false
+	}
+	addr, ok := c.pinnedAddrs[netID]
+	return addr, ok
+}
+
+// DisconnectNetwork removes the join recorded by ConnectNetwork. Failing when
+// the container was never a member (rather than a silent no-op) catches a
+// planner bug that would otherwise go unnoticed: the planner should never ask
+// to leave a network it does not believe it has joined.
+func (f *Fake) DisconnectNetwork(_ context.Context, netID NetworkID, id ContainerID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.containers[id]
+	if !ok {
+		return fmt.Errorf("container: fake: no such container %q", id)
+	}
+	var remaining []NetworkID
+	found := false
+	for _, n := range c.info.Networks {
+		if n == netID {
+			found = true
+			continue
+		}
+		remaining = append(remaining, n)
+	}
+	if !found {
+		return fmt.Errorf("container: fake: container %q is not attached to network %q", id, netID)
+	}
+	c.info.Networks = remaining
+	delete(c.pinnedAddrs, netID)
 	return nil
 }
 

@@ -222,11 +222,271 @@ func TestPlanFor(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := planFor(tc.desired, tc.observed, !tc.noNetwork, tc.gen)
+			got := planFor(tc.desired, tc.observed, !tc.noNetwork, tc.gen, selfAttachState{})
 			if got.Kind != tc.want {
 				t.Fatalf("planFor = %q (%s), want %q", got.Kind, got.Reason, tc.want)
 			}
 		})
+	}
+}
+
+// Self-attach sits between network creation and container creation on the
+// way up, and between container removal and network removal on the way down
+// — the ordering the DoD calls out explicitly. Every case here configures a
+// network so self-attach is even reachable; a create/teardown with no network
+// yet is covered by TestPlanFor's own "creates the network first" cases,
+// which self.Enabled must not short-circuit.
+func TestPlanFor_SelfAttach(t *testing.T) {
+	tests := []struct {
+		name     string
+		desired  *db.PluginContainer
+		observed *container.ContainerInfo
+		self     selfAttachState
+		want     ActionKind
+	}{
+		{
+			name:    "bring-up: self not yet attached joins before the container is created",
+			desired: desiredRow("i1", DesiredRunning),
+			self:    selfAttachState{Enabled: true, Attached: false},
+			want:    ActionAttachSelf,
+		},
+		{
+			name:    "bring-up: self already attached proceeds to create the container",
+			desired: desiredRow("i1", DesiredRunning),
+			self:    selfAttachState{Enabled: true, Attached: true},
+			want:    ActionCreate,
+		},
+		{
+			name:    "bring-up: self-attach disabled proceeds to create the container",
+			desired: desiredRow("i1", DesiredRunning),
+			self:    selfAttachState{},
+			want:    ActionCreate,
+		},
+		{
+			name:     "teardown: self still attached leaves the network before it is removed",
+			observed: nil,
+			self:     selfAttachState{Enabled: true, Attached: true},
+			want:     ActionDetachSelf,
+		},
+		{
+			name: "teardown: self already detached removes the network",
+			self: selfAttachState{Enabled: true, Attached: false},
+			want: ActionRemoveNetwork,
+		},
+		{
+			name: "teardown: self-attach disabled removes the network",
+			self: selfAttachState{},
+			want: ActionRemoveNetwork,
+		},
+		{
+			// #958 finding 7: self-attach is independent of the container's
+			// OWN lifecycle. A stopped instance whose container is already
+			// gone (observed == nil, DesiredStopped) with self still attached
+			// leaves the network — Gleipnir has no reason to stay attached to
+			// an instance nobody wants running.
+			name:     "stopped instance with no container and self attached detaches",
+			desired:  desiredRow("i1", DesiredStopped),
+			observed: nil,
+			self:     selfAttachState{Enabled: true, Attached: true},
+			want:     ActionDetachSelf,
+		},
+		{
+			name:     "stopped instance with no container and self already detached is left alone",
+			desired:  desiredRow("i1", DesiredStopped),
+			observed: nil,
+			self:     selfAttachState{Enabled: true, Attached: false},
+			want:     ActionNone,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := planFor(tc.desired, tc.observed, true, GenerationTrackingDisabled, tc.self)
+			if got.Kind != tc.want {
+				t.Fatalf("planFor = %q (%s), want %q", got.Kind, got.Reason, tc.want)
+			}
+		})
+	}
+}
+
+// #958 finding 7: self-attach/detach is planned independently of the
+// container's own lifecycle state — a recreated Gleipnir (a fresh container
+// ID, so Attached starts false again) must rejoin a network whose plugin is
+// ALREADY running and fully converged, and an instance the operator stopped
+// is one Gleipnir has no reason to stay attached to, even while its container
+// still exists (stopped, not yet removed).
+func TestPlanFor_SelfAttachIndependentOfLifecycle(t *testing.T) {
+	tests := []struct {
+		name     string
+		desired  *db.PluginContainer
+		observed *container.ContainerInfo
+		self     selfAttachState
+		want     ActionKind
+	}{
+		{
+			name:     "a recreated gleipnir rejoins a network whose plugin is already running",
+			desired:  desiredRow("i1", DesiredRunning),
+			observed: observedContainer("i1", container.ContainerStateRunning),
+			self:     selfAttachState{Enabled: true, Attached: false},
+			want:     ActionAttachSelf,
+		},
+		{
+			name:     "a stopped instance whose container still exists is detached from",
+			desired:  desiredRow("i1", DesiredStopped),
+			observed: observedContainer("i1", container.ContainerStateExited),
+			self:     selfAttachState{Enabled: true, Attached: true},
+			want:     ActionDetachSelf,
+		},
+		{
+			name:     "self-attach disabled never overrides ordinary lifecycle handling",
+			desired:  desiredRow("i1", DesiredRunning),
+			observed: observedContainer("i1", container.ContainerStateExited),
+			self:     selfAttachState{},
+			want:     ActionStart,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := planFor(tc.desired, tc.observed, true, GenerationTrackingDisabled, tc.self)
+			if got.Kind != tc.want {
+				t.Fatalf("planFor = %q (%s), want %q", got.Kind, got.Reason, tc.want)
+			}
+		})
+	}
+}
+
+// A converged instance — self already attached, container already running —
+// takes no self-attach action at all, on either side of the desired/observed
+// switch. Idempotency ("a converged pass performs zero socket writes") only
+// holds if this is true.
+func TestPlanFor_SelfAttachConvergedIsNone(t *testing.T) {
+	desired := desiredRow("i1", DesiredRunning)
+	observed := observedContainer("i1", container.ContainerStateRunning)
+	self := selfAttachState{Enabled: true, Attached: true}
+
+	if got := planFor(desired, observed, true, GenerationTrackingDisabled, self); got.Kind != ActionNone {
+		t.Fatalf("planFor = %q, want none — the instance and the self-attach are both already converged", got.Kind)
+	}
+}
+
+// The self-Inspect hold (#1021 review item 3b: don't create while self status
+// is unknown) has to cover ActionBeginFirstGeneration too, not just
+// ActionCreate — a generation's container lands on the very network self-attach
+// is joining, so first boot must wait behind the same uncertainty a plain
+// create would.
+func TestPlanFor_SelfAttachGatesFirstGeneration(t *testing.T) {
+	tests := []struct {
+		name string
+		self selfAttachState
+		want ActionKind
+	}{
+		{
+			name: "self status unknown holds first boot rather than minting a generation",
+			self: selfAttachState{Enabled: true, Unknown: true},
+			want: ActionNone,
+		},
+		{
+			name: "self not yet attached joins before generation 1 is minted",
+			self: selfAttachState{Enabled: true, Attached: false},
+			want: ActionAttachSelf,
+		},
+		{
+			name: "self already attached lets first boot mint generation 1",
+			self: selfAttachState{Enabled: true, Attached: true},
+			want: ActionBeginFirstGeneration,
+		},
+		{
+			name: "self-attach disabled never blocks first boot",
+			self: selfAttachState{},
+			want: ActionBeginFirstGeneration,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := planFor(desiredRow("i1", DesiredRunning), nil, true, GenerationMissing, tc.self)
+			if got.Kind != tc.want {
+				t.Fatalf("planFor = %q (%s), want %q", got.Kind, got.Reason, tc.want)
+			}
+		})
+	}
+}
+
+// GenerationLive hands the container's own lifecycle to ReconcileRotations,
+// but network membership stays the core loop's job (#958 combination
+// review): otherwise a recreated Gleipnir would never rejoin a live
+// instance's network, and a live instance the operator stops would never be
+// detached from.
+func TestPlanFor_SelfAttachAppliesUnderGenerationLive(t *testing.T) {
+	tests := []struct {
+		name    string
+		desired *db.PluginContainer
+		self    selfAttachState
+		want    ActionKind
+	}{
+		{
+			name:    "not attached joins even though rotation owns the container",
+			desired: desiredRow("i1", DesiredRunning),
+			self:    selfAttachState{Enabled: true, Attached: false},
+			want:    ActionAttachSelf,
+		},
+		{
+			name:    "unknown status holds rather than guessing",
+			desired: desiredRow("i1", DesiredRunning),
+			self:    selfAttachState{Enabled: true, Unknown: true},
+			want:    ActionNone,
+		},
+		{
+			name:    "stopped and attached leaves the network",
+			desired: desiredRow("i1", DesiredStopped),
+			self:    selfAttachState{Enabled: true, Attached: true},
+			want:    ActionDetachSelf,
+		},
+		{
+			name:    "already attached is converged",
+			desired: desiredRow("i1", DesiredRunning),
+			self:    selfAttachState{Enabled: true, Attached: true},
+			want:    ActionNone,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// observed is nil here on purpose: a live generation can be
+			// `pending` with no container yet, and self-attach must not
+			// depend on one existing.
+			got := planFor(tc.desired, nil, true, GenerationLive, tc.self)
+			if got.Kind != tc.want {
+				t.Fatalf("planFor = %q (%s), want %q", got.Kind, got.Reason, tc.want)
+			}
+		})
+	}
+}
+
+// selfStateFor is planPass's own glue between a raw selfInspect and the
+// selfAttachState planFor consumes.
+func TestSelfStateFor(t *testing.T) {
+	net := observedNetwork("i1")
+
+	if got := selfStateFor(selfInspect{}, net); got.Enabled {
+		t.Errorf("selfStateFor(not configured) = %+v, want Enabled=false", got)
+	}
+
+	notAttached := container.ContainerInfo{ID: "self"}
+	if got := selfStateFor(selfInspect{Configured: true, Info: &notAttached}, net); !got.Enabled || got.Attached || got.Unknown {
+		t.Errorf("selfStateFor(not attached) = %+v, want Enabled=true, Attached=false, Unknown=false", got)
+	}
+
+	attached := container.ContainerInfo{ID: "self", Networks: []container.NetworkID{net.ID}}
+	if got := selfStateFor(selfInspect{Configured: true, Info: &attached}, net); !got.Enabled || !got.Attached {
+		t.Errorf("selfStateFor(attached) = %+v, want Enabled=true, Attached=true", got)
+	}
+
+	// #1021 review item 3b: a failed Inspect reports Unknown, not merely
+	// Attached=false — the two must be distinguishable to planFor.
+	if got := selfStateFor(selfInspect{Configured: true, Unknown: true}, net); !got.Enabled || got.Attached || !got.Unknown {
+		t.Errorf("selfStateFor(unknown) = %+v, want Enabled=true, Attached=false, Unknown=true", got)
 	}
 }
 
@@ -259,7 +519,7 @@ func TestPlanFor_Drift(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			observed := observedContainer("i1", container.ContainerStateRunning)
 			tc.mutate(observed)
-			if got := planFor(desiredRow("i1", DesiredRunning), observed, true, GenerationTrackingDisabled); got.Kind != tc.want {
+			if got := planFor(desiredRow("i1", DesiredRunning), observed, true, GenerationTrackingDisabled, selfAttachState{}); got.Kind != tc.want {
 				t.Fatalf("planFor = %q (%s), want %q", got.Kind, got.Reason, tc.want)
 			}
 		})
@@ -272,7 +532,7 @@ func TestPlanFor_DriftBeatsLifecycle(t *testing.T) {
 	observed := observedContainer("i1", container.ContainerStateExited)
 	observed.Labels[LabelImageDigest] = "sha256:bbbb"
 
-	if got := planFor(desiredRow("i1", DesiredRunning), observed, true, GenerationTrackingDisabled); got.Kind != ActionDriftDetected {
+	if got := planFor(desiredRow("i1", DesiredRunning), observed, true, GenerationTrackingDisabled, selfAttachState{}); got.Kind != ActionDriftDetected {
 		t.Fatalf("planFor = %q, want drift_detected — a stopped container running the wrong image must not just be started", got.Kind)
 	}
 }
@@ -287,7 +547,7 @@ func TestPlanPass_UnlabelledManagedContainerIsAnOrphan(t *testing.T) {
 		Labels: map[string]string{LabelManaged: ManagedValue},
 	}}
 
-	actions := planPass(nil, observed, nil, nil, false)
+	actions := planPass(nil, observed, nil, nil, false, selfInspect{})
 	if len(actions) != 1 || actions[0].Kind != ActionRemove {
 		t.Fatalf("actions = %+v, want a single remove", actions)
 	}
@@ -313,7 +573,7 @@ func TestPlanPass_OneActionPerInstance(t *testing.T) {
 	}
 
 	byInstance := map[string]ActionKind{}
-	for _, a := range planPass(desired, observed, networks, nil, false) {
+	for _, a := range planPass(desired, observed, networks, nil, false, selfInspect{}) {
 		if prev, dup := byInstance[a.InstanceID]; dup {
 			t.Fatalf("instance %s planned twice: %q then %q", a.InstanceID, prev, a.Kind)
 		}

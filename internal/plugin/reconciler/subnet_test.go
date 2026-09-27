@@ -83,6 +83,51 @@ func TestSubnetForSlot_OutOfRange(t *testing.T) {
 	}
 }
 
+// #1021 review item 3: the upper half must exclude the network address, the
+// gateway, and the address self-attach reserves for Gleipnir (base + 2) —
+// checked here by confirming the upper half's own base is well past all
+// three, not merely by trusting the arithmetic.
+func TestUpperHalfIPRange(t *testing.T) {
+	tests := []struct {
+		name   string
+		subnet string
+		want   string
+	}{
+		{name: "a /24 splits into a /25", subnet: "10.83.4.0/24", want: "10.83.4.128/25"},
+		{name: "a /26 splits into a /27", subnet: "10.83.4.0/26", want: "10.83.4.32/27"},
+		{name: "an unmasked subnet is masked first", subnet: "10.83.4.9/24", want: "10.83.4.128/25"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := upperHalfIPRange(netip.MustParsePrefix(tc.subnet))
+			if err != nil {
+				t.Fatalf("upperHalfIPRange: %v", err)
+			}
+			if got.String() != tc.want {
+				t.Errorf("upperHalfIPRange(%s) = %s, want %s", tc.subnet, got, tc.want)
+			}
+
+			// The reserved address (subnet base + 2) must never be inside the
+			// range the daemon draws dynamic allocations from.
+			base := netip.MustParsePrefix(tc.subnet).Masked().Addr().As4()
+			base[3] += 2
+			reserved := netip.AddrFrom4(base)
+			if got.Contains(reserved) {
+				t.Errorf("upperHalfIPRange(%s) = %s contains the reserved address %s", tc.subnet, got, reserved)
+			}
+		})
+	}
+}
+
+func TestUpperHalfIPRange_NoRoomToSplit(t *testing.T) {
+	for _, subnet := range []string{"10.83.4.0/31", "10.83.4.0/32"} {
+		if _, err := upperHalfIPRange(netip.MustParsePrefix(subnet)); err == nil {
+			t.Errorf("upperHalfIPRange(%s) succeeded, want an error — no room to split", subnet)
+		}
+	}
+}
+
 // Capacity is what tells an operator whether their pool is big enough, so the
 // arithmetic is pinned rather than left implicit.
 func TestPoolCapacity(t *testing.T) {

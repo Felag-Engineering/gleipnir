@@ -14,6 +14,7 @@ package container
 import (
 	"context"
 	"io"
+	"net"
 	"time"
 )
 
@@ -136,6 +137,21 @@ type CreateOptions struct {
 	Privileged bool
 	CapAdd     []string
 
+	// CapDrop is REQUIRED to contain "ALL" — self-constraint rejects a create
+	// call that omits it (spec §7 hardening, #958 finding 2, tightened by
+	// #1021 review item V2). Docker's default capability set includes
+	// NET_RAW, which lets a container craft raw/ICMP-adjacent traffic — the
+	// tool an east-west attack from inside a plugin's own container would
+	// reach for — among others a plugin container never needs.
+	CapDrop []string
+
+	// SecurityOpt is REQUIRED to contain "no-new-privileges" — self-constraint
+	// rejects a create call that omits it (#1021 review item V2). Paired with
+	// CapDrop=[ALL]: with every capability gone, a setuid-root binary in the
+	// image is the remaining way a process could regain privilege, and
+	// no-new-privileges is what closes that door.
+	SecurityOpt []string
+
 	Resources Resources
 }
 
@@ -147,11 +163,29 @@ type NetworkOptions struct {
 	// itself is the reconciler's job (out of scope here); an empty value
 	// lets the runtime choose.
 	Subnet string
+	// IPRange restricts the daemon's DYNAMIC IPAM allocator to a sub-range of
+	// Subnet (e.g. the upper half). A statically-pinned address (self-attach's
+	// ConnectNetwork pin) only needs to fall inside Subnet, not IPRange, so
+	// reserving part of Subnet outside IPRange is what stops the dynamic
+	// allocator from ever handing a plugin container the address self-attach
+	// reserves for Gleipnir itself (#1021 review item 3). Empty means no
+	// restriction — the daemon may allocate from the whole Subnet.
+	IPRange string
 	// Internal must be true — self-constraint rejects a request to create a
 	// network with external connectivity (spec §7: "internal networks
 	// only"). The field exists (rather than being implicit) so a hostile
 	// request can be expressed and tested.
 	Internal bool
+
+	// EnableIPv6 must be false — self-constraint rejects a request to enable
+	// IPv6 on a managed instance network (#1021 review item V1). The field
+	// exists (rather than being implicit) so a hostile request can be
+	// expressed and tested, the same shape as Internal. DockerRuntime always
+	// passes an explicit false to the daemon regardless of this field's
+	// value having already passed validation — a daemon-level IPv6 default
+	// must not be able to give an instance network ULA/link-local addressing
+	// just because the request itself said nothing.
+	EnableIPv6 bool
 }
 
 // ContainerInfo is a point-in-time snapshot of a container's identity and
@@ -162,6 +196,12 @@ type ContainerInfo struct {
 	Image  string
 	Labels map[string]string
 	State  ContainerState
+
+	// Hostname is the container's configured hostname (Docker/Podman default
+	// it to the container's own short ID unless overridden). Used only to
+	// corroborate a self-identity candidate against what this process's own
+	// os.Hostname() reports — see ResolveSelfContainerID in self.go.
+	Hostname string
 	// Health is the runtime healthcheck status ("", "starting", "healthy",
 	// "unhealthy"). Spec §7's per-capability health layers on top of this
 	// container-level liveness signal; it does not replace it.
@@ -178,6 +218,22 @@ type ContainerInfo struct {
 	// exited. Zero on a container that is still running.
 	ExitCode int
 
+	// Networks lists the IDs of every network this container is currently
+	// attached to. Populated by Inspect only (ListByLabel's underlying
+	// list-summary call does not carry it). The reconciler's self-attach pass
+	// uses this to tell whether Gleipnir's own container has already joined
+	// an instance's network, so a converged pass takes no action instead of
+	// re-issuing a connect the daemon would refuse as a duplicate — the same
+	// re-derive-every-pass idiom as everything else here, rather than
+	// tracking membership state between passes.
+	Networks []NetworkID
+	// NetworkNames holds the same memberships by name. Docker's inspect
+	// response carries each endpoint's NetworkID, but Podman's compat API
+	// keys the endpoints by network name and may leave NetworkID empty or
+	// set to something other than the ID ListNetworksByLabel returns, so
+	// SelfAttached matches on either.
+	NetworkNames []string
+
 	CreatedAt time.Time
 }
 
@@ -188,6 +244,14 @@ type NetworkInfo struct {
 	Name     string
 	Labels   map[string]string
 	Internal bool
+	// Subnet is the network's IPv4 CIDR (e.g. "10.83.4.0/24"), when the
+	// runtime reports one. SelfAttacher.validate uses it to confirm a network
+	// carrying the right labels also has the subnet Gleipnir's own database
+	// allocated for that instance — the labels alone say "this is managed",
+	// the subnet says "this is the SAME managed network the reconciler thinks
+	// it is", which matters if a network with colliding labels but a
+	// different address range ever existed.
+	Subnet string
 }
 
 // ContainerStats is a single-sample resource usage reading (spec §7: "the
@@ -242,6 +306,29 @@ type Runtime interface {
 	CreateNetwork(ctx context.Context, opts NetworkOptions) (NetworkID, error)
 	RemoveNetwork(ctx context.Context, id NetworkID) error
 	ListNetworksByLabel(ctx context.Context, key, value string) ([]NetworkInfo, error)
+
+	// ConnectNetwork attaches an existing container to an existing network,
+	// and DisconnectNetwork is its inverse. These two are unconstrained
+	// network-membership primitives at this layer — every Runtime
+	// implementation performs them exactly as asked, with no self-constraint
+	// of their own, the same way Create's self-constraint does not extend to
+	// "which caller invoked it". The security boundary that matters here
+	// (Gleipnir's own container may join only a gleipnir.managed network, and
+	// only using the container ID resolved for itself) is enforced by
+	// SelfAttacher (self.go), the only production caller of these two
+	// methods.
+	//
+	// pinnedIPv4, when non-nil, requests that specific address on the
+	// network's IPAM range rather than whatever the daemon would otherwise
+	// assign. Self-attach always pins (spec §7 / #958 finding 4): the
+	// network's gateway address (typically .1) belongs to the bridge itself
+	// and cannot be assigned to any container, and an unpinned attach would
+	// otherwise get whatever address IPAM allocates NEXT — which depends on
+	// attach order and is not something a plugin can be told in advance.
+	// Pinning is what lets Gleipnir tell plugins and the host endpoint a
+	// single, deterministic address to reach it at, regardless of order.
+	ConnectNetwork(ctx context.Context, netID NetworkID, containerID ContainerID, pinnedIPv4 net.IP) error
+	DisconnectNetwork(ctx context.Context, netID NetworkID, containerID ContainerID) error
 
 	// Close releases the underlying socket connection. Safe to call once at
 	// shutdown; implementations should make repeat calls harmless.

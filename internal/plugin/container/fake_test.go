@@ -3,6 +3,7 @@ package container
 import (
 	"context"
 	"errors"
+	"net"
 	"testing"
 	"time"
 )
@@ -126,6 +127,103 @@ func TestFake_CreateNetworkEnforcesSelfConstraint(t *testing.T) {
 	}
 	if err := f.RemoveNetwork(ctx, id); err == nil {
 		t.Fatal("RemoveNetwork() on an already-removed network = nil error, want error")
+	}
+}
+
+// #1021 review item V1: an IPv6-enabled request is refused the same way an
+// external one is — before it ever reaches the socket.
+func TestFake_CreateNetworkRejectsIPv6(t *testing.T) {
+	f := NewFake()
+	ctx := context.Background()
+
+	_, err := f.CreateNetwork(ctx, NetworkOptions{Name: "n", Internal: true, EnableIPv6: true})
+	var violation *ConstraintViolationError
+	if !errors.As(err, &violation) {
+		t.Fatalf("CreateNetwork() error = %v, want *ConstraintViolationError", err)
+	}
+	if violation.Kind != ViolationIPv6Enabled {
+		t.Errorf("violation.Kind = %q, want %q", violation.Kind, ViolationIPv6Enabled)
+	}
+}
+
+func TestFake_ConnectAndDisconnectNetwork(t *testing.T) {
+	f := NewFake()
+	ctx := context.Background()
+
+	id, err := f.Create(ctx, validCreateOptions())
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	netID, err := f.CreateNetwork(ctx, NetworkOptions{Name: "n", Internal: true})
+	if err != nil {
+		t.Fatalf("CreateNetwork() error = %v", err)
+	}
+
+	pin := net.ParseIP("10.83.4.2")
+	if err := f.ConnectNetwork(ctx, netID, id, pin); err != nil {
+		t.Fatalf("ConnectNetwork() error = %v", err)
+	}
+	info, err := f.Inspect(ctx, id)
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	if len(info.Networks) != 1 || info.Networks[0] != netID {
+		t.Fatalf("Networks after ConnectNetwork = %v, want [%v]", info.Networks, netID)
+	}
+	if got, ok := f.PinnedAddress(id, netID); !ok || !got.Equal(pin) {
+		t.Fatalf("PinnedAddress() = (%v, %v), want (%v, true)", got, ok, pin)
+	}
+
+	// A second connect to a network already joined ERRORS, matching the real
+	// daemon's "endpoint ... already exists in network" refusal — a planner
+	// bug that double-attaches must be caught here, not tolerated.
+	if err := f.ConnectNetwork(ctx, netID, id, pin); err == nil {
+		t.Fatal("ConnectNetwork() on an already-joined network = nil error, want error")
+	}
+	info, _ = f.Inspect(ctx, id)
+	if len(info.Networks) != 1 {
+		t.Fatalf("Networks after a rejected repeat ConnectNetwork = %v, want exactly one entry", info.Networks)
+	}
+
+	if err := f.DisconnectNetwork(ctx, netID, id); err != nil {
+		t.Fatalf("DisconnectNetwork() error = %v", err)
+	}
+	info, _ = f.Inspect(ctx, id)
+	if len(info.Networks) != 0 {
+		t.Fatalf("Networks after DisconnectNetwork = %v, want none", info.Networks)
+	}
+	if _, ok := f.PinnedAddress(id, netID); ok {
+		t.Fatal("PinnedAddress() still reports a pin after DisconnectNetwork")
+	}
+
+	// Disconnecting again fails: the planner should never ask to leave a
+	// network it does not believe it has joined.
+	if err := f.DisconnectNetwork(ctx, netID, id); err == nil {
+		t.Fatal("DisconnectNetwork() on an unattached network = nil error, want error")
+	}
+}
+
+func TestFake_ConnectNetworkUnknownContainerOrNetwork(t *testing.T) {
+	f := NewFake()
+	ctx := context.Background()
+
+	id, err := f.Create(ctx, validCreateOptions())
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	netID, err := f.CreateNetwork(ctx, NetworkOptions{Name: "n", Internal: true})
+	if err != nil {
+		t.Fatalf("CreateNetwork() error = %v", err)
+	}
+
+	if err := f.ConnectNetwork(ctx, netID, "no-such-container", nil); err == nil {
+		t.Error("ConnectNetwork() with an unknown container = nil error, want error")
+	}
+	if err := f.ConnectNetwork(ctx, "no-such-network", id, nil); err == nil {
+		t.Error("ConnectNetwork() with an unknown network = nil error, want error")
+	}
+	if err := f.DisconnectNetwork(ctx, netID, "no-such-container"); err == nil {
+		t.Error("DisconnectNetwork() with an unknown container = nil error, want error")
 	}
 }
 

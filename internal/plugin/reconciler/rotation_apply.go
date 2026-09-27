@@ -321,7 +321,10 @@ func (r *Reconciler) createRotationContainer(ctx context.Context, act RotationAc
 		return fmt.Errorf("generation %s vanished before its container was created", act.GenerationID)
 	}
 
-	opts := r.withGenerationEnv(ctx, r.createOptions(desired), act.InstanceID)
+	opts, err := r.withGenerationEnv(ctx, r.createOptions(desired), act.InstanceID)
+	if err != nil {
+		return fmt.Errorf("generation %d container env: %w", gen.Generation, err)
+	}
 	opts.Name = generationContainerName(act.InstanceID, gen.Generation)
 	opts.Labels[LabelGeneration] = itoa64(gen.Generation)
 	opts.Labels[LabelImageDigest] = gen.ImageDigest
