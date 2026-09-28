@@ -147,3 +147,74 @@ func TestValidateMissingManifest(t *testing.T) {
 		t.Errorf("expected 'read' in error, got: %v", err)
 	}
 }
+
+func TestValidateV2OK(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "manifest.yaml")
+	if err := os.WriteFile(manifestPath, v2ManifestYAML("v2plugin", "1.0.0", "sha256:"+strings.Repeat("a", 64)), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	fakeCmd := &cobra.Command{}
+	var out bytes.Buffer
+	fakeCmd.SetOut(&out)
+	fakeCmd.SetErr(&bytes.Buffer{})
+
+	// No --binary: a v2 manifest has none to compare against.
+	if err := runValidate("", manifestPath, fakeCmd); err != nil {
+		t.Fatalf("expected OK, got error: %v", err)
+	}
+	if !strings.Contains(out.String(), "OK") {
+		t.Errorf("expected OK in output, got: %q", out.String())
+	}
+}
+
+func TestValidateV2RejectsInvalidManifest(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "manifest.yaml")
+	// A tag instead of a digest-pinned identifier fails manifestv2.Validate.
+	invalid := []byte(`schema_version: "2"
+name: bad
+version: 1.0.0
+package:
+  registry_type: oci
+  identifier: ghcr.io/acme/bad:latest
+  transport:
+    type: streamable-http
+gleipnir:
+  profiles:
+    tool_provider: {}
+`)
+	if err := os.WriteFile(manifestPath, invalid, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	fakeCmd := &cobra.Command{}
+	fakeCmd.SetOut(&bytes.Buffer{})
+	fakeCmd.SetErr(&bytes.Buffer{})
+
+	err := runValidate("", manifestPath, fakeCmd)
+	if err == nil {
+		t.Fatal("expected an error for an invalid v2 manifest, got nil")
+	}
+	if !strings.Contains(err.Error(), "digest-pinned") {
+		t.Errorf("expected the digest-pin validation failure, got: %v", err)
+	}
+}
+
+func TestValidateV1RequiresBinary(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := writeTestManifest(t, dir) // v1 manifest
+
+	fakeCmd := &cobra.Command{}
+	fakeCmd.SetOut(&bytes.Buffer{})
+	fakeCmd.SetErr(&bytes.Buffer{})
+
+	err := runValidate("", manifestPath, fakeCmd)
+	if err == nil {
+		t.Fatal("expected an error when --binary is omitted for a v1 manifest")
+	}
+	if !strings.Contains(err.Error(), "--binary") {
+		t.Errorf("expected error to mention --binary, got: %v", err)
+	}
+}

@@ -103,14 +103,27 @@ func validatePackage(p Package, add func(string, string, ...any)) {
 	switch {
 	case strings.TrimSpace(p.Identifier) == "":
 		add("package.identifier", "is required")
-	case !strings.Contains(p.Identifier, "@sha256:"):
+	case !strings.Contains(p.Identifier, pinMarker):
 		// A tag is a mutable pointer. Consenting to a tag is consenting to
 		// whatever it points at later, which is not consent at all.
 		add("package.identifier", "must be digest-pinned (repository@sha256:...), got %q", p.Identifier)
 	default:
-		digest := p.Identifier[strings.Index(p.Identifier, "@sha256:")+len("@sha256:"):]
+		// Same split Repository()/Digest() use (pinMarker, in manifest.go) —
+		// so a value this switch calls validly pinned is one those accessors
+		// parse the same way, not two independent readings of one string.
+		i := strings.Index(p.Identifier, pinMarker)
+		repository := p.Identifier[:i]
+		digest := p.Identifier[i+len(pinMarker):]
+		if strings.Contains(repository, "@") {
+			// "repo@extra@sha256:<hex>" is a real "@sha256:"-suffixed string
+			// but not a value Repository() should ever have to make sense of:
+			// a repository component containing its own '@' is not a shape
+			// any registry reference grammar produces, and accepting it here
+			// would only be accepting an ambiguity, not a reference.
+			add("package.identifier", "repository must not contain '@' ahead of the digest pin, got %q", p.Identifier)
+		}
 		if len(digest) != 64 || !isHex(digest) {
-			add("package.identifier", "digest must be 64 hex characters, got %q", digest)
+			add("package.identifier", "digest must be 64 lowercase hex characters, got %q", digest)
 		}
 	}
 
@@ -488,10 +501,16 @@ func sortMappingNode(n *yaml.Node) {
 	}
 }
 
+// isHex reports whether s consists solely of LOWERCASE hex digits (0-9, a-f).
+// Digests are canonically lowercase — every registry, `docker inspect`, and
+// this package's own sha256.Sum256-derived output all emit them that way —
+// so accepting uppercase here would let an identifier validate whose digest
+// half a plain string compare (Package.Digest(), imagearchive's verifyDigest)
+// would never treat as equal to the canonical form.
 func isHex(s string) bool {
 	for _, r := range s {
 		switch {
-		case r >= '0' && r <= '9', r >= 'a' && r <= 'f', r >= 'A' && r <= 'F':
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f':
 		default:
 			return false
 		}

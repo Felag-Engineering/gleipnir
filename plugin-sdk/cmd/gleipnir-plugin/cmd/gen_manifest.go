@@ -9,19 +9,30 @@ import (
 	"github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 )
 
-// NewGenManifestCmd returns the cobra.Command for the `gen-manifest` subcommand.
+// NewGenManifestCmd returns the cobra.Command for the `gen-manifest`
+// subcommand.
+//
+// v1-only. A v2 (containerized) plugin has no binary to invoke with
+// --emit-manifest — the manifest is the sole source of truth an author writes
+// by hand — so there is nothing for this command to generate. #1009 removes
+// gen-manifest entirely once the v1 --binary packaging mode it serves is
+// deleted.
 func NewGenManifestCmd() *cobra.Command {
 	var binary, out string
 
 	cmd := &cobra.Command{
 		Use:   "gen-manifest",
-		Short: "Generate deterministic manifest YAML from a plugin binary",
+		Short: "Generate deterministic manifest YAML from a plugin binary (v1 only)",
 		Long: `Invoke <binary> --emit-manifest, parse the JSON output, and write
 deterministic canonical YAML (sorted keys, 2-space indent).
 
 The canonical YAML is the artifact committed to version control and hashed for
 signing. Re-running gen-manifest for the same Go declarations produces
 byte-identical output.
+
+v1 (gRPC-subprocess) manifests only. A v2 (containerized) manifest.yaml has no
+generating binary — author it by hand and check it with 'gleipnir-plugin
+validate'. #1009 removes this command when v1 --binary packaging is deleted.
 
 Flags:
   --binary   path to the plugin binary (required)
