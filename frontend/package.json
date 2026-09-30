@@ -39,7 +39,7 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
     "@vitest/browser-playwright": "^4.1.7",
-    "@vitest/coverage-v8": "^4.1.8",
+    "@vitest/coverage-v8": "^5.0.2",
     "eventsource": "^4.1.1",
     "jsdom": "^30.0.1",
     "msw": "^2.14.6",
