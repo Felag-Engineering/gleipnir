@@ -80,6 +80,7 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-059 | LLM schema policy — discovery does BYTE-LEVEL NORMALIZATION ONLY (decode + sort keys + re-emit, no $ref resolution, no allOf flattening — three attempts at doing either safely each found a new widening mechanism, see #735); $ref resolution AND allOf flattening both moved into per-provider lossy translation w/ UI notice; exact enforcement against the stored (byte-normalized, otherwise untransformed) schema (validator resolves $ref/handles allOf natively); ADR-017 scoping enforces the policy narrowing as an INDEPENDENT compile alongside the stored schema (composing it as a single additional allOf branch is NOT a narrowing by construction — it widens when the stored schema carries unevaluatedProperties/unevaluatedItems, since the appended branch's own properties/items annotation can satisfy another branch's unevaluated* check; fail closed at save instead when independent compiles aren't used), unions branch property names for policy-editor DISPLAY only, rejected at save when governance can't be determined | 🟢 Decided | v0.2.0-alpha | internal/llm (all wires), internal/mcp discovery, internal/policy validator, internal/schemanorm (#735) — body in [mcp-realignment-spec.md](mcp-realignment-spec.md) §10 |
 | ADR-060 | Hard cutover: gRPC plugin substrate removed outright in v0.2.0-alpha (no dual-running; no known third-party plugins); plugin-sdk → manifest types + signing CLI + extension helpers + typed host-endpoint client wrappers, zero protobuf (Amendment 1, 2026-08-04); Slack plugin rewritten as proving ground | 🟢 Decided | v0.2.0-alpha | plugin-sdk, plugins/slack, DB migrations, release notes — body in [mcp-realignment-spec.md](mcp-realignment-spec.md) §12 |
 | ADR-061 | MRTR client conformance and responder assertion — inputRequests/inputResponses are maps keyed by server-assigned request id per go-sdk v1.7.0 (array shape refused); only form-mode `elicitation/create` is accepted (sampling, roots, url mode refused); `elicitation` client capability declared on every server pinned to 2026-07-28, no per-policy opt-in; authenticated responder asserted server-side in `inputResponses[id]._meta["io.gleipnir/responder"]`; every settlement path (answered, rejected, timeout — both the live and the scanner-driven restart-backstop case, cancelled, replayed_after_ttl) writes a decision record | 🟢 Decided | v0.2.0-alpha | internal/mcp (inputrequired.go, client.go, tasks.go, registry.go), internal/execution/agent (inputrequired.go, replay.go, toolinput_timeout_hook.go), internal/execution/run (manager.go, tool_input_handler.go, decisions_handler.go), internal/db (tool_input_requests CHECK + CancelToolInputRequest), main.go (scanner OnTerminated hook) |
+| ADR-062 | Gleipnir as identity root and directory for Relay — humans and agents are principals, teams are groupings; per-run agent credentials Gleipnir signs and Relay verifies (retires the shared `gleipnir` bearer); a signed directory Relay pulls (Gleipnir holds no Relay credential); the approver's own identity forwarded on the answering call so Relay records a verified approver; Relay authoritative for Permitted / Permitted-with-approval / Forbidden, Gleipnir narrows only | 🟡 In progress | milestone TBD | internal/http/auth (teams, OIDC later), internal/mcp (attribution → credential), internal/execution/run (per-run agent token), new directory endpoint + signing key; wire contract owned by Relay (gleipnir-relay ADR-0041) — body below |
 
 **Index notes.**
 - **ADR-025 and ADR-027 were never assigned** — the numbering intentionally skips them; there is no missing record.
@@ -135,6 +136,66 @@ A map from any go-sdk-based server fails to parse against Gleipnir's array decod
 - The retry timeout (`GLEIPNIR_MCP_TIMEOUT`, default 30s) is not widened by this ADR; operators running a server whose approved retry does real synchronous work (e.g. Relay's fan-out restart) are expected to raise it operationally (documented at 120s in the demo runbook), not via a new per-server code path. Amended by #939 (2026-09-24): per-server call timeout is an in-app setting; GLEIPNIR_MCP_TIMEOUT remains the default.
 
 CLAUDE.md settled line: "MRTR client conformance (ADR-061): map-keyed inputRequests/inputResponses per go-sdk (array shape refused); elicitation declared to every modern server; responder asserted server-side in response `_meta["io.gleipnir/responder"]`." Full statement: [settled-decisions.md](settled-decisions.md).
+
+---
+
+## ADR-062: Gleipnir as identity root and directory for Relay
+
+**Status:** 🟡 In progress — proposed 2026-09-30, flips to Decided when the owner merges this
+entry. Counterpart: Felag-Engineering/gleipnir-relay ADR-0041 (Proposed), which owns the wire
+contract. This entry records Gleipnir's half of one decision; the two must be accepted together.
+
+### Background
+
+Every agent run reaches Relay today through one shared machine Account (`gleipnir`) with a static
+bearer header (ADR-039). Relay cannot tell one policy from another except by the free-text
+on-behalf-of string (#943), and the approver identity Gleipnir stamps into the MRTR response
+(ADR-061, `_meta["io.gleipnir/responder"]`) can only land in Relay's *asserted* lane because it
+arrives on that shared Account. Relay's ADR-0040 made Gleipnir the interim owner of the permission
+model for agent work on exactly that basis, and Gleipnir #944 / #945 track the verified levels this
+leaves open. The owner settled the direction on 2026-09-29/30.
+
+### Decision
+
+1. **Gleipnir is the identity root and the directory.** Which principals exist and which teams
+   they belong to is Gleipnir's authority. An external OIDC provider may feed Gleipnir later
+   (§9.1's `oidc` link method is the seam); Gleipnir never becomes an IdP for third parties.
+2. **Humans and agents are principals; a team is a grouping of principals, not a principal.**
+   An agent is roughly one per policy and carries a list of accountable humans — attribution and
+   notification, never a cap on its authority. Editing teams and grants needs the `admin` role;
+   no step-up ceremony in the first pass.
+3. **Gleipnir mints a short-lived credential per run** for the agent, signed with a Gleipnir key
+   Relay trusts, and injects it on every call to Relay in place of the shared bearer. The run's
+   lifetime bounds the credential's; no human re-authentication is ever needed.
+4. **Gleipnir publishes a signed directory document** — principals, kind, accountable humans,
+   team membership, stable IDs — behind a read-only credential. Relay pulls it; Gleipnir may
+   ping Relay to pull now but pushes nothing and holds no Relay credential beyond an agent's own.
+5. **The approver's own identity rides the answering call.** When an operator settles a
+   Relay-parked request, Gleipnir forwards a credential for that human beside the agent's, so
+   Relay records a verified approver. This supersedes the responder assertion for Relay while
+   keeping it for every other server.
+6. **Relay is authoritative for Permitted / Permitted with approval / Forbidden.** Gleipnir's
+   capability grants, ADR-017 parameter scoping and `approval: required` narrow inside Relay's
+   answer and never widen it or remove an approval Relay requires.
+
+### Rejected alternatives
+
+- Pushing accounts into Relay over its Control API — needs a Relay `admin` credential in
+  Gleipnir, so a Gleipnir compromise becomes Relay administration.
+- Group claims in the agent token instead of a pulled directory — two sources of truth.
+- Building a full identity provider into Gleipnir — the reasons Relay's ADR-0024 refused it apply
+  here unchanged.
+
+### Consequences
+
+- The wire contract (directory format and signature, agent credential claims, approver header)
+  has **one home, in gleipnir-relay under `docs/api/`**; Gleipnir docs link to it and do not
+  restate it. Sequencing: contract first, Relay verification (against a fake issuer) next,
+  Gleipnir minting and directory after; the `relaysmoke` lane carries the end-to-end proof.
+- Per-server run attribution (#943) stays for non-Relay servers; for Relay the credential
+  replaces the on-behalf-of header as the identity signal.
+- A settled-decisions line is added to CLAUDE.md when this flips to Decided, not before.
+- Each implementation issue names its counterpart issue in the other repository.
 
 ---
 
