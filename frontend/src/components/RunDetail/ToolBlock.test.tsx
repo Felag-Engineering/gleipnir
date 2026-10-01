@@ -3,7 +3,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ApiRunStep } from '@/api/types'
-import { asToolOutput, MIXED_24 } from './fanOutFixtures'
+import { APPROVED_RETRY, asToolOutput, MIXED_24 } from './fanOutFixtures'
 import { parseStep } from './types'
 import type { ToolBlockData } from './types'
 import { ToolBlock } from './ToolBlock'
@@ -98,6 +98,12 @@ describe('ToolBlock — recognized fan-out shape', () => {
   it('renders a table', () => {
     renderBlock(makeBlock(asToolOutput(MIXED_24)))
     expect(screen.getByRole('table')).toBeInTheDocument()
+  })
+
+  it('renders a table for the answered retry of an in-band approval (job + decision)', () => {
+    renderBlock(makeBlock(asToolOutput(APPROVED_RETRY)))
+    expect(screen.getByRole('table')).toBeInTheDocument()
+    expect(screen.getByText('Relay decision')).toBeInTheDocument()
   })
 
   it('"Show raw output" swaps to the original JSON string, and "Show table" restores the table', async () => {

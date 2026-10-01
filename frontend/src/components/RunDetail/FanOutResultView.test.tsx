@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { FanOutResultView } from './FanOutResultView'
-import { ALL_OK_24, EMPTY, MIXED_24, SINGLE } from './fanOutFixtures'
+import { ALL_OK_24, APPROVED_RETRY, EMPTY, MIXED_24, SINGLE } from './fanOutFixtures'
 
 describe('FanOutResultView — all ok', () => {
   it('shows "24 Nodes" and "24 success"', () => {
@@ -113,5 +113,32 @@ describe('FanOutResultView — empty result', () => {
     expect(screen.getByText(/job-empty/)).toBeInTheDocument()
     expect(screen.getByText('No per-Node results were returned for this job.')).toBeInTheDocument()
     expect(screen.queryByRole('table')).toBeNull()
+  })
+})
+
+describe('FanOutResultView — answered approval retry', () => {
+  it('shows the decision Relay recorded above the per-Node table', () => {
+    render(<FanOutResultView result={APPROVED_RETRY} />)
+    expect(screen.getByText('Relay decision')).toBeInTheDocument()
+    expect(screen.getByText('approved')).toHaveAttribute('data-tone', 'ok')
+    expect(screen.getByText('1 of 1')).toBeInTheDocument()
+    expect(screen.getByText('in-band')).toBeInTheDocument()
+    expect(screen.getByText('dana')).toBeInTheDocument()
+    expect(screen.getByText(/\(asserted\)/)).toBeInTheDocument()
+    expect(screen.getByText(/request 172e493bee384ac7eef1aae480536ee9/)).toBeInTheDocument()
+    expect(screen.getByText(/^Relay to the agent: the call was re-entered/)).toBeInTheDocument()
+    expect(screen.getByText('2 success')).toBeInTheDocument()
+    expect(screen.getByRole('table')).toBeInTheDocument()
+  })
+
+  it('omits the on-behalf-of clause when Relay recorded no asserted approver', () => {
+    const result = { ...APPROVED_RETRY, decision: { ...APPROVED_RETRY.decision!, on_behalf_of: '' } }
+    render(<FanOutResultView result={result} />)
+    expect(screen.queryByText(/on behalf of/)).toBeNull()
+  })
+
+  it('renders no decision line for an ordinary dispatch', () => {
+    render(<FanOutResultView result={MIXED_24} />)
+    expect(screen.queryByText('Relay decision')).toBeNull()
   })
 })

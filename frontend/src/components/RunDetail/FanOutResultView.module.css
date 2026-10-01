@@ -45,11 +45,23 @@
   color: var(--text-faint);
 }
 
+/* Node ids are one token ("node-" + 32 hex); breaking at the hyphen splits
+   them across two lines, which reads as two values. */
 .node {
   font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+/* The output column takes whatever width the fixed-content columns leave, so
+   its one-line preview ellipsizes inside the card instead of pushing the table
+   past the card edge at projector widths. */
+.table tr:not(.detailRow) td:last-child {
+  width: 100%;
+  max-width: 0;
 }
 
 .badge {
+  white-space: nowrap;
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
@@ -106,6 +118,11 @@
   color: var(--text-second);
 }
 
+/* The chevron must not shrink when the preview beside it is ellipsized. */
+.expandBtn svg {
+  flex-shrink: 0;
+}
+
 .preview {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -142,4 +159,33 @@
   font-size: var(--text-sm);
   color: var(--text-muted);
   font-style: italic;
+}
+
+.decision {
+  margin-bottom: var(--space-3);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.decisionRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.decisionLabel {
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.decisionFact {
+  color: var(--text-second);
+}
+
+.decisionNote {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
 }

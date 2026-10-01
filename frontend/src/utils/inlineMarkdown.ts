@@ -2,6 +2,7 @@ import { createElement } from 'react'
 import type { ReactNode } from 'react'
 
 // Inline markdown tokenizer supporting bold (**), italic (* and _), and inline code (`).
+// An underscore inside a word (snake_case) is literal text, never an italic marker.
 // Only inline features — no block-level parsing (headings, lists, links). Unknown or
 // unmatched syntax is emitted verbatim. The caller is responsible for container
 // white-space: pre-wrap so newlines are preserved.
@@ -21,6 +22,28 @@ const DELIMITERS: [string, 'bold' | 'italic' | 'code'][] = [
   ['`', 'code'],
 ]
 
+// WORD_CHAR matches the characters that make an underscore "intraword".
+const WORD_CHAR = /[\p{L}\p{N}]/u
+
+function isWordChar(ch: string | undefined): boolean {
+  return ch !== undefined && WORD_CHAR.test(ch)
+}
+
+// findDelimiter returns the index of the next usable `delim` in `text` at or
+// after `from`, or -1. For `_` it follows CommonMark's intraword rule: an
+// underscore with a letter or digit on the relevant side neither opens nor
+// closes emphasis, so identifiers such as denied_by_policy or
+// relay.run_operation render verbatim instead of losing their underscores to
+// italics. The other delimiters keep their plain first-occurrence behaviour.
+function findDelimiter(text: string, delim: string, from: number, role: 'open' | 'close'): number {
+  if (delim !== '_') return text.indexOf(delim, from)
+  for (let i = text.indexOf('_', from); i !== -1; i = text.indexOf('_', i + 1)) {
+    const neighbour = role === 'open' ? text[i - 1] : text[i + 1]
+    if (!isWordChar(neighbour)) return i
+  }
+  return -1
+}
+
 // Tokenize a single line. Scans for the earliest delimiter and, if a closing
 // delimiter exists on the same line, emits the corresponding token. Falls
 // through to plain text when no pair is found.
@@ -33,7 +56,7 @@ function tokenizeLine(line: string): Token[] {
     let matched: [string, 'bold' | 'italic' | 'code'] | null = null
 
     for (const [delim, kind] of DELIMITERS) {
-      const idx = rest.indexOf(delim)
+      const idx = findDelimiter(rest, delim, 0, 'open')
       if (idx !== -1 && (earliest === -1 || idx < earliest)) {
         earliest = idx
         matched = [delim, kind]
@@ -47,7 +70,7 @@ function tokenizeLine(line: string): Token[] {
 
     const [delim, kind] = matched
     const afterOpen = earliest + delim.length
-    const closeIdx = rest.indexOf(delim, afterOpen)
+    const closeIdx = findDelimiter(rest, delim, afterOpen, 'close')
 
     if (closeIdx === -1) {
       // No closing delimiter — emit everything up to and including the opener

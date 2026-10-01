@@ -46,8 +46,20 @@ describe('DecisionList', () => {
     expect(await screen.findByText('Decisions')).toBeInTheDocument()
     expect(screen.getByText('relay.run_operation')).toBeInTheDocument()
     expect(screen.getByText('PERMISSION')).toBeInTheDocument()
-    expect(screen.getByText('Answered')).toBeInTheDocument()
+    expect(screen.getByText('Approved')).toBeInTheDocument()
     expect(screen.getByText('by alice')).toBeInTheDocument()
+  })
+
+  // "answered" is the wire word for both kinds; only a permission ask's
+  // answer is an approval.
+  it.each([
+    ['permission', 'answered', 'Approved'],
+    ['permission', 'rejected', 'Rejected'],
+    ['information', 'answered', 'Answered'],
+    ['information', 'rejected', 'Rejected'],
+  ])('labels a %s ask that was %s as "%s"', async (kind, outcome, label) => {
+    renderList([makeDecision({ kind, outcome })])
+    expect(await screen.findByText(label)).toBeInTheDocument()
   })
 
   // A settlement nobody acted in (timeout, cancel, replay) says so plainly

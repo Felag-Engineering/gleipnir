@@ -25,6 +25,16 @@ const OUTCOME_LABEL: Record<string, string> = {
   replayed_after_ttl: 'Replayed',
 }
 
+// outcomeLabel names a permission ask's outcomes for what they are. On the
+// wire "answered" covers both kinds — a human accepted a permission ask, or
+// supplied an information ask's values — but for a consent-only ask the
+// accepted answer IS an approval, and "Answered" alone does not tell a reader
+// which way the human went.
+function outcomeLabel(kind: string, outcome: string): string {
+  if (kind === 'permission' && outcome === 'answered') return 'Approved'
+  return OUTCOME_LABEL[outcome] ?? outcome
+}
+
 // DecisionList renders a run's tool-initiated HITL decision records
 // (ADR-055 §6.6): who was asked, what kind of ask it was, how it ended, and
 // who — if anyone — acted. It is oversight evidence the model never saw
@@ -61,7 +71,7 @@ export function DecisionList({ runId }: Props) {
                 <td className={styles.mono}>{d.tool_name ?? '—'}</td>
                 <td>{KIND_LABEL[d.kind] ?? d.kind}</td>
                 <td>
-                  {OUTCOME_LABEL[d.outcome] ?? d.outcome}
+                  {outcomeLabel(d.kind, d.outcome)}
                   {d.replay_of_request_id && (
                     <span className={styles.replayHint}>replay of {d.replay_of_request_id}</span>
                   )}
