@@ -1,10 +1,23 @@
 # Investor demo — script and feature floor
 
-**Status: DRAFT (2026-08-27).** Design document for the joint Gleipnir + Relay demo.
-Tracked by [#927](https://github.com/Felag-Engineering/gleipnir/issues/927) (Gleipnir half)
-and [Felag-Engineering/gleipnir-relay#451](https://github.com/Felag-Engineering/gleipnir-relay/issues/451)
+**Status: DRAFT (2026-08-27; re-checked against both repos 2026-10-01).** Design document for
+the joint Gleipnir + Relay demo. Tracked by [#927](https://github.com/Felag-Engineering/gleipnir/issues/927)
+(Gleipnir half) and [Felag-Engineering/gleipnir-relay#451](https://github.com/Felag-Engineering/gleipnir-relay/issues/451)
 (fleet half). The runnable operator runbook is [#933](https://github.com/Felag-Engineering/gleipnir/issues/933)
-and does not exist yet — this document is what it will be written from.
+([`investor-demo.md`](investor-demo.md), once it lands); this document is what it is written from.
+The Relay half's presenter runbook is
+[gleipnir-relay `docs/operations/demo-fleet.md`](https://github.com/Felag-Engineering/gleipnir-relay/blob/main/docs/operations/demo-fleet.md)
+— where the two disagree about Relay's behaviour, that file is newer and wins.
+
+> **What changed since the first draft (2026-10-01).** Act two is no longer blocked: relay#646
+> landed (Relay asks Gleipnir the approval question in-band); the demo fleet now starts on its
+> own in-band gate (`approval-gates.demo.json`, applied by `make demo-reset`, no fixture edit);
+> and the web Nodes carry a DEV-ONLY `systemctl` shim, so `service.restart` of `nginx` restarts
+> the real service and returns `success`. relay#626 is still open but no longer on the demo's
+> critical path. Two lines this script used to say are now false under that gate and have been
+> removed: that a machine Account is refused on every channel, and that Relay records the
+> approver as verified. Relay records it as **asserted**; the verified human is on Gleipnir's
+> side. None of the end-to-end path has been rehearsed with Gleipnir's own UI yet — rehearse it.
 
 ---
 
@@ -44,7 +57,10 @@ act three is real whether the Node is a container or a datacenter, which is exac
 admitting the setup costs nothing — and getting caught overstating it would cost the whole
 argument.
 
-**Before you start:** confirm the Relay MCP server's Call timeout reads `120s` on Gleipnir's
+**Before you start:** reset on demo morning, not the night before — every credential
+`make demo-reset` mints, and the agent's API Token, expires after 24h. Fault exactly one Node,
+`make demo-fault DEMO_FAULT_NODES="daemon-4"`: the default also downs `daemon-6` (staging), which
+the act-two alert and the responder's Selector do not cover. Confirm the Relay MCP server's Call timeout reads `120s` on Gleipnir's
 MCP servers page (set it in the server's detail if it shows `Default (30s)`) — Relay's approved
 retry runs the Job synchronously inside one `tools/call`, and the 30s default is tight for a
 fan-out restart. Confirm the Relay server shows `protocol_version 2026-07-28` on Gleipnir's
@@ -68,36 +84,40 @@ Depends on: [relay#452](https://github.com/Felag-Engineering/gleipnir-relay/issu
 
 ## Act 1 — ask the fleet a question (2 min)
 
-Gleipnir, the `fleet-reader` agent. Manual trigger, natural language:
+Gleipnir, the `fleet-reader` agent. Manual trigger, natural language. With the fault already
+injected on `daemon-4`:
 
-> *"Which nodes are on a different OS release from the rest?"*
+> *"Which web Nodes are not serving on 127.0.0.1:8080?"*
+
+or, if you would rather not depend on the agent reading a socket table:
+
+> *"Which Nodes run which Policy fingerprint, and which of them may restart nginx?"*
 
 Watch the trace populate:
 
 - **capability snapshot** — exactly five tools registered, recorded as the run's first step:
   `list_nodes`, `describe_node`, `list_operations`, `run_operation`, `get_job`
-- **thought** → `list_nodes` → `run_operation` (`file.read` on `/etc/os-release`, read class)
-  fanned out across the fleet
-- per-Node results, then the agent's summary
+- **thought** → `list_nodes` → `run_operation` (`file.read` on `/proc/net/tcp`, read class)
+  fanned out across the web Nodes
+- per-Node results, then the agent's summary — `dev-node-4` has no listener on
+  `0100007F:1F90` in state `0A`, and that is the act-two fault, found by the AI
 
 The line to land: **natural language in, typed Operations out.** The model never wrote a
 shell command — it selected from a fixed vocabulary, and its arguments cannot change which
 command runs.
 
-> **Say this up front, before you ask the question.** Every Node in the demo fleet today
-> bakes in the identical `/etc/os-release` (`docker/fixtures/os-release`,
-> `docker/daemon.Dockerfile:96-99`), so on the fleet as built the honest answer is "none —
-> they're all the same." The beat still lands (real state, a typed read, no shell access), but
-> a genuinely divergent answer needs at least one Node's fixture to actually differ, and that
-> is requested from the Relay side but not yet built —
-> [relay#451, item 3](https://github.com/Felag-Engineering/gleipnir-relay/issues/451#issuecomment-5805986410).
+> **Do not ask "which Nodes are on a different OS release".** Every Node bakes in the
+> identical `/etc/os-release`, and Relay deliberately refuses to fake per-Node variants (a
+> fleet that lies about what it is is worse than one that is legibly limited — demo-fleet.md,
+> "What varies, and what cannot"). The honest answer is "none", which is a dead beat.
+> Reading `/proc/net/tcp` is the one place the agent has to interpret hex: rehearse it, and
+> fall back to the Policy-fingerprint question if the model fumbles it.
 
 Depends on: [#928](https://github.com/Felag-Engineering/gleipnir/issues/928),
 [#930](https://github.com/Felag-Engineering/gleipnir/issues/930),
 [#932](https://github.com/Felag-Engineering/gleipnir/issues/932),
 [relay#452](https://github.com/Felag-Engineering/gleipnir-relay/issues/452) (closed, the
-nine-Node demo fleet). A divergent-Node fixture is not yet its own filed issue — it is noted
-in [relay#451's item 3](https://github.com/Felag-Engineering/gleipnir-relay/issues/451#issuecomment-5805986410).
+nine-Node demo fleet), relay#622 (closed, `make demo-fault`). All closed.
 
 > **Do not promise aggregation.** Server-side histogram-by-output ("97,412 identical / 3
 > divergent") is Relay's `v0.9.0` and is not built. At nine Nodes the agent's own summary is
@@ -105,37 +125,56 @@ in [relay#451's item 3](https://github.com/Felag-Engineering/gleipnir-relay/issu
 
 ## Act 2 — the fix, approved in-band (4 min)
 
-Uptime Kuma fires a webhook: **nginx** down. The responder agent picks it up, diagnoses with
-read Operations, and calls `relay.run_operation` proposing `service.restart` on a Selector
-that reaches the affected web Nodes — and, this time, the bastion too.
+Uptime Kuma fires a webhook: **nginx** down on `dev-node-4`. (On the demo fleet nothing Kuma
+can reach is faulted, so send the Kuma-shaped payload from the
+[fleet-ops playbook, Step 10](../playbooks/fleet-ops/README.md#step-10--fire-the-responder-responder-acceptance)
+and say so.) The responder agent picks it up, diagnoses with read Operations, and calls
+`relay.run_operation` proposing `service.restart` `{unit: nginx}` on
+`node:role=web, node:env=prod` — `dev-node-4` and its healthy sibling `dev-node-5`, fan-out 2,
+mutate class.
 
 **The wall is Relay's, and it is answered without leaving Gleipnir.** `run_operation` is not
 gated by Gleipnir's own `approval: required` in this policy — Relay owns approval for its
 own Operations, and the demo shows exactly one gate for this call, not a redundant second
-one. Relay's `tools/call` parks with an MRTR `input_required`: a plan — Operation, resolved
-arguments, resolved fan-out, risk class — **authored by Relay, not by the agent**, bound to
-a content hash. It appears on the run's own attention queue, attributed to `relay`, rendered
-verbatim as the untrusted text it is. The approver answers right there, in Gleipnir's UI,
-with the `approver` role Relay's Operation demanded.
+one. The call matches the demo gate's `demo-fleet-wide-mutates-need-a-human` rule (mutate,
+fan-out ≥ 2, in-band), so Relay's `tools/call` parks with an MRTR `input_required`: a plan —
+Operation, resolved arguments, resolved fan-out, risk class — **authored by Relay, not by the
+agent**, bound to a content hash. It appears on the run's own attention queue, attributed to
+`relay`, rendered verbatim as the untrusted text it is. The approver answers right there, in
+Gleipnir's UI, with the `approver` role Gleipnir requires for a permission ask.
 
 > "That plan was never in the agent's context. The model saw a tool call go out and, three
 > screens later, a result come back — everything in between happened between two other
 > parties, and the model was not one of them."
 
-Approve. Relay records the decision — **who approved it, asserted by Gleipnir's session and
-verifiable, not typed into a form** — and runs the Job in the same call that was waiting.
-Gleipnir records its own copy of the same decision, independently, on the run's Decisions
-list.
+Approve. Gleipnir records the decision against the approver's own authenticated session — the
+**verified** human — on the run's Decisions list, and sends Relay the answer with that username
+attached. Relay records the decision as made by Gleipnir's verified machine Account, in-band,
+with the human's name beside it as an **assertion**, and runs the Job in the same call that was
+waiting.
 
-> "The agent cannot write, truncate, or reshape what that approver saw, and it cannot
-> approve its own request — a machine account is refused on every channel. Two independent
-> systems both wrote down that a human, verified, said yes to this exact plan."
+> "The agent cannot write, truncate, or reshape what that approver saw, and it was never given
+> a tool to answer it. Gleipnir verified the human; Relay verified Gleipnir and wrote down who
+> Gleipnir says approved. Two systems, two independent records of the same yes."
 
-**Execution.** Per-Node results come back. The web Nodes restart. `dev-node-8` (the bastion)
-returns `denied_by_policy` — its local Policy carries no `service.restart` allow at all.
+Do **not** say a machine Account cannot approve its own request. Under the demo gate it can,
+in-band, if it supplies a name — that is the accepted client-integrity assumption of in-band
+approval (Relay `approval.md`, Channel strength; ADR-0029). What keeps the model away from that
+lever is Gleipnir's grant: `approve_request` is not registered with the agent. If asked, the
+default (out-of-band) fleet gate is the one that demonstrates a two-person control; this one
+does not.
 
-> "Nobody in this room can override that. Not me, not the AI, not an admin token. It is a
-> root-owned file on that machine, and this control plane has no code path that writes it."
+**Execution.** `dev-node-4` and `dev-node-5` return `success, exit_code: 0` *(predicted on this
+Selector; `service.restart` through the shim exiting `0` on a web Node was observed
+2026-09-29)*. The web Nodes' `systemctl` is a DEV-ONLY shim that restarts the real `httpd` —
+say "a container fleet" once, as act zero already did, and it costs nothing. The agent re-runs
+its diagnostic read and reports `dev-node-4` serving again. Independent proof if anyone asks:
+`file.read /var/lib/dev-fleet-service/state` shows a new `pid`.
+
+There is no Node refusal in this act any more: the responder is told to use the narrowest
+Selector, so it never reaches the bastion. The refusal is act three's job, where it is live and
+unambiguous. Do not steer the alert to drag the bastion in — a beat that depends on the model
+choosing a wider Selector than it was told to is choreography.
 
 A production deployment may still gate `run_operation` with Gleipnir's own
 `approval: required` on top of Relay's — that produces a **double approval** for one call,
@@ -143,44 +182,18 @@ Gleipnir's prompt first and Relay's second, back to back in the same UI. It is s
 tested; it is simply not what this demo's policy does, because one clean gate reads better
 on stage than two, and the point of act two is Relay's wall, not Gleipnir's.
 
-**This beat does not run on the fleet as it stands today. Three things have to be true
-first, and none of them are yet:**
-
-1. **[relay#646](https://github.com/Felag-Engineering/gleipnir-relay/issues/646)** (open) —
-   Relay must actually emit an answerable MRTR question for an in-band rule. Without it, the
-   call returns a bare `pending_approval` and nobody in Gleipnir's UI ever sees a question.
-2. **The approval-gate rule itself** — the shipped demo fixture
-   (`docker/fixtures/approval-gates.json`) is out-of-band with audience `dev-approver`, so even
-   with #646 merged it will not satisfy an in-band ask from the `gleipnir` Account. The
-   Relay-side rule this beat needs, and how it actually reaches the demo fleet (a fixture edit
-   plus a rebuild, not a compose override), is spelled out in
-   [the fleet-ops playbook, Step 2](../playbooks/fleet-ops/README.md#step-2--relay-side-the-approval-gate-rule-relay-configuration-not-gleipnir)
-   and requested from the Relay side in
-   [relay#451](https://github.com/Felag-Engineering/gleipnir-relay/issues/451#issuecomment-5805986410).
-3. **A restart that can actually succeed on busybox** — native `service.restart` always fails
-   here (`spawn systemctl: No such file or directory`; accepted and documented as a fixture
-   limit in the now-closed
-   [relay#389](https://github.com/Felag-Engineering/gleipnir-relay/issues/389)). The only real
-   fix on this image is the `dev-fleet-service` script, reachable today only through the
-   Raw Exec Gleipnir is never granted. Making it reachable as a typed Operation needs
-   **[relay#626](https://github.com/Felag-Engineering/gleipnir-relay/issues/626)** (open) — or
-   an equivalent fix to the demo image — so that a dispatchable `svc.restart` Template runs
-   the same script instead of shelling to a `systemctl` that does not exist.
-
-Until all three land, run this beat honestly as: the call parks, the approver has nothing
-in-band to answer (or, without #646, nothing at all), and if a call is ever approved the web
-Nodes report `failure: spawn systemctl: No such file or directory`, not a restart.
+**Not yet observed end to end:** the full path with Gleipnir's own UI in the loop — real
+webhook, real agent, the question in Gleipnir's attention queue, a human answering, the Job
+succeeding. Relay's 2026-09-29 observation used a client declaring `gleipnir`, not this UI.
+Rehearse it before anything else.
 
 Depends on: [#929](https://github.com/Felag-Engineering/gleipnir/issues/929),
 [#932](https://github.com/Felag-Engineering/gleipnir/issues/932),
-[relay#453](https://github.com/Felag-Engineering/gleipnir-relay/issues/453) (closed),
-[relay#452](https://github.com/Felag-Engineering/gleipnir-relay/issues/452) (closed),
-[relay#646](https://github.com/Felag-Engineering/gleipnir-relay/issues/646) (open),
-the approval-gate rule from
-[relay#451](https://github.com/Felag-Engineering/gleipnir-relay/issues/451#issuecomment-5805986410)
-(open, Relay-side config change, not yet applied to the shipped fixture),
-[relay#626](https://github.com/Felag-Engineering/gleipnir-relay/issues/626) (open) or an
-equivalent fix for restarting on busybox.
+[relay#453](https://github.com/Felag-Engineering/gleipnir-relay/issues/453),
+[relay#452](https://github.com/Felag-Engineering/gleipnir-relay/issues/452),
+[relay#646](https://github.com/Felag-Engineering/gleipnir-relay/issues/646), relay#389 (the
+shim) — all closed. [relay#626](https://github.com/Felag-Engineering/gleipnir-relay/issues/626)
+(Template Operations dispatchable by name) is open and no longer on this path.
 
 ## Act 3 — break it on purpose (4 min)
 
@@ -209,48 +222,49 @@ is the exact scripted beat in
 [gleipnir-relay's demo runbook](https://github.com/Felag-Engineering/gleipnir-relay/blob/main/docs/operations/demo-fleet.md#the-bypass-beat-scripted-exactly),
 and its refusal reason is asserted by a fixture test there.
 
-**3c — Blast radius, and the cord.** Ask for a `mutate` across the whole fleet with no
-Selector. At nine Nodes this stays well under Relay's default mutate blast cap (100) — it is
-the same approval gate as act two that catches an unscoped mutate, not the cap, and it parks
-for a human exactly like a scoped one does. Showing the **cap itself** refuse a request
-pre-dispatch needs `RELAY_MUTATE_BLAST_CAP` turned down below nine for the demo profile,
-which is not configured today — say so rather than imply the cap fired. Then pull the Freeze
-from the Relay Console: everything stops, and a machine Account can neither pull it nor
-release it. Freeze itself is built and role-gated
-([relay#457](https://github.com/Felag-Engineering/gleipnir-relay/issues/457),
-[relay#397](https://github.com/Felag-Engineering/gleipnir-relay/issues/397), both closed), but
-this specific beat has no entry in the Relay demo runbook yet and has not been rehearsed on
-the nine-Node fleet — rehearse it before it goes on stage.
+**3c — The cord.** As the founding admin, from the terminal, engage the Relay-wide Freeze:
+`POST /api/v1/freeze/engage` on the Control API (`scripts/dev-fleet-mcp.sh api`). Re-run
+`fleet-reader` with any question: Freeze is checked before every dispatch, of either risk
+class, so the agent's reads are refused too. Then show the agent's own token getting `403` on
+`POST /api/v1/freeze/release` — the Freeze floor is a human `operator`, so no machine Account
+can engage or release it. Release it as the admin; release requires a non-empty `reason`, and
+both acts are audited.
 
-> "Nobody in this room can raise that cap from here, and nobody can pull the cord back out
+> "Nobody in this room can raise that gate from here, and the AI cannot pull the cord back out
 > once it's in."
 
-Depends on: [relay#454](https://github.com/Felag-Engineering/gleipnir-relay/issues/454)
-(closed), [relay#456](https://github.com/Felag-Engineering/gleipnir-relay/issues/456)
-(closed, but does not cover 3c — see above); a demo-profile `RELAY_MUTATE_BLAST_CAP` override
-is not yet its own filed issue.
+**Unrehearsed.** No runbook on either side scripts this beat yet; the Console engage/release
+(relay#457) was cut from the Relay epic in favour of the terminal. Rehearse it on the nine-Node
+fleet or cut it — act three stands on 3a and 3b alone.
+
+**Do not show the blast cap.** At nine Nodes nothing reaches Relay's default mutate cap (100);
+an unscoped mutate parks at the same in-band gate as act two, not at the cap. Making the cap
+itself refuse needs `RELAY_MUTATE_BLAST_CAP` turned below nine, and the demo profile does not
+set it. Mention the cap in one sentence if you like; never imply it fired.
+
+Depends on: [relay#454](https://github.com/Felag-Engineering/gleipnir-relay/issues/454),
+[relay#397](https://github.com/Felag-Engineering/gleipnir-relay/issues/397) (both closed).
 
 ## Close — the receipts (1 min)
 
-Relay Console, activity. One screen for the Job from act two: who asked (the agent's machine
-Account, **verified**), on whose behalf (**asserted** — the caller said so, nothing checked
-it: the asserted lane now reads `fleet-responder` and `gleipnir run <run_id>` with a trace ID,
-so this Job joins back to the Gleipnir run on screen — these are claims Gleipnir makes, not
-credentials Relay verified; #944/#945 are the verified levels), who approved (**verified**
-human), what dispatched, what each Node returned, including the Node that refused.
+Relay Console, Job detail for the act-two Job. One screen: who asked —
+`auto-incident-response`, the agent's machine Account, **verified** by its API Token; on whose
+behalf — `fleet-responder` and `gleipnir run <run_id>` with a trace ID, **asserted** (Gleipnir
+says so; Relay checked nothing); who approved — the Gleipnir approver's username, **asserted**
+beside the verified machine Account; what dispatched, and what each Node returned. Then cut to
+the Gleipnir run's Decisions list: the same approval, recorded against the human's own
+**verified** session. Say the verified/asserted split out loud — it is the honest version of
+this slide, and ADR-062 (proposed: Gleipnir as identity root for Relay) is the answer to "when
+does Relay verify the human itself?"
 
 > "Every layer you just saw is independent, and every one of them writes down what
 > happened. That is the difference between trusting an AI and being able to audit one."
 
-The "what each Node returned" half needs a Job with a genuinely mixed result set — at least
-one real success alongside the refusal — and that is exactly the piece act two cannot yet
-produce (see act two's dependencies above; a mutate that can complete on this image is still
-open, [relay#626](https://github.com/Felag-Engineering/gleipnir-relay/issues/626)). Until then,
-this screen can show a parked-then-failed Job, not a parked-then-succeeded one.
+The act-two Job's results are two successes, not a mixed set. The refusal lives on its own Job
+from 3b; show both rows in the activity list rather than promising one Job that contains both.
 
-Depends on: [relay#455](https://github.com/Felag-Engineering/gleipnir-relay/issues/455)
-(closed for the who-asked / on-behalf-of / who-approved half; the mixed-result half is
-blocked on the same act-two dependencies above).
+Depends on: [relay#455](https://github.com/Felag-Engineering/gleipnir-relay/issues/455),
+[#943](https://github.com/Felag-Engineering/gleipnir/issues/943) (closed).
 
 ---
 
@@ -271,8 +285,11 @@ realignment cutover or Relay's `v0.1.0-beta` real-hardware work.
 | [relay#452](https://github.com/Felag-Engineering/gleipnir-relay/issues/452) demo fleet profile | 3 identical Nodes do not read as a fleet and produce no interesting refusal |
 | [relay#453](https://github.com/Felag-Engineering/gleipnir-relay/issues/453) Console approve/deny | the human control point must not look like a stub |
 | [relay#646](https://github.com/Felag-Engineering/gleipnir-relay/issues/646) MRTR in-band approval | Act 2's approval question reaches Gleipnir only through this; #929 is the Gleipnir half |
-| [relay#451 gate rule](https://github.com/Felag-Engineering/gleipnir-relay/issues/451#issuecomment-5805986410) in-band rule for the `gleipnir` Account | the shipped fixture is out-of-band, so without it #646 emits no answerable question |
-| [relay#626](https://github.com/Felag-Engineering/gleipnir-relay/issues/626) (or equivalent) restart that runs on busybox | Act 2's restart otherwise fails on every web Node with `spawn systemctl` |
+| ~~relay#451 gate rule~~ in-band gate the `gleipnir` client is asked under | **Done differently:** the demo fleet ships its own in-band gate, `approval-gates.demo.json`, which `make demo-reset` applies — no fixture edit |
+| ~~[relay#626](https://github.com/Felag-Engineering/gleipnir-relay/issues/626)~~ (or equivalent) restart that runs on busybox | **The equivalent landed:** a DEV-ONLY `systemctl` shim on the web Nodes (relay#389). relay#626 stays open and is off the critical path |
+
+**Status 2026-10-01:** every D0 item above is closed or replaced. What D0 is now missing is not
+an issue but an act: **no one has run act two end to end with Gleipnir's own UI.**
 
 ### D1 — without these the demo runs but does not land
 
@@ -281,13 +298,13 @@ realignment cutover or Relay's `v0.1.0-beta` real-hardware work.
 | [#932](https://github.com/Felag-Engineering/gleipnir/issues/932) legible fan-out results | both persuasive beats are readings of a result set |
 | [relay#454](https://github.com/Felag-Engineering/gleipnir-relay/issues/454) refusal legibility | act three is four refusals; each must explain itself to the caller |
 | [relay#455](https://github.com/Felag-Engineering/gleipnir-relay/issues/455) / [#943](https://github.com/felag-engineering/gleipnir/issues/943) attribution on one screen | the closing beat, and it has never been verified end to end |
-| [#933](https://github.com/Felag-Engineering/gleipnir/issues/933) + [relay#456](https://github.com/Felag-Engineering/gleipnir-relay/issues/456) runbooks | reset, timings, pre-flight, and the recorded fallback |
+| [#933](https://github.com/Felag-Engineering/gleipnir/issues/933) + [relay#456](https://github.com/Felag-Engineering/gleipnir-relay/issues/456) runbooks | reset, timings, pre-flight, and the recorded fallback. relay#456 is done (`demo-fleet.md`); #933 is open. No timing has been measured on either side and no recording exists |
 
 ### D2 — cut if time is short
 
 [relay#457](https://github.com/Felag-Engineering/gleipnir-relay/issues/457) Freeze from the
-Console (blocked on relay#397; the terminal is fine, arguably better for an emergency
-control), and server-side read aggregation (Relay `v0.9.0`).
+Console — **cut** from the Relay epic; act 3c uses the Control API from the terminal instead
+(arguably better for an emergency control). Server-side read aggregation (Relay `v0.9.0`).
 
 ---
 

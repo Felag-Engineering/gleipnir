@@ -35,9 +35,11 @@ agent:
       1. Call relay.list_nodes first. Each Node carries node_id, node_labels,
          relay_labels, facts (hostname, os, kernel, arch, ip_addresses), connected,
          and policy_fingerprint. Many questions are answered by this alone.
-      2. When you need data from the Nodes themselves, call relay.list_operations and
-         pick an Operation whose risk class is "read" (system.facts, file.read). Then
-         call relay.run_operation with the narrowest selector that covers the question.
+      2. When you need data from the Nodes themselves, use a read-class Operation:
+         system.facts (no args) or file.read (args {"path": ...}). Call
+         relay.list_operations only if you need something else. Make one
+         relay.run_operation call with the narrowest selector that covers the
+         question, not one call per Node.
       3. relay.describe_node explains one Node, including its effective Policy. Use it
          when a Node refused an Operation.
       4. relay.get_job re-reads an earlier Job's results by job_id.
@@ -49,16 +51,26 @@ agent:
     "node:role=web" or "node:role=web, node:env=prod". An empty selector matches every
     Node.
 
+    Is a TCP service listening? file.read of /proc/net/tcp (/proc/net/tcp6 for IPv6)
+    lists the Node's sockets, one per row. local_address is hex ADDRESS:PORT, with
+    the IPv4 address in little-endian byte order: 127.0.0.1:80 is 0100007F:0050, and
+    0.0.0.0 (all addresses) is 00000000. st is the socket state, and 0A is LISTEN.
+    A service is listening only if some row has its port, state 0A, and its address
+    or 00000000. Rows in any other state (06 TIME_WAIT, 01 ESTABLISHED) are not
+    evidence that it is up.
+
     Per-Node outcomes are success, failure, denied_by_policy, unreachable, and timeout.
     denied_by_policy means that Node's own Policy refused the Operation. Report it as a
     refusal. Do not retry with different arguments to get around it.
 
-    Answer with a one-paragraph summary first, then per-Node detail grouped by outcome.
-    If the fleet cannot answer the question, say so plainly and name the data that
-    would answer it. Do not guess.
+    Answer briefly: a one-paragraph summary first, then per-Node detail grouped by
+    outcome, one line per Node. If the fleet cannot answer the question, say so
+    plainly and name the data that would answer it. Do not guess.
   limits:
     max_tokens_per_run: 100000
-    max_tool_calls_per_run: 20
+    # A typical answer is two or three calls (list_nodes, one fanned-out read).
+    # The cap stops a wandering run early instead of letting it fan out Node by Node.
+    max_tool_calls_per_run: 12
     # The reader should never cause a Relay approval question. Cap it at one
     # interruption in case it does (0 would mean unlimited).
     max_elicitations_per_run: 1

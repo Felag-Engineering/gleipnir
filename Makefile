@@ -1,4 +1,4 @@
-.PHONY: help build test tools security security-go security-frontend proto lint-plugins lint-plugins-self-test lint-secret-keys lint lint-go-fmt lint-staticcheck ci-local ci-local-full ci-local-lanes ci-local-lint ci-local-drift ci-local-backend ci-local-sdk ci-local-frontend ci-local-scope-self-test relaysmoke lint-relaysmoke-build lint-substratev2-build
+.PHONY: help build test tools security security-go security-frontend proto lint-plugins lint-plugins-self-test lint-secret-keys lint lint-go-fmt lint-staticcheck ci-local ci-local-full ci-local-lanes ci-local-lint ci-local-drift ci-local-backend ci-local-sdk ci-local-frontend ci-local-scope-self-test relaysmoke relaysmoke-demo lint-relaysmoke-build lint-substratev2-build
 
 help:
 	@echo "Targets:"
@@ -28,6 +28,9 @@ help:
 	@echo "  relaysmoke                 cross-product smoke test against a live Relay"
 	@echo "                             fleet (needs Docker + RELAY_DIR=<gleipnir-relay"
 	@echo "                             checkout>); nightly/on-demand only, never ci-local"
+	@echo "  relaysmoke-demo            relaysmoke in STRICT mode against Relay's own demo"
+	@echo "                             gate: the in-band approval (MRTR) path must run"
+	@echo "                             end to end or the run FAILS — run before a demo"
 	@echo "  lint-relaysmoke-build      go vet -tags relaysmoke (compile-only, no Docker)"
 
 build:
@@ -212,6 +215,14 @@ lint-substratev2-build:
 relaysmoke:
 	@test -n "$(RELAY_DIR)" || { echo "relaysmoke: set RELAY_DIR=<gleipnir-relay checkout>"; exit 2; }
 	@RELAY_DIR="$(RELAY_DIR)" scripts/relaysmoke.sh
+
+# The pre-demo gate: the same lane, with the pending_approval fallback turned
+# from a skip into a failure and the Relay running its own demo approval gate
+# (docker/fixtures/approval-gates.demo.json). See "Strict mode" in
+# docs/developer/relay-smoke.md.
+relaysmoke-demo:
+	@test -n "$(RELAY_DIR)" || { echo "relaysmoke-demo: set RELAY_DIR=<gleipnir-relay checkout>"; exit 2; }
+	@RELAY_DIR="$(RELAY_DIR)" RELAYSMOKE_REQUIRE_MRTR=1 scripts/relaysmoke.sh
 
 # The scoper decides how much of this gate runs, so it is gated by the gate.
 ci-local-scope-self-test:

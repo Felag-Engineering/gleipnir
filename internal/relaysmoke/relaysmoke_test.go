@@ -57,9 +57,11 @@ agent:
 }
 
 // mutatePolicyYAML grants relay.run_operation WITHOUT Gleipnir's own
-// approval:required -- Relay owns the gate for this scenario (the smoke
-// lane's own testdata/approval-gates.json), exactly like #937's
-// mrtrPolicyYAML.
+// approval:required -- Relay owns the gate for this scenario (the lane's
+// testdata/approval-gates.json, or Relay's own demo gate in strict mode),
+// exactly like #937's mrtrPolicyYAML. It deliberately does NOT grant
+// relay.approve_request, matching the demo policy: the only way this run's
+// approval question can be answered is Gleipnir's operator tool-input path.
 func mutatePolicyYAML() string {
 	return `
 name: relaysmoke-mutate
@@ -97,7 +99,14 @@ func TestRelaySmoke(t *testing.T) {
 	h := newHarness(t, e)
 	ctx := context.Background()
 
-	rep := &report{RelayRef: e.RelayRef, RawExecOutcomes: map[string]int{}}
+	rules := rulesFor(e.RequireMRTR)
+	rep := &report{
+		RelayRef:        e.RelayRef,
+		StrictMRTR:      e.RequireMRTR,
+		ApprovalGate:    rules.File,
+		RawExecOutcomes: map[string]int{},
+	}
+	t.Logf("RELAYSMOKE strict MRTR (pre-demo gate) = %v; approval gate = %s", e.RequireMRTR, rules.File)
 	t.Cleanup(func() {
 		if err := rep.writeTo(e.ReportPath); err != nil {
 			t.Errorf("write report to %s: %v", e.ReportPath, err)
@@ -142,9 +151,7 @@ func TestRelaySmoke(t *testing.T) {
 			},
 			// run_attribution: relay (#943) is the live proof that Relay
 			// accepts the asserted attribution headers with no 400 — the
-			// point of this manual-only lane. gated_mutate is still expected
-			// to skip until relay#646 verifies the identity these headers
-			// merely claim.
+			// point of this manual-only lane.
 			"run_attribution": map[string]any{"mode": "relay"},
 		})
 		if err != nil {
@@ -333,6 +340,13 @@ func TestRelaySmoke(t *testing.T) {
 	})
 
 	t.Run("gated_mutate", func(t *testing.T) {
+		// The demo's own repair beat (Relay's docs/operations/demo-fleet.md):
+		// `node:role=web, node:env=prod` resolves to daemon-4 and daemon-5 of
+		// the `demo` compose profile scripts/relaysmoke.sh brings up — a
+		// fan-out of 2, so the fleet-wide-mutate rule parks it. Both are
+		// role=web Nodes, so daemon-entrypoint.sh links the DEV-ONLY systemctl
+		// shim and an approved restart exits 0 rather than failing to spawn
+		// systemctl; policy.web.toml allows service.restart of nginx.
 		llm := testutil.NewMockLLMClient(
 			testutil.MakeToolCallResponse("relay.run_operation", "call-1", map[string]any{
 				"selector":  "node:role=web, node:env=prod",
@@ -350,15 +364,17 @@ func TestRelaySmoke(t *testing.T) {
 
 		select {
 		case <-parkedCh:
-			gatedMutateBranchA(t, ctx, h, approver, runID, done, rep)
+			gatedMutateBranchA(t, ctx, h, approver, runID, done, e.RequireMRTR, rules, rep)
 
 		case <-done:
-			// gatedMutateBranchB ends in t.Skipf, which calls runtime.Goexit()
-			// and never returns to this call site — rep.MRTR is therefore set
-			// INSIDE the branch function, not after this call.
-			gatedMutateBranchB(t, ctx, h, approver, runID, e.RelayRef, rep)
+			// gatedMutateBranchB ends in t.Skipf (or, in strict mode,
+			// t.Fatalf), both of which call runtime.Goexit() and never return
+			// to this call site — rep.MRTR is therefore set INSIDE the branch
+			// function, not after this call.
+			gatedMutateBranchB(t, ctx, h, approver, runID, e.RelayRef, e.RequireMRTR, rules, rep)
 
 		case <-time.After(4 * time.Minute):
+			rep.MRTR = "failed: neither a pause nor run completion within 4m"
 			t.Fatalf("gated_mutate: neither the tool_input.created pause nor run completion arrived within 4m")
 		}
 	})
@@ -384,8 +400,13 @@ func TestRelaySmoke(t *testing.T) {
 		if err != nil {
 			t.Fatalf("raw_exec (first call): %v", err)
 		}
+		// This client declares no elicitation capability (CallOptions{} —
+		// only a policy-resolved tool gets one, registry.go), so Relay must
+		// never ask it a question: under the default lane's out-of-band rule
+		// it may not ask anyone (gleipnir-relay#646), and under the demo
+		// gate's in-band rule it may ask only a client that can answer.
 		if r1.ResultType == mcp.ResultTypeInputRequired {
-			t.Fatal("raw_exec parked with input_required under an out-of-band rule — gleipnir-relay#646 requires an out-of-band rule to never emit an answerable elicitation")
+			t.Fatalf("raw_exec parked with input_required for a client that declared no elicitation capability (rule %s) — Relay must render pending_approval here", rules.RawExec)
 		}
 		var parked runOrPlanOutput
 		if err := decodeToolPayload(r1.Output, &parked); err != nil {
@@ -394,8 +415,8 @@ func TestRelaySmoke(t *testing.T) {
 		if parked.PendingApproval == nil {
 			t.Fatalf("raw_exec did not park — want pending_approval, got %+v", parked)
 		}
-		if !containsString(parked.PendingApproval.MatchedRules, "dev-raw-exec-always-needs-a-human") {
-			t.Errorf("raw_exec matched_rules = %v, want it to contain dev-raw-exec-always-needs-a-human", parked.PendingApproval.MatchedRules)
+		if !containsString(parked.PendingApproval.MatchedRules, rules.RawExec) {
+			t.Errorf("raw_exec matched_rules = %v, want it to contain %s (gate %s)", parked.PendingApproval.MatchedRules, rules.RawExec, rules.File)
 		}
 
 		if err := decide(ctx, approver, parked.PendingApproval.RequestID, parked.PendingApproval.PlanHash, true,
@@ -505,7 +526,13 @@ func TestRelaySmoke(t *testing.T) {
 // gatedMutateBranchA is taken when Relay emitted `input_required` for the
 // gated mutate call: an MRTR pause a human can actually answer
 // (gleipnir-relay#646 present in this build).
-func gatedMutateBranchA(t *testing.T, ctx context.Context, h *harness, approver relayAPI, runID string, done <-chan struct{}, rep *report) {
+//
+// In strict mode (requireMRTR) it additionally proves the demo beat end to
+// end: the answer travels through Gleipnir's operator tool-input path (never
+// approve_request), Relay accepted the retry's responder assertion and
+// recorded an in-band decision, the matched rule is the demo gate's, and the
+// restart succeeded on every Node.
+func gatedMutateBranchA(t *testing.T, ctx context.Context, h *harness, approver relayAPI, runID string, done <-chan struct{}, requireMRTR bool, rules gateRules, rep *report) {
 	t.Helper()
 	rep.MRTR = "exercised"
 
@@ -525,11 +552,19 @@ func gatedMutateBranchA(t *testing.T, ctx context.Context, h *harness, approver 
 	if getBody.Data.ElicitationKind != string(model.ElicitationKindPermission) {
 		t.Errorf("elicitation_kind = %q, want permission", getBody.Data.ElicitationKind)
 	}
+	if requireMRTR && getBody.Data.RequiredRole != string(model.RoleApprover) {
+		t.Errorf("required_role = %q, want %q — a permission ask is answered by an approver", getBody.Data.RequiredRole, model.RoleApprover)
+	}
 	if len(getBody.Data.Requests) != 1 || getBody.Data.Requests[0].Message == "" {
 		t.Fatalf("requests = %+v, want one request with a non-empty Relay-authored message", getBody.Data.Requests)
 	}
 	t.Logf("RELAYSMOKE Relay's elicitation message: %s", getBody.Data.Requests[0].Message)
 
+	// The exact body the run detail page's Approve button sends for a
+	// consent-only ask (frontend ToolInputCard: `{confirmed: true}` when the
+	// requested schema has no fields). The responder identity is NOT in this
+	// body — the handler stamps it from the session (ADR-061), which is
+	// precisely the property strict mode checks on Relay's side below.
 	w = h.do(t, http.MethodPost, "/api/v1/runs/"+runID+"/tool-input",
 		`{"responses":[{"action":"accept","content":{"confirmed":true}}]}`, model.RoleApprover)
 	if w.Code != http.StatusAccepted {
@@ -546,6 +581,15 @@ func gatedMutateBranchA(t *testing.T, ctx context.Context, h *harness, approver 
 	}
 
 	results := toolResults(t, h.store, runID)
+	if requireMRTR {
+		// Structurally impossible today (the policy does not grant it, so it
+		// is never registered — ADR-001), and asserted anyway: the demo's
+		// claim is that a HUMAN answered in Gleipnir, and an approve_request
+		// call in this trace would mean the model did instead.
+		if r := lastToolResult(results, "relay.approve_request"); r != nil {
+			t.Errorf("the run called relay.approve_request (%+v) — the approval must arrive through Gleipnir's operator tool-input path, never a model-called tool", *r)
+		}
+	}
 	last := lastToolResult(results, "relay.run_operation")
 	if last == nil || last.IsError {
 		t.Fatalf("final relay.run_operation tool_result missing or is_error; results=%+v", results)
@@ -554,17 +598,44 @@ func gatedMutateBranchA(t *testing.T, ctx context.Context, h *harness, approver 
 	if err := decodeToolPayload([]byte(last.Output), &out); err != nil {
 		t.Fatalf("decode run_operation payload: %v", err)
 	}
+	if out.AnswerRefused != nil {
+		// Relay refuses an API-token session's answer that carries no
+		// io.gleipnir/responder permission assertion (AP-64) with exactly
+		// this block — the most likely reason for it is that Gleipnir's
+		// retry stopped stamping the responder.
+		t.Fatalf("Relay refused the answered retry: reason=%q state=%q next_step=%q — check that the retry carries _meta[\"io.gleipnir/responder\"] = {gate: permission, username} (internal/execution/agent/inputrequired.go)",
+			out.AnswerRefused.Reason, out.AnswerRefused.State, out.AnswerRefused.NextStep)
+	}
 	if len(out.Results) != 2 {
 		t.Errorf("run_operation returned %d per-node results, want 2 (node:role=web, node:env=prod)", len(out.Results))
 	}
+	rep.MutateOutcomes = map[string]int{}
+	seen := make(map[string]bool, len(out.Results))
 	for _, r := range out.Results {
+		rep.MutateOutcomes[r.Outcome]++
 		if r.NodeID == "" || r.Outcome == "" {
 			t.Errorf("per-node result missing node_id or outcome: %+v", r)
 		}
-		// NOT asserted "success": the busybox fixture has no systemctl, so
-		// this is `failure` per the Relay runbook, and only parking is the
-		// property under test here.
+		if seen[r.NodeID] {
+			t.Errorf("duplicate node_id %s in run_operation results", r.NodeID)
+		}
+		seen[r.NodeID] = true
 		t.Logf("RELAYSMOKE gated_mutate outcome: %s -> %s", r.NodeID, r.Outcome)
+
+		// Asserted only in strict mode: the default lane predates the web
+		// Nodes' systemctl shim and treats parking as the only property under
+		// test. Strict mode tracks the demo, where the restart must succeed.
+		if requireMRTR {
+			if r.Outcome != "success" {
+				t.Errorf("node %s outcome = %s (stderr=%q), want success — the demo's web Nodes restart nginx through the DEV-ONLY systemctl shim", r.NodeID, r.Outcome, r.Stderr)
+			} else if r.ExitCode == nil || *r.ExitCode != 0 {
+				t.Errorf("node %s exit_code = %v, want 0", r.NodeID, r.ExitCode)
+			}
+		}
+	}
+
+	if requireMRTR {
+		assertInBandDecision(t, ctx, approver, out, rules)
 	}
 
 	w = h.do(t, http.MethodGet, "/api/v1/runs/"+runID+"/decisions", "", model.RoleAuditor)
@@ -595,13 +666,69 @@ func gatedMutateBranchA(t *testing.T, ctx context.Context, h *harness, approver 
 	}
 }
 
+// assertInBandDecision checks, from Relay's side, that the answered retry was
+// accepted as an in-band decision naming Gleipnir's responder — which, on an
+// API-token session, Relay grants only when the retry carried
+// _meta["io.gleipnir/responder"] = {gate: "permission", username: <non-blank>}
+// (AP-64). The decision block echoes that username as on_behalf_of, so it is
+// the wire-level proof that the assertion arrived intact. The Control API
+// read-back then pins which gate the Relay actually loaded.
+func assertInBandDecision(t *testing.T, ctx context.Context, approver relayAPI, out runOrPlanOutput, rules gateRules) {
+	t.Helper()
+
+	d := out.Decision
+	if d == nil {
+		t.Fatalf("the answered retry's result carries no `decision` block — Relay did not treat the retry as an answer to its question; result=%+v", out)
+	}
+	if d.Channel != "in-band" {
+		t.Errorf("decision.channel = %q, want in-band", d.Channel)
+	}
+	if d.OnBehalfOf != approverUsername {
+		t.Errorf("decision.on_behalf_of = %q, want %q — the responder assertion Gleipnir stamps on the retry did not reach Relay as sent", d.OnBehalfOf, approverUsername)
+	}
+	if d.State != "approved" {
+		t.Errorf("decision.state = %q, want approved", d.State)
+	}
+	if d.RequestID == "" {
+		t.Fatal("decision.request_id is empty; cannot cross-check Relay's approval record")
+	}
+
+	a, err := getApproval(ctx, approver, d.RequestID)
+	if err != nil {
+		t.Fatalf("read back Relay's approval record: %v", err)
+	}
+	if !containsString(a.MatchedRules, rules.FleetWideMutate) {
+		t.Errorf("approval matched_rules = %v, want it to contain %s — the Relay is not running the demo gate (%s)", a.MatchedRules, rules.FleetWideMutate, rules.File)
+	}
+	if a.Channel != "in-band" || !a.RequesterAllowed || len(a.Audience) != 0 {
+		t.Errorf("approval requirement = {channel %q, requester_allowed %v, audience %v}, want {in-band, true, none} — the demo gate's semantics", a.Channel, a.RequesterAllowed, a.Audience)
+	}
+	if a.State != "approved" {
+		t.Errorf("approval state = %q, want approved", a.State)
+	}
+	if out.JobID == "" || a.JobID != out.JobID {
+		t.Errorf("approval job_id = %q, run_operation job_id = %q — want the same, non-empty Job", a.JobID, out.JobID)
+	}
+	if len(a.Decisions) != 1 {
+		t.Fatalf("approval decisions = %+v, want exactly one", a.Decisions)
+	}
+	got := a.Decisions[0]
+	if !got.Approve || got.Channel != "in-band" || got.Account != "gleipnir-smoke" || got.Human {
+		t.Errorf("approval decision = %+v, want an in-band approval by the gleipnir-smoke machine Account (human=false; the human is the ASSERTED responder)", got)
+	}
+}
+
 // gatedMutateBranchB is taken when the run completed on its own: Relay never
 // emitted input_required, so the model received the universal
 // `pending_approval` fallback text instead. This is the expected outcome on
 // a Relay build without gleipnir-relay#646 -- assert the fallback, clean up
 // Relay's own parked request, then skip (never silently pass) naming the
 // build and the tracked issue.
-func gatedMutateBranchB(t *testing.T, ctx context.Context, h *harness, approver relayAPI, runID, relayRef string, rep *report) {
+//
+// In strict mode the same fallback is a FAILURE: the demo depends on the
+// question reaching a human in Gleipnir, and a pending_approval result means
+// it would not have.
+func gatedMutateBranchB(t *testing.T, ctx context.Context, h *harness, approver relayAPI, runID, relayRef string, requireMRTR bool, rules gateRules, rep *report) {
 	t.Helper()
 
 	status := runStatus(t, h.store, runID)
@@ -617,12 +744,13 @@ func gatedMutateBranchB(t *testing.T, ctx context.Context, h *harness, approver 
 	parkedAsFallback := status == "complete" && last != nil && !last.IsError && decodeErr == nil &&
 		out.PendingApproval != nil && out.PendingApproval.Status == "pending_approval"
 	if !parkedAsFallback {
+		rep.MRTR = "failed: neither input_required nor pending_approval"
 		t.Fatalf("mutate run ended without parking and without pending_approval — cause: Gleipnir's parked-result (input_required) handling; run status=%s, last tool_result=%+v, error steps=%v",
 			status, last, errorSteps(t, h.store, runID))
 	}
 
-	if !containsString(out.PendingApproval.MatchedRules, "relaysmoke-fleet-wide-mutates-in-band") {
-		t.Errorf("pending_approval.matched_rules = %v, want it to contain relaysmoke-fleet-wide-mutates-in-band", out.PendingApproval.MatchedRules)
+	if !containsString(out.PendingApproval.MatchedRules, rules.FleetWideMutate) {
+		t.Errorf("pending_approval.matched_rules = %v, want it to contain %s (gate %s)", out.PendingApproval.MatchedRules, rules.FleetWideMutate, rules.File)
 	}
 	if out.PendingApproval.RequestID == "" || out.PendingApproval.PlanHash == "" {
 		t.Fatalf("pending_approval request_id/plan_hash empty: %+v", out.PendingApproval)
@@ -633,10 +761,18 @@ func gatedMutateBranchB(t *testing.T, ctx context.Context, h *harness, approver 
 		t.Fatalf("cleanup decision on Relay's fallback park: %v", err)
 	}
 
-	// Set before t.Skipf: Skipf calls runtime.Goexit(), so nothing after it in
-	// this goroutine (including the call site back in TestRelaySmoke) runs.
+	// rep.MRTR is set before t.Fatalf/t.Skipf: both call runtime.Goexit(), so
+	// nothing after them in this goroutine (including the call site back in
+	// TestRelaySmoke) runs.
+	if requireMRTR {
+		rep.MRTR = "failed: pending_approval fallback (strict)"
+		t.Fatalf("STRICT: Relay %s answered the gated mutate with pending_approval, not input_required — on stage the approval question would never reach a human in Gleipnir. "+
+			"Relay asks in-band only when ALL hold: the matched rule is in-band with requester_allowed and an audience admitting the requester (gate %s, matched %v); "+
+			"the client declares name `gleipnir` and the elicitation capability on the 2026-07-28 transport; and the build carries gleipnir-relay#646",
+			relayRef, rules.File, out.PendingApproval.MatchedRules)
+	}
 	rep.MRTR = "skipped: pending_approval fallback"
-	t.Skipf("Relay %s answered the in-band gated call with pending_approval, not input_required — gleipnir-relay#646 is not in this build. Asserted the universal fallback instead.", relayRef)
+	t.Skipf("Relay %s answered the in-band gated call with pending_approval, not input_required — gleipnir-relay#646 is not in this build, or the gate's rule is not askable by the requesting Account. Asserted the universal fallback instead. Run `make relaysmoke-demo` to make this a failure.", relayRef)
 }
 
 // waitForFleet is the one unavoidable wall-clock poll in this suite: there is

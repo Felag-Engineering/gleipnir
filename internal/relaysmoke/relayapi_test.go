@@ -160,12 +160,25 @@ func mintMachineToken(ctx context.Context, admin relayAPI, name string) (account
 // --- Approvals (relay/internal/controlplane/api/approvals.go) ---
 
 type approval struct {
-	RequestID    string   `json:"request_id"`
-	State        string   `json:"state"`
-	PlanHash     string   `json:"plan_hash"`
-	RequestedBy  string   `json:"requested_by"`
-	Channel      string   `json:"channel"`
-	MatchedRules []string `json:"matched_rules"`
+	RequestID        string             `json:"request_id"`
+	State            string             `json:"state"`
+	PlanHash         string             `json:"plan_hash"`
+	RequestedBy      string             `json:"requested_by"`
+	Channel          string             `json:"channel"`
+	MatchedRules     []string           `json:"matched_rules"`
+	Audience         []string           `json:"audience,omitempty"`
+	RequesterAllowed bool               `json:"requester_allowed"`
+	JobID            string             `json:"job_id,omitempty"`
+	Decisions        []approvalDecision `json:"decisions"`
+}
+
+// approvalDecision mirrors approvals.go's decisionResponse: one recorded
+// answer on a request.
+type approvalDecision struct {
+	Account string `json:"account"`
+	Approve bool   `json:"approve"`
+	Channel string `json:"channel"`
+	Human   bool   `json:"human"`
 }
 
 type listApprovalsResponse struct {
@@ -178,6 +191,16 @@ func pendingApprovals(ctx context.Context, a relayAPI) ([]approval, error) {
 		return nil, fmt.Errorf("list approvals: %w", err)
 	}
 	return resp.Approvals, nil
+}
+
+// getApproval reads one approval request in whatever state it is in,
+// including terminal ones (GET /api/v1/approvals/{id}).
+func getApproval(ctx context.Context, a relayAPI, requestID string) (approval, error) {
+	var resp approval
+	if _, err := a.do(ctx, http.MethodGet, fmt.Sprintf("/api/v1/approvals/%s", requestID), nil, &resp); err != nil {
+		return approval{}, fmt.Errorf("get approval %s: %w", requestID, err)
+	}
+	return resp, nil
 }
 
 // decide answers a parked approval request as approver, over the Control
@@ -253,6 +276,29 @@ type runOrPlanOutput struct {
 	JobID           string           `json:"job_id,omitempty"`
 	Results         []perNodeResult  `json:"results"`
 	PendingApproval *pendingApproval `json:"pending_approval,omitempty"`
+	// Decision is present only on an answered MRTR retry: what Relay recorded
+	// for the answer that rode it.
+	Decision *answeredDecision `json:"decision,omitempty"`
+	// AnswerRefused is present only when an answered retry's answer was
+	// refused (e.g. a missing responder assertion); nothing was dispatched.
+	AnswerRefused *answerRefused `json:"answer_refused,omitempty"`
+}
+
+// answeredDecision mirrors wire.go's ApprovalDecisionOutput, as carried on an
+// answered retry's `decision` block.
+type answeredDecision struct {
+	RequestID  string `json:"request_id"`
+	State      string `json:"state"`
+	Channel    string `json:"channel"`
+	OnBehalfOf string `json:"on_behalf_of"`
+}
+
+// answerRefused mirrors wire.go's AnswerRefusalOutput.
+type answerRefused struct {
+	RequestID string `json:"request_id,omitempty"`
+	Reason    string `json:"reason"`
+	State     string `json:"state,omitempty"`
+	NextStep  string `json:"next_step"`
 }
 
 // perNodeResult mirrors wire.go's PerNodeResult.
