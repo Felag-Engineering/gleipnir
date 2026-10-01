@@ -249,6 +249,16 @@ before.
 Run all of it within 30 minutes of going on, and again if the laptop has slept since. Every
 item has a check that shows real state, and a fix.
 
+**The day before (and after any change to either repo): `make relaysmoke-demo RELAY_DIR=<gleipnir-relay checkout>`**
+from the Gleipnir repo. It brings up its own private copy of the nine-Node fleet on Relay's own
+demo gate and drives act two's path end to end — the in-band question, an answer through the
+same endpoint the Approve button uses, the responder assertion reaching Relay, and two
+successful restarts — and **fails** rather than skips if any of it breaks
+([relay-smoke.md](../developer/relay-smoke.md#strict-mode-the-pre-demo-gate)). It runs on a separate compose
+project and port, so it does not touch the stage fleet, but stop it before `make demo-reset`
+to keep the laptop's memory for the demo. If it is red, act two is not ready; nothing below
+fixes that.
+
 | # | Item | Check | Fix |
 |---|---|---|---|
 | 1 | **Relay API token not expired** (24h) | `curl -sS -o /dev/null -w '%{http_code}\n' --resolve relay:9443:127.0.0.1 --cacert .dev-fleet/ca-cert.pem -H "Authorization: Bearer $(cat .dev-fleet/auto-incident-response-credential)" https://relay:9443/api/v1/approvals` → `200` | `401`: the token is expired or was wiped by a reset. Re-run §2 step 7, then replace the header value ([§5 step 3](#5-reset-between-runs)). |
