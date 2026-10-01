@@ -6,6 +6,10 @@ interface Props {
   policies: ApiPolicyListItem[]
   onTrigger?: (policyId: string, policyName: string) => void
   groupByFolder?: boolean
+  // Runs paused on a tool-initiated permission ask; their latest-run badge
+  // reads "Awaiting Approval". Supplied by the page, which already has the
+  // attention queue cached — the list itself fetches nothing.
+  permissionAskRunIds?: ReadonlySet<string>
 }
 
 function groupPoliciesByFolder(policies: ApiPolicyListItem[]): Map<string, ApiPolicyListItem[]> {
@@ -22,7 +26,7 @@ function groupPoliciesByFolder(policies: ApiPolicyListItem[]): Map<string, ApiPo
   return groups
 }
 
-export function PolicyList({ policies, onTrigger, groupByFolder = true }: Props) {
+export function PolicyList({ policies, onTrigger, groupByFolder = true, permissionAskRunIds }: Props) {
   function renderCards(items: ApiPolicyListItem[]) {
     return (
       <div className={styles.cardList}>
@@ -31,6 +35,7 @@ export function PolicyList({ policies, onTrigger, groupByFolder = true }: Props)
             key={policy.id}
             policy={policy}
             onTrigger={onTrigger ?? (() => {})}
+            awaitingPermission={policy.latest_run ? (permissionAskRunIds?.has(policy.latest_run.id) ?? false) : false}
           />
         ))}
       </div>

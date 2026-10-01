@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router'
-import { ArrowLeft, ChevronDown, ChevronUp } from 'lucide-react'
+import { ArrowDown, ArrowLeft, ChevronDown, ChevronUp } from 'lucide-react'
 import type { ApiRun } from '@/api/types'
 import { StatusBadge } from '@/components/dashboard/StatusBadge/StatusBadge'
 import { TriggerChip } from '@/components/dashboard/TriggerChip/TriggerChip'
 import { Button } from '@/components/Button'
 import type { RunStatus, TriggerType } from '@/constants/status'
 import { formatDurationMs, formatTokens, formatTimestamp, formatProviderName } from '@/utils/format'
+import { CAPABILITY_SNAPSHOT_ANCHOR } from './CapabilitySnapshotCard'
 import styles from './RunHeader.module.css'
 
 interface CapabilityTool {
@@ -32,12 +33,14 @@ interface Props {
   showCancel?: boolean
   onCancel?: () => void
   cancelPending?: boolean
+  // True when the run is paused on a tool-initiated permission ask; the
+  // status badge then reads "Awaiting Approval" (see runStatusLabel).
+  awaitingPermission?: boolean
 }
 
-export function RunHeader({ run, toolCallCount, tokenTotal, duration, capabilitySnapshot, showRetry, onRetry, showCancel, onCancel, cancelPending }: Props) {
+export function RunHeader({ run, toolCallCount, tokenTotal, duration, capabilitySnapshot, showRetry, onRetry, showCancel, onCancel, cancelPending, awaitingPermission = false }: Props) {
   const navigate = useNavigate()
   const [adminOpen, setAdminOpen] = useState(false)
-  const [capExpanded, setCapExpanded] = useState(false)
 
   const statCards = [
     { value: duration !== null ? formatDurationMs(duration) : '—', label: 'Duration' },
@@ -54,6 +57,10 @@ export function RunHeader({ run, toolCallCount, tokenTotal, duration, capability
       ].filter(Boolean)
     : []
 
+  function scrollToSnapshot() {
+    document.getElementById(CAPABILITY_SNAPSHOT_ANCHOR)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
   return (
     <header className={styles.header}>
       <div className={styles.row1}>
@@ -67,7 +74,7 @@ export function RunHeader({ run, toolCallCount, tokenTotal, duration, capability
         <span className={styles.policyName}>
           {run.policy_name || run.policy_id}
         </span>
-        <StatusBadge status={run.status as RunStatus} />
+        <StatusBadge status={run.status as RunStatus} awaitingPermission={awaitingPermission} />
         <TriggerChip type={run.trigger_type as TriggerType} />
         {showRetry && onRetry && (
           <Button variant="secondary" size="small" onClick={onRetry}>
@@ -93,49 +100,24 @@ export function RunHeader({ run, toolCallCount, tokenTotal, duration, capability
       {capabilityParts.length > 0 && (
         <div>
           <div className={styles.capabilityRow}>
+            {/* The tool list itself lives in one place: the Capability
+                snapshot card at the top of the timeline. This summary keeps
+                the model and tool count in view and jumps to that card. */}
             <button
               type="button"
               className={styles.capabilityBar}
-              onClick={() => setCapExpanded(o => !o)}
-              aria-expanded={capExpanded}
+              onClick={scrollToSnapshot}
+              aria-label={`${capabilityParts.join(' · ')} — show capability snapshot`}
             >
               {capabilityParts.join(' · ')}
               <span className={styles.capabilityChevron}>
-                {capExpanded ? <ChevronUp size={14} aria-hidden /> : <ChevronDown size={14} aria-hidden />}
+                <ArrowDown size={14} aria-hidden />
               </span>
             </button>
             {capabilitySnapshot?.feedbackEnabled && (
               <span className={styles.feedbackChip}>Feedback</span>
             )}
           </div>
-          {capExpanded && capabilitySnapshot && capabilitySnapshot.tools.length > 0 && (
-            <div className={styles.capabilityTableWrapper}>
-              <table className={styles.capabilityTable}>
-                <thead>
-                  <tr>
-                    <th>Tool</th>
-                    <th>Server</th>
-                    <th>Approval</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {capabilitySnapshot.tools.map(tool => (
-                    <tr key={`${tool.server_name}/${tool.tool_name}`}>
-                      <td className={styles.mono}>{tool.tool_name}</td>
-                      <td className={`${styles.mono} ${styles.muted}`}>{tool.server_name}</td>
-                      <td>
-                        {tool.approval === 'required' ? (
-                          <span className={styles.approvalRequired}>required</span>
-                        ) : (
-                          <span className={styles.approvalNone}>none</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
         </div>
       )}
 

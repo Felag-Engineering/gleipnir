@@ -7,6 +7,7 @@ import { TriggerRunModal } from '@/components/TriggerRunModal'
 import { PageHeader } from '@/components/PageHeader'
 import { usePolicies } from '@/hooks/queries/policies'
 import { useSetupReadiness } from '@/hooks/useSetupReadiness'
+import { usePermissionAskRunIds } from '@/hooks/useAttentionItems'
 import { queryKeys } from '@/hooks/queryKeys'
 import { QueryBoundary } from '@/components/QueryBoundary'
 import { usePageTitle } from '@/hooks/usePageTitle'
@@ -17,6 +18,7 @@ export default function AgentsPage() {
   usePageTitle('Agents')
   const { data: policies, status: policiesStatus } = usePolicies()
   const readiness = useSetupReadiness()
+  const permissionAskRunIds = usePermissionAskRunIds()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const [triggerTarget, setTriggerTarget] = useState<{ id: string; name: string } | null>(null)
@@ -58,6 +60,7 @@ export default function AgentsPage() {
       >
         <PolicyList
           policies={policies ?? []}
+          permissionAskRunIds={permissionAskRunIds}
           onTrigger={(id: string, name: string) => setTriggerTarget({ id, name })}
         />
       </QueryBoundary>

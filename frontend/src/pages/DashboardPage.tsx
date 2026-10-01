@@ -10,7 +10,7 @@ import { useTimeSeriesStats } from '@/hooks/queries/stats'
 import { useAttentionItems } from '@/hooks/useAttentionItems'
 import { useSetupReadiness } from '@/hooks/useSetupReadiness'
 import { useRuns } from '@/hooks/queries/runs'
-import { useCurrentUser } from '@/hooks/queries/users'
+import { useRoleAccess } from '@/permissions/useRoleAccess'
 import styles from './DashboardPage.module.css'
 
 export default function DashboardPage() {
@@ -18,17 +18,14 @@ export default function DashboardPage() {
   useRechartsCleanup()
   const timeSeries = useTimeSeriesStats()
   const attention = useAttentionItems()
-  const readiness = useSetupReadiness()
-  const recentRuns = useRuns({ limit: 1 })
-  const hasFirstRun = recentRuns.runs.length > 0
-
   // Only admins and operators can see — or do — the setup steps. For any other
   // role the readiness endpoints answer 403, which would read as "not done"
   // and show an approver or auditor a checklist claiming the instance is
-  // unconfigured, with links they cannot use.
-  const { data: currentUser } = useCurrentUser()
-  const roles = currentUser?.roles ?? []
-  const canSetUp = roles.includes('admin') || roles.includes('operator')
+  // unconfigured, with links they cannot use. The reads are not sent either.
+  const { canSetUp } = useRoleAccess()
+  const readiness = useSetupReadiness({ enabled: canSetUp })
+  const recentRuns = useRuns({ limit: 1 })
+  const hasFirstRun = recentRuns.runs.length > 0
 
   return (
     <div className={styles.page}>

@@ -77,10 +77,13 @@ export function useAudienceReferences(id: string | undefined) {
 
 // GET /api/v1/admin/plugin-instances — consumed by the audience editor (#290)
 // and the admin/plugins page (#230).
-export function usePluginInstancesForAudience() {
+// `enabled: false` skips the request — used where the current role's read
+// would 403 (see permissions/roleAccess.ts).
+export function usePluginInstancesForAudience({ enabled = true }: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: queryKeys.admin.pluginInstances,
     queryFn: () => apiFetch<ApiPluginInstanceForAudience[]>('/admin/plugin-instances'),
+    enabled,
   })
 }
 

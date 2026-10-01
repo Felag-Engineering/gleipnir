@@ -14,6 +14,11 @@ import styles from './StepTimeline.module.css'
 
 interface Props {
   items: (ParsedStep | ToolBlockData)[]
+  // The run's capability snapshot step (ADR-018), rendered as the first entry
+  // of the timeline whatever the active filter: it is the frame every other
+  // step happened inside. It is passed separately from `items` because filter
+  // counts and pagination exclude it.
+  snapshot?: ParsedStep | null
   systemPrompt?: string | null
   runId: string
   runStatus: string
@@ -28,8 +33,10 @@ interface Props {
   nodeHostnames?: NodeHostnameIndex
 }
 
-export function StepTimeline({ items, systemPrompt, runId, runStatus, triggerType, triggerPayload, durationMs, nodeHostnames }: Props) {
-  if (items.length === 0 && !triggerType) {
+export function StepTimeline({ items, snapshot, systemPrompt, runId, runStatus, triggerType, triggerPayload, durationMs, nodeHostnames }: Props) {
+  const snapshotContent = snapshot?.type === 'capability_snapshot' ? snapshot.content : null
+
+  if (items.length === 0 && !triggerType && !snapshotContent) {
     return (
       <p className={styles.empty}>No steps to display.</p>
     )
@@ -39,6 +46,11 @@ export function StepTimeline({ items, systemPrompt, runId, runStatus, triggerTyp
 
   return (
     <ol className={styles.timeline} aria-label="Run steps">
+      {snapshotContent && (
+        <li className={styles.item}>
+          <CapabilitySnapshotCard content={snapshotContent} systemPrompt={systemPrompt} />
+        </li>
+      )}
       {triggerType && (
         <li className={styles.item}>
           <TriggerBlock triggerType={triggerType} payload={triggerPayload ?? null} />

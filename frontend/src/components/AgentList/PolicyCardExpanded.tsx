@@ -2,6 +2,7 @@ import { Link } from 'react-router'
 import type { ApiPolicyListItem } from '@/api/types'
 import { usePolicy } from '@/hooks/queries/policies'
 import { useRuns } from '@/hooks/queries/runs'
+import { usePermissionAskRunIds } from '@/hooks/useAttentionItems'
 import { yamlToFormState } from '@/components/AgentEditor/agentEditorUtils'
 import { formatTokens, formatTimeAgo } from '@/utils/format'
 import { StatusBadge } from '@/components/dashboard/StatusBadge'
@@ -33,6 +34,7 @@ export function PolicyCardExpanded({ policy }: Props) {
     sort: 'started_at',
     order: 'desc',
   })
+  const permissionAskRunIds = usePermissionAskRunIds()
 
   if (detailLoading || runsLoading) {
     return (
@@ -51,7 +53,13 @@ export function PolicyCardExpanded({ policy }: Props) {
   const concurrency = formState?.concurrency.concurrency ?? 'skip'
   const concurrencyLabel = concurrency.charAt(0).toUpperCase() + concurrency.slice(1)
 
-  const hasFeedbackPending = runs.some(r => r.status === 'waiting_for_feedback')
+  // A run waiting_for_feedback on a tool-initiated permission ask is an
+  // approval to the person reading this, so it is counted as one.
+  const hasApprovalPending = runs.some(r =>
+    r.status === 'waiting_for_approval'
+    || (r.status === 'waiting_for_feedback' && permissionAskRunIds.has(r.id)))
+  const hasFeedbackPending = runs.some(r =>
+    r.status === 'waiting_for_feedback' && !permissionAskRunIds.has(r.id))
 
   return (
     <div className={styles.expanded}>
@@ -82,6 +90,9 @@ export function PolicyCardExpanded({ policy }: Props) {
         <div>
           <div className={styles.recentLabel}>
             Recent Runs
+            {hasApprovalPending && (
+              <span className={styles.feedbackBadge}>approval pending</span>
+            )}
             {hasFeedbackPending && (
               <span className={styles.feedbackBadge}>feedback pending</span>
             )}
@@ -93,7 +104,7 @@ export function PolicyCardExpanded({ policy }: Props) {
                 to={`/runs/${run.id}`}
                 className={styles.recentRow}
               >
-                {isRunStatus(run.status) && <StatusBadge status={run.status as RunStatus} />}
+                {isRunStatus(run.status) && <StatusBadge status={run.status as RunStatus} awaitingPermission={permissionAskRunIds.has(run.id)} />}
                 <span className={styles.recentTime}>{formatTimeAgo(run.started_at)}</span>
               </Link>
             ))}

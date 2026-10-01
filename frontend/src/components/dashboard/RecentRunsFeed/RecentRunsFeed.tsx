@@ -2,6 +2,8 @@ import { Link, useNavigate } from 'react-router'
 import { ArrowRight } from 'lucide-react'
 import { useRuns } from '@/hooks/queries/runs'
 import { useSetupReadiness } from '@/hooks/useSetupReadiness'
+import { usePermissionAskRunIds } from '@/hooks/useAttentionItems'
+import { useRoleAccess } from '@/permissions/useRoleAccess'
 import { StatusBadge } from '@/components/dashboard/StatusBadge'
 import { EmptyState } from '@/components/EmptyState'
 import { SkeletonBlock } from '@/components/SkeletonBlock'
@@ -41,14 +43,27 @@ const EMPTY_STATE_BY_STEP = {
   },
 }
 
+// Shown to a role that cannot configure the instance or open the Agents page
+// (an approver): no setup advice it cannot act on, and no link that 403s.
+const EMPTY_STATE_VIEW_ONLY = {
+  headline: 'No runs yet',
+  subtext: 'Runs appear here as agents are triggered.',
+}
+
 export function RecentRunsFeed() {
   const { runs, isLoading } = useRuns({ limit: 10, sort: 'started_at', order: 'desc' })
-  const readiness = useSetupReadiness()
+  const access = useRoleAccess()
+  // The readiness reads 403 for roles that cannot set the instance up, so they
+  // are not sent for those roles at all.
+  const readiness = useSetupReadiness({ enabled: access.canSetUp })
+  const permissionAskRunIds = usePermissionAskRunIds()
   const navigate = useNavigate()
 
-  const emptyStateProps = readiness.isError
-    ? EMPTY_STATE_BY_STEP.ready
-    : EMPTY_STATE_BY_STEP[readiness.nextStep]
+  const emptyStateProps = !access.canSetUp
+    ? (access.canAccess('/agents') ? EMPTY_STATE_BY_STEP.ready : EMPTY_STATE_VIEW_ONLY)
+    : readiness.isError
+      ? EMPTY_STATE_BY_STEP.ready
+      : EMPTY_STATE_BY_STEP[readiness.nextStep]
 
   return (
     <div>
@@ -94,7 +109,7 @@ export function RecentRunsFeed() {
                 {run.policy_name || run.policy_id}
               </span>
               <span className={styles.colStatus}>
-                <StatusBadge status={run.status as RunStatus} />
+                <StatusBadge status={run.status as RunStatus} awaitingPermission={permissionAskRunIds.has(run.id)} />
               </span>
               <span className={styles.colDuration}>
                 {formatDuration(duration)}

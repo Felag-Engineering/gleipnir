@@ -107,7 +107,9 @@ export function useRunTimeline(
   const displayedItems = filteredItems.slice(0, displayedCount)
   const hasMore = filteredItems.length > displayedCount
 
-  // Capability snapshots are now rendered in the header, not in the timeline.
+  // Capability snapshots are not timeline items: RunDetailPage hands
+  // snapshotSteps[0] to StepTimeline, which renders it as the first entry
+  // outside filtering and pagination.
   const timelineItems: (ParsedStep | ToolBlockData)[] = displayedItems
 
   const remainingCount = filteredItems.length - displayedItems.length

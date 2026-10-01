@@ -35,10 +35,13 @@ export interface ProviderModels {
   models: ModelInfo[]
 }
 
-export function useModels() {
+// `enabled: false` skips the request — used where the current role's read
+// would 403 (see permissions/roleAccess.ts).
+export function useModels({ enabled = true }: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: queryKeys.models.all,
     queryFn: () => apiFetch<ProviderModels[]>('/models'),
     staleTime: 5 * 60 * 1000, // models don't change often, cache 5 min
+    enabled,
   })
 }
