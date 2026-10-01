@@ -33,9 +33,32 @@ readonly REPO_ROOT
 # --- Inputs ------------------------------------------------------------
 [ -n "${RELAY_DIR:-}" ] || die 2 "RELAY_DIR is required — set it to a gleipnir-relay checkout, e.g. RELAY_DIR=~/felag/gleipnir-relay"
 [ -d "$RELAY_DIR" ] || die 2 "RELAY_DIR=$RELAY_DIR is not a directory"
-[ -f "$RELAY_DIR/docker-compose.yml" ] || die 2 "RELAY_DIR=$RELAY_DIR has no docker-compose.yml — is this a gleipnir-relay checkout?"
 RELAY_DIR="$(cd "$RELAY_DIR" && pwd)"
 readonly RELAY_DIR
+
+# Relay split its single-Relay deployment stack from the dev/demo fleets
+# (gleipnir-relay#783): the fleet now lives in docker-compose.demo.yml and
+# there is deliberately no root docker-compose.yml. Prefer the new name and
+# fall back to the old one only so an older pinned checkout still runs.
+if [ -f "$RELAY_DIR/docker-compose.demo.yml" ]; then
+	RELAY_COMPOSE_FILE="$RELAY_DIR/docker-compose.demo.yml"
+elif [ -f "$RELAY_DIR/docker-compose.yml" ]; then
+	RELAY_COMPOSE_FILE="$RELAY_DIR/docker-compose.yml"
+else
+	die 2 "RELAY_DIR=$RELAY_DIR has neither docker-compose.demo.yml nor docker-compose.yml — is this a gleipnir-relay checkout?"
+fi
+readonly RELAY_COMPOSE_FILE
+
+# RELAYSMOKE_REQUIRE_MRTR=1 is the pre-demo gate (docs/developer/relay-smoke.md,
+# "Strict mode"). Only "" / "0" / "1" are accepted: a typo such as "true" must
+# not quietly run the lenient lane while the caller believes the MRTR path was
+# proved.
+RELAYSMOKE_REQUIRE_MRTR="${RELAYSMOKE_REQUIRE_MRTR:-0}"
+case "$RELAYSMOKE_REQUIRE_MRTR" in
+0 | 1) ;;
+*) die 2 "RELAYSMOKE_REQUIRE_MRTR=$RELAYSMOKE_REQUIRE_MRTR — must be 0 or 1" ;;
+esac
+readonly RELAYSMOKE_REQUIRE_MRTR
 
 RELAYSMOKE_CONTROL_PORT="${RELAYSMOKE_CONTROL_PORT:-19443}"
 RELAYSMOKE_WAIT_SECONDS="${RELAYSMOKE_WAIT_SECONDS:-900}"
@@ -73,7 +96,7 @@ readonly PROJECT="gleipnir-relaysmoke"
 # own single-call-site discipline in scripts/demo-fleet.sh).
 dc() {
 	docker compose -p "$PROJECT" --project-directory "$RELAY_DIR" \
-		-f "$RELAY_DIR/docker-compose.yml" \
+		-f "$RELAY_COMPOSE_FILE" \
 		-f "$REPO_ROOT/internal/relaysmoke/testdata/compose.override.yml" \
 		--profile demo "$@"
 }
@@ -96,6 +119,32 @@ gates_file="$RELAYSMOKE_ARTIFACT_DIR/approval-gates.json"
 install -m 0644 "$REPO_ROOT/internal/relaysmoke/testdata/approval-gates.json" "$gates_file"
 export RELAYSMOKE_GATES_FILE="$gates_file"
 export RELAYSMOKE_CONTROL_PORT
+
+# Which gate file the Relay loads. Relay's compose file interpolates
+# RELAY_APPROVAL_GATE_CONFIG from DEV_FLEET_APPROVAL_GATE_CONFIG, read from
+# the caller's shell or a .env in RELAY_DIR — so it is set explicitly in BOTH
+# modes, never inherited: a leftover export must not change which gate this
+# lane proves.
+#
+#   - default: the lane's own testdata gate, mounted by compose.override.yml
+#     over the dev gate's path.
+#   - strict (RELAYSMOKE_REQUIRE_MRTR=1): Relay's OWN demo gate, baked into the
+#     dev-fleet image at /etc/relay/approval-gates.demo.json — exactly what
+#     Relay's scripts/demo-fleet.sh selects for the presenter's `relay-demo`
+#     fleet. Pointing at the baked file (rather than copying its rules into
+#     testdata) means the pre-demo gate can never drift from the stage gate.
+#     The override's mount is still applied in this mode, over a path the
+#     Relay then never reads.
+if [ "$RELAYSMOKE_REQUIRE_MRTR" = "1" ]; then
+	[ -f "$RELAY_DIR/docker/fixtures/approval-gates.demo.json" ] ||
+		die 2 "strict mode needs Relay's demo gate (docker/fixtures/approval-gates.demo.json, gleipnir-relay#774) — RELAY_DIR=$RELAY_DIR predates it"
+	grep -q 'DEV_FLEET_APPROVAL_GATE_CONFIG' "$RELAY_COMPOSE_FILE" ||
+		die 2 "strict mode needs $RELAY_COMPOSE_FILE to honour DEV_FLEET_APPROVAL_GATE_CONFIG (gleipnir-relay#774) — without it the Relay would silently load a different gate"
+	export DEV_FLEET_APPROVAL_GATE_CONFIG="/etc/relay/approval-gates.demo.json"
+	echo "relaysmoke: STRICT mode — Relay's demo gate ($DEV_FLEET_APPROVAL_GATE_CONFIG); a pending_approval fallback FAILS the run"
+else
+	export DEV_FLEET_APPROVAL_GATE_CONFIG="/etc/relay/approval-gates.json"
+fi
 
 cred_dir="$RELAYSMOKE_ARTIFACT_DIR/credentials"
 mkdir -m 0700 -p "$cred_dir"
@@ -124,7 +173,7 @@ dc up --build -d
 
 # --- Readiness -----------------------------------------------------------
 daemon_services="$(dc config --services | grep '^daemon-' | sort || true)"
-[ -n "$daemon_services" ] || die 1 "docker compose config --services returned no daemon-* services — does RELAY_DIR's docker-compose.yml still define the 'demo' profile?"
+[ -n "$daemon_services" ] || die 1 "docker compose config --services returned no daemon-* services — does $RELAY_COMPOSE_FILE still define the 'demo' profile?"
 expected_nodes="$(printf '%s\n' "$daemon_services" | wc -l | tr -d ' ')"
 
 read -r -d '' WAIT_HEALTHY_PY <<'PY' || true
@@ -223,6 +272,7 @@ export RELAYSMOKE_APPROVER_TOKEN_FILE="$cred_dir/approver-credential"
 export RELAYSMOKE_RELAY_REF
 export RELAYSMOKE_REPORT="$RELAYSMOKE_ARTIFACT_DIR/report.json"
 export RELAYSMOKE_EXPECTED_NODES="$expected_nodes"
+export RELAYSMOKE_REQUIRE_MRTR
 
 echo "relaysmoke: running the suite (relay $RELAYSMOKE_RELAY_REF, $expected_nodes Nodes expected)"
 set +e

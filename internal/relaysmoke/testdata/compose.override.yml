@@ -1,4 +1,5 @@
-# Second `-f` layered onto "$RELAY_DIR/docker-compose.yml" by scripts/relaysmoke.sh's
+# Second `-f` layered onto Relay's fleet compose file ("$RELAY_DIR/docker-compose.demo.yml",
+# or docker-compose.yml on a checkout older than gleipnir-relay#783) by scripts/relaysmoke.sh's
 # dc() function. Compose resolves this file's own relative paths against the FIRST
 # file's project directory ($RELAY_DIR), which is why every path here is an absolute
 # value interpolated from the environment rather than a path relative to this file.
@@ -7,8 +8,9 @@
 # `relay-demo` fleet without touching it (docs/developer/relay-smoke.md):
 #
 #   - volumes: mounts the smoke lane's own approval-gates.json over Relay's baked-in
-#     fixture (docker/fixtures/approval-gates.json), which is all out-of-band and would
-#     never let the gated_mutate step exercise MRTR even once gleipnir-relay#646 lands.
+#     dev fixture (docker/fixtures/approval-gates.json), which is all out-of-band. In
+#     strict mode (RELAYSMOKE_REQUIRE_MRTR=1) scripts/relaysmoke.sh points the Relay at
+#     its OWN baked demo gate instead, so this mount is present but never read.
 #     This APPENDS to relay's existing `relay-data` volume entry rather than replacing
 #     it — Compose merges a service's `volumes:` list across files.
 #   - ports: !override drops the fixed 7654/9443 host publishes entirely and republishes

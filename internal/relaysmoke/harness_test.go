@@ -52,6 +52,12 @@ type env struct {
 	RelayRef      string
 	ReportPath    string
 	ExpectedNodes int
+
+	// RequireMRTR is strict mode (RELAYSMOKE_REQUIRE_MRTR=1, `make
+	// relaysmoke-demo`): scripts/relaysmoke.sh has started the Relay on its
+	// own demo approval gate, and gated_mutate's pending_approval fallback is
+	// a failure rather than a skip. See docs/developer/relay-smoke.md.
+	RequireMRTR bool
 }
 
 // loadEnv reads every RELAYSMOKE_* variable the lane needs. A missing
@@ -82,6 +88,19 @@ func loadEnv(t *testing.T) env {
 		t.Fatalf("RELAYSMOKE_EXPECTED_NODES=%q is not an integer", expectedNodesRaw)
 	}
 
+	// Parsed strictly: an unrecognised value (e.g. "true") is a Fatalf, never
+	// read as "off" — a pre-demo gate that silently ran the lenient lane would
+	// report a green the caller never earned.
+	var requireMRTR bool
+	switch raw := os.Getenv("RELAYSMOKE_REQUIRE_MRTR"); raw {
+	case "", "0":
+		requireMRTR = false
+	case "1":
+		requireMRTR = true
+	default:
+		t.Fatalf("RELAYSMOKE_REQUIRE_MRTR=%q — must be 0 or 1", raw)
+	}
+
 	return env{
 		MCPURL:        get("RELAYSMOKE_MCP_URL"),
 		APIBase:       get("RELAYSMOKE_API_BASE"),
@@ -91,6 +110,36 @@ func loadEnv(t *testing.T) env {
 		RelayRef:      get("RELAYSMOKE_RELAY_REF"),
 		ReportPath:    get("RELAYSMOKE_REPORT"),
 		ExpectedNodes: expectedNodes,
+		RequireMRTR:   requireMRTR,
+	}
+}
+
+// gateRules names the approval-gate rules the suite expects Relay to match,
+// which depend on which gate file the Relay was started with.
+type gateRules struct {
+	// File is the gate's source, for the report and failure messages.
+	File string
+	// FleetWideMutate is the rule a fan-out-2 mutate parks under.
+	FleetWideMutate string
+	// RawExec is the rule every Raw Exec parks under.
+	RawExec string
+}
+
+// rulesFor returns the gate the lane is running against. Strict mode runs
+// Relay's own demo gate (docker/fixtures/approval-gates.demo.json, selected by
+// scripts/relaysmoke.sh); the default lane runs testdata/approval-gates.json.
+func rulesFor(requireMRTR bool) gateRules {
+	if requireMRTR {
+		return gateRules{
+			File:            "relay:docker/fixtures/approval-gates.demo.json",
+			FleetWideMutate: "demo-fleet-wide-mutates-need-a-human",
+			RawExec:         "demo-raw-exec-always-needs-a-human",
+		}
+	}
+	return gateRules{
+		File:            "gleipnir:internal/relaysmoke/testdata/approval-gates.json",
+		FleetWideMutate: "relaysmoke-fleet-wide-mutates-in-band",
+		RawExec:         "dev-raw-exec-always-needs-a-human",
 	}
 }
 
@@ -100,10 +149,13 @@ func loadEnv(t *testing.T) env {
 // both read it.
 type report struct {
 	RelayRef        string         `json:"relay_ref"`
+	StrictMRTR      bool           `json:"strict_mrtr"`
+	ApprovalGate    string         `json:"approval_gate"`
 	ProtocolVersion string         `json:"protocol_version"`
 	Tools           []string       `json:"tools"`
 	ReaderNodes     int            `json:"reader_nodes"`
 	MRTR            string         `json:"mrtr"`
+	MutateOutcomes  map[string]int `json:"mutate_outcomes,omitempty"`
 	RawExecOutcomes map[string]int `json:"raw_exec_outcomes"`
 }
 

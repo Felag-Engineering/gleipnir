@@ -13,6 +13,10 @@
 // does not, a raw_exec every Node Policy refuses, and that a broken CA or
 // bearer token fails with a message naming the cause.
 //
+// Strict mode (RELAYSMOKE_REQUIRE_MRTR=1, `make relaysmoke-demo`) is the
+// pre-demo gate: the Relay runs its own demo approval gate, the MRTR skip
+// becomes a failure, and the in-band approval beat is asserted end to end.
+//
 // Every file in this package carries the `relaysmoke` build tag, so this
 // package does not exist as far as `go build/vet/test/list ./...` is
 // concerned — it needs Docker and a multi-container Relay fleet, which
