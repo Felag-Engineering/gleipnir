@@ -1,15 +1,13 @@
 # Drive a Relay fleet (fleet-ops)
 
-**Status:** Complete for the reader. The responder's in-band approval needs all three of:
-a Relay build with [gleipnir-relay#646](https://github.com/Felag-Engineering/gleipnir-relay/issues/646)
-(MRTR emits an answerable in-band question at all), the approval-gate rule in
-[Step 2](#step-2--relay-side-the-approval-gate-rule-relay-configuration-not-gleipnir) (the
-shipped demo fixture is out-of-band and will not satisfy this), and a working restart on the
-demo Nodes — either
-[gleipnir-relay#626](https://github.com/Felag-Engineering/gleipnir-relay/issues/626) (so a
-Template Operation can be dispatched by name) or an equivalent fix to the busybox image, since
-today the native `service.restart` always fails there
-(see [Step 10](#step-10--fire-the-responder-responder-acceptance)). The reader works today.
+**Status:** Complete for both agents on Relay's nine-Node demo fleet, as of 2026-10-01. Relay
+asks in-band since [gleipnir-relay#646](https://github.com/Felag-Engineering/gleipnir-relay/issues/646);
+`make demo-reset` starts the Relay on its own in-band demo gate (no fixture edit — see
+[Step 2](#step-2--relay-side-the-approval-gate-rule-relay-configuration-not-gleipnir)); and the
+demo's web Nodes carry a DEV-ONLY `systemctl` shim, so `service.restart` of `nginx` restarts a
+real service there. The responder's full path through Gleipnir's own UI — question in the
+attention queue, a human answering, the Job succeeding — has not yet been observed end to end;
+rehearse it before relying on it.
 
 ## What it does
 
@@ -65,10 +63,12 @@ No Relay tool carries Gleipnir's `approval: required` in this pack.
 Nothing in Gleipnir does. `run_operation` is one tool for both risk classes. `params` cannot
 restrict values, and Relay's `operator` role (the lowest that can run a read Operation) can
 also request a mutate. The prompt tells it not to, and that is guidance, not a control. The
-structural bounds are Relay's: the [Step 2](#step-2--relay-side-the-approval-gate-rule-relay-configuration-not-gleipnir)
-gate rule parks every mutate by the `gleipnir` Account (any fan-out) until a human in Gleipnir
-answers, plus the mutate blast cap and each Node's Policy. With Relay's SHIPPED demo fixture
-instead, a fan-out-1 mutate runs with no human. If you need read-only to be structural,
+structural bounds are Relay's: its approval gate, the mutate blast cap, and each Node's Policy.
+On the demo fleet's gate a mutate parks for a human only at fan-out 2 or more; **a fan-out-1
+mutate runs with no human** (on the demo roster that means the db or bastion Node alone, where
+it fails or is refused). On your own Relay, the account-scoped rule in
+[Step 2](#step-2--relay-side-the-approval-gate-rule-relay-configuration-not-gleipnir) parks every
+mutate by Gleipnir's Account at any fan-out. If you need read-only to be structural,
 register a second server with a `viewer` token. The cost: `viewer` cannot call `run_operation`
 at all, so the reader loses fleet-wide reads.
 
@@ -86,31 +86,30 @@ Your own Relay: start it with `-control-enabled` and
 ## Step 2 — Relay-side: the approval gate rule (Relay configuration, not Gleipnir)
 
 A gate file is root-owned Relay config (`RELAY_APPROVAL_GATE_CONFIG` / `-approval-gate-config`),
-loaded only at startup. Matching rules merge to the strictest requirement. The shipped demo
-fixture (`docker/fixtures/approval-gates.json`) is out-of-band, so
-[gleipnir-relay#646](https://github.com/Felag-Engineering/gleipnir-relay/issues/646) will not
-emit an answerable MRTR question against it and Gleipnir will only ever see a bare
-`pending_approval` result. For in-band approval from Gleipnir, the rule matching the `gleipnir`
-Account's mutates must be in-band, `requester_allowed` true, and have an audience containing
-`gleipnir`. The audience is checked against the Account that delivers the answer (Gleipnir's
-machine Account). The human is recorded as the asserted approver.
+loaded only at startup. Matching rules merge to the strictest requirement. Relay asks the
+question in-band only of a client that declares the name `gleipnir` (Gleipnir does), and only
+under an **in-band** rule; under an out-of-band rule Gleipnir sees a bare `pending_approval`.
 
-**How the gate file actually reaches the demo fleet today:** it is `COPY`'d into the Relay
-image at build time (`docker/relay.Dockerfile:40`), and there is no compose-level override to
-mount a different one. So applying the rule below means editing
-`docker/fixtures/approval-gates.json` in a Relay checkout, then `make demo-build` followed by
-`make demo-reset` to rebuild and restart the fleet on it. This gap — a way to mount a demo-only
-gate file instead of editing the shipped fixture — is requested from the Relay side in
-[gleipnir-relay#451](https://github.com/Felag-Engineering/gleipnir-relay/issues/451)
-([comment](https://github.com/Felag-Engineering/gleipnir-relay/issues/451#issuecomment-5805986410)).
+**Demo fleet: nothing to do.** `make demo-reset` and `make demo-up` start the Relay on
+`docker/fixtures/approval-gates.demo.json`, whose two rules are in-band with
+`requester_allowed: true` and no audience: `demo-fleet-wide-mutates-need-a-human` (mutate,
+fan-out ≥ 2) and `demo-raw-exec-always-needs-a-human`. Use the `make demo-*` targets — a bare
+`docker compose ... up` gets the default fleet's out-of-band gate instead. Relay records an
+in-band answer as decided by Gleipnir's verified machine Account, with the Gleipnir user who
+answered as an asserted name beside it.
+
+**Your own Relay:** the rule that matches Gleipnir's mutates must be in-band and
+`requester_allowed: true`. If it names an audience, the audience must contain Gleipnir's
+machine Account (the Account that delivers the answer). A stricter variant that parks every
+mutate by that Account at any fan-out:
 
 ```json
 {
   "rules": [
     {
       "name": "gleipnir-mutates-ask-a-gleipnir-approver",
-      "match": { "account": "gleipnir", "risk_class": "mutate" },
-      "require": { "count": 1, "audience": ["gleipnir"], "requester_allowed": true,
+      "match": { "account": "auto-incident-response", "risk_class": "mutate" },
+      "require": { "count": 1, "audience": ["auto-incident-response"], "requester_allowed": true,
                    "channel": "in-band", "ttl": "1h" }
     },
     {
@@ -122,19 +121,22 @@ gate file instead of editing the shipped fixture — is requested from the Relay
 }
 ```
 
-`match` has no negation. A broad out-of-band mutate rule (like the fixture's
+`match` has no negation. A broad out-of-band mutate rule (like the default fleet's
 `dev-fleet-wide-mutates-need-a-human`) would ALSO match Gleipnir's dispatches and win the
-merge, so scope such rules to other Accounts with `account`. This rule is per Relay's current
-`approval.Decide`. Re-check it when
-[gleipnir-relay#646](https://github.com/Felag-Engineering/gleipnir-relay/issues/646) lands.
+merge, so scope such rules to other Accounts with `account`. Replace `auto-incident-response`
+with whatever you named Gleipnir's Account in Step 3.
 
 ## Step 3 — Mint Gleipnir's machine Account and API token
 
-Demo fleet: follow Relay's "Credentials for Gleipnir (copy-paste)" block in
-`docs/operations/demo-fleet.md`. Its effect: Account `gleipnir`, kind machine, role `operator`,
-token ttl 86400, written to `.dev-fleet/gleipnir-credential`. Own Relay: an admin creates a
-machine Account at `operator` (the lowest role that can run a read Operation) and mints a token
-with an explicit TTL. The token is shown once, and a demo reset destroys it.
+Demo fleet: run Relay's "Credentials for Gleipnir (copy-paste)" block in
+`docs/operations/demo-fleet.md` as written. Its effect: Account `auto-incident-response`, kind
+machine, role `operator`, token ttl 86400, written to
+`.dev-fleet/auto-incident-response-credential`. Re-run it after every `make demo-reset`, which
+destroys the store. (Relay's runbook recommends one Account per agent; with one `relay` server
+registered in Gleipnir, both agents share this one, and Relay tells them apart by the
+on-behalf-of attribution in Step 7.) Own Relay: an admin creates a machine Account at
+`operator` (the lowest role that can run a read Operation) and mints a token with an explicit
+TTL. The token is shown once.
 
 ## Step 4 — Get the CA certificate
 
@@ -179,7 +181,7 @@ Tools → Add MCP server:
 - Run attribution: `Relay preset` (sends `X-Relay-On-Behalf-Of`, `X-Relay-Session-Ref`,
   `traceparent` on every tool call, so Relay's attribution screen shows which agent and run
   asked)
-- Auth header: `Authorization` = `Bearer <contents of .dev-fleet/gleipnir-credential>`
+- Auth header: `Authorization` = `Bearer <contents of .dev-fleet/auto-incident-response-credential>`
 
 Expected: badge "Protocol 2026-07-28", eight tools, Call timeout `120s`, and Run attribution
 `Relay preset` in the server's detail. If the badge reads "Legacy protocol" or "Protocol
@@ -254,10 +256,11 @@ moves to `waiting_for_feedback`, and a "TOOL ASK" row attributed to `relay` appe
 attention queue. The approver approves on the run page, and Relay runs the Job in the same
 (retried) call. Relay's Job shows on-behalf-of `fleet-responder` and session ref
 `gleipnir run <run_id>` (plus the run's URL when `public_url` is set) — the asserted join back
-to this Gleipnir run. On the demo fleet each web Node then reports `failure: spawn systemctl: No such
-file or directory`. That is the busybox limit
-([gleipnir-relay#626](https://github.com/Felag-Engineering/gleipnir-relay/issues/626), or an
-equivalent fix to the demo image), not a Gleipnir fault; say so. Resend with `status: 1` and
+to this Gleipnir run. On the demo fleet `dev-node-4` and `dev-node-5` then report
+`success, exit_code: 0` *(predicted on this Selector)*: their `systemctl` is a DEV-ONLY shim that
+restarts the real demo service. Fault only `daemon-4` first if you want the restart to fix
+something (`make demo-fault DEMO_FAULT_NODES="daemon-4"` in the Relay repo; the default also
+downs `daemon-6`, in staging, which this alert does not name). Resend with `status: 1` and
 expect `200 {"data":{"filtered":true}}`. Without
 [gleipnir-relay#646](https://github.com/Felag-Engineering/gleipnir-relay/issues/646), or with an
 out-of-band rule, the agent gets a `pending_approval` result and reports it. Nothing dispatches.
@@ -302,11 +305,11 @@ survive.
 | `401` | Token expired (24h) or wiped by a reset. |
 | Relay role error on `run_operation` | The Account is a `viewer`. |
 | Badge Legacy / unknown | Rediscover. |
-| Agent reports `pending_approval` | The gate rule is out-of-band, or the Relay lacks #646. |
+| Agent reports `pending_approval` | The gate rule is out-of-band (demo fleet started with a bare `docker compose up`, not `make demo-reset`), or the Relay lacks #646. |
 | Approval answered but refused (not in audience / requester excluded) | The gate rule lacks audience `gleipnir` or `requester_allowed` true. |
 | Tool call times out after approval | The `relay` server's Call timeout is not `120s` (detail modal shows `Default (30s)`). Set it there; no restart needed. |
 | Relay shows no on-behalf-of / session ref | Run attribution is `Off` on the `relay` server's detail. Set it to `Relay preset`; no restart needed. |
 | Run fails with feedback timeout | Nobody with the `approver` role answered within `feedback.timeout`. |
-| `spawn systemctl` failure | The demo fleet's busybox limit. |
+| `spawn systemctl` failure | A `service.restart` reached a db Node (no shim there — the demo fleet's busybox limit). Web Nodes have the shim. |
 | `data.warnings` about `params` | Server not discovered before the POST. |
 | Webhook `401` / `403` / `409` / `filtered` | As in devops. |
