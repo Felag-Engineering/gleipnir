@@ -586,7 +586,7 @@ rendering; the Console's Job detail design is in the Relay repo's
 - per-Node results: 2 × `success`
 
 **Point at,** left: the Gleipnir run page → **Decisions**: one row, tool `run_operation`, kind
-`PERMISSION`, outcome `Answered`, `by <approver>`. This side is the **verified** human:
+`PERMISSION`, outcome `Approved`, `by <approver>`. This side is the **verified** human:
 Gleipnir took the name from the signed-in session, not from anything the model or the form
 could set.
 
