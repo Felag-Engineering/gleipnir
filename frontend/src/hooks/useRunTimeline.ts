@@ -1,10 +1,12 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import {
   parseStep,
   pairToolBlocks,
   isToolBlock,
 } from '@/components/RunDetail'
 import type { FilterKey } from '@/components/RunDetail'
+import { buildNodeHostnameIndex } from '@/components/RunDetail/nodeHostnames'
+import type { NodeHostnameIndex } from '@/components/RunDetail/nodeHostnames'
 import type { ParsedStep, ToolBlockData } from '@/components/RunDetail/types'
 import type { ApiRunStep } from '@/api/types'
 
@@ -18,6 +20,8 @@ export interface RunTimelineResult {
   hasMore: boolean
   remainingCount: number
   loadMore: () => void
+  // node_id → hostname per MCP server, from every list_nodes result in the run.
+  nodeHostnames: NodeHostnameIndex
 }
 
 // useRunTimeline owns all step data processing: parsing, snapshot separation,
@@ -28,16 +32,25 @@ export function useRunTimeline(
 ): RunTimelineResult {
   const [displayedCount, setDisplayedCount] = useState(PAGE_SIZE)
 
-  const allParsed: ParsedStep[] = rawSteps.map(parseStep)
+  // Parsing and pairing depend only on the step list, so they are memoized on
+  // it; the hostname index below parses tool output JSON and must not be
+  // rebuilt on every render (the run detail re-renders each second while live).
+  const { snapshotSteps, pairedItems } = useMemo(() => {
+    const allParsed: ParsedStep[] = rawSteps.map(parseStep)
+    // Separate capability_snapshot steps; filter counts exclude them (ADR-018)
+    const nonSnapshotSteps = allParsed.filter((s) => s.type !== 'capability_snapshot')
+    return {
+      snapshotSteps: allParsed.filter((s) => s.type === 'capability_snapshot'),
+      // Pair tool_call/tool_result/approval_request steps into visual ToolBlock units.
+      // Filtering and pagination operate on these paired items so that a tool interaction
+      // counts as one item regardless of how many raw steps it spans.
+      pairedItems: pairToolBlocks(nonSnapshotSteps),
+    }
+  }, [rawSteps])
 
-  // Separate capability_snapshot steps; filter counts exclude them (ADR-018)
-  const nonSnapshotSteps = allParsed.filter((s) => s.type !== 'capability_snapshot')
-  const snapshotSteps = allParsed.filter((s) => s.type === 'capability_snapshot')
-
-  // Pair tool_call/tool_result/approval_request steps into visual ToolBlock units.
-  // Filtering and pagination operate on these paired items so that a tool interaction
-  // counts as one item regardless of how many raw steps it spans.
-  const pairedItems = pairToolBlocks(nonSnapshotSteps)
+  // Built from every paired item, before filtering and pagination, so the
+  // list_nodes result a fan-out table needs is found even when it is hidden.
+  const nodeHostnames = useMemo(() => buildNodeHostnameIndex(pairedItems), [pairedItems])
 
   // Count each filter category over paired visual items (not raw steps).
   // "All" reflects what the user sees on screen — one entry per visual block.
@@ -103,5 +116,5 @@ export function useRunTimeline(
     setDisplayedCount((c) => c + PAGE_SIZE)
   }
 
-  return { timelineItems, filteredItems, snapshotSteps, counts, hasMore, remainingCount, loadMore }
+  return { timelineItems, filteredItems, snapshotSteps, counts, hasMore, remainingCount, loadMore, nodeHostnames }
 }

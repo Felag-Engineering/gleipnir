@@ -189,3 +189,51 @@
   font-size: var(--text-xs);
   color: var(--text-muted);
 }
+
+/* A decision under which nothing ran (a denial, a refused answer) gets a red
+   rule on its leading edge, so it cannot be mistaken for the approved line. */
+.decisionRefusal {
+  padding-left: var(--space-3);
+  box-shadow: inset 4px 0 0 var(--color-red);
+}
+
+/* Relay's reason for refusing an answer: the main fact of the block, so it
+   reads at body size rather than as a footnote. */
+.decisionReason {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-sm);
+  color: var(--text-second);
+  overflow-wrap: anywhere;
+}
+
+.nothingDispatched {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-second);
+}
+
+/* Hostname as the row's primary label, with the full node_id beneath it.
+   The id is cut visually only (text-overflow), so selecting and copying it
+   still yields the whole id; the cell's title carries it as well. */
+.hostname {
+  display: block;
+  font-family: var(--font-mono);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.nodeIdSecondary {
+  display: block;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.detailNodeId {
+  font-family: var(--font-mono);
+  color: var(--text-second);
+  user-select: all;
+}

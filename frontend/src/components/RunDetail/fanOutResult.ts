@@ -1,6 +1,8 @@
 // Detects and parses Relay's per-Node fan-out execution result, returned by
 // run_operation, raw_exec and get_job. These types mirror Relay's PerNodeResult /
-// ExecutionOutput / RunOrPlanOutput (relay/internal/controlplane/mcp/wire.go).
+// ExecutionOutput / RunOrPlanOutput (relay/internal/controlplane/mcp/wire.go),
+// plus the decision / answer_refused blocks an answered approval retry carries
+// (ApprovalDecisionOutput / AnswerRefusalOutput, tools_approval.go).
 export interface FanOutRow {
   node_id: string
   outcome: string
@@ -25,12 +27,32 @@ export interface FanOutDecision {
   next_step: string
 }
 
+// FanOutAnswerRefusal mirrors Relay's AnswerRefusalOutput: an answered retry
+// whose answer Relay refused before (or instead of) reaching a decision.
+// reason and next_step are always sent; the rest are omitempty on Relay's side.
+export interface FanOutAnswerRefusal {
+  reason: string
+  next_step: string
+  request_id?: string
+  state?: string
+  job_id?: string
+  expires_at?: string
+}
+
+// FanOutResult is either a dispatch (job_id set, one row per Node) or, on the
+// answered retry of an in-band approval, an outcome where nothing was
+// dispatched (job_id absent, results empty). Relay's own contract: "an absent
+// job_id always means nothing was dispatched, never a failed id".
 export interface FanOutResult {
-  job_id: string
+  job_id?: string
   results: FanOutRow[]
-  // Present only on the answered retry of an in-band approval — the call that
-  // ran because a human said yes.
+  // Present only on the answered retry of an in-band approval: what the human
+  // decided, beside the Job it released (approved) or with nothing dispatched
+  // (denied).
   decision?: FanOutDecision
+  // Present only when that answered retry's answer was refused. Never beside
+  // a job_id.
+  answer_refused?: FanOutAnswerRefusal
 }
 
 const REQUIRED_ROW_KEYS = [
@@ -47,7 +69,7 @@ const OPTIONAL_ROW_KEYS = ['exit_code', 'refusal_explanation'] as const
 
 const ALLOWED_ROW_KEYS = new Set<string>([...REQUIRED_ROW_KEYS, ...OPTIONAL_ROW_KEYS])
 
-const ALLOWED_TOP_LEVEL_KEYS = new Set(['job_id', 'results', 'decision'])
+const ALLOWED_TOP_LEVEL_KEYS = new Set(['job_id', 'results', 'decision', 'answer_refused'])
 
 const DECISION_KEYS = [
   'request_id',
@@ -105,6 +127,21 @@ function isFanOutDecision(value: unknown): value is FanOutDecision {
   return DECISION_KEYS.every((key) => typeof value[key] === 'string')
 }
 
+const REQUIRED_REFUSAL_KEYS = ['reason', 'next_step'] as const
+const OPTIONAL_REFUSAL_KEYS = ['request_id', 'state', 'job_id', 'expires_at'] as const
+const ALLOWED_REFUSAL_KEYS = new Set<string>([...REQUIRED_REFUSAL_KEYS, ...OPTIONAL_REFUSAL_KEYS])
+
+// isFanOutAnswerRefusal holds answer_refused to the same closed-key rule.
+// Every field Relay sends is a string.
+function isFanOutAnswerRefusal(value: unknown): value is FanOutAnswerRefusal {
+  if (!isPlainObject(value)) return false
+  for (const key of Object.keys(value)) {
+    if (!ALLOWED_REFUSAL_KEYS.has(key)) return false
+    if (typeof value[key] !== 'string') return false
+  }
+  return REQUIRED_REFUSAL_KEYS.every((key) => key in value)
+}
+
 // parseFanOutResult detects Relay's fan-out shape in the value parseToolOutput
 // already returns. Detection is shape-only, not tool-name-based, and every
 // predicate closes over its key set: an unrecognized field anywhere sends the
@@ -131,19 +168,36 @@ export function parseFanOutResult(output: unknown): FanOutResult | null {
     if (!ALLOWED_TOP_LEVEL_KEYS.has(key)) return null
   }
 
-  // job_id is present only when something was actually dispatched. Plan and
-  // parked responses omit it, so they fall back to today's rendering.
-  if (typeof candidate.job_id !== 'string' || candidate.job_id === '') return null
-
   if (!Array.isArray(candidate.results)) return null
-  if (!candidate.results.every(isFanOutRow)) return null
+  if ('decision' in candidate && !isFanOutDecision(candidate.decision)) return null
+  if ('answer_refused' in candidate && !isFanOutAnswerRefusal(candidate.answer_refused)) return null
 
-  const parsed: FanOutResult = { job_id: candidate.job_id, results: candidate.results as FanOutRow[] }
-  if ('decision' in candidate) {
-    if (!isFanOutDecision(candidate.decision)) return null
-    parsed.decision = candidate.decision
+  if ('job_id' in candidate) {
+    // A dispatch. Relay omits job_id rather than sending it empty, so an empty
+    // or non-string one is not a shape we know.
+    if (typeof candidate.job_id !== 'string' || candidate.job_id === '') return null
+    if (!candidate.results.every(isFanOutRow)) return null
+    // Relay renders answer_refused only on a call that dispatched nothing.
+    if ('answer_refused' in candidate) return null
+
+    const parsed: FanOutResult = { job_id: candidate.job_id, results: candidate.results as FanOutRow[] }
+    if ('decision' in candidate) parsed.decision = candidate.decision as FanOutDecision
+    return parsed
   }
-  return parsed
+
+  // No job_id: nothing was dispatched. The only such shapes rendered here are
+  // an answered retry's outcome: a decision (for example a denial) or a
+  // refused answer, exactly one of them, with an empty results array. Plan
+  // and parked responses carry keys outside the allowed set and were already
+  // sent to the fallback rendering above.
+  if (candidate.results.length !== 0) return null
+  const hasDecision = 'decision' in candidate
+  const hasRefusal = 'answer_refused' in candidate
+  if (hasDecision === hasRefusal) return null
+
+  return hasDecision
+    ? { results: [], decision: candidate.decision as FanOutDecision }
+    : { results: [], answer_refused: candidate.answer_refused as FanOutAnswerRefusal }
 }
 
 export type OutcomeTone = 'ok' | 'policy' | 'failed' | 'notRun' | 'unknown'

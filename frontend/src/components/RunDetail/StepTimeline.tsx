@@ -8,6 +8,7 @@ import { ThoughtBlock } from './ThoughtBlock'
 import { ToolBlock } from './ToolBlock'
 import { TriggerBlock } from './TriggerBlock'
 import { isToolBlock } from './types'
+import type { NodeHostnameIndex } from './nodeHostnames'
 import type { ParsedStep, ToolBlockData } from './types'
 import styles from './StepTimeline.module.css'
 
@@ -21,9 +22,13 @@ interface Props {
   // durationMs is optional — Storybook stories and test contexts may omit it.
   // CompleteBlock renders without a duration when this is undefined or null.
   durationMs?: number | null
+  // Built once per step list by useRunTimeline from the WHOLE run, not just
+  // the visible items, so a filter or page boundary cannot hide the list_nodes
+  // result a fan-out table takes its hostnames from.
+  nodeHostnames?: NodeHostnameIndex
 }
 
-export function StepTimeline({ items, systemPrompt, runId, runStatus, triggerType, triggerPayload, durationMs }: Props) {
+export function StepTimeline({ items, systemPrompt, runId, runStatus, triggerType, triggerPayload, durationMs, nodeHostnames }: Props) {
   if (items.length === 0 && !triggerType) {
     return (
       <p className={styles.empty}>No steps to display.</p>
@@ -51,6 +56,7 @@ export function StepTimeline({ items, systemPrompt, runId, runStatus, triggerTyp
               runStatus,
               systemPrompt,
               durationMs,
+              nodeHostnames,
               isFinalThought: idx === finalThoughtIndex,
             })}
           </li>
@@ -65,6 +71,7 @@ interface RenderContext {
   runStatus: string
   systemPrompt?: string | null
   durationMs?: number | null
+  nodeHostnames?: NodeHostnameIndex
   isFinalThought: boolean
 }
 
@@ -88,7 +95,7 @@ function findFinalThoughtIndex(items: (ParsedStep | ToolBlockData)[]): number {
 // future step types) that should degrade gracefully.
 function renderBlock(item: ParsedStep | ToolBlockData, ctx: RenderContext) {
   if (isToolBlock(item)) {
-    return <ToolBlock block={item} runId={ctx.runId} runStatus={ctx.runStatus} />
+    return <ToolBlock block={item} runId={ctx.runId} runStatus={ctx.runStatus} nodeHostnames={ctx.nodeHostnames} />
   }
 
   switch (item.type) {

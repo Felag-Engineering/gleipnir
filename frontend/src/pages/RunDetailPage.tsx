@@ -49,7 +49,7 @@ export default function RunDetailPage() {
   const [filter, setFilter] = useState<FilterKey>('all')
   const [retryModalOpen, setRetryModalOpen] = useState(false)
 
-  const { timelineItems, counts, snapshotSteps, hasMore, remainingCount, loadMore } = useRunTimeline(rawSteps, filter)
+  const { timelineItems, counts, snapshotSteps, hasMore, remainingCount, loadMore, nodeHostnames } = useRunTimeline(rawSteps, filter)
   const { sentinelRef, showNewPill, scrollToBottom } = useScrollSentinel(rawSteps.length)
 
   // Extract capability snapshot for the header
@@ -212,7 +212,7 @@ export default function RunDetailPage() {
                   </button>
                 )}
 
-                <StepTimeline items={timelineItems} systemPrompt={run.system_prompt} runId={id!} runStatus={run.status} triggerType={run.trigger_type} triggerPayload={run.trigger_payload} durationMs={duration} />
+                <StepTimeline items={timelineItems} systemPrompt={run.system_prompt} runId={id!} runStatus={run.status} triggerType={run.trigger_type} triggerPayload={run.trigger_payload} durationMs={duration} nodeHostnames={nodeHostnames} />
 
                 {hasMore && (
                   <button

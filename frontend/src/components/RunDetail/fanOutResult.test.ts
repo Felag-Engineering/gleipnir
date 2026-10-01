@@ -129,8 +129,63 @@ describe('parseFanOutResult — answered approval retry', () => {
     expect(parseFanOutResult({ ...GET_JOB_SHAPE, decision: 'approved' })).toBeNull()
   })
 
-  it('still rejects a denied retry, which carries no job_id', () => {
-    expect(parseFanOutResult({ results: [], decision: { ...decision, state: 'denied' } })).toBeNull()
+})
+
+// Shapes from Relay's answerThenDispatch (tools_execution.go): every branch
+// that dispatches nothing renders {results: [], decision | answer_refused}
+// with job_id omitted.
+describe('parseFanOutResult — answered retry that dispatched nothing', () => {
+  const denied = {
+    request_id: 'req-1',
+    state: 'denied',
+    progress: '1 of 1',
+    channel: 'in-band',
+    on_behalf_of: 'dana',
+    next_step: 'a denial is terminal. Nothing ran; do not retry. the answer was recorded (progress shown when the rule needs more).',
+  }
+  const refusal = {
+    request_id: 'req-1',
+    reason: 'approval request is not pending (already decided or expired)',
+    state: 'denied',
+    expires_at: '2026-10-01T13:48:18Z',
+    next_step: 'this request is no longer open (already decided, or expired); it cannot be decided again.',
+  }
+
+  it.each([
+    ['a denial: {results: [], decision}', { results: [], decision: denied }],
+    ['a denial as the JSON text Relay sends', JSON.stringify({ decision: denied, results: [] })],
+    ['an expired request with nothing dispatched', { results: [], decision: { ...denied, state: 'expired', channel: '', on_behalf_of: '' } }],
+    ['a refused answer: {results: [], answer_refused}', { results: [], answer_refused: refusal }],
+    ['a refused answer with only the two required fields', { results: [], answer_refused: { reason: 'r', next_step: 'n' } }],
+    ['a refused answer naming a Job released earlier', { results: [], answer_refused: { ...refusal, state: 'approved', job_id: 'job-9' } }],
+  ])('accepts %s', (_label, shape) => {
+    const parsed = parseFanOutResult(shape)
+    expect(parsed).not.toBeNull()
+    expect(parsed).not.toHaveProperty('job_id')
+    expect(parsed!.results).toEqual([])
+  })
+
+  it('keeps the decision verbatim', () => {
+    expect(parseFanOutResult({ results: [], decision: denied })).toEqual({ results: [], decision: denied })
+  })
+
+  it('keeps the refusal verbatim', () => {
+    expect(parseFanOutResult({ results: [], answer_refused: refusal })).toEqual({ results: [], answer_refused: refusal })
+  })
+
+  it.each([
+    ['neither decision nor answer_refused', { results: [] }],
+    ['both decision and answer_refused', { results: [], decision: denied, answer_refused: refusal }],
+    ['rows without a job_id', { results: GET_JOB_SHAPE.results, decision: denied }],
+    ['a re-parked retry (pending_approval beside the decision)', { results: [], decision: denied, pending_approval: { status: 'pending_approval' } }],
+    ['an answer_refused with an unknown key', { results: [], answer_refused: { ...refusal, extra: 'x' } }],
+    ['an answer_refused missing reason', { results: [], answer_refused: { next_step: 'n' } }],
+    ['an answer_refused missing next_step', { results: [], answer_refused: { reason: 'r' } }],
+    ['an answer_refused with a non-string field', { results: [], answer_refused: { ...refusal, state: 2 } }],
+    ['answer_refused beside a job_id', { ...GET_JOB_SHAPE, answer_refused: refusal }],
+    ['a decision missing a field', { results: [], decision: { ...denied, progress: undefined } }],
+  ])('rejects %s', (_label, shape) => {
+    expect(parseFanOutResult(JSON.parse(JSON.stringify(shape)))).toBeNull()
   })
 })
 

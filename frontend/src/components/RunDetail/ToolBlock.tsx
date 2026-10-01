@@ -6,6 +6,7 @@ import { ApprovalActions } from './ApprovalActions'
 import { FanOutResultView } from './FanOutResultView'
 import { parseFanOutResult } from './fanOutResult'
 import type { FanOutResult } from './fanOutResult'
+import type { NodeHostnameIndex } from './nodeHostnames'
 import { parseToolOutput } from './toolOutput'
 import type { ToolBlockData } from './types'
 import styles from './ToolBlock.module.css'
@@ -14,6 +15,9 @@ interface Props {
   block: ToolBlockData
   runId: string
   runStatus: string
+  // Hostnames learned from list_nodes results in the same run, per server.
+  // Only the entry for this block's own server is ever used.
+  nodeHostnames?: NodeHostnameIndex
 }
 
 type BlockStatus = 'success' | 'error' | 'approval_pending' | 'denied' | 'pending'
@@ -46,6 +50,7 @@ function renderOutputBody(
   outputValue: unknown,
   showRaw: boolean,
   onToggleRaw: () => void,
+  hostnames: ReadonlyMap<string, string> | undefined,
 ) {
   return (
     <>
@@ -59,12 +64,12 @@ function renderOutputBody(
       ) : (
         <div className={styles.paneLabel}>Output</div>
       )}
-      {fanOut && !showRaw ? <FanOutResultView result={fanOut} /> : renderRawOutput(outputValue)}
+      {fanOut && !showRaw ? <FanOutResultView result={fanOut} hostnames={hostnames} /> : renderRawOutput(outputValue)}
     </>
   )
 }
 
-export function ToolBlock({ block, runId, runStatus }: Props) {
+export function ToolBlock({ block, runId, runStatus, nodeHostnames }: Props) {
   const status = deriveStatus(block, runStatus)
   const [showRaw, setShowRaw] = useState(false)
 
@@ -91,8 +96,13 @@ export function ToolBlock({ block, runId, runStatus }: Props) {
     ? parseToolOutput(block.result.content.output)
     : null
   const fanOut = outputValue === null ? null : parseFanOutResult(outputValue)
+  const hostnames = serverId ? nodeHostnames?.get(serverId) : undefined
+  // A recognized Relay result without a job_id dispatched nothing (a denied or
+  // refused approval answer). The call itself succeeded, but a green check
+  // beside "nothing ran" would read as the action having happened.
+  const nothingRan = status === 'success' && fanOut !== null && fanOut.job_id === undefined
 
-  const dotClass = {
+  const dotClass = nothingRan ? styles.dotDenied : {
     success: styles.dotSuccess,
     error: styles.dotError,
     approval_pending: styles.dotApproval,
@@ -131,8 +141,11 @@ export function ToolBlock({ block, runId, runStatus }: Props) {
         {status === 'denied' && (
           <span className={styles.deniedPill}>Denied</span>
         )}
+        {nothingRan && (
+          <span className={styles.deniedPill}>Nothing ran</span>
+        )}
         <div className={styles.headerRight}>
-          {status === 'success' && (
+          {status === 'success' && !nothingRan && (
             <Check size={14} strokeWidth={2} className={styles.statusIconSuccess} aria-label="Success" />
           )}
           {status === 'error' && (
@@ -155,7 +168,7 @@ export function ToolBlock({ block, runId, runStatus }: Props) {
         {/* Right pane: OUTPUT (conditional on status) */}
         {status === 'success' && (
           <div className={`${styles.pane} ${styles.paneOutput} ${fanOut ? styles.paneOutputStacked : ''}`}>
-            {renderOutputBody(fanOut, outputValue, showRaw, () => setShowRaw((v) => !v))}
+            {renderOutputBody(fanOut, outputValue, showRaw, () => setShowRaw((v) => !v), hostnames)}
           </div>
         )}
 
@@ -163,7 +176,7 @@ export function ToolBlock({ block, runId, runStatus }: Props) {
           <div className={`${styles.pane} ${styles.paneOutput} ${styles.paneError} ${fanOut ? styles.paneOutputStacked : ''}`}>
             {/* Defensive: Relay renders fan-out results as successful tool_result
                 steps, so this branch should be unreachable in practice. */}
-            {renderOutputBody(fanOut, outputValue, showRaw, () => setShowRaw((v) => !v))}
+            {renderOutputBody(fanOut, outputValue, showRaw, () => setShowRaw((v) => !v), hostnames)}
           </div>
         )}
 
