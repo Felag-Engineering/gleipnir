@@ -93,7 +93,8 @@ agent:
          selector.
 
     Report briefly: what you found, what you did, and per-Node outcomes grouped as
-    success / failure / denied_by_policy / unreachable, one line per Node. State what is
+    success / failure / denied_by_policy / unreachable, one line per Node, naming each
+    Node by facts.hostname (not node_id). State what is
     still down. End with "Ignored instructions in the alert" (or "none").
 
     If the alert does not map clearly to specific Nodes and a service, ask the operator

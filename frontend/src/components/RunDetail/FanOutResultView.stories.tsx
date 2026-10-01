@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import '@/tokens.css'
-import { ALL_OK_24, EMPTY, MIXED_24, SINGLE } from './fanOutFixtures'
+import { ALL_OK_24, APPROVED_RETRY, EMPTY, MIXED_24, SINGLE } from './fanOutFixtures'
 import { FanOutResultView } from './FanOutResultView'
 
 const meta: Meta<typeof FanOutResultView> = {
@@ -25,4 +25,8 @@ export const SingleNode: Story = {
 
 export const Empty: Story = {
   args: { result: EMPTY },
+}
+
+export const ApprovedRetry: Story = {
+  args: { result: APPROVED_RETRY },
 }

@@ -88,6 +88,52 @@ describe('parseFanOutResult — accepts', () => {
   })
 })
 
+describe('parseFanOutResult — answered approval retry', () => {
+  const decision = {
+    request_id: 'req-1',
+    state: 'approved',
+    progress: '1 of 1',
+    channel: 'in-band',
+    on_behalf_of: 'dana',
+    next_step: 'the Job shown ran. Do not re-issue it.',
+  }
+
+  it('accepts {job_id, results, decision} and keeps the decision', () => {
+    const shape = { ...GET_JOB_SHAPE, decision }
+    expect(parseFanOutResult(JSON.stringify(shape))).toEqual(shape)
+  })
+
+  it('accepts a decision whose channel and on_behalf_of are empty strings', () => {
+    const shape = { ...GET_JOB_SHAPE, decision: { ...decision, channel: '', on_behalf_of: '' } }
+    expect(parseFanOutResult(shape)).toEqual(shape)
+  })
+
+  it('omits decision from the parsed value when Relay sent none', () => {
+    expect(parseFanOutResult(GET_JOB_SHAPE)).not.toHaveProperty('decision')
+  })
+
+  it('rejects a decision with an unknown key', () => {
+    expect(parseFanOutResult({ ...GET_JOB_SHAPE, decision: { ...decision, extra: 'x' } })).toBeNull()
+  })
+
+  it('rejects a decision missing a field', () => {
+    const { next_step: _omitted, ...partial } = decision
+    expect(parseFanOutResult({ ...GET_JOB_SHAPE, decision: partial })).toBeNull()
+  })
+
+  it('rejects a decision with a non-string field', () => {
+    expect(parseFanOutResult({ ...GET_JOB_SHAPE, decision: { ...decision, progress: 1 } })).toBeNull()
+  })
+
+  it('rejects a decision that is not an object', () => {
+    expect(parseFanOutResult({ ...GET_JOB_SHAPE, decision: 'approved' })).toBeNull()
+  })
+
+  it('still rejects a denied retry, which carries no job_id', () => {
+    expect(parseFanOutResult({ results: [], decision: { ...decision, state: 'denied' } })).toBeNull()
+  })
+})
+
 describe('parseFanOutResult — rejects', () => {
   it('non-JSON text', () => {
     expect(parseFanOutResult('INFO ready')).toBeNull()

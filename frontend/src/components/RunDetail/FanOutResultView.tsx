@@ -2,7 +2,7 @@ import { Fragment, useId, useState } from 'react'
 import { Check, ChevronDown, ChevronRight, HelpCircle, MinusCircle, ShieldCheck, X } from 'lucide-react'
 import { formatDurationMs } from '@/utils/format'
 import { groupByOutcome, outcomeLabel, outcomeTone, OUTCOME_ORDER } from './fanOutResult'
-import type { FanOutResult, FanOutRow, OutcomeTone } from './fanOutResult'
+import type { FanOutDecision, FanOutResult, FanOutRow, OutcomeTone } from './fanOutResult'
 import styles from './FanOutResultView.module.css'
 
 interface Props {
@@ -38,6 +38,53 @@ function summaryOrder(counts: OutcomeCount[]): OutcomeCount[] {
   const known = order.filter((o) => byOutcome.has(o)).map((o) => byOutcome.get(o)!)
   const unknown = counts.filter((c) => !(order as string[]).includes(c.outcome))
   return [...known, ...unknown]
+}
+
+// DECISION_TONE colours Relay's request state the way the outcome chips colour
+// a Node: approved reads as the go-ahead, anything else as "did not proceed".
+// An unrecognized state is shown verbatim in the neutral tone.
+function decisionTone(state: string): OutcomeTone {
+  switch (state) {
+    case 'approved':
+      return 'ok'
+    case 'denied':
+      return 'failed'
+    case 'pending':
+    case 'expired':
+      return 'notRun'
+    default:
+      return 'unknown'
+  }
+}
+
+// DecisionLine renders the decision block Relay returns beside the Job an
+// in-band approval released. Every field is shown: on_behalf_of is the name
+// Gleipnir asserted to Relay, and Relay records it as an assertion, never as a
+// verified identity, so the label says so. next_step is Relay's instruction to
+// the AI-agent, labelled as such rather than presented as advice to the reader.
+function DecisionLine({ decision }: { decision: FanOutDecision }) {
+  const tone = decisionTone(decision.state)
+  return (
+    <div className={styles.decision}>
+      <div className={styles.decisionRow}>
+        <span className={styles.decisionLabel}>Relay decision</span>
+        <span className={`${styles.chip} ${TONE_CLASS[tone]}`} data-tone={tone}>
+          {decision.state}
+        </span>
+        {decision.progress && <span className={styles.decisionFact}>{decision.progress}</span>}
+        {decision.channel && <span className={styles.decisionFact}>{decision.channel}</span>}
+        {decision.on_behalf_of && (
+          <span className={styles.decisionFact}>
+            on behalf of <strong>{decision.on_behalf_of}</strong> (asserted)
+          </span>
+        )}
+        <span className={styles.jobId}>request {decision.request_id}</span>
+      </div>
+      {decision.next_step && (
+        <p className={styles.decisionNote}>Relay to the agent: {decision.next_step}</p>
+      )}
+    </div>
+  )
 }
 
 // previewText picks the first non-empty of stdout/stderr/refusal_explanation and
@@ -86,9 +133,12 @@ export function FanOutResultView({ result }: Props) {
     </div>
   )
 
+  const decision = result.decision ? <DecisionLine decision={result.decision} /> : null
+
   if (n === 0) {
     return (
       <div>
+        {decision}
         {summary}
         <p className={styles.empty}>No per-Node results were returned for this job.</p>
       </div>
@@ -99,6 +149,7 @@ export function FanOutResultView({ result }: Props) {
 
   return (
     <div>
+      {decision}
       {summary}
       <table className={styles.table}>
         <thead>

@@ -246,7 +246,7 @@ whose service is not reachable from Uptime Kuma, send a Kuma-shaped payload:
 curl -X POST http://localhost:8080/api/v1/webhooks/<policy-id> \
   -H "Authorization: Bearer <policy-secret>" -H "Content-Type: application/json" \
   -d '{"heartbeat":{"status":0,"msg":"nginx not answering on dev-node-4, dev-node-5","important":true},
-       "monitor":{"name":"nginx","url":"http://dev-node-4","type":"http"},
+       "monitor":{"name":"nginx","url":"http://dev-node-4:8080","type":"http"},
        "msg":"[nginx] [Down] nginx not answering on dev-node-4, dev-node-5"}'
 ```
 
@@ -294,11 +294,30 @@ the approval to a Relay-authored plan hash.
 
 ## After `make demo-reset`
 
-The CA and the token are both new. In Tools → relay: replace the CA (server detail → CA
-certificate), re-run Step 3, and replace the Authorization header value. No Gleipnir restart is
-needed, because the PEM and headers are part of the client cache key. Policies, the protocol
-pin, and the Run attribution setting (it is on the Gleipnir row, not the Relay side) all
-survive.
+The CA and the token are both new. Re-run Step 3 (mint the token), then, from the Gleipnir repo
+root:
+
+```bash
+export RELAY_DIR=<gleipnir-relay checkout> GLEIPNIR_ADMIN_USER=<admin>
+read -rs GLEIPNIR_ADMIN_PASSWORD && export GLEIPNIR_ADMIN_PASSWORD
+scripts/demo-fleet-ops.sh sync
+```
+
+`sync` replaces the CA and the `Authorization` header on `relay` from the Relay repo's
+`.dev-fleet/`, rediscovers, and fails unless the protocol pin is `2026-07-28`, the call
+timeout `120`, run attribution `relay`, the pinned CA's SHA-256 equals the live file's, and
+`raw_exec`/`approve_request` are still disabled. `scripts/demo-fleet-ops.sh check` is the
+read-only pre-flight afterwards (one PASS/FAIL line per item). The same script's `setup` does
+Steps 6–8 and the webhook secret in one idempotent run, apart from the provider key; see the
+investor demo runbook ([docs/demo/investor-demo.md](../../demo/investor-demo.md), §2) for the
+environment it reads. It never takes a password or token on its command line.
+
+By hand, if the script cannot run: in Tools → relay, replace the CA (server detail → CA
+certificate) and the Authorization header value, then press Rediscover.
+
+Either way no Gleipnir restart is needed, because the PEM and headers are part of the client
+cache key. Policies, the protocol pin, and the Run attribution setting (it is on the Gleipnir
+row, not the Relay side) all survive.
 
 ## Troubleshooting
 

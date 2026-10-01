@@ -13,9 +13,24 @@ export interface FanOutRow {
   refusal_explanation?: string
 }
 
+// FanOutDecision mirrors Relay's ApprovalDecisionOutput: the decision block an
+// answered MRTR retry carries beside the Job it released. Relay always emits
+// every field (none are omitempty), so all six are required here.
+export interface FanOutDecision {
+  request_id: string
+  state: string
+  progress: string
+  channel: string
+  on_behalf_of: string
+  next_step: string
+}
+
 export interface FanOutResult {
   job_id: string
   results: FanOutRow[]
+  // Present only on the answered retry of an in-band approval — the call that
+  // ran because a human said yes.
+  decision?: FanOutDecision
 }
 
 const REQUIRED_ROW_KEYS = [
@@ -32,7 +47,16 @@ const OPTIONAL_ROW_KEYS = ['exit_code', 'refusal_explanation'] as const
 
 const ALLOWED_ROW_KEYS = new Set<string>([...REQUIRED_ROW_KEYS, ...OPTIONAL_ROW_KEYS])
 
-const ALLOWED_TOP_LEVEL_KEYS = new Set(['job_id', 'results'])
+const ALLOWED_TOP_LEVEL_KEYS = new Set(['job_id', 'results', 'decision'])
+
+const DECISION_KEYS = [
+  'request_id',
+  'state',
+  'progress',
+  'channel',
+  'on_behalf_of',
+  'next_step',
+] as const
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -71,6 +95,16 @@ function isFanOutRow(value: unknown): value is FanOutRow {
   return true
 }
 
+// isFanOutDecision holds the decision block to the same closed-key rule as a
+// row: an unrecognized or missing field sends the whole result to the
+// fallback rendering rather than being dropped.
+function isFanOutDecision(value: unknown): value is FanOutDecision {
+  if (!isPlainObject(value)) return false
+  const keys = Object.keys(value)
+  if (keys.length !== DECISION_KEYS.length) return false
+  return DECISION_KEYS.every((key) => typeof value[key] === 'string')
+}
+
 // parseFanOutResult detects Relay's fan-out shape in the value parseToolOutput
 // already returns. Detection is shape-only, not tool-name-based, and every
 // predicate closes over its key set: an unrecognized field anywhere sends the
@@ -104,7 +138,12 @@ export function parseFanOutResult(output: unknown): FanOutResult | null {
   if (!Array.isArray(candidate.results)) return null
   if (!candidate.results.every(isFanOutRow)) return null
 
-  return { job_id: candidate.job_id, results: candidate.results as FanOutRow[] }
+  const parsed: FanOutResult = { job_id: candidate.job_id, results: candidate.results as FanOutRow[] }
+  if ('decision' in candidate) {
+    if (!isFanOutDecision(candidate.decision)) return null
+    parsed.decision = candidate.decision
+  }
+  return parsed
 }
 
 export type OutcomeTone = 'ok' | 'policy' | 'failed' | 'notRun' | 'unknown'

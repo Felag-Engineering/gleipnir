@@ -10,6 +10,7 @@ import { useTimeSeriesStats } from '@/hooks/queries/stats'
 import { useAttentionItems } from '@/hooks/useAttentionItems'
 import { useSetupReadiness } from '@/hooks/useSetupReadiness'
 import { useRuns } from '@/hooks/queries/runs'
+import { useCurrentUser } from '@/hooks/queries/users'
 import styles from './DashboardPage.module.css'
 
 export default function DashboardPage() {
@@ -21,16 +22,26 @@ export default function DashboardPage() {
   const recentRuns = useRuns({ limit: 1 })
   const hasFirstRun = recentRuns.runs.length > 0
 
+  // Only admins and operators can see — or do — the setup steps. For any other
+  // role the readiness endpoints answer 403, which would read as "not done"
+  // and show an approver or auditor a checklist claiming the instance is
+  // unconfigured, with links they cannot use.
+  const { data: currentUser } = useCurrentUser()
+  const roles = currentUser?.roles ?? []
+  const canSetUp = roles.includes('admin') || roles.includes('operator')
+
   return (
     <div className={styles.page}>
       <PageHeader title="Control Center" />
-      <SetupChecklist
-        hasModel={readiness.hasModel}
-        hasToolSource={readiness.hasToolSource}
-        hasAgent={readiness.hasAgent}
-        hasFirstRun={hasFirstRun}
-        isLoading={readiness.isLoading || recentRuns.isLoading}
-      />
+      {canSetUp && (
+        <SetupChecklist
+          hasModel={readiness.hasModel}
+          hasToolSource={readiness.hasToolSource}
+          hasAgent={readiness.hasAgent}
+          hasFirstRun={hasFirstRun}
+          isLoading={readiness.isLoading || recentRuns.isLoading}
+        />
+      )}
       <div className={styles.chartGrid}>
         <RunActivityChart
           data={timeSeries.data}

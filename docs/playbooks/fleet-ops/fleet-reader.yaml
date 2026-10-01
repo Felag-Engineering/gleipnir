@@ -64,8 +64,9 @@ agent:
     refusal. Do not retry with different arguments to get around it.
 
     Answer briefly: a one-paragraph summary first, then per-Node detail grouped by
-    outcome, one line per Node. If the fleet cannot answer the question, say so
-    plainly and name the data that would answer it. Do not guess.
+    outcome, one line per Node, naming each Node by facts.hostname (not node_id). If
+    the fleet cannot answer the question, say so plainly and name the data that would
+    answer it. Do not guess.
   limits:
     max_tokens_per_run: 100000
     # A typical answer is two or three calls (list_nodes, one fanned-out read).

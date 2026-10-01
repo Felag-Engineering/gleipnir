@@ -50,6 +50,22 @@ describe('renderInlineMarkdown', () => {
     expect(stringify(renderInlineMarkdown('_italic_'))).toBe('<em>italic</em>')
   })
 
+  it.each([
+    ['a snake_case identifier', 'outcome denied_by_policy on 2 Nodes', 'outcome denied_by_policy on 2 Nodes'],
+    ['two identifiers on one line', 'relay.run_operation then relay.list_nodes', 'relay.run_operation then relay.list_nodes'],
+    ['an identifier inside bold', '**denied_by_policy** (2)', '<strong>denied_by_policy</strong> (2)'],
+    ['a trailing underscore after a word', 'snake_ and _case', 'snake_ and _case'],
+    ['digits around the underscore', 'exit_code 0 at 12_000ms', 'exit_code 0 at 12_000ms'],
+  ])('leaves intraword underscores literal: %s', (_label, input, expected) => {
+    expect(stringify(renderInlineMarkdown(input))).toBe(expected)
+  })
+
+  it('still italicizes _word_ next to a snake_case identifier', () => {
+    expect(stringify(renderInlineMarkdown('_note_ on denied_by_policy'))).toBe(
+      '<em>note</em> on denied_by_policy',
+    )
+  })
+
   it('`code` produces <code>', () => {
     expect(stringify(renderInlineMarkdown('`foo`'))).toBe('<code>foo</code>')
   })

@@ -109,3 +109,23 @@ export const EMPTY: FanOutResult = {
   job_id: 'job-empty',
   results: [],
 }
+
+// APPROVED_RETRY is what Relay returns on the answered retry of an in-band
+// approval: the Job the approval released, plus the decision block. Key order
+// matches Relay's JSON encoding (decision is marshalled after results).
+export const APPROVED_RETRY: FanOutResult = {
+  job_id: 'job-approved',
+  results: [
+    successRow('node-1123aea7732badca90d02d21bd1aac96'),
+    successRow('node-814e5b14eca5206060abdb164672609f'),
+  ],
+  decision: {
+    request_id: '172e493bee384ac7eef1aae480536ee9',
+    state: 'approved',
+    progress: '1 of 1',
+    channel: 'in-band',
+    on_behalf_of: 'dana',
+    next_step:
+      'the call was re-entered through the full dispatch pipeline once in this response, and the Job shown ran. Do not re-issue it. the answer was recorded (progress shown when the rule needs more).',
+  },
+}

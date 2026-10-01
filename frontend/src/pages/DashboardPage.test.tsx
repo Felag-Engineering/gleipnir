@@ -303,6 +303,9 @@ describe('DashboardPage', () => {
 
   it('SetupChecklist is visible when any setup step is pending', async () => {
     server.use(
+      http.get('/api/v1/auth/me', () =>
+        HttpResponse.json({ data: { id: '1', username: 'op', roles: ['operator'] } }),
+      ),
       http.get('/api/v1/stats', () => HttpResponse.json({ data: STATS })),
       http.get('/api/v1/stats/timeseries', () => HttpResponse.json({ data: TIMESERIES })),
       http.get('/api/v1/attention', () => HttpResponse.json({ data: ATTENTION })),
@@ -351,5 +354,33 @@ describe('DashboardPage', () => {
     await waitFor(() => {
       expect(screen.queryByText('SETUP')).not.toBeInTheDocument()
     })
+  })
+
+  it('SetupChecklist is hidden from a role that cannot do setup, whose readiness reads are refused', async () => {
+    const forbidden = () => HttpResponse.json({ error: 'forbidden' }, { status: 403 })
+    server.use(
+      http.get('/api/v1/auth/me', () =>
+        HttpResponse.json({ data: { id: '2', username: 'dana', roles: ['approver'] } }),
+      ),
+      http.get('/api/v1/stats', () => HttpResponse.json({ data: STATS })),
+      http.get('/api/v1/stats/timeseries', () => HttpResponse.json({ data: TIMESERIES })),
+      http.get('/api/v1/attention', () => HttpResponse.json({ data: ATTENTION })),
+      http.get('/api/v1/runs', () => HttpResponse.json({ data: RUNS })),
+      http.get('/api/v1/mcp/servers', forbidden),
+      http.get('/api/v1/models', forbidden),
+      http.get('/api/v1/policies', forbidden),
+      http.get('/api/v1/admin/plugin-instances', forbidden),
+    )
+
+    renderDashboard(makeClient())
+
+    await waitFor(() => {
+      expect(screen.getByText('RECENT RUNS')).toBeInTheDocument()
+    })
+    await waitFor(() => {
+      expect(screen.getAllByText('No runs yet').length).toBeGreaterThanOrEqual(1)
+    })
+    expect(screen.queryByText('SETUP')).not.toBeInTheDocument()
+    expect(screen.queryByText('Add a model API key')).not.toBeInTheDocument()
   })
 })
