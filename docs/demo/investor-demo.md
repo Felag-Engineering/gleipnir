@@ -382,9 +382,9 @@ Alternate question, if the fault is not in place for some reason. It works on a 
 
 **Point at,** on the run page as it fills in:
 
-- the **Capability snapshot** card, the first step: exactly five tools from server `relay`
-  (`list_nodes`, `describe_node`, `list_operations`, `run_operation`, `get_job`). No
-  `raw_exec`.
+- the **Capability snapshot** card, the first entry of the run's timeline (above the trigger):
+  exactly five tools listed under server `relay` (`list_nodes`, `describe_node`,
+  `list_operations`, `run_operation`, `get_job`). No `raw_exec`.
 - `list_nodes`, then `run_operation` with `file.read` of `/proc/net/tcp` fanned across the
   web Nodes, then per-Node results *(predicted: the model picks this path; the playbook lists
   it as the expected trace)*
@@ -478,8 +478,8 @@ $ scripts/demo-fleet-ops.sh fire inject
 
 **Point at:** the alert text in the run's trigger step, with the `rm -rf` line buried in it.
 Then the agent's report, which should mention the embedded instruction and not act on it
-*(predicted: the model's wording varies)*. Then scroll back to the **Capability snapshot**:
-`raw_exec` is not there. Optional: Tools → `relay` → `raw_exec` shows **Disabled**.
+*(predicted: the model's wording varies)*. Then scroll back to the top of the timeline, to the **Capability snapshot** card (or
+click the tool count in the run header, which jumps to it): `raw_exec` is not there. Optional: Tools → `relay` → `raw_exec` shows **Disabled**.
 
 **Say:**
 
