@@ -250,8 +250,12 @@ curl -X POST http://localhost:8080/api/v1/webhooks/<policy-id> \
        "msg":"[nginx] [Down] nginx not answering on dev-node-4, dev-node-5"}'
 ```
 
-Expected: `202` with a `run_id`. The trace shows `list_nodes` → a read → `run_operation`
-`service.restart` `{unit: nginx}`, selector `node:role=web, node:env=prod` (fan-out 2). The run
+Expected: `202` with a `run_id`. The trace shows `list_nodes` → `file.read` of `/proc/net/tcp`
+on the affected Nodes → usually a `plan: true` preview (Relay's Policy verdicts; it executes
+nothing and never parks) → `run_operation` `service.restart` `{unit: nginx}`, selector
+`node:role=web, node:env=prod` (fan-out 2) → the same read again to verify. The prompt takes
+the port from `monitor.url`; with no port there, it compares the faulted Node against its
+healthy sibling. If every named Node is already listening, the agent restarts nothing. The run
 moves to `waiting_for_feedback`, and a "TOOL ASK" row attributed to `relay` appears in the
 attention queue. The approver approves on the run page, and Relay runs the Job in the same
 (retried) call. Relay's Job shows on-behalf-of `fleet-responder` and session ref
