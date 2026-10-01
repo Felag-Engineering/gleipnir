@@ -30,6 +30,8 @@ export function StepTimeline({ items, systemPrompt, runId, runStatus, triggerTyp
     )
   }
 
+  const finalThoughtIndex = findFinalThoughtIndex(items)
+
   return (
     <ol className={styles.timeline} aria-label="Run steps">
       {triggerType && (
@@ -44,7 +46,13 @@ export function StepTimeline({ items, systemPrompt, runId, runStatus, triggerTyp
 
         return (
           <li key={key} className={styles.item}>
-            {renderBlock(item, { runId, runStatus, systemPrompt, durationMs })}
+            {renderBlock(item, {
+              runId,
+              runStatus,
+              systemPrompt,
+              durationMs,
+              isFinalThought: idx === finalThoughtIndex,
+            })}
           </li>
         )
       })}
@@ -57,6 +65,21 @@ interface RenderContext {
   runStatus: string
   systemPrompt?: string | null
   durationMs?: number | null
+  isFinalThought: boolean
+}
+
+// findFinalThoughtIndex returns the index of the run's answer: the last
+// thought, provided nothing but terminal steps follows it. A thought followed
+// by another tool call is working-out, not an answer, so it stays collapsed.
+// Returns -1 when there is no such thought (for example, mid-run).
+function findFinalThoughtIndex(items: (ParsedStep | ToolBlockData)[]): number {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i]
+    if (isToolBlock(item)) return -1
+    if (item.type === 'thought') return i
+    if (item.type !== 'complete' && item.type !== 'error') return -1
+  }
+  return -1
 }
 
 // renderBlock selects the appropriate block component for each item type.
@@ -74,7 +97,7 @@ function renderBlock(item: ParsedStep | ToolBlockData, ctx: RenderContext) {
     case 'thinking':
       return <ThinkingBlock step={item} />
     case 'thought':
-      return <ThoughtBlock step={item} />
+      return <ThoughtBlock step={item} defaultExpanded={ctx.isFinalThought} />
     case 'error':
       return <ErrorBlock step={item} />
     case 'complete':
