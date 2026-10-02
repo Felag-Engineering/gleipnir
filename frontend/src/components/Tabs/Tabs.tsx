@@ -34,6 +34,12 @@ export interface TabsProps {
    * `tabId(idPrefix, tab.id)` so the tab ↔ panel relationship is announced.
    */
   idPrefix?: string
+  /**
+   * Show the leading status marker (step number / check / error count).
+   * Defaults to true. Turn it off where tabs are views rather than steps of a
+   * form, and a number would read as an order the operator has to follow.
+   */
+  showMarkers?: boolean
 }
 
 /** Element id for a tab button. */
@@ -53,7 +59,7 @@ export function panelId(idPrefix: string, id: string): string {
  * consumer and stay mounted, so activation-follows-focus is the correct
  * variant.
  */
-export function Tabs({ tabs, activeId, onChange, ariaLabel, idPrefix = 'tabs' }: TabsProps) {
+export function Tabs({ tabs, activeId, onChange, ariaLabel, idPrefix = 'tabs', showMarkers = true }: TabsProps) {
   const btnRefs = useRef<Array<HTMLButtonElement | null>>([])
 
   function handleKeyDown(e: KeyboardEvent<HTMLButtonElement>, index: number) {
@@ -107,16 +113,18 @@ export function Tabs({ tabs, activeId, onChange, ariaLabel, idPrefix = 'tabs' }:
             onClick={() => onChange(tab.id)}
             onKeyDown={(e) => handleKeyDown(e, index)}
           >
-            <span
-              className={markerClass}
-              // Only the error state joins the accessible name (as it shipped in
-              // #711); the numeric/complete markers are decorative so a tab's
-              // name stays exactly its label for assistive tech and tests.
-              aria-label={hasError ? `${errorCount} ${errorCount === 1 ? 'error' : 'errors'}` : undefined}
-              aria-hidden={hasError ? undefined : true}
-            >
-              {hasError ? errorCount : complete ? '✓' : index + 1}
-            </span>
+            {showMarkers && (
+              <span
+                className={markerClass}
+                // Only the error state joins the accessible name (as it shipped in
+                // #711); the numeric/complete markers are decorative so a tab's
+                // name stays exactly its label for assistive tech and tests.
+                aria-label={hasError ? `${errorCount} ${errorCount === 1 ? 'error' : 'errors'}` : undefined}
+                aria-hidden={hasError ? undefined : true}
+              >
+                {hasError ? errorCount : complete ? '✓' : index + 1}
+              </span>
+            )}
             <span className={styles.tabLabel}>{tab.label}</span>
           </button>
         )
