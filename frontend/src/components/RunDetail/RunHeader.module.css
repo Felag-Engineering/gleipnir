@@ -114,58 +114,6 @@
   font-size: var(--text-xs);
 }
 
-.capabilityTableWrapper {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-  margin-top: var(--space-2);
-}
-
-.capabilityTable {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--text-xs);
-}
-
-.capabilityTable th {
-  padding: var(--space-2) var(--space-3);
-  text-align: left;
-  font-family: var(--font-mono);
-  font-weight: var(--weight-medium);
-  color: var(--text-muted);
-  background: var(--bg-code);
-  border-bottom: 1px solid var(--border-subtle);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.capabilityTable td {
-  padding: var(--space-2) var(--space-3);
-  font-family: var(--font-mono);
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.capabilityTable tr:last-child td {
-  border-bottom: none;
-}
-
-.mono {
-  font-family: var(--font-mono);
-}
-
-.muted {
-  color: var(--text-muted);
-}
-
-.approvalRequired {
-  color: var(--color-amber);
-}
-
-.approvalNone {
-  color: var(--text-faint);
-}
-
 /* Collapsible admin bar */
 
 .adminBar {

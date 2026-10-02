@@ -20,6 +20,8 @@ export const Complete: Story = { args: { status: 'complete' } };
 export const Running: Story = { args: { status: 'running' } };
 export const AwaitingApproval: Story = { args: { status: 'waiting_for_approval' } };
 export const AwaitingFeedback: Story = { args: { status: 'waiting_for_feedback' } };
+// waiting_for_feedback on a tool-initiated permission ask reads as an approval.
+export const AwaitingPermissionAsk: Story = { args: { status: 'waiting_for_feedback', awaitingPermission: true } };
 export const Failed: Story = { args: { status: 'failed' } };
 export const Interrupted: Story = { args: { status: 'interrupted' } };
 export const Pending: Story = { args: { status: 'pending' } };

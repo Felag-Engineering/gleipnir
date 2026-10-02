@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import React from 'react'
@@ -195,7 +195,8 @@ describe('RunDetailPage — step types render', () => {
       }),
     ])
     renderPage()
-    expect(screen.getByText('fs.write')).toBeInTheDocument()
+    // Once in the snapshot card, once as the ToolBlock's tool name.
+    expect(screen.getAllByText('fs.write')).toHaveLength(2)
   })
 
   it('renders tool_result step', () => {
@@ -239,7 +240,7 @@ describe('RunDetailPage — step types render', () => {
     expect(screen.getByText('Run complete')).toBeInTheDocument()
   })
 
-  it('renders capability_snapshot info in header bar (collapsed by default)', () => {
+  it('renders capability_snapshot summary in the header bar', () => {
     const capContent = JSON.stringify([
       { server_name: 'srv1', tool_name: 'fs.read', approval: 'none', timeout: 0, on_timeout: '' },
     ])
@@ -247,24 +248,53 @@ describe('RunDetailPage — step types render', () => {
       makeStep({ id: 'snap', type: 'capability_snapshot', content: capContent }),
     ])
     renderPage()
-    // Capability info is shown in header bar, not as a timeline card
-    expect(screen.getByText(/1 tool/)).toBeInTheDocument()
-    // Table should not be visible by default
-    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+    const bar = screen.getByRole('button', { name: /show capability snapshot/i })
+    expect(bar.textContent).toContain('1 tool')
   })
 
-  it('expands capability bar to show tool table on click', async () => {
+  it('renders the capability snapshot as the first timeline entry, tools visible without a click', () => {
+    const capContent = JSON.stringify([
+      { server_name: 'relay', tool_name: 'list_nodes', approval: 'none', timeout: 0, on_timeout: '' },
+      { server_name: 'relay', tool_name: 'run_operation', approval: 'none', timeout: 0, on_timeout: '' },
+    ])
+    mockLoaded(makeRun(), [
+      makeStep({ id: 'snap', type: 'capability_snapshot', content: capContent }),
+      makeStep({ id: 's2', step_number: 1, type: 'thought', content: JSON.stringify({ text: 'Looking.' }) }),
+    ])
+    renderPage()
+    const timeline = screen.getByRole('list', { name: 'Run steps' })
+    const first = timeline.querySelector(':scope > li')
+    expect(first).not.toBeNull()
+    const card = within(first as HTMLElement).getByRole('region', { name: /capability snapshot/i })
+    expect(card.textContent).toContain('list_nodes')
+    expect(card.textContent).toContain('run_operation')
+  })
+
+  it('keeps the snapshot out of the filter counts (ADR-018)', () => {
     const capContent = JSON.stringify([
       { server_name: 'srv1', tool_name: 'fs.read', approval: 'none', timeout: 0, on_timeout: '' },
     ])
     mockLoaded(makeRun(), [
       makeStep({ id: 'snap', type: 'capability_snapshot', content: capContent }),
+      makeStep({ id: 's2', step_number: 1, type: 'thought', content: JSON.stringify({ text: 'Only step.' }) }),
     ])
     renderPage()
-    fireEvent.click(screen.getByText(/1 tool/))
-    await waitFor(() => {
-      expect(screen.getByRole('table')).toBeInTheDocument()
-    })
+    const filters = screen.getByRole('navigation', { name: 'Step filter' })
+    expect(within(filters).getByRole('button', { name: /^All/ }).textContent).toBe('All1')
+  })
+
+  it('keeps the snapshot card visible under a filter that excludes it', async () => {
+    const capContent = JSON.stringify([
+      { server_name: 'srv1', tool_name: 'fs.read', approval: 'none', timeout: 0, on_timeout: '' },
+    ])
+    mockLoaded(makeRun(), [
+      makeStep({ id: 'snap', type: 'capability_snapshot', content: capContent }),
+      makeStep({ id: 's2', step_number: 1, type: 'thought', content: JSON.stringify({ text: 'Only step.' }) }),
+    ])
+    renderPage()
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Step filter' })).getByRole('button', { name: /^Errors/ }))
+    await waitFor(() => expect(screen.queryByText('Only step.')).not.toBeInTheDocument())
+    expect(screen.getByRole('region', { name: /capability snapshot/i })).toBeInTheDocument()
   })
 
   it('renders capability_snapshot V2 with provider in header bar', () => {
@@ -279,7 +309,7 @@ describe('RunDetailPage — step types render', () => {
       makeStep({ id: 'snap', type: 'capability_snapshot', content: capContent }),
     ])
     renderPage()
-    const bar = screen.getByText(/1 tool/)
+    const bar = screen.getByRole('button', { name: /show capability snapshot/i })
     expect(bar.textContent).toContain('Anthropic')
     expect(bar.textContent).toContain('claude-sonnet-4-6')
   })
@@ -295,7 +325,7 @@ describe('RunDetailPage — step types render', () => {
       makeStep({ id: 'snap', type: 'capability_snapshot', content: capContent }),
     ])
     renderPage()
-    const bar = screen.getByText(/1 tool/)
+    const bar = screen.getByRole('button', { name: /show capability snapshot/i })
     expect(bar.textContent).toContain('claude-sonnet-4-6')
     // provider omitted — should not appear
     expect(bar.textContent).not.toContain('anthropic')
@@ -1086,6 +1116,46 @@ describe('RunDetailPage — tool-initiated request', () => {
 
     expect(screen.getByText('Delete 12 production records?')).toBeInTheDocument()
     expect(screen.getByLabelText('Tool-initiated request')).toBeInTheDocument()
+  })
+
+  it('labels the run "Awaiting Approval" while parked on a permission ask', () => {
+    mockLoaded(makeRun({ status: 'waiting_for_feedback' }))
+    vi.mocked(useToolInput).mockReturnValue({
+      request: pendingRequest,
+    } as ReturnType<typeof useToolInput>)
+
+    renderPage()
+
+    expect(screen.getByText('Awaiting Approval')).toBeInTheDocument()
+    expect(screen.queryByText('Awaiting Feedback')).not.toBeInTheDocument()
+  })
+
+  it('keeps "Awaiting Feedback" for an information ask', () => {
+    mockLoaded(makeRun({ status: 'waiting_for_feedback' }))
+    vi.mocked(useToolInput).mockReturnValue({
+      request: { ...pendingRequest, elicitation_kind: 'information', required_role: 'operator', requests: [{ message: 'Which ticket?' }] },
+    } as ReturnType<typeof useToolInput>)
+
+    renderPage()
+
+    expect(screen.getByText('Awaiting Feedback')).toBeInTheDocument()
+    expect(screen.queryByText('Awaiting Approval')).not.toBeInTheDocument()
+  })
+
+  it('takes the permission kind from the cached attention queue before the request loads', () => {
+    mockLoaded(makeRun({ status: 'waiting_for_feedback' }))
+    const queryClient = makeQueryClient()
+    queryClient.setQueryData(['attention'], {
+      items: [{
+        type: 'tool_input', request_id: 'tir-1', run_id: 'r1', policy_id: 'p1', policy_name: 'my-policy',
+        tool_name: 'deploy.release', message: 'Delete?', expires_at: null, created_at: '2025-01-01T12:00:00Z',
+        elicitation_kind: 'permission',
+      }],
+    })
+
+    renderPage(queryClient)
+
+    expect(screen.getByText('Awaiting Approval')).toBeInTheDocument()
   })
 
   // A run that is running or finished has no pending request, and asking on

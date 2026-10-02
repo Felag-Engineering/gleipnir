@@ -169,4 +169,28 @@ describe('useSetupReadiness', () => {
     expect(result.current.hasToolSource).toBe(false)
     expect(result.current.nextStep).toBe('tools')
   })
+
+  it('sends no readiness request when disabled, and reports nothing loading or errored', () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const wrapper = ({ children }: { children: React.ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children)
+
+    const { result } = renderHook(() => useSetupReadiness({ enabled: false }), { wrapper })
+
+    // An enabled query starts fetching as soon as it mounts; a disabled one never does.
+    expect(queryClient.isFetching()).toBe(0)
+    expect(result.current.isLoading).toBe(false)
+    expect(result.current.isError).toBe(false)
+  })
+
+  it('does fetch when enabled (the control for the case above)', () => {
+    setupHandlers({})
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const wrapper = ({ children }: { children: React.ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children)
+
+    renderHook(() => useSetupReadiness(), { wrapper })
+
+    expect(queryClient.isFetching()).toBe(4)
+  })
 })

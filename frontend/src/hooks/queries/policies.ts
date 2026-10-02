@@ -5,10 +5,13 @@ import { ApiError } from '@/api/fetch'
 import type { ApiPolicyListItem, ApiPolicyDetail, WebhookSecretResponse } from '@/api/types'
 import { queryKeys } from '../queryKeys'
 
-export function usePolicies() {
+// `enabled: false` skips the request — used where the current role's read
+// would 403 (see permissions/roleAccess.ts).
+export function usePolicies({ enabled = true }: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: queryKeys.policies.all,
     queryFn: () => apiFetch<ApiPolicyListItem[]>('/policies'),
+    enabled,
   })
 }
 

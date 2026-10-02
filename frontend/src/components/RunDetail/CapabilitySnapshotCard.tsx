@@ -1,17 +1,45 @@
 import { useState } from 'react'
-import { Settings, ChevronDown, ChevronUp, ChevronRight } from 'lucide-react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 import type { CapabilitySnapshotContent, CapabilitySnapshotV2, GrantedToolEntry } from './types'
 import { isFeedbackEntry } from './types'
 import { formatProviderName } from '@/utils/format'
 import styles from './CapabilitySnapshotCard.module.css'
+
+// Anchor the run header's capability summary scrolls to.
+export const CAPABILITY_SNAPSHOT_ANCHOR = 'capability-snapshot'
 
 interface Props {
   content: CapabilitySnapshotContent
   systemPrompt?: string | null
 }
 
+interface ServerGroup {
+  server: string
+  tools: GrantedToolEntry[]
+}
+
+// groupByServer keeps servers, and tools within a server, in snapshot order —
+// the order the runtime registered them.
+function groupByServer(tools: GrantedToolEntry[]): ServerGroup[] {
+  const groups: ServerGroup[] = []
+  const byServer = new Map<string, ServerGroup>()
+  for (const tool of tools) {
+    let group = byServer.get(tool.server_name)
+    if (!group) {
+      group = { server: tool.server_name, tools: [] }
+      byServer.set(tool.server_name, group)
+      groups.push(group)
+    }
+    group.tools.push(tool)
+  }
+  return groups
+}
+
+// CapabilitySnapshotCard is the first entry of the run timeline: the exact
+// tools registered with the agent at run start (ADR-018). The tool names are
+// always visible, grouped by server, because the point of the card is what is
+// *not* on it — a tool missing here did not exist for the agent (ADR-001).
 export function CapabilitySnapshotCard({ content, systemPrompt }: Props) {
-  const [expanded, setExpanded] = useState(false)
   const [promptExpanded, setPromptExpanded] = useState(false)
 
   // Support both the legacy array shape (pre-ADR-023) and the V2 object shape.
@@ -22,64 +50,69 @@ export function CapabilitySnapshotCard({ content, systemPrompt }: Props) {
   const modelName = isV2 ? (content as CapabilitySnapshotV2).model : undefined
   const provider = isV2 ? (content as CapabilitySnapshotV2).provider : undefined
   const count = realTools.length
+  const groups = groupByServer(realTools)
+
+  const meta = [
+    `${count} tool${count === 1 ? '' : 's'}`,
+    provider ? formatProviderName(provider) : undefined,
+    modelName,
+  ].filter(Boolean).join(' · ')
 
   return (
-    <div className={styles.card}>
-      <button
-        type="button"
-        className={styles.summary}
-        onClick={() => setExpanded((e) => !e)}
-        aria-expanded={expanded}
-      >
-        <Settings size={14} className={styles.icon} aria-hidden />
-        <span className={styles.label}>
-          Capability snapshot — {count} tool{count === 1 ? '' : 's'}{provider ? ` · ${formatProviderName(provider)}` : ''}{modelName ? ` · ${modelName}` : ''}
-        </span>
-        {expanded ? <ChevronUp size={14} className={styles.chevron} aria-hidden /> : <ChevronDown size={14} className={styles.chevron} aria-hidden />}
-      </button>
-      {expanded && (
-        <div className={styles.tableWrapper}>
-          {feedbackEnabled && (
-            <div className={styles.feedbackRow}>
-              <span className={styles.feedbackChip}>Feedback</span>
-              <span className={styles.feedbackLabel}>gleipnir.ask_operator — human-in-the-loop channel</span>
+    <section
+      id={CAPABILITY_SNAPSHOT_ANCHOR}
+      className={styles.card}
+      aria-label="Capability snapshot"
+    >
+      <div className={styles.header}>
+        <span className={styles.label}>Capability snapshot</span>
+        <span className={styles.meta}>{meta}</span>
+        {feedbackEnabled && (
+          <span className={styles.feedbackChip} title="gleipnir.ask_operator — human-in-the-loop channel">
+            Feedback
+          </span>
+        )}
+      </div>
+
+      {groups.length === 0 ? (
+        <p className={styles.none}>No tools were registered for this run.</p>
+      ) : (
+        <dl className={styles.groups}>
+          {groups.map(group => (
+            <div key={group.server} className={styles.group}>
+              <dt className={styles.server}>{group.server}</dt>
+              <dd className={styles.tools}>
+                <ul className={styles.toolList}>
+                  {group.tools.map(tool => (
+                    <li key={tool.tool_name} className={styles.tool}>
+                      {tool.tool_name}
+                      {tool.approval === 'required' && (
+                        <span className={styles.approvalTag}>approval</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </dd>
             </div>
-          )}
-          <table className={styles.table}>
-            <thead>
-              <tr>
-                <th>Server</th>
-                <th>Tool</th>
-                <th>Approval</th>
-              </tr>
-            </thead>
-            <tbody>
-              {realTools.map((t, i) => (
-                <tr key={i}>
-                  <td className={styles.mono}>{t.server_name}</td>
-                  <td className={styles.mono}>{t.tool_name}</td>
-                  <td className={styles.mono}>{t.approval}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {systemPrompt && (
-            <>
-              <button
-                type="button"
-                className={styles.promptToggle}
-                onClick={() => setPromptExpanded((e) => !e)}
-                aria-expanded={promptExpanded}
-              >
-                {promptExpanded ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />} System prompt
-              </button>
-              {promptExpanded && (
-                <pre className={styles.promptBody}>{systemPrompt}</pre>
-              )}
-            </>
-          )}
-        </div>
+          ))}
+        </dl>
       )}
-    </div>
+
+      {systemPrompt && (
+        <>
+          <button
+            type="button"
+            className={styles.promptToggle}
+            onClick={() => setPromptExpanded((e) => !e)}
+            aria-expanded={promptExpanded}
+          >
+            {promptExpanded ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />} System prompt
+          </button>
+          {promptExpanded && (
+            <pre className={styles.promptBody}>{systemPrompt}</pre>
+          )}
+        </>
+      )}
+    </section>
   )
 }

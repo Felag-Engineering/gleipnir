@@ -2,11 +2,15 @@ import { Fragment, useId, useState } from 'react'
 import { Check, ChevronDown, ChevronRight, HelpCircle, MinusCircle, ShieldCheck, X } from 'lucide-react'
 import { formatDurationMs } from '@/utils/format'
 import { groupByOutcome, outcomeLabel, outcomeTone, OUTCOME_ORDER } from './fanOutResult'
-import type { FanOutDecision, FanOutResult, FanOutRow, OutcomeTone } from './fanOutResult'
+import type { FanOutAnswerRefusal, FanOutDecision, FanOutResult, FanOutRow, OutcomeTone } from './fanOutResult'
 import styles from './FanOutResultView.module.css'
 
 interface Props {
   result: FanOutResult
+  // node_id → hostname, learned from a list_nodes result on the same server
+  // earlier in the run (nodeHostnames.ts). Optional: without it, or for an id
+  // it does not hold, a row shows its node_id exactly as Relay sent it.
+  hostnames?: ReadonlyMap<string, string>
 }
 
 const TONE_ICON: Record<OutcomeTone, typeof Check> = {
@@ -64,8 +68,11 @@ function decisionTone(state: string): OutcomeTone {
 // the AI-agent, labelled as such rather than presented as advice to the reader.
 function DecisionLine({ decision }: { decision: FanOutDecision }) {
   const tone = decisionTone(decision.state)
+  // A denial is the human gate working, but nothing ran: the line is marked
+  // as a refusal so it cannot be read as the go-ahead at a glance.
+  const refusal = tone === 'failed'
   return (
-    <div className={styles.decision}>
+    <div className={`${styles.decision} ${refusal ? styles.decisionRefusal : ''}`}>
       <div className={styles.decisionRow}>
         <span className={styles.decisionLabel}>Relay decision</span>
         <span className={`${styles.chip} ${TONE_CLASS[tone]}`} data-tone={tone}>
@@ -87,6 +94,45 @@ function DecisionLine({ decision }: { decision: FanOutDecision }) {
   )
 }
 
+// AnswerRefusedLine renders Relay's answer_refused block: the operator's
+// answer reached Relay but Relay did not take it as a decision. reason and
+// next_step are Relay's own words and are shown as plain text.
+function AnswerRefusedLine({ refusal }: { refusal: FanOutAnswerRefusal }) {
+  return (
+    <div className={`${styles.decision} ${styles.decisionRefusal}`}>
+      <div className={styles.decisionRow}>
+        <span className={styles.decisionLabel}>Relay decision</span>
+        <span className={`${styles.chip} ${TONE_CLASS.failed}`} data-tone="failed">
+          answer refused
+        </span>
+        {refusal.state && <span className={styles.decisionFact}>request {refusal.state}</span>}
+        {refusal.job_id && <span className={styles.decisionFact}>released job {refusal.job_id} earlier</span>}
+        {refusal.request_id && <span className={styles.jobId}>request {refusal.request_id}</span>}
+      </div>
+      <p className={styles.decisionReason}>{refusal.reason}</p>
+      {refusal.next_step && (
+        <p className={styles.decisionNote}>Relay to the agent: {refusal.next_step}</p>
+      )}
+    </div>
+  )
+}
+
+// NodeCell labels a row by hostname when one is known, keeping the node_id
+// in full beneath it (and as the cell's tooltip): the id is what Relay's audit
+// trail and every other Relay surface use, so it must stay readable and
+// copyable. The hostname is a plain text node, never markup.
+function NodeCell({ nodeId, hostname }: { nodeId: string; hostname: string | undefined }) {
+  if (!hostname) {
+    return <td className={styles.node}>{nodeId}</td>
+  }
+  return (
+    <td className={styles.node} title={nodeId}>
+      <span className={styles.hostname}>{hostname}</span>
+      <span className={styles.nodeIdSecondary}>{nodeId}</span>
+    </td>
+  )
+}
+
 // previewText picks the first non-empty of stdout/stderr/refusal_explanation and
 // returns only its first line — the rest is reachable only in the expanded
 // detail. A long first line is still cut visually by CSS text-overflow ellipsis.
@@ -95,7 +141,7 @@ function previewText(row: FanOutRow): string | null {
   return text ? text.split('\n')[0] : null
 }
 
-export function FanOutResultView({ result }: Props) {
+export function FanOutResultView({ result, hostnames }: Props) {
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set())
   const idPrefix = useId()
 
@@ -116,6 +162,20 @@ export function FanOutResultView({ result }: Props) {
     })
   }
 
+  const decision = result.decision ? <DecisionLine decision={result.decision} /> : null
+
+  // No job_id means Relay dispatched nothing (its own contract), so there is
+  // no Job to summarize and no table to draw — only what Relay decided.
+  if (result.job_id === undefined) {
+    return (
+      <div>
+        {decision}
+        {result.answer_refused && <AnswerRefusedLine refusal={result.answer_refused} />}
+        <p className={styles.nothingDispatched}>Nothing was dispatched.</p>
+      </div>
+    )
+  }
+
   const summary = (
     <div className={styles.summary}>
       <span className={styles.total}>
@@ -132,8 +192,6 @@ export function FanOutResultView({ result }: Props) {
       <span className={styles.jobId}>job {result.job_id}</span>
     </div>
   )
-
-  const decision = result.decision ? <DecisionLine decision={result.decision} /> : null
 
   if (n === 0) {
     return (
@@ -175,7 +233,7 @@ export function FanOutResultView({ result }: Props) {
             return (
               <Fragment key={index}>
                 <tr data-outcome={row.outcome} className={tone === 'policy' ? styles.rowPolicy : ''}>
-                  <td className={styles.node}>{row.node_id}</td>
+                  <NodeCell nodeId={row.node_id} hostname={hostnames?.get(row.node_id)} />
                   <td>
                     <span className={`${styles.badge} ${TONE_CLASS[tone]}`} data-tone={tone}>
                       <Icon size={14} aria-hidden />
@@ -206,7 +264,7 @@ export function FanOutResultView({ result }: Props) {
                 {open && (
                   <tr className={styles.detailRow}>
                     <td colSpan={5} id={detailId}>
-                      <RowDetail row={row} tone={tone} />
+                      <RowDetail row={row} tone={tone} labelledByHostname={hostnames?.has(row.node_id) ?? false} />
                     </td>
                   </tr>
                 )}
@@ -219,16 +277,30 @@ export function FanOutResultView({ result }: Props) {
   )
 }
 
-function RowDetail({ row, tone }: { row: FanOutRow; tone: OutcomeTone }) {
+function RowDetail({ row, tone, labelledByHostname }: { row: FanOutRow; tone: OutcomeTone; labelledByHostname: boolean }) {
   const hasStdout = row.stdout !== ''
   const hasStderr = row.stderr !== ''
 
+  // When the row is labelled by hostname, the expanded detail repeats the
+  // node_id on its own line, where it can be selected without the hostname.
+  const nodeIdLine = labelledByHostname && (
+    <div className={styles.streamLabel}>
+      node_id <span className={styles.detailNodeId}>{row.node_id}</span>
+    </div>
+  )
+
   if (!hasStdout && !hasStderr && !row.refusal_explanation) {
-    return <p className={styles.streamLabel}>(empty)</p>
+    return (
+      <>
+        {nodeIdLine}
+        <p className={styles.streamLabel}>(empty)</p>
+      </>
+    )
   }
 
   return (
     <>
+      {nodeIdLine}
       {hasStdout && (
         <div>
           <div className={styles.streamLabel}>

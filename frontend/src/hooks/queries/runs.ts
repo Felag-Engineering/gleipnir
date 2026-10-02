@@ -1,5 +1,5 @@
 import { useQuery, keepPreviousData } from '@tanstack/react-query'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { apiFetch, ApiError } from '@/api/fetch'
 import type { ApiRun, ApiRunDecision, ApiRunsResponse, ApiRunStep, ApiToolInputRequest } from '@/api/types'
 import { queryKeys } from '../queryKeys'
@@ -136,8 +136,13 @@ export function useRunSteps(id?: string): UseRunStepsResult {
     setExtraPages([])
   }, [baseQuery.dataUpdatedAt])
 
-  const firstPage = baseQuery.data ?? []
-  const allSteps: ApiRunStep[] = [firstPage, ...extraPages].flat()
+  const firstPage = baseQuery.data
+  // Memoized so the array keeps its identity until a page actually changes:
+  // useRunTimeline memoizes its parsing on this reference.
+  const allSteps: ApiRunStep[] = useMemo(
+    () => [firstPage ?? [], ...extraPages].flat(),
+    [firstPage, extraPages],
+  )
 
   const lastStep = allSteps[allSteps.length - 1]
   const lastStepNumber = lastStep?.step_number ?? -1
@@ -147,7 +152,7 @@ export function useRunSteps(id?: string): UseRunStepsResult {
   const lastPageLen =
     extraPages.length > 0
       ? extraPages[extraPages.length - 1].length
-      : firstPage.length
+      : (firstPage?.length ?? 0)
   const hasMore = lastPageLen === PAGE_SIZE_STEPS
 
   async function loadMore() {

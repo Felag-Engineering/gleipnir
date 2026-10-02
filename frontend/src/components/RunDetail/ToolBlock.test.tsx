@@ -3,7 +3,8 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ApiRunStep } from '@/api/types'
-import { APPROVED_RETRY, asToolOutput, MIXED_24 } from './fanOutFixtures'
+import { ANSWER_REFUSED, APPROVED_RETRY, asToolOutput, DEMO_HOSTNAMES, DEMO_MIXED, DENIED_RETRY, MIXED_24 } from './fanOutFixtures'
+import type { NodeHostnameIndex } from './nodeHostnames'
 import { parseStep } from './types'
 import type { ToolBlockData } from './types'
 import { ToolBlock } from './ToolBlock'
@@ -45,11 +46,11 @@ function makeBlock(output: string, isError = false): ToolBlockData {
   }
 }
 
-function renderBlock(block: ToolBlockData) {
+function renderBlock(block: ToolBlockData, nodeHostnames?: NodeHostnameIndex) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <ToolBlock block={block} runId="run-1" runStatus="complete" />
+      <ToolBlock block={block} runId="run-1" runStatus="complete" nodeHostnames={nodeHostnames} />
     </QueryClientProvider>,
   )
 }
@@ -131,5 +132,39 @@ describe('ToolBlock — is_error: true', () => {
     expect(screen.queryByRole('button', { name: /show raw output/i })).toBeNull()
     const pre = container.querySelector('pre')
     expect(pre?.textContent).toBe('permission denied: /tmp/report.txt')
+  })
+})
+
+describe('ToolBlock — Relay result that dispatched nothing', () => {
+  it.each([
+    ['a rejected approval', DENIED_RETRY],
+    ['a refused answer', ANSWER_REFUSED],
+  ])('%s: no table, a "Nothing ran" pill, no success check', (_label, result) => {
+    renderBlock(makeBlock(asToolOutput(result)))
+    expect(screen.queryByRole('table')).toBeNull()
+    expect(screen.getByText('Nothing was dispatched.')).toBeInTheDocument()
+    expect(screen.getByText('Nothing ran')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Success')).toBeNull()
+    // Still a recognized shape, so the raw JSON stays one click away.
+    expect(screen.getByRole('button', { name: /show raw output/i })).toBeInTheDocument()
+  })
+
+  it('a dispatched result keeps its success check and no "Nothing ran" pill', () => {
+    renderBlock(makeBlock(asToolOutput(APPROVED_RETRY)))
+    expect(screen.getByLabelText('Success')).toBeInTheDocument()
+    expect(screen.queryByText('Nothing ran')).toBeNull()
+  })
+})
+
+describe('ToolBlock — hostnames', () => {
+  it('uses the hostnames indexed under its own server', () => {
+    renderBlock(makeBlock(asToolOutput(DEMO_MIXED)), new Map([['relay-server', DEMO_HOSTNAMES]]))
+    expect(screen.getByText('dev-node-4')).toBeInTheDocument()
+  })
+
+  it('ignores hostnames indexed under another server', () => {
+    renderBlock(makeBlock(asToolOutput(DEMO_MIXED)), new Map([['other-server', DEMO_HOSTNAMES]]))
+    expect(screen.queryByText('dev-node-4')).toBeNull()
+    expect(screen.getByText('node-814e5b14eca5206060abdb164672609f')).toBeInTheDocument()
   })
 })

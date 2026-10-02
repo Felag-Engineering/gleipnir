@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useRuns } from '@/hooks/queries/runs'
 import { usePolicies } from '@/hooks/queries/policies'
+import { useRoleAccess } from '@/permissions/useRoleAccess'
 import { useRunsFilters } from '@/hooks/useRunsFilters'
 import { useAttentionItems } from '@/hooks/useAttentionItems'
 import { queryKeys } from '@/hooks/queryKeys'
@@ -14,6 +15,7 @@ import { formatTimeAgo, formatTokens, formatDuration, formatTimestamp, computeRu
 import { computePageNumbers, rangeToSince } from '@/utils/pagination'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import { getRunRowClasses } from './runsUtils'
+import { permissionAskRunIds } from '@/utils/permissionAsks'
 import styles from './RunsPage.module.css'
 
 const PAGE_SIZE = 25
@@ -57,9 +59,14 @@ export default function RunsPage() {
   })
 
   usePageTitle('Run History')
-  const { data: policies } = usePolicies()
+  // The agent filter needs the policy list, which an approver cannot read.
+  const access = useRoleAccess()
+  const canFilterByAgent = access.canAccess('/agents')
+  const { data: policies } = usePolicies({ enabled: canFilterByAgent })
   const { items: attentionItems } = useAttentionItems()
   const pendingApprovalCount = attentionItems.filter(i => i.type === 'approval').length
+  // Read from the attention items this page already holds — no request per row.
+  const awaitingPermission = permissionAskRunIds(attentionItems)
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   const firstItem = offset + 1
@@ -110,20 +117,24 @@ export default function RunsPage() {
 
         <div className={styles.filterDivider} aria-hidden="true" />
 
-        {/* Agent filter: styled native select to get accessibility for free */}
-        <select
-          className={policy ? `${styles.chip} ${styles.chipActive}` : styles.chip}
-          value={policy}
-          onChange={(e) => setFilter('policy', e.target.value)}
-          aria-label="Filter by agent"
-        >
-          <option value="">All agents ▾</option>
-          {(policies ?? []).map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </select>
+        {/* Agent filter: styled native select to get accessibility for free.
+            Hidden from a role that cannot read the agent list — it would be an
+            empty dropdown. */}
+        {canFilterByAgent && (
+          <select
+            className={policy ? `${styles.chip} ${styles.chipActive}` : styles.chip}
+            value={policy}
+            onChange={(e) => setFilter('policy', e.target.value)}
+            aria-label="Filter by agent"
+          >
+            <option value="">All agents ▾</option>
+            {(policies ?? []).map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        )}
 
         {/* Date range filter: styled native select */}
         <select
@@ -185,7 +196,7 @@ export default function RunsPage() {
                   </div>
                 </div>
 
-                <StatusBadge status={run.status as RunStatus} />
+                <StatusBadge status={run.status as RunStatus} awaitingPermission={awaitingPermission.has(run.id)} />
 
                 <span className={styles.duration}>
                   {formatDuration(computeRunDuration(run))}

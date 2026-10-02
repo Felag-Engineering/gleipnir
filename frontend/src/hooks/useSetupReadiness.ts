@@ -12,15 +12,19 @@ export interface SetupReadiness {
   nextStep: 'model' | 'tools' | 'agent' | 'ready'
 }
 
-export function useSetupReadiness(): SetupReadiness {
-  const models = useModels()
-  const servers = useMcpServers()
-  const policies = usePolicies()
+// Pass `enabled: false` for a role that cannot act on the setup steps (see
+// canSetUp in permissions/roleAccess.ts): no readiness request is sent, every
+// flag reads false, and nothing is loading or errored. Callers must then not
+// present the result as "this instance is unconfigured".
+export function useSetupReadiness({ enabled = true }: { enabled?: boolean } = {}): SetupReadiness {
+  const models = useModels({ enabled })
+  const servers = useMcpServers({ enabled })
+  const policies = usePolicies({ enabled })
   // Plugin instances enrich the tools step: a tool-providing plugin satisfies
   // the same step as an MCP server. Errors here degrade to hasToolPlugin=false
   // rather than propagating to isError — a 403 from non-admin roles must not
   // break the checklist for the whole dashboard.
-  const plugins = usePluginInstancesForAudience()
+  const plugins = usePluginInstancesForAudience({ enabled })
 
   const isLoading = models.isLoading || servers.isLoading || policies.isLoading || plugins.isLoading
   const isError = models.isError || servers.isError || policies.isError

@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import React from 'react'
 import { RunHeader } from './RunHeader'
@@ -86,24 +86,28 @@ describe('RunHeader — feedback filtering', () => {
     expect(screen.queryByText('Feedback')).not.toBeInTheDocument()
   })
 
-  it('expanded table omits ask_operator — only shows the 2 real tools', async () => {
-    renderHeader({
-      provider: 'anthropic',
-      model: 'claude-sonnet-4-6',
-      toolCount: 2,
-      tools: TWO_REAL_TOOLS,
-      feedbackEnabled: true,
-    })
-    fireEvent.click(screen.getByRole('button', { name: /2 tools/i }))
-    await waitFor(() => {
-      expect(screen.getByRole('table')).toBeInTheDocument()
-    })
-    // Both real tools are present
-    expect(screen.getByText('read_file')).toBeInTheDocument()
-    expect(screen.getByText('write_file')).toBeInTheDocument()
-    // ask_operator must not appear in the table
-    expect(screen.queryByText('ask_operator')).not.toBeInTheDocument()
-    expect(screen.queryByText('gleipnir')).not.toBeInTheDocument()
+  it('the capability summary jumps to the timeline snapshot card instead of expanding a second list', () => {
+    const target = document.createElement('section')
+    target.id = 'capability-snapshot'
+    const scrollIntoView = vi.fn()
+    target.scrollIntoView = scrollIntoView
+    document.body.appendChild(target)
+    try {
+      renderHeader({
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-6',
+        toolCount: 2,
+        tools: TWO_REAL_TOOLS,
+        feedbackEnabled: true,
+      })
+      fireEvent.click(screen.getByRole('button', { name: /2 tools/i }))
+      expect(scrollIntoView).toHaveBeenCalledTimes(1)
+      // The header no longer carries its own copy of the tool list.
+      expect(screen.queryByRole('table')).not.toBeInTheDocument()
+      expect(screen.queryByText('read_file')).not.toBeInTheDocument()
+    } finally {
+      target.remove()
+    }
   })
 
   it('shows "1 tool" when snapshot has exactly one real tool and no feedback', () => {
@@ -115,5 +119,37 @@ describe('RunHeader — feedback filtering', () => {
     const bar = screen.getByRole('button', { name: /1 tool/i })
     expect(bar.textContent).toContain('1 tool')
     expect(bar.textContent).not.toContain('tools')
+  })
+})
+
+describe('RunHeader — status badge for a tool-initiated permission ask', () => {
+  function renderWithStatus(status: ApiRun['status'], awaitingPermission?: boolean) {
+    return render(
+      <MemoryRouter>
+        <RunHeader
+          run={{ ...BASE_RUN, status, completed_at: null }}
+          toolCallCount={0}
+          tokenTotal={0}
+          duration={1_000}
+          awaitingPermission={awaitingPermission}
+        />
+      </MemoryRouter>,
+    )
+  }
+
+  it('reads "Awaiting Approval" while parked on a permission ask', () => {
+    renderWithStatus('waiting_for_feedback', true)
+    expect(screen.getByText('Awaiting Approval')).toBeInTheDocument()
+    expect(screen.queryByText('Awaiting Feedback')).not.toBeInTheDocument()
+  })
+
+  it('keeps "Awaiting Feedback" for an information ask or native feedback', () => {
+    renderWithStatus('waiting_for_feedback', false)
+    expect(screen.getByText('Awaiting Feedback')).toBeInTheDocument()
+  })
+
+  it('ignores awaitingPermission for any other status', () => {
+    renderWithStatus('running', true)
+    expect(screen.getByText('Running')).toBeInTheDocument()
   })
 })

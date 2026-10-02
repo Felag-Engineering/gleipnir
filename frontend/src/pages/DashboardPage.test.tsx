@@ -1,5 +1,5 @@
 import React from 'react'
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router'
@@ -107,6 +107,16 @@ function setupDefaultHandlers() {
 }
 
 describe('DashboardPage', () => {
+  // Signed in as an admin unless a test says otherwise: the setup checklist and
+  // its readiness reads are only for roles that can do setup.
+  beforeEach(() => {
+    server.use(
+      http.get('/api/v1/auth/me', () =>
+        HttpResponse.json({ data: { id: '1', username: 'admin', roles: ['admin'] } }),
+      ),
+    )
+  })
+
   it('renders all dashboard sections', async () => {
     setupDefaultHandlers()
     renderDashboard(makeClient())
@@ -356,20 +366,29 @@ describe('DashboardPage', () => {
     })
   })
 
-  it('SetupChecklist is hidden from a role that cannot do setup, whose readiness reads are refused', async () => {
-    const forbidden = () => HttpResponse.json({ error: 'forbidden' }, { status: 403 })
+  // The readiness endpoints answer 403 for an approver; the dashboard must not
+  // send them at all, nor show a checklist or links the role cannot use.
+  it.each([
+    { role: 'approver', agentsLink: false },
+    { role: 'auditor', agentsLink: true },
+  ])('a $role sees no setup checklist and sends no readiness reads', async ({ role, agentsLink }) => {
+    const readinessHits: string[] = []
+    const refuse = ({ request }: { request: Request }) => {
+      readinessHits.push(new URL(request.url).pathname)
+      return HttpResponse.json({ error: 'forbidden' }, { status: 403 })
+    }
     server.use(
       http.get('/api/v1/auth/me', () =>
-        HttpResponse.json({ data: { id: '2', username: 'dana', roles: ['approver'] } }),
+        HttpResponse.json({ data: { id: '2', username: 'dana', roles: [role] } }),
       ),
       http.get('/api/v1/stats', () => HttpResponse.json({ data: STATS })),
       http.get('/api/v1/stats/timeseries', () => HttpResponse.json({ data: TIMESERIES })),
       http.get('/api/v1/attention', () => HttpResponse.json({ data: ATTENTION })),
       http.get('/api/v1/runs', () => HttpResponse.json({ data: RUNS })),
-      http.get('/api/v1/mcp/servers', forbidden),
-      http.get('/api/v1/models', forbidden),
-      http.get('/api/v1/policies', forbidden),
-      http.get('/api/v1/admin/plugin-instances', forbidden),
+      http.get('/api/v1/mcp/servers', refuse),
+      http.get('/api/v1/models', refuse),
+      http.get('/api/v1/policies', refuse),
+      http.get('/api/v1/admin/plugin-instances', refuse),
     )
 
     renderDashboard(makeClient())
@@ -382,5 +401,8 @@ describe('DashboardPage', () => {
     })
     expect(screen.queryByText('SETUP')).not.toBeInTheDocument()
     expect(screen.queryByText('Add a model API key')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Start by adding a model API key/)).not.toBeInTheDocument()
+    expect(screen.queryAllByRole('link', { name: 'Go to Agents' }).length > 0).toBe(agentsLink)
+    expect(readinessHits).toEqual([])
   })
 })

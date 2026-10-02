@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@/api/fetch'
 import type { ApiAttentionResponse, ApiAttentionItem } from '@/api/types'
+import { permissionAskRunIds } from '@/utils/permissionAsks'
 import { queryKeys } from './queryKeys'
 
 export type AttentionItemType = 'approval' | 'feedback' | 'tool_input' | 'failure'
@@ -41,6 +42,12 @@ function sortKeyForItem(item: ApiAttentionItem): number {
   return new Date(item.created_at).getTime() + 24 * 60 * 60 * 1000
 }
 
+const ATTENTION_STALE_TIME = 30_000
+
+function fetchAttention(): Promise<ApiAttentionResponse> {
+  return apiFetch<ApiAttentionResponse>('/attention')
+}
+
 // useAttentionItems fetches the attention queue from GET /api/v1/attention,
 // filters out dismissed failures, and sorts all items by deadline urgency.
 //
@@ -54,8 +61,8 @@ export function useAttentionItems() {
 
   const query = useQuery({
     queryKey: queryKeys.attention.all,
-    queryFn: () => apiFetch<ApiAttentionResponse>('/attention'),
-    staleTime: 30_000,
+    queryFn: fetchAttention,
+    staleTime: ATTENTION_STALE_TIME,
   })
 
   const dismissed = loadDismissedSet()
@@ -83,4 +90,22 @@ export function useAttentionItems() {
     isLoading: query.isLoading,
     dismissFailure,
   }
+}
+
+// usePermissionAskRunIds returns the IDs of runs currently paused on a
+// tool-initiated *permission* ask (a `tool_input` attention row whose
+// elicitation_kind is `permission`). Run lists use it to label such a run
+// "Awaiting Approval" rather than "Awaiting Feedback".
+//
+// It reads the same cached attention query the sidebar already keeps warm for
+// every page (same key, same fetcher), so a list of N runs costs no extra
+// request — never one per row. SSE `tool_input.*` and `run.status_changed`
+// events invalidate that key, so the set follows the queue.
+export function usePermissionAskRunIds(): ReadonlySet<string> {
+  const query = useQuery({
+    queryKey: queryKeys.attention.all,
+    queryFn: fetchAttention,
+    staleTime: ATTENTION_STALE_TIME,
+  })
+  return permissionAskRunIds(query.data?.items ?? [])
 }

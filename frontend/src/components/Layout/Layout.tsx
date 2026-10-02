@@ -8,18 +8,27 @@ import { useSSE } from '@/hooks/useSSE'
 import { useCurrentUser } from '@/hooks/queries/users'
 import { useAttentionItems } from '@/hooks/useAttentionItems'
 import { useMcpServers } from '@/hooks/queries/servers'
+import { canAccess, type AppRoute } from '@/permissions/roleAccess'
 import { ToastRegion } from '@/components/Toast'
 import { UserMenu } from './UserMenu'
 import styles from './Layout.module.css'
 
-const NAV_ITEMS = [
+interface NavItem {
+  label: string
+  to: AppRoute
+  Icon: typeof Activity
+}
+
+// Which entries a user sees is decided by ROUTE_ROLES (permissions/roleAccess),
+// the single role→route map — never by a check here.
+const NAV_ITEMS: NavItem[] = [
   { label: 'Control Center', to: '/dashboard', Icon: Activity },
   { label: 'Run History', to: '/runs', Icon: History },
   { label: 'Agents', to: '/agents', Icon: Bot },
   { label: 'Tools', to: '/tools', Icon: Wrench },
 ]
 
-const ADMIN_NAV_ITEMS = [
+const ADMIN_NAV_ITEMS: NavItem[] = [
   { label: 'Users', to: '/admin/users', Icon: Users },
   { label: 'Models', to: '/admin/models', Icon: Cpu },
   { label: 'Audiences', to: '/admin/audiences', Icon: Megaphone },
@@ -38,7 +47,14 @@ export default function Layout() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const closeDrawer = useCallback(() => setDrawerOpen(false), [])
   const { items: attentionItems } = useAttentionItems()
-  const { data: mcpServers } = useMcpServers()
+  // Until /auth/me answers, roles is empty: only the ungated Control Center
+  // shows, and no role-gated link or request goes out on a guess.
+  const roles = currentUser?.roles ?? []
+  const navItems = NAV_ITEMS.filter(item => canAccess(roles, item.to))
+  const adminNavItems = ADMIN_NAV_ITEMS.filter(item => canAccess(roles, item.to))
+  // The Tools health dot needs the server list, which only roles that can open
+  // Tools may read.
+  const { data: mcpServers } = useMcpServers({ enabled: canAccess(roles, '/tools') })
 
   // Close the mobile drawer whenever navigation occurs so tapping a nav link
   // dismisses it. Keyed on pathname only — the drawer is a shell concern.
@@ -112,7 +128,7 @@ export default function Layout() {
         </div>
 
         <nav className={styles.nav} aria-label="Main navigation">
-          {NAV_ITEMS.map(({ label, to, Icon }) => {
+          {navItems.map(({ label, to, Icon }) => {
             const statusClass =
               to === '/dashboard' && hasPendingApprovals ? styles.navLinkNeedsApproval
               : to === '/tools' && hasUnhealthyServers ? styles.navLinkMcpUnhealthy
@@ -131,12 +147,12 @@ export default function Layout() {
               </NavLink>
             )
           })}
-          {(currentUser?.roles?.includes('admin') ?? false) && (
+          {adminNavItems.length > 0 && (
             <>
               <div className={styles.navSectionHeader}>
                 <span className={styles.navSectionLabel}>Admin</span>
               </div>
-              {ADMIN_NAV_ITEMS.map(({ label, to, Icon }) => (
+              {adminNavItems.map(({ label, to, Icon }) => (
                 <NavLink
                   key={to}
                   to={to}

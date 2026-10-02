@@ -14,10 +14,23 @@ import type { AttentionItem } from '@/hooks/useAttentionItems'
 vi.mock('@/hooks/queries/runs')
 vi.mock('@/hooks/queries/policies')
 vi.mock('@/hooks/useAttentionItems')
+vi.mock('@/hooks/queries/users')
 
 import { useRuns } from '@/hooks/queries/runs'
 import { usePolicies } from '@/hooks/queries/policies'
 import { useAttentionItems } from '@/hooks/useAttentionItems'
+import { useCurrentUser } from '@/hooks/queries/users'
+
+function signInAs(...roles: string[]) {
+  vi.mocked(useCurrentUser).mockReturnValue({
+    data: { id: 'u1', username: 'someone', roles },
+  } as ReturnType<typeof useCurrentUser>)
+}
+
+// An operator unless a test says otherwise — every filter is available to one.
+beforeEach(() => {
+  signInAs('operator', 'approver', 'auditor')
+})
 
 // --- Helpers ---
 
@@ -250,6 +263,17 @@ describe('RunsPage — filters', () => {
   it('agent filter select is present', () => {
     renderPage()
     expect(screen.getByRole('combobox', { name: /filter by agent/i })).toBeInTheDocument()
+    expect(vi.mocked(usePolicies)).toHaveBeenCalledWith({ enabled: true })
+  })
+
+  // An approver cannot read the agent list (GET /policies 403s): no request,
+  // and no empty dropdown.
+  it('hides the agent filter from an approver and does not ask for the agent list', () => {
+    signInAs('approver')
+    renderPage()
+    expect(screen.queryByRole('combobox', { name: /filter by agent/i })).not.toBeInTheDocument()
+    expect(vi.mocked(usePolicies)).toHaveBeenCalledWith({ enabled: false })
+    expect(vi.mocked(usePolicies)).not.toHaveBeenCalledWith({ enabled: true })
   })
 
   it('date range filter select is present', () => {
@@ -439,5 +463,29 @@ describe('computePageNumbers', () => {
     const result = computePageNumbers(5, 20)
     expect(result[0]).toBe(1)
     expect(result[result.length - 1]).toBe(20)
+  })
+})
+
+describe('RunsPage — status label for a tool-initiated permission ask', () => {
+  function attentionWith(items: Partial<AttentionItem>[]) {
+    vi.mocked(useAttentionItems).mockReturnValue({
+      ...DEFAULT_ATTENTION_RETURN,
+      items: items as AttentionItem[],
+      count: items.length,
+    })
+  }
+
+  it('reads "Awaiting Approval" for a run parked on a permission ask, from the attention items already loaded', () => {
+    mockLoaded([
+      makeRun({ id: 'run-perm', status: 'waiting_for_feedback', completed_at: null }),
+      makeRun({ id: 'run-info', status: 'waiting_for_feedback', completed_at: null }),
+    ])
+    attentionWith([
+      { type: 'tool_input', run_id: 'run-perm', elicitation_kind: 'permission', request_id: 'a', created_at: new Date().toISOString(), sortKey: 0 },
+      { type: 'tool_input', run_id: 'run-info', elicitation_kind: 'information', request_id: 'b', created_at: new Date().toISOString(), sortKey: 1 },
+    ])
+    renderPage()
+    expect(screen.getAllByText('Awaiting Approval')).toHaveLength(1)
+    expect(screen.getAllByText('Awaiting Feedback')).toHaveLength(1)
   })
 })

@@ -246,3 +246,36 @@ describe('useRunTimeline — pagination', () => {
     expect(result.current.hasMore).toBe(false)
   })
 })
+
+describe('useRunTimeline — node hostnames', () => {
+  const N4 = 'node-814e5b14eca5206060abdb164672609f'
+  const listNodes = JSON.stringify({ nodes: [{ node_id: N4, facts: { hostname: 'dev-node-4' } }] })
+  const steps: ApiRunStep[] = [
+    makeStep({ id: 'c1', step_number: 1, type: 'tool_call', content: JSON.stringify({ tool_name: 'relay.list_nodes', server_id: 'relay', input: {} }) }),
+    makeStep({
+      id: 'r1',
+      step_number: 2,
+      type: 'tool_result',
+      content: JSON.stringify({ tool_name: 'relay.list_nodes', output: JSON.stringify([{ type: 'text', text: listNodes }]), is_error: false }),
+    }),
+    makeStep({ id: 't1', step_number: 3, type: 'thought', content: JSON.stringify({ text: 'restart' }) }),
+  ]
+
+  it('indexes list_nodes hostnames by server', () => {
+    const { result } = renderHook(() => useRunTimeline(steps, 'all'))
+    expect(result.current.nodeHostnames.get('relay')?.get(N4)).toBe('dev-node-4')
+  })
+
+  it('builds the index from the whole run, even when a filter hides the list_nodes block', () => {
+    const { result } = renderHook(() => useRunTimeline(steps, 'thought'))
+    expect(result.current.timelineItems).toHaveLength(1)
+    expect(result.current.nodeHostnames.get('relay')?.get(N4)).toBe('dev-node-4')
+  })
+
+  it('keeps the same index across re-renders with the same steps', () => {
+    const { result, rerender } = renderHook(() => useRunTimeline(steps, 'all'))
+    const first = result.current.nodeHostnames
+    rerender()
+    expect(result.current.nodeHostnames).toBe(first)
+  })
+})

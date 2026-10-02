@@ -31,6 +31,8 @@ function formatNextFire(iso: string): string | null {
 interface Props {
   policy: ApiPolicyListItem
   onTrigger: (policyId: string, policyName: string) => void
+  // True when the latest run is paused on a tool-initiated permission ask.
+  awaitingPermission?: boolean
 }
 
 function statusDotClass(status: string | undefined): string {
@@ -45,7 +47,7 @@ function statusDotClass(status: string | undefined): string {
   }
 }
 
-export function PolicyCard({ policy, onTrigger }: Props) {
+export function PolicyCard({ policy, onTrigger, awaitingPermission = false }: Props) {
   const [expanded, setExpanded] = useState(false)
   const run = policy.latest_run
   const isPaused = Boolean(policy.paused_at)
@@ -82,7 +84,7 @@ export function PolicyCard({ policy, onTrigger }: Props) {
           )}
           {run && isRunStatus(run.status) && (
             <>
-              <StatusBadge status={run.status as RunStatus} />
+              <StatusBadge status={run.status as RunStatus} awaitingPermission={awaitingPermission} />
               <span className={styles.timeAgo}>{formatTimeAgo(run.started_at)}</span>
             </>
           )}

@@ -24,6 +24,7 @@ import type { FilterKey } from '@/components/RunDetail'
 import type { CapabilitySnapshotV2, GrantedToolEntry } from '@/components/RunDetail/types'
 import { isFeedbackEntry } from '@/components/RunDetail/types'
 import { useCurrentUser } from '@/hooks/queries/users'
+import { usePermissionAskRunIds } from '@/hooks/useAttentionItems'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import NotFoundPage from '@/pages/NotFoundPage'
 import { ApiError } from '@/api/fetch'
@@ -45,11 +46,22 @@ export default function RunDetailPage() {
   // run detail view would be a request per page load that answers 404.
   const { request: toolInputRequest } = useToolInput(id, run?.status === 'waiting_for_feedback')
 
+  // A run parked on a tool-initiated permission ask reads "Awaiting Approval".
+  // The pending request itself is the authority; the attention queue (already
+  // cached by the sidebar) answers first, so the badge does not flash
+  // "Awaiting Feedback" while the tool-input request is still loading.
+  const permissionAskRunIds = usePermissionAskRunIds()
+  const awaitingPermission =
+    run?.status === 'waiting_for_feedback' &&
+    (toolInputRequest
+      ? toolInputRequest.elicitation_kind === 'permission'
+      : permissionAskRunIds.has(run.id))
+
   usePageTitle(runStatus === 'error' ? 'Run not found' : (id ? `Run ${id.slice(0, 8)}` : 'Run'))
   const [filter, setFilter] = useState<FilterKey>('all')
   const [retryModalOpen, setRetryModalOpen] = useState(false)
 
-  const { timelineItems, counts, snapshotSteps, hasMore, remainingCount, loadMore } = useRunTimeline(rawSteps, filter)
+  const { timelineItems, counts, snapshotSteps, hasMore, remainingCount, loadMore, nodeHostnames } = useRunTimeline(rawSteps, filter)
   const { sentinelRef, showNewPill, scrollToBottom } = useScrollSentinel(rawSteps.length)
 
   // Extract capability snapshot for the header
@@ -176,6 +188,7 @@ export default function RunDetailPage() {
                 showCancel={showCancel}
                 onCancel={handleCancel}
                 cancelPending={cancelRun.isPending}
+                awaitingPermission={awaitingPermission}
               />
 
               {toolInputRequest && <ToolInputCard request={toolInputRequest} />}
@@ -212,7 +225,7 @@ export default function RunDetailPage() {
                   </button>
                 )}
 
-                <StepTimeline items={timelineItems} systemPrompt={run.system_prompt} runId={id!} runStatus={run.status} triggerType={run.trigger_type} triggerPayload={run.trigger_payload} durationMs={duration} />
+                <StepTimeline items={timelineItems} snapshot={snapshotSteps[0] ?? null} systemPrompt={run.system_prompt} runId={id!} runStatus={run.status} triggerType={run.trigger_type} triggerPayload={run.trigger_payload} durationMs={duration} nodeHostnames={nodeHostnames} />
 
                 {hasMore && (
                   <button
