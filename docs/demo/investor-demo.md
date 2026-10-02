@@ -335,7 +335,7 @@ nothing clears them sooner. The table's own checks stay valid as the by-hand fal
 | 8 | **Exactly one bastion** | `scripts/dev-fleet-mcp.sh call list_nodes '{"selector":"node:role=bastion"}'` → one Node | More than one: full [reset](#5-reset-between-runs). |
 | 9 | **The fault is in place** | Fleet-reader is what will find it on stage, so check quietly from the terminal: `scripts/dev-fleet-mcp.sh call run_operation '{"selector":"node:role=web, node:env=prod","operation":"file.read","args":{"path":"/proc/net/tcp"}}'`. dev-node-4's output has **no** row with local address `0100007F:1F90` and state `0A`; dev-node-5's has one. | `make demo-fault DEMO_FAULT_NODES="daemon-4"` |
 | 10 | **No parked approvals** | `scripts/dev-fleet-mcp.sh api GET /api/v1/approvals` → empty `approvals` array | Reset, or deny each request left over from a rehearsal (Relay runbook, "The human approver"). |
-| 11 | **Gleipnir attention queue empty**; no run in `Awaiting Feedback` | `check`: *attention queue has no pending approval, feedback or tool ask*. By hand: Dashboard | Open each run and **Cancel run**. |
+| 11 | **Gleipnir attention queue empty**; no run in `Awaiting Approval` or `Awaiting Feedback` | `check`: *attention queue has no pending approval, feedback or tool ask*. By hand: Dashboard | Open each run and **Cancel run**. |
 | 12 | **Bypass beat works** | Run the Act 3b command once (below). Expect the one `denied_by_policy` line. | `KeyError`: run it without the filter to see the error. An auth error means `.dev-fleet/` is stale: `make demo-creds`. |
 | 13 | **Approver window** | Second browser profile is signed in as `<approver>` on the Dashboard | Sign in again. Sessions can expire. |
 | 14 | **Webhook secret saved for `fire`** | `check`: *saved webhook secret and URL match fleet-responder* | `scripts/demo-fleet-ops.sh setup` re-saves them (it keeps the existing secret). Without the script: §2 step 8's by-hand block. |
@@ -421,8 +421,11 @@ laptop's containers, so I'm sending the same payload it would."
    `{unit: nginx}` on `node:role=web, node:env=prod` (dev-node-4 and dev-node-5, fan-out 2).
 2. Relay's gate rule `demo-fleet-wide-mutates-need-a-human` (mutate class, fan-out ≥ 2) parks
    the call and asks the approval question in-band. The run's status becomes
-   **Awaiting Feedback**, and a **TOOL ASK** row attributed to `relay` appears in the Dashboard's
+   **Awaiting Approval** (the run's internal state is still `waiting_for_feedback`; only the
+   label says what it is waiting on), and a **TOOL ASK** row attributed to `relay` appears in the Dashboard's
    attention queue. It is a permission ask, so the button reads **Review**.
+   Find it from the Dashboard or the run link, not Run History's **Needs Approval** filter: that
+   filter matches Gleipnir's own `approval: required` state, not a question from Relay.
 3. **Switch to the approver window.** Dashboard → the TOOL ASK row → **Review**. This opens
    the run page's tool-initiated request card: badge **PERMISSION**, tool `run_operation`,
    server `relay`, and the line *"Asked by relay mid-call. The text below comes from relay, not
@@ -633,7 +636,7 @@ Gleipnir keeps everything, but its copy of the CA and token is now stale.
    - *CA certificate* → **Edit** → paste the new `.dev-fleet/ca-cert.pem` → **Save**
    - **Auth (1)** → `Authorization` value → `Bearer <new token>` → **Save**
    - **↻ Rediscover**. Expect `Protocol 2026-07-28`, eight tools, and no discovery error.
-4. **Clean Gleipnir's queue:** **Cancel run** on any run still in `Awaiting Feedback`. Its
+4. **Clean Gleipnir's queue:** **Cancel run** on any run still in `Awaiting Approval` or `Awaiting Feedback`. Its
    Relay request no longer exists after the reset.
 5. **Re-fault:** `make demo-fault DEMO_FAULT_NODES="daemon-4"`. The reset cleared the fault.
 6. **Freeze:** a reset starts unfrozen. If you rehearsed 3c without a reset, confirm it was
