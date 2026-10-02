@@ -27,7 +27,11 @@ func TestCuratedModels_NonEmpty(t *testing.T) {
 	}
 
 	// Confirm each expected model ID is present.
-	expected := []string{"gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"}
+	expected := []string{
+		"gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna",
+		"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano",
+		"gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-4.1", "gpt-4.1-mini",
+	}
 	for _, id := range expected {
 		if !seen[id] {
 			t.Errorf("%q is missing from curatedModels", id)

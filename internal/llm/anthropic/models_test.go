@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -91,6 +92,21 @@ func TestListModels_DoesNotContainAlias(t *testing.T) {
 	for _, m := range models {
 		if _, isAlias := validationAliases[m.Name]; isAlias {
 			t.Errorf("ListModels returned alias %q, which should not appear in the display list", m.Name)
+		}
+	}
+}
+
+// TestCuratedModels_5xAreReasoning guards the invariant documented on
+// curatedModels: thinking cannot be disabled on any 5.x model, so each must be
+// IsReasoning. Otherwise client.go would send no thinking config and the
+// 4096-token non-thinking max_tokens default, which thinking alone can exhaust.
+func TestCuratedModels_5xAreReasoning(t *testing.T) {
+	for _, m := range curatedModels {
+		if !strings.Contains(m.Name, "-5") || strings.HasSuffix(m.Name, "-4-5") {
+			continue
+		}
+		if !m.IsReasoning {
+			t.Errorf("%s: IsReasoning = false, want true (thinking is always on for 5.x models)", m.Name)
 		}
 	}
 }

@@ -184,6 +184,8 @@ func consumeStream(
 				stop = llm.StopReasonToolUse
 			case anthropic.StopReasonMaxTokens:
 				stop = llm.StopReasonMaxTokens
+			case anthropic.StopReasonRefusal:
+				stop = llm.StopReasonRefusal
 			default:
 				stop = llm.StopReasonUnknown
 			}

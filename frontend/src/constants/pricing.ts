@@ -10,12 +10,18 @@
 // public pricing pages — suitable for dashboard charts, not billing.
 export const MODEL_PRICING: Record<string, { input: number; output: number }> = {
   // Anthropic curated models.
+  'Fable 5.1':  { input: 10.00 / 1_000_000, output: 50.00 / 1_000_000 },
+  'Fable 5':    { input: 10.00 / 1_000_000, output: 50.00 / 1_000_000 },
+  'Opus 5.5':   { input: 4.00 / 1_000_000,  output: 20.00 / 1_000_000 },
+  'Opus 5':     { input: 5.00 / 1_000_000,  output: 25.00 / 1_000_000 },
+  'Sonnet 5.5': { input: 2.00 / 1_000_000,  output: 10.00 / 1_000_000 },
+  'Sonnet 5':   { input: 2.00 / 1_000_000,  output: 10.00 / 1_000_000 },
   'Opus 4.8':   { input: 5.00 / 1_000_000,  output: 25.00 / 1_000_000 },
   'Opus 4.7':   { input: 5.00 / 1_000_000,  output: 25.00 / 1_000_000 },
   'Opus 4.6':   { input: 5.00 / 1_000_000,  output: 25.00 / 1_000_000 },
   'Sonnet 4.6': { input: 3.00 / 1_000_000,  output: 15.00 / 1_000_000 },
-  'Haiku 4.5':  { input: 0.80 / 1_000_000,  output: 4.00 / 1_000_000 },
-  'Opus 4.5':   { input: 15.00 / 1_000_000, output: 75.00 / 1_000_000 },
+  'Haiku 4.5':  { input: 1.00 / 1_000_000,  output: 5.00 / 1_000_000 },
+  'Opus 4.5':   { input: 5.00 / 1_000_000,  output: 25.00 / 1_000_000 },
   'Sonnet 4.5': { input: 3.00 / 1_000_000,  output: 15.00 / 1_000_000 },
 
   // Anthropic legacy/alias display names — kept for historical run data.
@@ -24,23 +30,41 @@ export const MODEL_PRICING: Record<string, { input: number; output: number }> = 
   'Opus 4':    { input: 15.00 / 1_000_000, output: 75.00 / 1_000_000 },
 
   // Google curated models.
-  'Gemini 3 Pro':          { input: 1.25 / 1_000_000,   output: 10.00 / 1_000_000 },
-  'Gemini 3 Flash':        { input: 0.15 / 1_000_000,   output: 0.60 / 1_000_000 },
+  'Gemini 3.1 Pro':        { input: 2.00 / 1_000_000,   output: 12.00 / 1_000_000 },
+  'Gemini 3.8 Flash':      { input: 0.75 / 1_000_000,   output: 3.75 / 1_000_000 },
+  'Gemini 3.7 Flash':      { input: 0.75 / 1_000_000,   output: 3.75 / 1_000_000 },
+  'Gemini 3.6 Flash':      { input: 0.75 / 1_000_000,   output: 3.75 / 1_000_000 },
+  'Gemini 3.5 Flash':      { input: 1.50 / 1_000_000,   output: 9.00 / 1_000_000 },
+  'Gemini 3.5 Flash-Lite': { input: 0.30 / 1_000_000,   output: 2.50 / 1_000_000 },
+  'Gemini 3.1 Flash-Lite': { input: 0.25 / 1_000_000,   output: 1.50 / 1_000_000 },
+  'Gemini 3 Flash':        { input: 0.50 / 1_000_000,   output: 3.00 / 1_000_000 },
   'Gemini 2.5 Pro':        { input: 1.25 / 1_000_000,   output: 10.00 / 1_000_000 },
-  'Gemini 2.5 Flash':      { input: 0.15 / 1_000_000,   output: 0.60 / 1_000_000 },
-  'Gemini 2.5 Flash-Lite': { input: 0.075 / 1_000_000,  output: 0.30 / 1_000_000 },
+  'Gemini 2.5 Flash':      { input: 0.30 / 1_000_000,   output: 2.50 / 1_000_000 },
+  'Gemini 2.5 Flash-Lite': { input: 0.10 / 1_000_000,   output: 0.40 / 1_000_000 },
 
   // Google legacy models — kept for historical run cost charts.
+  'Gemini 3 Pro':          { input: 2.00 / 1_000_000,   output: 12.00 / 1_000_000 },
   'Gemini 2.0 Flash':      { input: 0.10 / 1_000_000,   output: 0.40 / 1_000_000 },
   'Gemini 2.0 Flash-Lite': { input: 0.075 / 1_000_000,  output: 0.30 / 1_000_000 },
 
   // OpenAI curated models.
-  'GPT-5':        { input: 2.00 / 1_000_000, output: 8.00 / 1_000_000 },
-  'GPT-5 Mini':   { input: 0.40 / 1_000_000, output: 1.60 / 1_000_000 },
-  'GPT-5 Nano':   { input: 0.10 / 1_000_000, output: 0.40 / 1_000_000 },
-  'GPT-4.1':      { input: 2.00 / 1_000_000, output: 8.00 / 1_000_000 },
-  'GPT-4.1 Mini': { input: 0.40 / 1_000_000, output: 1.60 / 1_000_000 },
-  'GPT-4.1 Nano': { input: 0.10 / 1_000_000, output: 0.40 / 1_000_000 },
+  'GPT-6 Astra':   { input: 10.00 / 1_000_000, output: 50.00 / 1_000_000 },
+  'GPT-6.1 Sol':   { input: 2.00 / 1_000_000,  output: 10.00 / 1_000_000 },
+  'GPT-6 Sol':     { input: 2.00 / 1_000_000,  output: 10.00 / 1_000_000 },
+  'GPT-6 Luna':    { input: 0.10 / 1_000_000,  output: 0.50 / 1_000_000 },
+  'GPT-5.6 Sol':   { input: 4.00 / 1_000_000,  output: 20.00 / 1_000_000 },
+  'GPT-5.6 Terra': { input: 2.00 / 1_000_000,  output: 12.00 / 1_000_000 },
+  'GPT-5.6 Luna':  { input: 0.20 / 1_000_000,  output: 1.20 / 1_000_000 },
+  'GPT-5.5':       { input: 5.00 / 1_000_000,  output: 30.00 / 1_000_000 },
+  'GPT-5.4':       { input: 2.50 / 1_000_000,  output: 15.00 / 1_000_000 },
+  'GPT-5.4 Mini':  { input: 0.75 / 1_000_000,  output: 4.50 / 1_000_000 },
+  'GPT-5.4 Nano':  { input: 0.20 / 1_000_000,  output: 1.25 / 1_000_000 },
+  'GPT-5':         { input: 1.25 / 1_000_000,  output: 10.00 / 1_000_000 },
+  'GPT-5 Mini':    { input: 0.25 / 1_000_000,  output: 2.00 / 1_000_000 },
+  'GPT-5 Nano':    { input: 0.05 / 1_000_000,  output: 0.40 / 1_000_000 },
+  'GPT-4.1':       { input: 2.00 / 1_000_000,  output: 8.00 / 1_000_000 },
+  'GPT-4.1 Mini':  { input: 0.40 / 1_000_000,  output: 1.60 / 1_000_000 },
+  'GPT-4.1 Nano':  { input: 0.10 / 1_000_000,  output: 0.40 / 1_000_000 },
 }
 
 // estimateCost converts a token count to an approximate dollar cost for a

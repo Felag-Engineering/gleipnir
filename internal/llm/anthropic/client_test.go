@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -499,8 +500,9 @@ func TestTranslateStopReason(t *testing.T) {
 		{sdkanthropic.StopReasonEndTurn, llm.StopReasonEndTurn},
 		{sdkanthropic.StopReasonToolUse, llm.StopReasonToolUse},
 		{sdkanthropic.StopReasonMaxTokens, llm.StopReasonMaxTokens},
-		// StopReasonStopSequence, StopReasonPauseTurn, and StopReasonRefusal
-		// are not mapped and fall to StopReasonUnknown.
+		{sdkanthropic.StopReasonRefusal, llm.StopReasonRefusal},
+		// StopReasonStopSequence and StopReasonPauseTurn are not mapped and
+		// fall to StopReasonUnknown.
 		{sdkanthropic.StopReasonStopSequence, llm.StopReasonUnknown},
 		{sdkanthropic.StopReasonPauseTurn, llm.StopReasonUnknown},
 		{"unexpected_value", llm.StopReasonUnknown},
@@ -521,6 +523,65 @@ func TestTranslateStopReason(t *testing.T) {
 }
 
 // --- Integration tests using httptest ---
+
+// TestCreateMessage_ThinkingConfig verifies the thinking field sent on the
+// wire: reasoning models get adaptive thinking with summarized display (the
+// 4.7+ and 5.x default of "omitted" would leave thinking steps blank in the
+// run trace), and non-reasoning models send no thinking field at all.
+func TestCreateMessage_ThinkingConfig(t *testing.T) {
+	tests := []struct {
+		name         string
+		model        string
+		wantThinking map[string]any // nil means the field must be absent
+	}{
+		{
+			name:         "5.x reasoning model",
+			model:        "claude-opus-5-5",
+			wantThinking: map[string]any{"type": "adaptive", "display": "summarized"},
+		},
+		{
+			name:         "4.x reasoning model",
+			model:        "claude-sonnet-4-6",
+			wantThinking: map[string]any{"type": "adaptive", "display": "summarized"},
+		},
+		{
+			name:         "non-reasoning model",
+			model:        "claude-haiku-4-5",
+			wantThinking: nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotBody map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+					t.Errorf("decoding request body: %v", err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(messageRespJSON(`[{"type":"text","text":"ok"}]`, "end_turn", 1, 1))) //nolint:errcheck
+			}))
+			defer srv.Close()
+
+			req := minimalRequest()
+			req.Model = tc.model
+			if _, err := newTestClient(t, srv).CreateMessage(context.Background(), req); err != nil {
+				t.Fatalf("CreateMessage() error: %v", err)
+			}
+
+			thinking, present := gotBody["thinking"]
+			if tc.wantThinking == nil {
+				if present {
+					t.Errorf("thinking = %v, want field absent", thinking)
+				}
+				return
+			}
+			if !reflect.DeepEqual(thinking, tc.wantThinking) {
+				t.Errorf("thinking = %v, want %v", thinking, tc.wantThinking)
+			}
+		})
+	}
+}
 
 func TestCreateMessage_TextResponse(t *testing.T) {
 	tests := []struct {

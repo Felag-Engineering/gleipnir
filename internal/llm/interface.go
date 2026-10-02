@@ -34,6 +34,9 @@ const (
 	StopReasonMaxTokens
 	// StopReasonError indicates the response was terminated due to an error.
 	StopReasonError
+	// StopReasonRefusal indicates the provider's safety layer declined the
+	// request. The response carries no usable answer or tool calls.
+	StopReasonRefusal
 )
 
 func (s StopReason) String() string {
@@ -48,6 +51,8 @@ func (s StopReason) String() string {
 		return "max_tokens"
 	case StopReasonError:
 		return "error"
+	case StopReasonRefusal:
+		return "refusal"
 	default:
 		return "unknown"
 	}

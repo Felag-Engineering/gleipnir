@@ -430,12 +430,23 @@ func (a *BoundAgent) runAPILoop(
 			return a.failRun(ctx, err)
 		}
 
-		// If stop reason is tool_use but no tool calls were dispatched, the
-		// API response is malformed (e.g. unknown block types). Sending
-		// the assistant message back with no tool results would violate the
-		// protocol and likely cause the next API call to fail.
+		// Refusal: the provider's safety layer declined the request. Retrying
+		// the same conversation would be declined again, so fail with an error
+		// that says so rather than the generic no-tool-calls one below.
+		if resp.StopReason == llm.StopReasonRefusal {
+			err := fmt.Errorf("LLM declined the request (stop reason: refusal)")
+			a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeAPIError)
+			return a.failRun(ctx, err)
+		}
+
+		// Any other stop reason with no tool calls dispatched means the
+		// response is malformed or was cut short (e.g. unknown block types, a
+		// provider safety stop). Sending the assistant message back with no
+		// tool results would violate the protocol and likely cause the next
+		// API call to fail. The stop reason is named so the operator can tell
+		// these cases apart.
 		if len(toolResultBlocks) == 0 {
-			return a.failRun(ctx, fmt.Errorf("tool_use stop reason with no tool calls dispatched"))
+			return a.failRun(ctx, fmt.Errorf("LLM stopped (stop reason: %s) with no tool calls dispatched", resp.StopReason))
 		}
 
 		// Prepend a current-time text block so the agent is aware of elapsed

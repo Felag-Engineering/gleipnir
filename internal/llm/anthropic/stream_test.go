@@ -173,6 +173,30 @@ func TestConsumeStream_TextOnly(t *testing.T) {
 	}
 }
 
+// TestConsumeStream_Refusal verifies a streamed refusal maps to
+// StopReasonRefusal rather than StopReasonUnknown, so the agent can fail the
+// run with an error that names the cause.
+func TestConsumeStream_Refusal(t *testing.T) {
+	stream := &fakeStream{
+		events: []anthropic.MessageStreamEventUnion{
+			makeMessageStartEvent(10),
+			makeMessageDeltaEvent("refusal", 0),
+			makeMessageStopEvent(),
+		},
+	}
+
+	out := make(chan llm.MessageChunk, 32)
+	consumeStream(context.Background(), stream, out, nil)
+
+	chunks := collectChunks(t, out)
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d", len(chunks))
+	}
+	if chunks[0].StopReason == nil || *chunks[0].StopReason != llm.StopReasonRefusal {
+		t.Errorf("StopReason = %v, want Refusal", chunks[0].StopReason)
+	}
+}
+
 func TestConsumeStream_TextAndToolCall(t *testing.T) {
 	stream := &fakeStream{
 		events: []anthropic.MessageStreamEventUnion{
