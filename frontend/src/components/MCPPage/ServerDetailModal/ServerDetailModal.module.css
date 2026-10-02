@@ -20,8 +20,10 @@
   border: 1px solid var(--border-mid);
   border-radius: 12px;
   width: 100%;
-  max-width: 640px;
-  max-height: 80vh;
+  max-width: 960px;
+  /* A fixed height (not max-height) so switching tabs or tools never resizes
+     the dialog under the cursor. Content scrolls inside each pane instead. */
+  height: min(860px, calc(100vh - 2 * var(--space-6)));
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -41,8 +43,7 @@
 }
 
 .header {
-  padding: var(--space-4) var(--space-5);
-  border-bottom: 1px solid var(--border-mid);
+  padding: var(--space-4) var(--space-5) var(--space-3);
   flex-shrink: 0;
 }
 
@@ -50,16 +51,20 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--space-3);
   margin-bottom: var(--space-2);
 }
 
 .titleGroup {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
+  min-width: 0;
 }
 
 .serverName {
+  overflow-wrap: anywhere;
   font-size: var(--text-base);
   font-weight: var(--weight-semibold);
   color: var(--text-primary);
@@ -107,20 +112,32 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
 }
 
 .meta {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  min-width: 0;
   font-size: var(--text-xs);
-  color: var(--text-faint);
+  color: var(--text-muted);
+}
+
+.url {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
 }
 
 .metaSep {
   margin: 0 var(--space-2);
-  color: var(--text-faint);
 }
 
 .actions {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
 }
 
@@ -136,6 +153,7 @@
   font-size: var(--text-xs);
   color: var(--text-second);
   font-family: var(--font-body);
+  white-space: nowrap;
   transition: color var(--duration-fast) var(--ease-out),
     border-color var(--duration-fast) var(--ease-out);
 }
@@ -177,22 +195,87 @@
   background: color-mix(in srgb, var(--color-red) 10%, transparent);
 }
 
+/* Tab strip sits flush under the header. Its underline spans the full
+   width; the inset lines the first tab's label up with the header text. */
+.tabs {
+  flex-shrink: 0;
+}
+
+.tabs :global([role='tablist']) {
+  padding: 0 var(--space-1);
+}
+
+.toolsPanel,
+.connectionPanel {
+  flex: 1;
+  min-height: 0;
+}
+
+/* `hidden` must win over the display rules below. */
+.toolsPanel[hidden],
+.connectionPanel[hidden] {
+  display: none;
+}
+
+.toolsPanel {
+  display: flex;
+  flex-direction: column;
+}
+
+.connectionPanel {
+  overflow-y: auto;
+}
+
+/* The global scrollbar (tokens.css) is a 4px thumb in the border color, which
+   is close to invisible on the dark theme — operators could not tell these
+   panes scroll at all. The standard properties take precedence over the
+   ::-webkit-scrollbar rules in current Chromium and also cover Firefox. */
+.connectionPanel,
+.detailPane,
+.toolList {
+  scrollbar-width: thin;
+  scrollbar-color: var(--text-muted) transparent;
+}
+
+/* Master-detail: the list and the selected tool's details scroll
+   independently, so a long schema never pushes the list out of reach. */
+.toolsLayout {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) 1fr;
+}
+
+.listPane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--border-mid);
+}
+
+.detailPane {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .filterBar {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-5);
-  border-bottom: 1px solid var(--border-subtle);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--border-mid);
   flex-shrink: 0;
 }
 
 .filterIcon {
-  color: var(--text-faint);
+  color: var(--text-muted);
   flex-shrink: 0;
 }
 
 .filterInput {
   flex: 1;
+  min-width: 0;
   background: none;
   border: none;
   outline: none;
@@ -202,16 +285,77 @@
 }
 
 .filterInput::placeholder {
-  color: var(--text-faint);
+  color: var(--text-muted);
 }
 
-.body {
-  overflow-y: auto;
+.toolList {
   flex: 1;
   min-height: 0;
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: var(--space-1) 0;
+}
+
+.toolItem {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: var(--space-2) var(--space-4);
+  border: none;
+  border-left: 2px solid transparent;
+  background: none;
+  cursor: pointer;
+  font-family: var(--font-body);
+  text-align: left;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+.toolItem:hover {
+  background: var(--bg-surface);
+}
+
+.toolItem:focus-visible {
+  outline: 2px solid var(--color-blue);
+  outline-offset: -2px;
+}
+
+.toolItemSelected {
+  background: var(--bg-surface);
+  border-left-color: var(--color-blue);
+}
+
+.toolItemDisabled .toolItemName {
+  opacity: 0.6;
+}
+
+.toolItemName {
+  max-width: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--color-blue);
+  overflow-wrap: anywhere;
+}
+
+.toolItemMeta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.toolItemDisabledTag {
+  color: var(--color-amber);
 }
 
 .loadingContainer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
   padding: var(--space-4);
 }
 
@@ -219,12 +363,66 @@
   padding: var(--space-8);
   text-align: center;
   font-size: var(--text-sm);
-  color: var(--text-faint);
+  color: var(--text-muted);
   font-style: italic;
 }
 
-/* Auth headers button in the actions bar */
-.authHeadersBtn {
+/* Below this width the two panes stack: a short scrollable list on top,
+   details underneath. */
+@media (max-width: 720px) {
+  .toolsLayout {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 35%) minmax(0, 1fr);
+  }
+
+  .listPane {
+    border-right: none;
+    border-bottom: 1px solid var(--border-mid);
+  }
+}
+
+/* Connection tab sections. The section components (CA certificate, call
+   timeout, run attribution, Arcade) bring their own padding and divider, so
+   the auth-header section matches them. */
+.connSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border-mid);
+  background: var(--bg-elevated);
+}
+
+.connTitle {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.connHint {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.headerKeys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.headerKey {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-md);
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-mid);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-second);
+}
+
+.secondaryBtn {
   padding: var(--space-1) var(--space-3);
   border: 1px solid var(--border-mid);
   border-radius: var(--radius-lg);
@@ -237,37 +435,21 @@
     border-color var(--duration-fast) var(--ease-out);
 }
 
-.authHeadersBtn:hover {
+.secondaryBtn:hover {
   color: var(--text-primary);
-  border-color: var(--text-faint);
+  border-color: var(--text-muted);
 }
 
-/* Inline auth header editor panel */
 .headerEditor {
-  padding: var(--space-4) var(--space-5);
-  border-bottom: 1px solid var(--border-mid);
-  background: var(--bg-elevated);
-  flex-shrink: 0;
-}
-
-.headerEditorTitle {
-  font-size: var(--text-sm);
-  font-weight: var(--weight-semibold);
-  color: var(--text-primary);
-  margin-bottom: var(--space-2);
-}
-
-.headerEditorHint {
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-  margin: 0 0 var(--space-3) 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }
 
 .headerEditorRow {
   display: flex;
   gap: var(--space-2);
   align-items: center;
-  margin-bottom: var(--space-2);
 }
 
 .headerEditorKey {
@@ -322,6 +504,7 @@
 }
 
 .addHeaderBtn {
+  align-self: flex-start;
   background: transparent;
   border: 1px dashed var(--border-mid);
   border-radius: var(--radius-md);
@@ -339,7 +522,6 @@
 }
 
 .headerEditorError {
-  margin-top: var(--space-2);
   font-size: var(--text-xs);
   color: var(--color-red);
 }
@@ -348,7 +530,7 @@
   display: flex;
   gap: var(--space-2);
   justify-content: flex-end;
-  margin-top: var(--space-3);
+  margin-top: var(--space-1);
 }
 
 .cancelBtn {
@@ -396,7 +578,7 @@
 }
 
 .managedNote {
-  color: var(--color-text-muted);
+  color: var(--text-muted);
   font-size: var(--text-xs);
   align-self: center;
 }

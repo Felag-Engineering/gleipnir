@@ -1,1 +1,0 @@
-export { ParamChip } from './ParamChip'

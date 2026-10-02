@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from 'react'
 import FocusTrap from 'focus-trap-react'
 import { Search } from 'lucide-react'
 import type { ApiMcpServer, ApiMcpTool, ApiPolicyListItem } from '@/api/types'
-import { ToolAccordionRow } from '@/components/MCPPage/ToolAccordionRow'
+import { ToolDetail } from '@/components/MCPPage/ToolDetail'
+import { topLevelParamCount } from '@/components/MCPPage/ToolDetail/schemaParams'
+import { Tabs, tabId, panelId } from '@/components/Tabs'
 import { SkeletonBlock } from '@/components/SkeletonBlock'
 import { formatTimeAgo } from '@/utils/format'
 import {
@@ -74,10 +76,10 @@ export function ServerDetailModal({
 }: Props) {
   const setToolEnabledMutation = useSetMcpToolEnabled()
   const toast = useToast()
-  const [expandedToolId, setExpandedToolId] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState<'tools' | 'connection'>('tools')
+  const [selectedToolId, setSelectedToolId] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
   const [showHeaderEditor, setShowHeaderEditor] = useState(false)
-  const [showCaCertSection, setShowCaCertSection] = useState(false)
   const [headerRows, setHeaderRows] = useState<HeaderRow[]>([])
   const [isSaving, setIsSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -127,14 +129,6 @@ export function ServerDetailModal({
     const currentNames = new Set(headerRows.map((r) => r.originalName).filter(Boolean) as string[])
 
     const promises: Promise<unknown>[] = []
-
-    // Name or URL changed → update server metadata.
-    if (headerRows.length === 0 || server.name !== server.name || server.url !== server.url) {
-      // Only call updateMutation if name/url actually needs updating. The caller
-      // of this component owns those fields, so we skip the update here unless
-      // a dedicated name/url form fires it. The per-header endpoints are the
-      // focus of this editor.
-    }
 
     // Set headers: any row with a non-empty value fires SetAuthHeader.
     for (const row of headerRows) {
@@ -201,16 +195,15 @@ export function ServerDetailModal({
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [onClose])
 
-  // Collapse expanded tool when it gets filtered out
-  useEffect(() => {
-    if (expandedToolId && filteredTools && !filteredTools.some((t) => t.id === expandedToolId)) {
-      setExpandedToolId(null)
-    }
-  }, [filteredTools, expandedToolId])
+  // The selected tool falls back to the first visible one, so the detail
+  // pane is never empty while the list has entries — including after the
+  // filter hides the previous selection.
+  const selectedTool =
+    filteredTools?.find((t) => t.id === selectedToolId) ?? filteredTools?.[0]
 
   const showFilter = !toolsLoading && toolCount > 5
-  const existingKeyCount = server.auth_header_keys?.length ?? 0
-  const caCertCount = server.ca_certificates?.length ?? 0
+  const existingKeys = server.auth_header_keys ?? []
+  const idPrefix = `server-${server.id}`
 
   return (
     <FocusTrap focusTrapOptions={{ initialFocus: false, allowOutsideClick: true, returnFocusOnDeactivate: true, fallbackFocus: '[role="dialog"]', escapeDeactivates: false }}>
@@ -253,43 +246,25 @@ export function ServerDetailModal({
             </div>
             <div className={styles.headerBottom}>
               <div className={styles.meta}>
-                <span>{server.url}</span>
+                <span className={styles.url}>{server.url}</span>
                 {server.last_discovered_at && (
                   <>
-                    <span className={styles.metaSep}>&middot;</span>
+                    <span className={styles.metaSep} aria-hidden="true">&middot;</span>
                     <span>Discovered {formatTimeAgo(server.last_discovered_at)}</span>
                   </>
                 )}
               </div>
               <div className={styles.actions}>
                 {/*
-                  A managed entry's credentials come from the plugin's own
-                  credential surface and its lifecycle owns the row, so neither
-                  button is offered — the API answers both with a 409, and an
-                  affordance that always fails is worse than no affordance.
-                  Rediscover stays: it is a read.
+                  A managed entry's lifecycle owns the row, so Delete is not
+                  offered — the API answers it with a 409, and an affordance
+                  that always fails is worse than no affordance. Rediscover
+                  stays: it is a read.
                 */}
-                {isManaged ? (
+                {isManaged && (
                   <span className={styles.managedNote}>
                     Managed by the plugin lifecycle
                   </span>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      className={styles.authHeadersBtn}
-                      onClick={openHeaderEditor}
-                    >
-                      {existingKeyCount > 0 ? `Auth (${existingKeyCount})` : 'Auth headers'}
-                    </button>
-                    <button
-                      type="button"
-                      className={styles.authHeadersBtn}
-                      onClick={() => setShowCaCertSection((v) => !v)}
-                    >
-                      {caCertCount > 0 ? `CA cert (${caCertCount})` : 'CA certificate'}
-                    </button>
-                  </>
                 )}
                 <button
                   type="button"
@@ -319,142 +294,225 @@ export function ServerDetailModal({
             </div>
           </div>
 
-          {showHeaderEditor && (
-            <div className={styles.headerEditor}>
-              <div className={styles.headerEditorTitle}>Authentication headers</div>
-              <p className={styles.headerEditorHint}>
-                Existing header names are read-only. Type a new value to replace a stored secret, or remove a row to delete the header. Add a new row to create an additional header.
-              </p>
-              {headerRows.map((row, index) => (
-                <div key={index} className={styles.headerEditorRow}>
-                  <input
-                    type="text"
-                    className={styles.headerEditorKey}
-                    placeholder="Header name"
-                    value={row.name}
-                    readOnly={row.originalName !== undefined}
-                    disabled={row.originalName !== undefined}
-                    onChange={(e) => updateName(index, e.target.value)}
-                    aria-label={`Header name ${index + 1}`}
-                  />
-                  <input
-                    type="text"
-                    className={styles.headerEditorValue}
-                    placeholder={row.originalName !== undefined ? '•••• (saved — type to replace)' : 'Value'}
-                    value={row.value}
-                    onChange={(e) => updateValue(index, e.target.value)}
-                    aria-label={`Header value ${index + 1}`}
-                  />
-                  <button
-                    type="button"
-                    className={styles.headerEditorRemove}
-                    onClick={() => removeHeaderRow(index)}
-                    aria-label={`Remove header ${index + 1}`}
-                  >
-                    &times;
-                  </button>
-                </div>
-              ))}
-              <button type="button" className={styles.addHeaderBtn} onClick={addHeaderRow}>
-                + Add header
-              </button>
-              {saveError && (
-                <div className={styles.headerEditorError}>
-                  {saveError}
-                </div>
-              )}
-              <div className={styles.headerEditorFooter}>
-                <button
-                  type="button"
-                  className={styles.cancelBtn}
-                  onClick={() => { setShowHeaderEditor(false); setSaveError(null) }}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className={styles.saveBtn}
-                  onClick={handleSaveHeaders}
-                  disabled={isSaving}
-                >
-                  {isSaving ? 'Saving…' : 'Save'}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {(showCaCertSection || caCertCount > 0) && (
-            <CaCertificateSection server={server} />
-          )}
-
-          <CallTimeoutSection server={server} />
-
-          <RunAttributionSection server={server} />
-
-          {server.is_arcade_gateway && tools && (
-            <ArcadeAuthSection
-              server={server}
-              tools={tools}
-              canManage={canManage}
+          <div className={styles.tabs}>
+            <Tabs
+              tabs={[
+                { id: 'tools', label: `Tools (${toolCount})` },
+                { id: 'connection', label: 'Connection' },
+              ]}
+              activeId={activeTab}
+              onChange={(id) => setActiveTab(id as 'tools' | 'connection')}
+              ariaLabel={`${server.name} sections`}
+              idPrefix={idPrefix}
+              showMarkers={false}
             />
-          )}
+          </div>
 
-          {showFilter && (
-            <div className={styles.filterBar}>
-              <Search size={14} className={styles.filterIcon} />
-              <input
-                type="text"
-                className={styles.filterInput}
-                placeholder="Filter tools..."
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-                aria-label="Filter tools"
-              />
-            </div>
-          )}
-
-          <div className={styles.body}>
+          {/*
+            Both panels stay mounted so an in-progress edit on the Connection
+            tab survives a look at the tools. Each panel owns its own scrolling:
+            the modal itself never scrolls, so the header and tabs stay put.
+          */}
+          <div
+            className={styles.toolsPanel}
+            role="tabpanel"
+            id={panelId(idPrefix, 'tools')}
+            aria-labelledby={tabId(idPrefix, 'tools')}
+            hidden={activeTab !== 'tools'}
+          >
             {toolsLoading ? (
               <div className={styles.loadingContainer}>
                 <SkeletonBlock height={44} />
                 <SkeletonBlock height={44} />
                 <SkeletonBlock height={44} />
               </div>
-            ) : filteredTools && filteredTools.length > 0 ? (
-              filteredTools.map((tool) => {
-                const ref = `${server.name}.${tool.name}`
-                const usedBy = toolUsageMap.get(ref)
-                return (
-                  <ToolAccordionRow
-                    key={tool.id}
-                    tool={tool}
-                    expanded={expandedToolId === tool.id}
-                    onToggle={() => setExpandedToolId(expandedToolId === tool.id ? null : tool.id)}
-                    usedBy={usedBy}
-                    canManage={canManage}
-                    onSetEnabled={(enabled) =>
-                      setToolEnabledMutation.mutate(
-                        { serverId: server.id, toolId: tool.id, enabled },
-                        {
-                          // No success toast — the tool's toggle reflects the new state.
-                          // Toggling several tools in a row shouldn't stack confirmations.
-                          onError: () => toast.error("Couldn't update tool"),
-                        },
-                      )
-                    }
-                    isUpdatingEnabled={
-                      setToolEnabledMutation.isPending &&
-                      setToolEnabledMutation.variables?.toolId === tool.id
-                    }
-                  />
-                )
-              })
-            ) : filter && tools && tools.length > 0 ? (
-              <div className={styles.empty}>No tools matching "{filter}"</div>
-            ) : (
+            ) : toolCount === 0 ? (
               <div className={styles.empty}>
                 No tools discovered. Click Rediscover to fetch tools from this server.
               </div>
+            ) : (
+              <div className={styles.toolsLayout}>
+                <div className={styles.listPane}>
+                  {showFilter && (
+                    <div className={styles.filterBar}>
+                      <Search size={14} className={styles.filterIcon} aria-hidden="true" />
+                      <input
+                        type="text"
+                        className={styles.filterInput}
+                        placeholder="Filter tools..."
+                        value={filter}
+                        onChange={(e) => setFilter(e.target.value)}
+                        aria-label="Filter tools"
+                      />
+                    </div>
+                  )}
+                  {filteredTools && filteredTools.length > 0 ? (
+                    <ul className={styles.toolList} aria-label="Tools">
+                      {filteredTools.map((tool) => {
+                        const selected = tool.id === selectedTool?.id
+                        const paramCount = topLevelParamCount(tool.input_schema)
+                        return (
+                          <li key={tool.id}>
+                            <button
+                              type="button"
+                              className={`${styles.toolItem} ${selected ? styles.toolItemSelected : ''} ${tool.enabled === false ? styles.toolItemDisabled : ''}`}
+                              aria-current={selected ? 'true' : undefined}
+                              onClick={() => setSelectedToolId(tool.id)}
+                            >
+                              <span className={styles.toolItemName}>{tool.name}</span>
+                              <span className={styles.toolItemMeta}>
+                                {tool.enabled === false && (
+                                  <span className={styles.toolItemDisabledTag}>Disabled</span>
+                                )}
+                                {paramCount === 0 ? 'no params' : `${paramCount} param${paramCount === 1 ? '' : 's'}`}
+                              </span>
+                            </button>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  ) : (
+                    <div className={styles.empty}>No tools matching "{filter}"</div>
+                  )}
+                </div>
+                <div className={styles.detailPane}>
+                  {selectedTool && (
+                    <ToolDetail
+                      // Keyed so the JSON viewer's expanded state resets per tool.
+                      key={selectedTool.id}
+                      tool={selectedTool}
+                      serverName={server.name}
+                      usedBy={toolUsageMap.get(`${server.name}.${selectedTool.name}`)}
+                      canManage={canManage}
+                      onSetEnabled={(enabled) =>
+                        setToolEnabledMutation.mutate(
+                          { serverId: server.id, toolId: selectedTool.id, enabled },
+                          {
+                            // No success toast — the tool's status pill reflects the new state.
+                            // Toggling several tools in a row shouldn't stack confirmations.
+                            onError: () => toast.error("Couldn't update tool"),
+                          },
+                        )
+                      }
+                      isUpdatingEnabled={
+                        setToolEnabledMutation.isPending &&
+                        setToolEnabledMutation.variables?.toolId === selectedTool.id
+                      }
+                    />
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div
+            className={styles.connectionPanel}
+            role="tabpanel"
+            id={panelId(idPrefix, 'connection')}
+            aria-labelledby={tabId(idPrefix, 'connection')}
+            hidden={activeTab !== 'connection'}
+          >
+            <section className={styles.connSection}>
+              <h3 className={styles.connTitle}>Authentication headers</h3>
+              {isManaged ? (
+                // A managed entry's credentials come from the plugin's own
+                // credential surface; the API answers header writes with a 409.
+                <p className={styles.connHint}>
+                  Credentials for this server come from its plugin and are managed there.
+                </p>
+              ) : showHeaderEditor ? (
+                <div className={styles.headerEditor}>
+                  <p className={styles.connHint}>
+                    Existing header names are read-only. Type a new value to replace a stored secret, or remove a row to delete the header. Add a new row to create an additional header.
+                  </p>
+                  {headerRows.map((row, index) => (
+                    <div key={index} className={styles.headerEditorRow}>
+                      <input
+                        type="text"
+                        className={styles.headerEditorKey}
+                        placeholder="Header name"
+                        value={row.name}
+                        readOnly={row.originalName !== undefined}
+                        disabled={row.originalName !== undefined}
+                        onChange={(e) => updateName(index, e.target.value)}
+                        aria-label={`Header name ${index + 1}`}
+                      />
+                      <input
+                        type="text"
+                        className={styles.headerEditorValue}
+                        placeholder={row.originalName !== undefined ? '•••• (saved — type to replace)' : 'Value'}
+                        value={row.value}
+                        onChange={(e) => updateValue(index, e.target.value)}
+                        aria-label={`Header value ${index + 1}`}
+                      />
+                      <button
+                        type="button"
+                        className={styles.headerEditorRemove}
+                        onClick={() => removeHeaderRow(index)}
+                        aria-label={`Remove header ${index + 1}`}
+                      >
+                        &times;
+                      </button>
+                    </div>
+                  ))}
+                  <button type="button" className={styles.addHeaderBtn} onClick={addHeaderRow}>
+                    + Add header
+                  </button>
+                  {saveError && (
+                    <div className={styles.headerEditorError}>
+                      {saveError}
+                    </div>
+                  )}
+                  <div className={styles.headerEditorFooter}>
+                    <button
+                      type="button"
+                      className={styles.cancelBtn}
+                      onClick={() => { setShowHeaderEditor(false); setSaveError(null) }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.saveBtn}
+                      onClick={handleSaveHeaders}
+                      disabled={isSaving}
+                    >
+                      {isSaving ? 'Saving…' : 'Save'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {existingKeys.length > 0 ? (
+                    <div className={styles.headerKeys}>
+                      {existingKeys.map((k) => (
+                        <code key={k} className={styles.headerKey}>{k}</code>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className={styles.connHint}>No authentication headers are sent to this server.</p>
+                  )}
+                  <div>
+                    <button type="button" className={styles.secondaryBtn} onClick={openHeaderEditor}>
+                      {existingKeys.length > 0 ? 'Edit headers' : 'Add headers'}
+                    </button>
+                  </div>
+                </>
+              )}
+            </section>
+
+            {!isManaged && <CaCertificateSection server={server} />}
+
+            <CallTimeoutSection server={server} />
+
+            <RunAttributionSection server={server} />
+
+            {server.is_arcade_gateway && tools && (
+              <ArcadeAuthSection
+                server={server}
+                tools={tools}
+                canManage={canManage}
+              />
             )}
           </div>
         </div>

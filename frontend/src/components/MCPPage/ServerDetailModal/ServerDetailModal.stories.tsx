@@ -161,3 +161,70 @@ export const ArcadeGateway: Story = {
     ],
   },
 }
+
+// A tool whose schema carries the details an operator needs before granting
+// it: parameter descriptions, allowed values, defaults, limits, and nested
+// properties. The detail pane should show all of it without a scroll trap.
+const richTool: ApiMcpTool = {
+  id: 't-rich', server_id: 'srv-1', name: 'run_command',
+  description:
+    'Run a shell command on one or more fleet nodes and return each node\'s output.\n\n' +
+    'Commands run as the node agent\'s service user. Output is truncated at the byte limit.',
+  input_schema: {
+    type: 'object',
+    required: ['command', 'targets'],
+    properties: {
+      command: { type: 'string', description: 'The command line to execute.', minLength: 1, maxLength: 4096 },
+      targets: {
+        type: 'array',
+        description: 'Node IDs to run on. Use list_nodes to discover them.',
+        items: { type: 'string' },
+        minItems: 1,
+        maxItems: 50,
+      },
+      shell: { type: 'string', enum: ['sh', 'bash', 'pwsh'], default: 'sh', description: 'Shell used to interpret the command.' },
+      timeout_seconds: { type: 'integer', minimum: 1, maximum: 600, default: 30, description: 'Per-node timeout.' },
+      options: {
+        type: 'object',
+        description: 'Execution options.',
+        properties: {
+          working_dir: { type: 'string', description: 'Directory to run in.', format: 'path' },
+          env: { type: 'object', description: 'Extra environment variables.' },
+          capture: { type: 'string', enum: ['stdout', 'stderr', 'both'], default: 'both' },
+        },
+      },
+    },
+  },
+  enabled: true,
+  simplified_for: ['google'],
+}
+
+export const DetailedSchema: Story = {
+  args: {
+    ...Healthy.args,
+    tools: [richTool, ...tools],
+  },
+}
+
+// Enough tools to need the filter and to scroll the list.
+export const ManyTools: Story = {
+  args: {
+    ...Healthy.args,
+    tools: [
+      richTool,
+      ...Array.from({ length: 30 }, (_, i): ApiMcpTool => ({
+        id: `t-many-${i}`, server_id: 'srv-1', name: `tool_${String(i + 1).padStart(2, '0')}`,
+        description: `Generated tool number ${i + 1}.`,
+        input_schema: { type: 'object', properties: { id: { type: 'string', description: 'Identifier.' } }, required: ['id'] },
+        enabled: i % 7 !== 3,
+      })),
+    ],
+  },
+}
+
+export const Managed: Story = {
+  args: {
+    ...Healthy.args,
+    server: { ...server, trust_tier: 'managed' as const, plugin_instance_id: 'pi-1', editable: false },
+  },
+}

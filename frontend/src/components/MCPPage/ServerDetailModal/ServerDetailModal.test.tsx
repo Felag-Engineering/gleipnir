@@ -35,6 +35,13 @@ vi.mock('@/hooks/mutations/servers', () => ({
   }),
 }))
 
+// Auth headers, CA certificate, call timeout and run attribution live on the
+// Connection tab, which is hidden (and so not in the accessibility tree)
+// until selected.
+function openConnectionTab() {
+  fireEvent.click(screen.getByRole('tab', { name: 'Connection' }))
+}
+
 function renderWithClient(ui: React.ReactElement) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>)
@@ -101,10 +108,11 @@ describe('ServerDetailModal', () => {
     expect(screen.getByText(/mcp-test-server:8090/)).toBeInTheDocument()
   })
 
-  it('renders all tool names in accordion', () => {
+  it('lists every tool name', () => {
     renderWithClient(<ServerDetailModal {...defaultProps} />)
-    expect(screen.getByText('echo')).toBeInTheDocument()
-    expect(screen.getByText('get_time')).toBeInTheDocument()
+    const list = screen.getByRole('list', { name: 'Tools' })
+    expect(list).toHaveTextContent('echo')
+    expect(list).toHaveTextContent('get_time')
   })
 
   it('renders the call timeout section (issue #939)', () => {
@@ -188,22 +196,28 @@ describe('ServerDetailModal — auth header editor', () => {
     mockDeleteHeaderMutate = vi.fn()
   })
 
-  it('shows "Auth headers" label when server has no auth_header_keys', () => {
+  it('offers "Add headers" when server has no auth_header_keys', () => {
     render(<ServerDetailModal {...defaultProps} />)
-    expect(screen.getByRole('button', { name: 'Auth headers' })).toBeInTheDocument()
+    openConnectionTab()
+    expect(screen.getByText('No authentication headers are sent to this server.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add headers' })).toBeInTheDocument()
   })
 
-  it('shows "Auth (N)" label when server has auth_header_keys populated', () => {
+  it('lists stored header names and offers "Edit headers" when auth_header_keys is populated', () => {
     const serverWithKeys: ApiMcpServer = { ...server, auth_header_keys: ['x-api-key', 'x-token'] }
     render(<ServerDetailModal {...defaultProps} server={serverWithKeys} />)
-    expect(screen.getByRole('button', { name: 'Auth (2)' })).toBeInTheDocument()
+    openConnectionTab()
+    expect(screen.getByText('x-api-key')).toBeInTheDocument()
+    expect(screen.getByText('x-token')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Edit headers' })).toBeInTheDocument()
   })
 
   it('opening the editor seeds one row per key with empty value fields and disabled name inputs', () => {
     const serverWithKeys: ApiMcpServer = { ...server, auth_header_keys: ['x-api-key', 'x-token'] }
     render(<ServerDetailModal {...defaultProps} server={serverWithKeys} />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Auth (2)' }))
+    openConnectionTab()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit headers' }))
 
     const nameInputs = screen.getAllByRole('textbox', { name: /header name/i })
     const valueInputs = screen.getAllByRole('textbox', { name: /header value/i })
@@ -226,7 +240,8 @@ describe('ServerDetailModal — auth header editor', () => {
     })
 
     render(<ServerDetailModal {...defaultProps} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Auth headers' }))
+    openConnectionTab()
+    fireEvent.click(screen.getByRole('button', { name: 'Add headers' }))
     fireEvent.click(screen.getByRole('button', { name: /\+ add header/i }))
 
     const nameInputs = screen.getAllByRole('textbox', { name: /header name/i })
@@ -254,7 +269,8 @@ describe('ServerDetailModal — auth header editor', () => {
 
     const serverWithKeys: ApiMcpServer = { ...server, auth_header_keys: ['x-api-key'] }
     render(<ServerDetailModal {...defaultProps} server={serverWithKeys} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Auth (1)' }))
+    openConnectionTab()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit headers' }))
 
     const valueInputs = screen.getAllByRole('textbox', { name: /header value/i })
     fireEvent.change(valueInputs[0], { target: { value: 'replaced-secret' } })
@@ -277,7 +293,8 @@ describe('ServerDetailModal — auth header editor', () => {
 
     const serverWithKeys: ApiMcpServer = { ...server, auth_header_keys: ['x-api-key'] }
     render(<ServerDetailModal {...defaultProps} server={serverWithKeys} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Auth (1)' }))
+    openConnectionTab()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit headers' }))
 
     // Remove the row.
     fireEvent.click(screen.getByRole('button', { name: /remove header 1/i }))
@@ -297,7 +314,8 @@ describe('ServerDetailModal — auth header editor', () => {
   it('saving with no changes fires no mutations', async () => {
     const serverWithKeys: ApiMcpServer = { ...server, auth_header_keys: ['x-api-key'] }
     render(<ServerDetailModal {...defaultProps} server={serverWithKeys} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Auth (1)' }))
+    openConnectionTab()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit headers' }))
 
     // Do not modify any row.
     await act(async () => {
@@ -347,12 +365,16 @@ describe('ServerDetailModal — managed plugin endpoints', () => {
   // The API answers both mutations with a 409, and an affordance that always
   // fails is worse than no affordance: it reads as a bug rather than as a
   // boundary.
-  it('offers no auth-header or delete action', () => {
+  it('offers no auth-header, CA certificate or delete action', () => {
     render(<ServerDetailModal {...defaultProps} server={managed} />)
 
-    expect(screen.queryByRole('button', { name: /^Auth/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument()
     expect(screen.getByText(/Managed by the plugin lifecycle/i)).toBeInTheDocument()
+
+    openConnectionTab()
+    expect(screen.queryByRole('button', { name: /headers$/ })).not.toBeInTheDocument()
+    expect(screen.queryByText('CA certificate')).not.toBeInTheDocument()
+    expect(screen.getByText(/Credentials for this server come from its plugin/i)).toBeInTheDocument()
   })
 
   // Rediscover is a read, and a managed endpoint's tools are discovered exactly
@@ -369,8 +391,104 @@ describe('ServerDetailModal — managed plugin endpoints', () => {
 
   it('leaves an external server untouched', () => {
     render(<ServerDetailModal {...defaultProps} />)
-    expect(screen.getByRole('button', { name: 'Auth headers' })).toBeInTheDocument()
+    openConnectionTab()
+    expect(screen.getByRole('button', { name: 'Add headers' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument()
     expect(screen.queryByText(/Managed by the plugin lifecycle/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('ServerDetailModal — tools tab', () => {
+  beforeEach(() => {
+    mockSetToolEnabledMutate = vi.fn()
+  })
+
+  it('opens on the Tools tab with the first tool selected and its details shown', () => {
+    render(<ServerDetailModal {...defaultProps} />)
+
+    expect(screen.getByRole('tab', { name: 'Tools (2)' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('button', { name: /^echo/ })).toHaveAttribute('aria-current', 'true')
+    const detail = screen.getByRole('article', { name: 'echo details' })
+    expect(detail).toHaveTextContent('Echo message back.')
+    expect(detail).toHaveTextContent('test-server.echo')
+  })
+
+  it('shows the clicked tool in the detail pane', () => {
+    render(<ServerDetailModal {...defaultProps} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /^get_time/ }))
+
+    expect(screen.getByRole('button', { name: /^get_time/ })).toHaveAttribute('aria-current', 'true')
+    expect(screen.getByRole('button', { name: /^echo/ })).not.toHaveAttribute('aria-current')
+    expect(screen.getByRole('article', { name: 'get_time details' })).toHaveTextContent('Get current time.')
+  })
+
+  it('names the agents that grant the selected tool', () => {
+    const policies = [
+      { id: 'p1', name: 'nightly-check', trigger_type: 'cron', folder: '', model: '', tool_count: 1,
+        tool_refs: ['test-server.echo', 'other-server.echo'], avg_token_cost: 0, run_count: 0,
+        created_at: '', updated_at: '', paused_at: null, latest_run: null, next_fire_at: null },
+    ]
+    render(<ServerDetailModal {...defaultProps} policies={policies} />)
+    expect(screen.getByRole('article', { name: 'echo details' })).toHaveTextContent('nightly-check')
+  })
+
+  it('falls back to the first visible tool when the filter hides the selection', () => {
+    const many: ApiMcpTool[] = Array.from({ length: 6 }, (_, i) => ({
+      ...tools[1],
+      id: `m${i}`,
+      name: i === 5 ? 'special_tool' : `tool_${i}`,
+      description: `Tool ${i}.`,
+    }))
+    render(<ServerDetailModal {...defaultProps} tools={many} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /^tool_2/ }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Filter tools' }), { target: { value: 'special' } })
+
+    expect(screen.queryByRole('button', { name: /^tool_2/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('article', { name: 'special_tool details' })).toBeInTheDocument()
+  })
+
+  it('says so when the filter matches nothing', () => {
+    const many: ApiMcpTool[] = Array.from({ length: 6 }, (_, i) => ({ ...tools[1], id: `m${i}`, name: `tool_${i}` }))
+    render(<ServerDetailModal {...defaultProps} tools={many} />)
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Filter tools' }), { target: { value: 'zzz' } })
+
+    expect(screen.getByText('No tools matching "zzz"')).toBeInTheDocument()
+    expect(screen.queryByRole('article')).not.toBeInTheDocument()
+  })
+
+  it('disables the selected tool when a manager clicks "Disable tool"', () => {
+    render(<ServerDetailModal {...defaultProps} canManage={true} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /^get_time/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Disable tool' }))
+
+    expect(mockSetToolEnabledMutate).toHaveBeenCalledWith(
+      { serverId: 'srv-1', toolId: 't2', enabled: false },
+      expect.any(Object),
+    )
+  })
+
+  it('offers no enable/disable control without manage rights', () => {
+    render(<ServerDetailModal {...defaultProps} canManage={false} />)
+    expect(screen.queryByRole('button', { name: /(Enable|Disable) tool/ })).not.toBeInTheDocument()
+  })
+
+  it('shows the empty state when the server has no tools', () => {
+    render(<ServerDetailModal {...defaultProps} tools={[]} />)
+    expect(screen.getByText(/No tools discovered/)).toBeInTheDocument()
+  })
+
+  it('keeps the Connection tab hidden until it is selected', () => {
+    render(<ServerDetailModal {...defaultProps} />)
+    expect(screen.queryByRole('heading', { name: 'Authentication headers' })).not.toBeInTheDocument()
+
+    openConnectionTab()
+
+    expect(screen.getByRole('tab', { name: 'Connection' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('heading', { name: 'Authentication headers' })).toBeInTheDocument()
+    expect(screen.queryByRole('article')).not.toBeInTheDocument()
   })
 })
