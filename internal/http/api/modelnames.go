@@ -14,6 +14,12 @@ package api
 // each provider's curated list has an entry here.
 var ModelDisplayNames = map[string]string{
 	// Anthropic curated models (from internal/llm/anthropic/models.go curatedModels).
+	"claude-fable-5-1":  "Fable 5.1",
+	"claude-fable-5":    "Fable 5",
+	"claude-opus-5-5":   "Opus 5.5",
+	"claude-opus-5":     "Opus 5",
+	"claude-sonnet-5-5": "Sonnet 5.5",
+	"claude-sonnet-5":   "Sonnet 5",
 	"claude-opus-4-8":   "Opus 4.8",
 	"claude-opus-4-7":   "Opus 4.7",
 	"claude-opus-4-6":   "Opus 4.6",
@@ -32,7 +38,13 @@ var ModelDisplayNames = map[string]string{
 
 	// Google curated models (from internal/llm/google/models.go curatedModels).
 	// "(Preview)" is stripped to keep cost chart labels short.
-	"gemini-3-pro-preview":   "Gemini 3 Pro",
+	"gemini-3.1-pro-preview": "Gemini 3.1 Pro",
+	"gemini-3.8-flash":       "Gemini 3.8 Flash",
+	"gemini-3.7-flash":       "Gemini 3.7 Flash",
+	"gemini-3.6-flash":       "Gemini 3.6 Flash",
+	"gemini-3.5-flash":       "Gemini 3.5 Flash",
+	"gemini-3.5-flash-lite":  "Gemini 3.5 Flash-Lite",
+	"gemini-3.1-flash-lite":  "Gemini 3.1 Flash-Lite",
 	"gemini-3-flash-preview": "Gemini 3 Flash",
 	"gemini-2.5-pro":         "Gemini 2.5 Pro",
 	"gemini-2.5-flash":       "Gemini 2.5 Flash",
@@ -40,16 +52,28 @@ var ModelDisplayNames = map[string]string{
 
 	// Google legacy IDs — removed from curatedModels (deprecated for new API users),
 	// kept here so historical run data still renders readable names in cost charts.
+	"gemini-3-pro-preview":  "Gemini 3 Pro",
 	"gemini-2.0-flash":      "Gemini 2.0 Flash",
 	"gemini-2.0-flash-lite": "Gemini 2.0 Flash-Lite",
 
 	// OpenAI curated models (from internal/llm/openai/models.go curatedModels).
-	"gpt-5":        "GPT-5",
-	"gpt-5-mini":   "GPT-5 Mini",
-	"gpt-5-nano":   "GPT-5 Nano",
-	"gpt-4.1":      "GPT-4.1",
-	"gpt-4.1-mini": "GPT-4.1 Mini",
-	"gpt-4.1-nano": "GPT-4.1 Nano",
+	"gpt-6-astra":   "GPT-6 Astra",
+	"gpt-6.1-sol":   "GPT-6.1 Sol",
+	"gpt-6-sol":     "GPT-6 Sol",
+	"gpt-6-luna":    "GPT-6 Luna",
+	"gpt-5.6-sol":   "GPT-5.6 Sol",
+	"gpt-5.6-terra": "GPT-5.6 Terra",
+	"gpt-5.6-luna":  "GPT-5.6 Luna",
+	"gpt-5.5":       "GPT-5.5",
+	"gpt-5.4":       "GPT-5.4",
+	"gpt-5.4-mini":  "GPT-5.4 Mini",
+	"gpt-5.4-nano":  "GPT-5.4 Nano",
+	"gpt-5":         "GPT-5",
+	"gpt-5-mini":    "GPT-5 Mini",
+	"gpt-5-nano":    "GPT-5 Nano",
+	"gpt-4.1":       "GPT-4.1",
+	"gpt-4.1-mini":  "GPT-4.1 Mini",
+	"gpt-4.1-nano":  "GPT-4.1 Nano",
 }
 
 // GetModelDisplayName returns the display name for a model API ID.

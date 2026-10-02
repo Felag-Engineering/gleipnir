@@ -8,11 +8,18 @@ import "fmt"
 type OpenAIHints struct {
 	Temperature     *float64
 	TopP            *float64
-	ReasoningEffort *string // "low" | "medium" | "high"
+	ReasoningEffort *string // "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
 	MaxOutputTokens *int64
 }
 
-var validReasoningEfforts = map[string]bool{"low": true, "medium": true, "high": true}
+// validReasoningEfforts is the union of every level any curated model accepts.
+// Support varies by model (e.g. "max" is GPT-6 only, "none" is GPT-5.1+), and
+// the API rejects a level the chosen model lacks, so per-model gating is left
+// to the provider rather than duplicated here.
+var validReasoningEfforts = map[string]bool{
+	"none": true, "minimal": true, "low": true, "medium": true,
+	"high": true, "xhigh": true, "max": true,
+}
 
 // parseHints converts a policy-YAML options map into an *OpenAIHints, or
 // returns a descriptive error if any field is invalid or unknown.
@@ -44,7 +51,7 @@ func parseHints(options map[string]any) (*OpenAIHints, error) {
 				return nil, fmt.Errorf("reasoning_effort: must be a string, got %T", raw)
 			}
 			if !validReasoningEfforts[s] {
-				return nil, fmt.Errorf("reasoning_effort: must be one of low, medium, high; got %q", s)
+				return nil, fmt.Errorf("reasoning_effort: must be one of none, minimal, low, medium, high, xhigh, max; got %q", s)
 			}
 			h.ReasoningEffort = &s
 		case "max_output_tokens":

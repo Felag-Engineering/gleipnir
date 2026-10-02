@@ -73,4 +73,17 @@ describe('estimateCost', () => {
       estimateCost('GPT-4.1', 1_000_000),
     )
   })
+
+  // Every curated model's display name (internal/http/api/modelnames.go) needs
+  // a pricing entry, or its runs show $0.00 on the cost chart (issue #669).
+  it.each([
+    'Fable 5.1', 'Fable 5', 'Opus 5.5', 'Opus 5', 'Sonnet 5.5', 'Sonnet 5',
+    'GPT-6 Astra', 'GPT-6.1 Sol', 'GPT-6 Sol', 'GPT-6 Luna',
+    'GPT-5.6 Sol', 'GPT-5.6 Terra', 'GPT-5.6 Luna',
+    'GPT-5.5', 'GPT-5.4', 'GPT-5.4 Mini', 'GPT-5.4 Nano',
+    'Gemini 3.1 Pro', 'Gemini 3.8 Flash', 'Gemini 3.7 Flash', 'Gemini 3.6 Flash',
+    'Gemini 3.5 Flash', 'Gemini 3.5 Flash-Lite', 'Gemini 3.1 Flash-Lite',
+  ])('%s has a non-zero price', (name) => {
+    expect(estimateCost(name, 1000)).toBeGreaterThan(0)
+  })
 })

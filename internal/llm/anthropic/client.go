@@ -125,9 +125,7 @@ func (w *wire) Call(ctx context.Context, req llm.MessageRequest) (*llm.MessageRe
 		Tools:     tools,
 	}
 	if isReasoning {
-		params.Thinking = anthropic.ThinkingConfigParamUnion{
-			OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{},
-		}
+		params.Thinking = adaptiveThinking()
 	}
 
 	sdkResp, sdkErr := w.client.Messages.New(ctx, params)
@@ -168,15 +166,26 @@ func (w *wire) Stream(ctx context.Context, req llm.MessageRequest) (<-chan llm.M
 		Tools:     tools,
 	}
 	if isReasoning {
-		params.Thinking = anthropic.ThinkingConfigParamUnion{
-			OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{},
-		}
+		params.Thinking = adaptiveThinking()
 	}
 
 	stream := w.client.Messages.NewStreaming(ctx, params)
 	out := make(chan llm.MessageChunk, 16)
 	go consumeStream(ctx, stream, out, nameMap.SanitizedToOriginal)
 	return out, nil
+}
+
+// adaptiveThinking is the thinking config sent for every IsReasoning model.
+// Display is set explicitly because the 4.7+ and 5.x models default to
+// "omitted", which returns thinking blocks with empty text — the run trace
+// would then record blank thinking steps. "summarized" was the default on
+// 4.6, so this keeps every reasoning model's trace readable.
+func adaptiveThinking() anthropic.ThinkingConfigParamUnion {
+	return anthropic.ThinkingConfigParamUnion{
+		OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{
+			Display: anthropic.ThinkingConfigAdaptiveDisplaySummarized,
+		},
+	}
 }
 
 // ListModels returns a defensive copy of the curated Anthropic model list.
@@ -574,8 +583,8 @@ func translateResponse(resp *anthropic.Message, sanitizedToOriginal map[string]s
 	}
 
 	// Map Anthropic stop reasons to the provider-neutral enum.
-	// StopReasonStopSequence, StopReasonPauseTurn, and StopReasonRefusal are
-	// not yet mapped — they fall through to StopReasonUnknown.
+	// StopReasonStopSequence and StopReasonPauseTurn are not yet mapped — they
+	// fall through to StopReasonUnknown.
 	switch resp.StopReason {
 	case anthropic.StopReasonEndTurn:
 		result.StopReason = llm.StopReasonEndTurn
@@ -583,6 +592,8 @@ func translateResponse(resp *anthropic.Message, sanitizedToOriginal map[string]s
 		result.StopReason = llm.StopReasonToolUse
 	case anthropic.StopReasonMaxTokens:
 		result.StopReason = llm.StopReasonMaxTokens
+	case anthropic.StopReasonRefusal:
+		result.StopReason = llm.StopReasonRefusal
 	default:
 		result.StopReason = llm.StopReasonUnknown
 	}

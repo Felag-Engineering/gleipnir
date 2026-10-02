@@ -786,6 +786,82 @@ func TestRun_TokenBudgetExceeded(t *testing.T) {
 	}
 }
 
+// TestRun_NonToolStopWithoutToolCalls verifies that a response which neither
+// ends the turn nor calls a tool fails the run with an error naming the cause.
+// Previously every such case reported "tool_use stop reason with no tool calls
+// dispatched", which misdescribed a refusal or a provider safety stop.
+func TestRun_NonToolStopWithoutToolCalls(t *testing.T) {
+	tests := []struct {
+		name          string
+		stopReason    llm.StopReason
+		wantErrSubstr string
+		wantErrorStep bool // refusal records an error step for the operator
+	}{
+		{
+			name:          "refusal",
+			stopReason:    llm.StopReasonRefusal,
+			wantErrSubstr: "LLM declined the request (stop reason: refusal)",
+			wantErrorStep: true,
+		},
+		{
+			name:          "provider error stop",
+			stopReason:    llm.StopReasonError,
+			wantErrSubstr: "LLM stopped (stop reason: error) with no tool calls dispatched",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testutil.NewTestStore(t)
+			testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+			testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
+
+			w := NewAuditWriter(s.Queries())
+			ba, err := New(Config{
+				LLMClient:    testutil.NewFakeClientOnly(testutil.MakeLLMTextResponse("", tc.stopReason, 5, 0)),
+				Policy:       minimalPolicy(),
+				Audit:        w,
+				StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			runErr := ba.Run(context.Background(), "r1", "trigger")
+			if runErr == nil || !strings.Contains(runErr.Error(), tc.wantErrSubstr) {
+				t.Fatalf("Run error = %v, want it to contain %q", runErr, tc.wantErrSubstr)
+			}
+
+			run, err := s.GetRun(context.Background(), "r1")
+			if err != nil {
+				t.Fatalf("GetRun: %v", err)
+			}
+			if run.Status != string(model.RunStatusFailed) {
+				t.Errorf("run status = %q, want %q", run.Status, model.RunStatusFailed)
+			}
+
+			steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
+			if err != nil {
+				t.Fatalf("ListRunSteps: %v", err)
+			}
+			var errorStepFound bool
+			for _, step := range steps {
+				if step.Type != string(model.StepTypeError) {
+					continue
+				}
+				var content map[string]string
+				if err := json.Unmarshal([]byte(step.Content), &content); err == nil &&
+					strings.Contains(content["message"], tc.wantErrSubstr) {
+					errorStepFound = true
+				}
+			}
+			if errorStepFound != tc.wantErrorStep {
+				t.Errorf("error step with %q found = %v, want %v", tc.wantErrSubstr, errorStepFound, tc.wantErrorStep)
+			}
+		})
+	}
+}
+
 func TestRun_CapabilitySnapshotFirst(t *testing.T) {
 	s := testutil.NewTestStore(t)
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
