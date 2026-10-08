@@ -19,6 +19,7 @@ The web UI handles day-to-day operations: managing policies, reviewing runs, app
 | `rotate-key` | Re-encrypt all at-rest secrets under a new encryption key |
 | `reset-password` | Reset a user's password directly in the database |
 | `create-user` | Create a new user with an assigned role directly in the database |
+| `list-users` | List all users with roles and status (never prints credentials) |
 
 ---
 
@@ -242,3 +243,41 @@ The server does not need to be stopped. This command performs a short INSERT tha
 
 - **Generated password is secret material.** It is printed to stdout so it can be captured by downstream tools (`... | tee password.txt`). Do not share terminal output containing this line.
 - **Role validation happens before the database is opened.** Supplying an unrecognised role exits with code 2 without writing anything to the database.
+
+---
+
+## list-users
+
+Prints a table of all users read directly from the database: username, roles, creation time, and status.
+
+```bash
+docker compose run --rm api gleipnirctl list-users
+```
+
+Example output:
+```
+USERNAME  ROLES           CREATED_AT            STATUS
+alice     admin,operator  2026-01-02T03:04:05Z  active
+bob       auditor         2026-01-03T03:04:05Z  deactivated
+```
+
+- Rows are ordered by username.
+- A user holds one or more roles; they are printed comma-separated in alphabetical order (`-` if the user has none).
+- `STATUS` is `deactivated` when the account has been deactivated, otherwise `active`. Deactivated users are included.
+- With no users, the header is printed followed by a `no users` line.
+- Password hashes and other credential material are never read or printed.
+
+The server does not need to be stopped; the command only reads.
+
+### Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--db-path` | `$GLEIPNIR_DB_PATH` or `/data/gleipnir.db` | Path to the SQLite database file. |
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success (including an empty user table) |
+| 1 | Unexpected error (I/O failure, DB error) |

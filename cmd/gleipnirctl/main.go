@@ -24,6 +24,7 @@ func main() {
 	root.AddCommand(newRotateKeyCmd())
 	root.AddCommand(newResetPasswordCmd())
 	root.AddCommand(newCreateUserCmd())
+	root.AddCommand(newListUsersCmd())
 	if err := root.Execute(); err != nil {
 		root.PrintErrln("error:", err)
 		os.Exit(1)
