@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/oauth2"
 
+	"github.com/felag-engineering/gleipnir/internal/http/auth"
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	"github.com/felag-engineering/gleipnir/internal/infra/headervalidate"
@@ -48,6 +49,17 @@ func NewPluginCredentialsHandler(q OAuthPluginQuerier, store *oauth.DBStore, pub
 	return &PluginCredentialsHandler{q: q, store: store, publisher: pub}
 }
 
+// credentialWriteContext returns the request context carrying the authenticated
+// caller as the audit actor for credential writes. The id comes from the
+// session, never from the request body.
+func credentialWriteContext(r *http.Request) context.Context {
+	ctx := r.Context()
+	if caller, ok := auth.UserFromContext(ctx); ok && caller != nil {
+		return oauth.WithActor(ctx, caller.ID)
+	}
+	return ctx
+}
+
 // Get handles GET /api/v1/admin/plugins/{id}/instances/{iid}/credentials.
 // Returns a redacted view of the stored credentials (key names and presence
 // flags; never secret values).
@@ -72,7 +84,7 @@ func (h *PluginCredentialsHandler) Get(w http.ResponseWriter, r *http.Request) {
 // Wipes the secret sub-blob for the instance while preserving the Strategy.
 // Returns 204 on success.
 func (h *PluginCredentialsHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx := credentialWriteContext(r)
 	_, instanceID, ok := h.resolveInstance(w, r)
 	if !ok {
 		return
@@ -102,7 +114,7 @@ type setStaticAPIKeyRequest struct {
 // Validates the header name, then overwrites the static_api_key sub-blob.
 // Returns 400 when the header name is invalid or the instance uses a different strategy.
 func (h *PluginCredentialsHandler) SetStaticAPIKey(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx := credentialWriteContext(r)
 	pluginID, instanceID, ok := h.resolveInstance(w, r)
 	if !ok {
 		return
@@ -145,7 +157,7 @@ type setHeaderRequest struct {
 // Validates the header name and adds or replaces the named header in the
 // header_set sub-blob. Mirrors MCPHandler.SetAuthHeader.
 func (h *PluginCredentialsHandler) SetHeader(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx := credentialWriteContext(r)
 	pluginID, instanceID, ok := h.resolveInstance(w, r)
 	if !ok {
 		return
@@ -180,7 +192,7 @@ func (h *PluginCredentialsHandler) SetHeader(w http.ResponseWriter, r *http.Requ
 // Removes the named header from the header_set sub-blob. Idempotent: no 404
 // when the header is absent, mirroring MCPHandler.DeleteAuthHeader.
 func (h *PluginCredentialsHandler) DeleteHeader(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx := credentialWriteContext(r)
 	pluginID, instanceID, ok := h.resolveInstance(w, r)
 	if !ok {
 		return
@@ -211,7 +223,7 @@ type setBasicAuthRequest struct {
 // basic_auth is a stepping stone for legacy enterprise services; new plugins
 // should prefer static_api_key or oauth2_authcode (see spec §9.1).
 func (h *PluginCredentialsHandler) SetBasicAuth(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx := credentialWriteContext(r)
 	pluginID, instanceID, ok := h.resolveInstance(w, r)
 	if !ok {
 		return
@@ -312,7 +324,7 @@ type setOAuthClientRequest struct {
 // prerequisite for clicking "Authorize" — BeginAuthcode requires both values
 // to be present in StoredCredentials.
 func (h *PluginCredentialsHandler) SetOAuthClient(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx := credentialWriteContext(r)
 	pluginID, instanceID, ok := h.resolveInstance(w, r)
 	if !ok {
 		return
@@ -361,7 +373,7 @@ type setOAuthTokenRequest struct {
 // escape hatch for E2E tests and manual recovery; the canonical happy path
 // remains the authcode UI flow.
 func (h *PluginCredentialsHandler) SetOAuthToken(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx := credentialWriteContext(r)
 	pluginID, instanceID, ok := h.resolveInstance(w, r)
 	if !ok {
 		return
