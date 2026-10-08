@@ -10,12 +10,13 @@ import (
 )
 
 const consumePluginOAuthNonce = `-- name: ConsumePluginOAuthNonce :one
-DELETE FROM plugin_oauth_nonces WHERE nonce = ?1 RETURNING instance_id, expires_at
+DELETE FROM plugin_oauth_nonces WHERE nonce = ?1 RETURNING instance_id, expires_at, actor_user_id
 `
 
 type ConsumePluginOAuthNonceRow struct {
-	InstanceID string `json:"instance_id"`
-	ExpiresAt  string `json:"expires_at"`
+	InstanceID  string  `json:"instance_id"`
+	ExpiresAt   string  `json:"expires_at"`
+	ActorUserID *string `json:"actor_user_id"`
 }
 
 // ConsumePluginOAuthNonce atomically deletes the nonce and returns its
@@ -24,7 +25,7 @@ type ConsumePluginOAuthNonceRow struct {
 func (q *Queries) ConsumePluginOAuthNonce(ctx context.Context, nonce string) (ConsumePluginOAuthNonceRow, error) {
 	row := q.db.QueryRowContext(ctx, consumePluginOAuthNonce, nonce)
 	var i ConsumePluginOAuthNonceRow
-	err := row.Scan(&i.InstanceID, &i.ExpiresAt)
+	err := row.Scan(&i.InstanceID, &i.ExpiresAt, &i.ActorUserID)
 	return i, err
 }
 
@@ -41,15 +42,16 @@ func (q *Queries) DeletePluginOAuthNoncesByInstance(ctx context.Context, instanc
 }
 
 const insertPluginOAuthNonce = `-- name: InsertPluginOAuthNonce :exec
-INSERT INTO plugin_oauth_nonces (nonce, instance_id, expires_at, created_at)
-VALUES (?1, ?2, ?3, ?4)
+INSERT INTO plugin_oauth_nonces (nonce, instance_id, expires_at, created_at, actor_user_id)
+VALUES (?1, ?2, ?3, ?4, ?5)
 `
 
 type InsertPluginOAuthNonceParams struct {
-	Nonce      string `json:"nonce"`
-	InstanceID string `json:"instance_id"`
-	ExpiresAt  string `json:"expires_at"`
-	CreatedAt  string `json:"created_at"`
+	Nonce       string  `json:"nonce"`
+	InstanceID  string  `json:"instance_id"`
+	ExpiresAt   string  `json:"expires_at"`
+	CreatedAt   string  `json:"created_at"`
+	ActorUserID *string `json:"actor_user_id"`
 }
 
 func (q *Queries) InsertPluginOAuthNonce(ctx context.Context, arg InsertPluginOAuthNonceParams) error {
@@ -58,6 +60,7 @@ func (q *Queries) InsertPluginOAuthNonce(ctx context.Context, arg InsertPluginOA
 		arg.InstanceID,
 		arg.ExpiresAt,
 		arg.CreatedAt,
+		arg.ActorUserID,
 	)
 	return err
 }

@@ -210,7 +210,7 @@ func TestHandleCallback_NonceSingleUse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStateEnvelope: %v", err)
 	}
-	if err := nonces.Record(ctx, nonce, "inst-1"); err != nil {
+	if err := nonces.Record(ctx, nonce, "inst-1", nil); err != nil {
 		t.Fatalf("Record nonce: %v", err)
 	}
 
@@ -225,7 +225,7 @@ func TestHandleCallback_NonceSingleUse(t *testing.T) {
 	_, _ = mgr.HandleCallback(ctx, encoded, "bad-code")
 
 	// Nonce must be gone now.
-	ok, err := nonces.Consume(ctx, nonce)
+	ok, _, err := nonces.Consume(ctx, nonce)
 	if err != nil {
 		t.Fatalf("second Consume: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestHandleCallback_ExpiredState_Error(t *testing.T) {
 	mgr := NewManager(store, nonces, func() time.Time { return baseTime }, hmacKey, func() string { return "https://gleipnir.example.com" })
 
 	env, nonce, _ := NewStateEnvelope("inst-1", "https://app.example.com", clock)
-	_ = nonces.Record(context.Background(), nonce, "inst-1")
+	_ = nonces.Record(context.Background(), nonce, "inst-1", nil)
 	encoded, _ := EncodeState(env, hmacKey)
 
 	// Now try to handle callback long after the envelope expired.
@@ -377,7 +377,7 @@ func TestHandleCallback_WritesLastCallbackURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStateEnvelope: %v", err)
 	}
-	if err := nonces.Record(ctx, nonce, "inst-1"); err != nil {
+	if err := nonces.Record(ctx, nonce, "inst-1", nil); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 	encoded, err := EncodeState(env, hmacKey)
@@ -503,7 +503,7 @@ func buildCallbackState(t *testing.T, nonces NonceStore, hmacKey []byte, clock f
 	if err != nil {
 		t.Fatalf("NewStateEnvelope: %v", err)
 	}
-	if err := nonces.Record(context.Background(), nonce, "inst-1"); err != nil {
+	if err := nonces.Record(context.Background(), nonce, "inst-1", nil); err != nil {
 		t.Fatalf("Record nonce: %v", err)
 	}
 	encoded, err := EncodeState(env, hmacKey)

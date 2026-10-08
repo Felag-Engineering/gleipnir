@@ -2,11 +2,13 @@ package oauth
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,6 +88,13 @@ func TestBeginClientcred_ActorAttribution(t *testing.T) {
 
 func TestAuthcode_BeginToCallbackActorAttribution(t *testing.T) {
 	adminID := "admin-1"
+	baseTime := func() time.Time { return time.Unix(1000000, 0) }
+	nonceStores := map[string]func() NonceStore{
+		"memory": func() NonceStore {
+			return &MemoryNonceStore{entries: make(map[string]time.Time), clock: baseTime}
+		},
+		"db": func() NonceStore { return NewDBNonceStore(newFakeNonceQuerier(), baseTime) },
+	}
 	tests := []struct {
 		name     string
 		beginCtx context.Context
@@ -94,34 +103,45 @@ func TestAuthcode_BeginToCallbackActorAttribution(t *testing.T) {
 		{"begun by admin", WithActor(context.Background(), adminID), &adminID},
 		{"begun without actor", context.Background(), nil},
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			srv := newTokenServer(t)
-			creds := testCreds("oauth2_authcode")
-			creds.AuthorizationURL = "https://provider.example.com/oauth/authorize"
-			creds.TokenURL = srv.URL + "/token"
-			q := querierWithCreds(t, creds)
-			mgr, _ := newTestManager(q, "https://gleipnir.example.com")
+	for storeName, newNonces := range nonceStores {
+		for _, tc := range tests {
+			t.Run(storeName+"/"+tc.name, func(t *testing.T) {
+				srv := newTokenServer(t)
+				creds := testCreds("oauth2_authcode")
+				creds.AuthorizationURL = "https://provider.example.com/oauth/authorize"
+				creds.TokenURL = srv.URL + "/token"
+				q := querierWithCreds(t, creds)
+				store := NewDBStore(q, noopEncrypt, noopDecrypt, q, baseTime)
+				mgr := NewManager(store, newNonces(), baseTime, fixedKey(), func() string { return "https://gleipnir.example.com" })
 
-			authorizeURL, err := mgr.BeginAuthcode(tc.beginCtx, "inst-1", "/done")
-			if err != nil {
-				t.Fatalf("BeginAuthcode: %v", err)
-			}
-			u, err := url.Parse(authorizeURL)
-			if err != nil {
-				t.Fatalf("parse: %v", err)
-			}
+				authorizeURL, err := mgr.BeginAuthcode(tc.beginCtx, "inst-1", "/done")
+				if err != nil {
+					t.Fatalf("BeginAuthcode: %v", err)
+				}
+				u, err := url.Parse(authorizeURL)
+				if err != nil {
+					t.Fatalf("parse: %v", err)
+				}
+				state := u.Query().Get("state")
 
-			// The callback runs with a bare context, as the unauthenticated route does.
-			if _, err := mgr.HandleCallback(context.Background(), u.Query().Get("state"), "code"); err != nil {
-				t.Fatalf("HandleCallback: %v", err)
-			}
-			requireActor(t, issuedEvent(t, mgr.store.q.(*fakeOAuthQuerier)), tc.want)
-		})
+				// The user id must not travel to the provider or browser history,
+				// in the clear or inside the base64 payload.
+				decoded, _ := base64.URLEncoding.DecodeString(state)
+				if strings.Contains(authorizeURL, adminID) || strings.Contains(string(decoded), adminID) {
+					t.Errorf("authorize URL leaks the actor user id: %s", authorizeURL)
+				}
+
+				// The callback runs with a bare context, as the unauthenticated route does.
+				if _, err := mgr.HandleCallback(context.Background(), state, "code"); err != nil {
+					t.Fatalf("HandleCallback: %v", err)
+				}
+				requireActor(t, issuedEvent(t, q), tc.want)
+			})
+		}
 	}
 }
 
-func TestHandleCallback_LegacyEnvelopeWithoutActor_NullActor(t *testing.T) {
+func TestHandleCallback_LegacyNonceWithoutActor_NullActor(t *testing.T) {
 	srv := newTokenServer(t)
 	creds := testCreds("oauth2_authcode")
 	creds.AuthorizationURL = "https://provider.example.com/oauth/authorize"
@@ -130,16 +150,16 @@ func TestHandleCallback_LegacyEnvelopeWithoutActor_NullActor(t *testing.T) {
 
 	baseTime := func() time.Time { return time.Unix(1000000, 0) }
 	store := NewDBStore(q, noopEncrypt, noopDecrypt, q, baseTime)
-	nonces := &MemoryNonceStore{entries: make(map[string]time.Time), clock: baseTime}
+	nonces := NewDBNonceStore(newFakeNonceQuerier(), baseTime)
 	key := fixedKey()
 	mgr := NewManager(store, nonces, baseTime, key, func() string { return "https://gleipnir.example.com" })
 
-	// An envelope minted before ActorUserID existed has no such field at all.
+	// A nonce row written before actor_user_id existed reads back as NULL.
 	env, nonce, err := NewStateEnvelope("inst-1", "/done", baseTime)
 	if err != nil {
 		t.Fatalf("NewStateEnvelope: %v", err)
 	}
-	if err := nonces.Record(context.Background(), nonce, "inst-1"); err != nil {
+	if err := nonces.Record(context.Background(), nonce, "inst-1", nil); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 	encoded, err := EncodeState(env, key)
@@ -152,9 +172,8 @@ func TestHandleCallback_LegacyEnvelopeWithoutActor_NullActor(t *testing.T) {
 	requireActor(t, issuedEvent(t, q), nil)
 }
 
-// A forged actor can only be injected by editing the signed payload, which the
-// HMAC check rejects before the nonce is touched.
-func TestHandleCallback_ForgedActorRejected(t *testing.T) {
+// A state signed with the wrong key is rejected before the nonce is touched.
+func TestHandleCallback_ForgedStateRejected(t *testing.T) {
 	q := querierWithCreds(t, testCreds("oauth2_authcode"))
 	baseTime := func() time.Time { return time.Unix(1000000, 0) }
 	store := NewDBStore(q, noopEncrypt, noopDecrypt, q, baseTime)
@@ -162,8 +181,7 @@ func TestHandleCallback_ForgedActorRejected(t *testing.T) {
 	mgr := NewManager(store, nonces, baseTime, fixedKey(), func() string { return "https://gleipnir.example.com" })
 
 	env, nonce, _ := NewStateEnvelope("inst-1", "/done", baseTime)
-	env.ActorUserID = "victim-admin"
-	_ = nonces.Record(context.Background(), nonce, "inst-1")
+	_ = nonces.Record(context.Background(), nonce, "inst-1", nil)
 	forged, err := EncodeState(env, []byte("attacker-key-attacker-key-attack"))
 	if err != nil {
 		t.Fatalf("EncodeState: %v", err)

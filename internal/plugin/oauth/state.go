@@ -42,12 +42,6 @@ type StateEnvelope struct {
 	Nonce      string `json:"nonce"`
 	ExpiresAt  int64  `json:"expires_at"` // Unix seconds
 	ReturnURL  string `json:"return_url"`
-	// ActorUserID is the admin who started the flow, written by BeginAuthcode
-	// from the authenticated session. It rides inside the HMAC-signed payload,
-	// so the unauthenticated callback can attribute the issued token without
-	// ever trusting the callback request. Empty for envelopes minted before this
-	// field existed, which attribute to the system (NULL actor).
-	ActorUserID string `json:"actor_user_id,omitempty"`
 }
 
 // EncodeState serialises and HMAC-signs the envelope. The returned string is
@@ -138,12 +132,15 @@ func generateNonce() (string, error) {
 }
 
 // NonceStore is the single-use nonce registry used by the OAuth callback flow.
-// Record inserts a nonce; Consume atomically deletes it and returns whether it
-// was present and unexpired. Both MemoryNonceStore and DBNonceStore satisfy
-// this interface.
+// Record inserts a nonce together with the admin who started the flow (nil for
+// system-started flows); Consume atomically deletes it and returns whether it
+// was present and unexpired, plus that admin. The actor lives server-side with
+// the nonce rather than in the state parameter so the user id never travels to
+// the OAuth provider or browser history. Both MemoryNonceStore and
+// DBNonceStore satisfy this interface.
 type NonceStore interface {
-	Record(ctx context.Context, nonce, instanceID string) error
-	Consume(ctx context.Context, nonce string) (bool, error)
+	Record(ctx context.Context, nonce, instanceID string, actorUserID *string) error
+	Consume(ctx context.Context, nonce string) (ok bool, actorUserID *string, err error)
 }
 
 // NonceQuerier is the narrow DB interface required by DBNonceStore. It is
@@ -169,34 +166,38 @@ func NewDBNonceStore(q NonceQuerier, clock func() time.Time) *DBNonceStore {
 }
 
 // Record inserts nonce into the DB with a 10-minute TTL.
-func (s *DBNonceStore) Record(ctx context.Context, nonce, instanceID string) error {
+func (s *DBNonceStore) Record(ctx context.Context, nonce, instanceID string, actorUserID *string) error {
 	now := s.clock().UTC()
 	return s.q.InsertPluginOAuthNonce(ctx, db.InsertPluginOAuthNonceParams{
-		Nonce:      nonce,
-		InstanceID: instanceID,
-		ExpiresAt:  now.Add(stateHMACExpiry).Format(time.RFC3339Nano),
-		CreatedAt:  now.Format(time.RFC3339Nano),
+		Nonce:       nonce,
+		InstanceID:  instanceID,
+		ExpiresAt:   now.Add(stateHMACExpiry).Format(time.RFC3339Nano),
+		CreatedAt:   now.Format(time.RFC3339Nano),
+		ActorUserID: actorUserID,
 	})
 }
 
 // Consume atomically deletes the nonce and returns true when it was present
-// and not yet expired. Returns (false, nil) for an unknown or already-consumed
-// nonce.
-func (s *DBNonceStore) Consume(ctx context.Context, nonce string) (bool, error) {
+// and not yet expired, with the recorded actor (nil for legacy rows). Returns
+// (false, nil, nil) for an unknown or already-consumed nonce.
+func (s *DBNonceStore) Consume(ctx context.Context, nonce string) (bool, *string, error) {
 	row, err := s.q.ConsumePluginOAuthNonce(ctx, nonce)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+		return false, nil, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("oauth nonce: consume: %w", err)
+		return false, nil, fmt.Errorf("oauth nonce: consume: %w", err)
 	}
 	exp, parseErr := time.Parse(time.RFC3339Nano, row.ExpiresAt)
 	if parseErr != nil {
-		return false, fmt.Errorf("oauth nonce: parse expires_at: %w", parseErr)
+		return false, nil, fmt.Errorf("oauth nonce: parse expires_at: %w", parseErr)
 	}
 	// DecodeState fires ErrStateExpired before Consume is reached (manager.go),
 	// so an expired row here is a clock-skew safety net, not the primary path.
-	return s.clock().UTC().Before(exp), nil
+	if !s.clock().UTC().Before(exp) {
+		return false, nil, nil
+	}
+	return true, row.ActorUserID, nil
 }
 
 // Prune deletes all nonces whose expiry is before now.
@@ -230,6 +231,7 @@ func (s *DBNonceStore) StartJanitor(ctx context.Context, interval time.Duration)
 type MemoryNonceStore struct {
 	mu      sync.Mutex
 	entries map[string]time.Time // nonce → expiry
+	actors  map[string]string    // nonce → actor user id; absent = no actor
 	clock   func() time.Time
 }
 
@@ -246,24 +248,38 @@ func NewMemoryNonceStore(clock func() time.Time) *MemoryNonceStore {
 }
 
 // Record registers nonce with a 10-minute TTL.
-func (s *MemoryNonceStore) Record(_ context.Context, nonce, _ string) error {
+func (s *MemoryNonceStore) Record(_ context.Context, nonce, _ string, actorUserID *string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.entries[nonce] = s.clock().Add(stateHMACExpiry)
+	if actorUserID != nil {
+		if s.actors == nil {
+			s.actors = make(map[string]string)
+		}
+		s.actors[nonce] = *actorUserID
+	}
 	return nil
 }
 
 // Consume atomically checks and removes nonce. Returns true if the nonce was
 // present and not yet expired; false otherwise (expired or already consumed).
-func (s *MemoryNonceStore) Consume(_ context.Context, nonce string) (bool, error) {
+func (s *MemoryNonceStore) Consume(_ context.Context, nonce string) (bool, *string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	exp, ok := s.entries[nonce]
 	if !ok {
-		return false, nil
+		return false, nil, nil
 	}
 	delete(s.entries, nonce)
-	return s.clock().Before(exp), nil
+	actor, hasActor := s.actors[nonce]
+	delete(s.actors, nonce)
+	if !s.clock().Before(exp) {
+		return false, nil, nil
+	}
+	if !hasActor {
+		return true, nil, nil
+	}
+	return true, &actor, nil
 }
 
 // janitor prunes expired entries every minute. Runs forever; expected to be
@@ -277,6 +293,7 @@ func (s *MemoryNonceStore) janitor() {
 		for nonce, exp := range s.entries {
 			if now.After(exp) {
 				delete(s.entries, nonce)
+				delete(s.actors, nonce)
 			}
 		}
 		s.mu.Unlock()

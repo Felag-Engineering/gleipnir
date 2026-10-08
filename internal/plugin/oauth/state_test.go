@@ -131,18 +131,18 @@ func TestMemoryNonceStore_SingleUse(t *testing.T) {
 	// interferes with test cleanup.
 
 	ctx := context.Background()
-	if err := store.Record(ctx, "nonce-abc", "inst-1"); err != nil {
+	if err := store.Record(ctx, "nonce-abc", "inst-1", nil); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 
-	ok, err := store.Consume(ctx, "nonce-abc")
+	ok, _, err := store.Consume(ctx, "nonce-abc")
 	if err != nil {
 		t.Fatalf("Consume: %v", err)
 	}
 	if !ok {
 		t.Fatal("expected first Consume to return true")
 	}
-	ok, err = store.Consume(ctx, "nonce-abc")
+	ok, _, err = store.Consume(ctx, "nonce-abc")
 	if err != nil {
 		t.Fatalf("second Consume: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestMemoryNonceStore_UnknownNonce(t *testing.T) {
 		clock:   clock,
 	}
 
-	ok, err := store.Consume(context.Background(), "unknown-nonce")
+	ok, _, err := store.Consume(context.Background(), "unknown-nonce")
 	if err != nil {
 		t.Fatalf("Consume: %v", err)
 	}
@@ -178,14 +178,14 @@ func TestMemoryNonceStore_ExpiredNonce(t *testing.T) {
 		clock:   clock,
 	}
 	ctx := context.Background()
-	if err := store.Record(ctx, "old-nonce", "inst-1"); err != nil {
+	if err := store.Record(ctx, "old-nonce", "inst-1", nil); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 
 	// Advance past expiry before consuming.
 	store.clock = func() time.Time { return baseTime.Add(stateHMACExpiry + time.Second) }
 
-	ok, err := store.Consume(ctx, "old-nonce")
+	ok, _, err := store.Consume(ctx, "old-nonce")
 	if err != nil {
 		t.Fatalf("Consume: %v", err)
 	}
@@ -240,7 +240,7 @@ func newFakeNonceQuerier() *fakeNonceQuerier {
 func (f *fakeNonceQuerier) InsertPluginOAuthNonce(_ context.Context, arg db.InsertPluginOAuthNonceParams) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.rows[arg.Nonce] = db.ConsumePluginOAuthNonceRow{InstanceID: arg.InstanceID, ExpiresAt: arg.ExpiresAt}
+	f.rows[arg.Nonce] = db.ConsumePluginOAuthNonceRow{InstanceID: arg.InstanceID, ExpiresAt: arg.ExpiresAt, ActorUserID: arg.ActorUserID}
 	return nil
 }
 
@@ -275,11 +275,11 @@ func TestDBNonceStore_RecordAndConsume_Once(t *testing.T) {
 	store := NewDBNonceStore(newFakeNonceQuerier(), clock)
 	ctx := context.Background()
 
-	if err := store.Record(ctx, "nonce-1", "inst-1"); err != nil {
+	if err := store.Record(ctx, "nonce-1", "inst-1", nil); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 
-	ok, err := store.Consume(ctx, "nonce-1")
+	ok, _, err := store.Consume(ctx, "nonce-1")
 	if err != nil {
 		t.Fatalf("Consume: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestDBNonceStore_RecordAndConsume_Once(t *testing.T) {
 	}
 
 	// Second consume must return false (nonce already deleted).
-	ok, err = store.Consume(ctx, "nonce-1")
+	ok, _, err = store.Consume(ctx, "nonce-1")
 	if err != nil {
 		t.Fatalf("second Consume: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestDBNonceStore_Consume_Unknown_ReturnsFalse(t *testing.T) {
 	store := NewDBNonceStore(newFakeNonceQuerier(), clock)
 	ctx := context.Background()
 
-	ok, err := store.Consume(ctx, "no-such-nonce")
+	ok, _, err := store.Consume(ctx, "no-such-nonce")
 	if err != nil {
 		t.Fatalf("Consume: %v", err)
 	}
@@ -320,14 +320,14 @@ func TestDBNonceStore_Consume_Expired_ReturnsFalse(t *testing.T) {
 	store := NewDBNonceStore(newFakeNonceQuerier(), clock)
 	ctx := context.Background()
 
-	if err := store.Record(ctx, "old-nonce", "inst-1"); err != nil {
+	if err := store.Record(ctx, "old-nonce", "inst-1", nil); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 
 	// Advance clock past expiry.
 	store.clock = func() time.Time { return baseTime.Add(stateHMACExpiry + time.Second) }
 
-	ok, err := store.Consume(ctx, "old-nonce")
+	ok, _, err := store.Consume(ctx, "old-nonce")
 	if err != nil {
 		t.Fatalf("Consume: %v", err)
 	}
@@ -357,7 +357,7 @@ func TestDBNonceStore_Prune_RemovesExpiredOnly(t *testing.T) {
 	}
 
 	// Expired nonce must be gone.
-	ok, err := store.Consume(context.Background(), "expired-nonce")
+	ok, _, err := store.Consume(context.Background(), "expired-nonce")
 	if err != nil {
 		t.Fatalf("Consume expired: %v", err)
 	}
@@ -366,7 +366,7 @@ func TestDBNonceStore_Prune_RemovesExpiredOnly(t *testing.T) {
 	}
 
 	// Fresh nonce must still be present.
-	ok, err = store.Consume(context.Background(), "fresh-nonce")
+	ok, _, err = store.Consume(context.Background(), "fresh-nonce")
 	if err != nil {
 		t.Fatalf("Consume fresh: %v", err)
 	}
