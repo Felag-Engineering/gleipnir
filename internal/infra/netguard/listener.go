@@ -134,6 +134,9 @@ type Listener struct {
 	denyPool netip.Prefix
 	logger   *slog.Logger
 	onRefuse func(reason string)
+	// wrapped is set only by Wrap, so a Listener built as a bare struct
+	// literal cannot mint a Guard.
+	wrapped bool
 
 	mu           sync.Mutex
 	refused      uint64 // lifetime count, for callers that want to assert on it
@@ -180,11 +183,33 @@ func Wrap(ln net.Listener, denyPool netip.Prefix, logger *slog.Logger, opts ...O
 		logger:       logger,
 		windowCounts: make(map[refusalReason]uint64),
 		lastReportAt: make(map[refusalReason]time.Time),
+		wrapped:      true,
 	}
 	for _, opt := range opts {
 		opt(l)
 	}
 	return l, nil
+}
+
+// Guard is proof that an operator-API listener went through Wrap. Its zero
+// value is "no proof", and its only source of a non-zero value is
+// (*Listener).Guard, so a caller that must not proceed without the guard (the
+// reconciler's self-attach) can take a Guard instead of a bool that anyone
+// can set to true.
+type Guard struct {
+	proven bool
+}
+
+// Active reports whether g was issued by a Listener built through Wrap.
+func (g Guard) Active() bool { return g.proven }
+
+// Guard returns proof that l was built by Wrap. A Listener not built by Wrap
+// (a bare struct literal, or nil) yields the zero Guard.
+func (l *Listener) Guard() Guard {
+	if l == nil || !l.wrapped {
+		return Guard{}
+	}
+	return Guard{proven: true}
 }
 
 // Installed reports whether ln is a netguard-wrapped listener. Exposed so a

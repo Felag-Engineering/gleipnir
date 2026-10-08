@@ -169,6 +169,16 @@ func ValidateCreateNetwork(opts NetworkOptions) error {
 			Detail: "every plugin network must have IPv6 disabled",
 		}
 	}
+	// A subnet with no IPRange leaves the daemon's dynamic allocator free to
+	// hand the reserved self-attach address to a plugin container, so the
+	// reservation must be structural rather than a caller convention
+	// (#1033 b). A network with no Subnet has no reserved address to protect.
+	if opts.Subnet != "" && opts.IPRange == "" {
+		return &ConstraintViolationError{
+			Kind:   ViolationReservedAddrInRange,
+			Detail: fmt.Sprintf("subnet %s requires an IPRange that excludes the reserved self-attach address", opts.Subnet),
+		}
+	}
 	if opts.IPRange != "" {
 		if err := validateIPRangeExcludesReserved(opts); err != nil {
 			return err
@@ -223,8 +233,9 @@ func validateIPRangeExcludesReserved(opts NetworkOptions) error {
 // from the same subnet — the second usable address, one past the network's
 // own gateway. Duplicated here rather than imported: this package must not
 // depend on internal/plugin/egress (container is the lower-level primitive
-// egress builds on, not the reverse). Kept in sync by hand; egress.GleipnirAddrOf's
-// own doc names itself as the one place that formula is authoritative.
+// egress builds on, not the reverse). egress.GleipnirAddrOf's own doc names
+// itself as the one place that formula is authoritative; a test in egress
+// pins the two to equal output (#1033 f).
 func gleipnirReservedAddr(subnet netip.Prefix) netip.Addr {
 	base := subnet.Masked().Addr().As4()
 	base[3] += 2

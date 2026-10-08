@@ -210,6 +210,18 @@ func TestValidateCreateNetwork(t *testing.T) {
 			wantKind: ViolationReservedAddrInRange,
 		},
 		{
+			// #1033 b: the reservation must be structural, not a caller
+			// convention — a Subnet with no IPRange leaves the dynamic
+			// allocator free to hand out the reserved address.
+			name: "Subnet without IPRange rejected",
+			opts: NetworkOptions{
+				Name: "gleipnir-plugin-abc123", Internal: true,
+				Subnet: "10.83.4.0/24",
+			},
+			wantErr:  true,
+			wantKind: ViolationReservedAddrInRange,
+		},
+		{
 			name: "IPRange with no Subnet to validate against rejected",
 			opts: NetworkOptions{
 				Name: "gleipnir-plugin-abc123", Internal: true,

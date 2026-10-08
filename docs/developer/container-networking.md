@@ -190,11 +190,11 @@ here is two layers, not one:
    on both `LocalAddr` and `RemoteAddr` for the operator API listener — the second
    layer, independent of what Gleipnir's own namespace sysctls say, so a
    misconfigured or reverted namespace setting does not silently remove all
-   protection. `reconciler.Config.OperatorAPIGuarded` is the structural gate for this:
-   self-attach refuses to activate at all until the caller wiring the reconciler
-   confirms that guard is actually in front of the operator listener (see the
-   `Config` field's own doc comment) — the same fail-closed shape as the forwarding
-   check, and deliberately NOT importing the unmerged netguard package to express it.
+   protection. `reconciler.Config.OperatorAPIGuard` is the structural gate for this:
+   self-attach refuses to activate at all unless it holds a `netguard.Guard`, which
+   only `(*netguard.Listener).Guard()` on a listener built by `netguard.Wrap` can
+   produce (the zero value is "no proof") — the same fail-closed shape as the
+   forwarding check, but not a bool anyone can set to true.
 
 ## Subnet allocation
 

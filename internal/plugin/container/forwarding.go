@@ -1,7 +1,9 @@
 package container
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"strings"
 )
@@ -36,10 +38,18 @@ var (
 var ipv6SysctlDir = "/proc/sys/net/ipv6"
 
 // pathExists is the injectable seam over checking whether ipv6SysctlDir is
-// present.
-var pathExists = func(path string) bool {
+// present. Only fs.ErrNotExist means "absent"; any other stat error (EACCES,
+// a masked /proc) is returned so the caller fails closed instead of skipping
+// the IPv6 checks on a guess (#1033 c).
+var pathExists = func(path string) (bool, error) {
 	_, err := os.Stat(path)
-	return err == nil
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	return false, err
 }
 
 // readSysctl is the injectable seam over the /proc reads above.
@@ -104,7 +114,11 @@ func CheckForwardingDisabled() error {
 		}
 	}
 
-	if !pathExists(ipv6SysctlDir) {
+	ipv6Present, err := pathExists(ipv6SysctlDir)
+	if err != nil {
+		return &ForwardingEnabledError{Path: ipv6SysctlDir, Want: "readable", Err: err}
+	}
+	if !ipv6Present {
 		return nil
 	}
 	ipv6Checks := []struct{ path, want string }{

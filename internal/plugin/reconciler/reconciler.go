@@ -10,11 +10,13 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	"github.com/felag-engineering/gleipnir/internal/infra/logctx"
+	"github.com/felag-engineering/gleipnir/internal/infra/netguard"
 	"github.com/felag-engineering/gleipnir/internal/plugin/container"
 	"github.com/felag-engineering/gleipnir/internal/plugin/egress"
 	"github.com/felag-engineering/gleipnir/internal/plugin/resources"
@@ -97,28 +99,22 @@ type Config struct {
 	// whatever host happens to run the test.
 	CheckForwardingDisabled func() error
 
-	// OperatorAPIGuarded gates self-attach on the operator-facing admin API
+	// OperatorAPIGuard gates self-attach on the operator-facing admin API
 	// listener having been wrapped by the network guard that refuses
-	// cross-instance traffic (netguard, PR #1029 — not merged as of #958's
-	// own landing, so this stays a plain bool rather than importing an
-	// opaque marker type from an unmerged package). Without that guard,
-	// Gleipnir joining every instance network while its own operator API
-	// remains reachable FROM those networks would hand a compromised plugin
-	// a path to the admin surface — self-attach's other checks (managed
-	// label, Internal, instance match, subnet containment, forwarding
-	// disabled) say nothing about that path, because it runs through
-	// Gleipnir's OWN container being multi-homed, not through a network
-	// Gleipnir joined incorrectly.
+	// cross-instance traffic (netguard). Without that guard, Gleipnir joining
+	// every instance network while its own operator API remains reachable
+	// FROM those networks would hand a compromised plugin a path to the admin
+	// surface — self-attach's other checks (managed label, Internal,
+	// instance match, subnet containment, forwarding disabled) say nothing
+	// about that path, because it runs through Gleipnir's OWN container being
+	// multi-homed, not through a network Gleipnir joined incorrectly.
 	//
-	// The caller wiring the reconciler (#962, once it exists) must set this
-	// to true ONLY once the netguard listener wrapper is actually in front
-	// of the operator listener, never speculatively "because the code
-	// compiles" — a true value here that does not reflect a real guard is
-	// worse than leaving self-attach disabled, since it reads as an
-	// intentional decision instead of a gap. Defaults to false, so a
-	// caller that says nothing about it gets self-attach OFF, the same
-	// fail-closed default the forwarding check gets.
-	OperatorAPIGuarded bool
+	// The value can only come from (*netguard.Listener).Guard on a listener
+	// built by netguard.Wrap, so it cannot be set speculatively "because the
+	// code compiles" (#1033 a). The zero value is "no proof", so a caller that
+	// says nothing about it gets self-attach OFF, the same fail-closed
+	// default the forwarding check gets.
+	OperatorAPIGuard netguard.Guard
 
 	// Rotations is the generation-record store. Optional: nil disables
 	// generation tracking entirely, and the core loop falls back to plain,
@@ -200,10 +196,22 @@ type PassResult struct {
 	// Converged is true when the pass found nothing to do. Idempotency means
 	// a converged pass performs zero socket writes.
 	Converged bool `json:"converged"`
+
+	// SelfInspectFailedPasses counts consecutive passes whose Inspect of
+	// Gleipnir's own container failed. While it is non-zero, instance
+	// creation is held (self-attach status unknown), so a persistent value
+	// is how an operator learns the hold is not transient rather than
+	// finding one WARN line per pass (#1033 d). Zero when self-attach is not
+	// configured or the last Inspect succeeded.
+	SelfInspectFailedPasses int `json:"self_inspect_failed_passes"`
 }
 
 // Reconciler runs the level-triggered convergence loop.
 type Reconciler struct {
+	// selfInspectFailures is the running count behind
+	// PassResult.SelfInspectFailedPasses.
+	selfInspectFailures atomic.Int64
+
 	runtime   container.Runtime
 	store     Store
 	posture   container.Posture
@@ -329,9 +337,9 @@ func New(cfg Config) (*Reconciler, error) {
 		//    container being multi-homed, not through a network Gleipnir
 		//    joined incorrectly.
 		switch {
-		case !cfg.OperatorAPIGuarded:
+		case !cfg.OperatorAPIGuard.Active():
 			slog.Error("reconciler: refusing to enable gleipnir self-attach; " +
-				"the operator API is not confirmed guarded against cross-instance traffic (Config.OperatorAPIGuarded)")
+				"the operator API is not confirmed guarded against cross-instance traffic (Config.OperatorAPIGuard)")
 
 		// 2. Gleipnir's own kernel has forwarding disabled on both stacks
 		//    (#958 finding 2): a container attached to two isolated instance
@@ -570,18 +578,21 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (PassResult, error) {
 	// can reach yet, or a duplicate-attach the daemon would refuse. The next
 	// pass tries Inspect again.
 	self := selfInspect{Configured: r.selfAttacher != nil}
+	selfInspectFailedPasses := 0
 	if self.Configured {
 		info, err := r.runtime.Inspect(ctx, r.selfAttacher.ContainerID())
 		if err != nil {
 			logctx.Logger(ctx).WarnContext(ctx, "reconciler: inspecting gleipnir's own container failed; self-attach status unknown for this pass",
 				"err", err)
 			self.Unknown = true
+			selfInspectFailedPasses = int(r.selfInspectFailures.Add(1))
 		} else {
 			self.Info = &info
+			r.selfInspectFailures.Store(0)
 		}
 	}
 
-	result := PassResult{Desired: len(desired), Observed: len(observed)}
+	result := PassResult{Desired: len(desired), Observed: len(observed), SelfInspectFailedPasses: selfInspectFailedPasses}
 	for _, action := range planPass(desired, observed, networks, generations, r.rotations != nil, self) {
 		if action.Kind == ActionNone {
 			continue
