@@ -951,7 +951,12 @@ func TestRequest_RequestCapable_DisableFalse_RouteToPlugin(t *testing.T) {
 	testutil.InsertRun(t, ds.store, "run1", "pol1", model.RunStatusRunning)
 
 	d := ds.newDispatcher(200*time.Millisecond, 100*time.Millisecond)
-	reqID, outcome, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "prompt", nil)
+	var routedTo []string
+	rc := dispatch.RouteContext{
+		RunID: "run1", PolicyID: "pol1", ToolName: "ask",
+		OnRouted: func(pluginInstanceID string) { routedTo = append(routedTo, pluginInstanceID) },
+	}
+	reqID, outcome, err := d.Request(context.Background(), audID, rc, "prompt", nil)
 	if err != nil {
 		t.Fatalf("Request: %v", err)
 	}
@@ -960,6 +965,9 @@ func TestRequest_RequestCapable_DisableFalse_RouteToPlugin(t *testing.T) {
 	}
 	if reqID == "" {
 		t.Error("reqID should not be empty for RouteToPlugin")
+	}
+	if len(routedTo) != 1 || routedTo[0] != instID {
+		t.Errorf("OnRouted calls = %v, want exactly [%s]", routedTo, instID)
 	}
 }
 

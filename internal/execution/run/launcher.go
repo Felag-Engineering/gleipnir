@@ -400,6 +400,7 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 		ApprovalDispatcher:     l.approvalDispatcher,
 		FeedbackDispatcher:     l.feedbackDispatcher,
 		AudienceID:             audienceID,
+		GateRoutes:             l.manager,
 		TriggeredBy:            params.TriggeredBy,
 		PublicURL:              l.publicURLForAttribution(ctx),
 	})

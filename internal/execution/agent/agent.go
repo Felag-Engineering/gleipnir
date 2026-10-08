@@ -88,6 +88,10 @@ type Config struct {
 	// AudienceID is the DB row ID of the policy's audience, resolved by the
 	// launcher.  Empty string means no audience — fall back to in-app.
 	AudienceID string
+	// GateRoutes receives where each open approval/feedback gate is waiting,
+	// so the UI answer path can refuse a request a plugin channel owns. Nil
+	// disables tracking.
+	GateRoutes GateRouteRecorder
 	// TriggeredBy is the authenticated username for a manual run, "" for
 	// every other trigger type and for a queued manual run re-launched by
 	// DrainQueue (issue #943; in-memory only, not persisted — see
@@ -133,6 +137,9 @@ func New(cfg Config) (*BoundAgent, error) {
 	}
 
 	var approvalOpts []ApprovalHandlerOption
+	if cfg.GateRoutes != nil {
+		approvalOpts = append(approvalOpts, WithApprovalGateRoutes(cfg.GateRoutes))
+	}
 	if cfg.ApprovalDispatcher != nil && cfg.AudienceID != "" {
 		approvalOpts = append(approvalOpts, WithApprovalChannelDispatch(
 			cfg.ApprovalDispatcher, cfg.AudienceID, cfg.PolicyID,
@@ -140,6 +147,9 @@ func New(cfg Config) (*BoundAgent, error) {
 	}
 
 	var feedbackOpts []FeedbackHandlerOption
+	if cfg.GateRoutes != nil {
+		feedbackOpts = append(feedbackOpts, WithFeedbackGateRoutes(cfg.GateRoutes))
+	}
 	if cfg.FeedbackDispatcher != nil && cfg.AudienceID != "" {
 		feedbackOpts = append(feedbackOpts, WithFeedbackChannelDispatch(
 			cfg.FeedbackDispatcher, cfg.AudienceID, cfg.PolicyID,

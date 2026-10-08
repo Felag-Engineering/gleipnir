@@ -210,6 +210,9 @@ type dispatchParams struct {
 	Kind            model.ElicitationKind
 	Options         []inapptask.Option
 	RequestedSchema json.RawMessage
+	// OnPluginRoute is called with the chosen entry's plugin instance ID once
+	// routing has opened the ask on a plugin channel. May be nil.
+	OnPluginRoute func(instanceID string)
 }
 
 // askResult is what askChannel resolved to, before kind-specific mapping.
@@ -240,6 +243,8 @@ func (a *TaskChannelAdapters) DispatchApproval(ctx context.Context, req agent.Ap
 		Now:        timeNow(),
 		Kind:       model.ElicitationKindPermission,
 		Options:    approvalOptions,
+
+		OnPluginRoute: req.OnPluginRoute,
 	}
 
 	result, err := a.askChannel(ctx, p)
@@ -347,6 +352,7 @@ func (a *TaskChannelAdapters) DispatchFeedback(ctx context.Context, req agent.Fe
 		Now:             timeNow(),
 		Kind:            model.ElicitationKindInformation,
 		RequestedSchema: feedbackRequestedSchema,
+		OnPluginRoute:   req.OnPluginRoute,
 	}
 
 	result, err := a.askChannel(ctx, p)
@@ -411,6 +417,9 @@ func (a *TaskChannelAdapters) askChannel(ctx context.Context, p dispatchParams) 
 			return askResult{}, errRouteToInApp
 		}
 		return askResult{}, fmt.Errorf("routing %s request: %w", p.Kind, err)
+	}
+	if p.OnPluginRoute != nil {
+		p.OnPluginRoute(routed.InstanceID)
 	}
 
 	// TaskWaiter.Wait races a timer against a channel delivery (its own

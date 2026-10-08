@@ -31,6 +31,10 @@ type RouteContext struct {
 	// additionalProperties: false so the plugin tolerates extra fields via
 	// json.Unmarshal into its typed config struct.
 	Metadata map[string]string
+	// OnRouted, when non-nil, is called with the chosen plugin instance's ID
+	// once Request has picked a real (non-in-app) entry, before the request is
+	// sent to it. It is not called for a RouteToInApp outcome.
+	OnRouted func(pluginInstanceID string)
 }
 
 // DispatcherConfig holds all tunable parameters for a Dispatcher.
@@ -348,6 +352,10 @@ func (d *Dispatcher) Request(ctx context.Context, audienceID string, rc RouteCon
 			return "", RouteToInApp, nil
 		}
 		return "", 0, ErrNoRequestCapableEntry
+	}
+
+	if rc.OnRouted != nil {
+		rc.OnRouted(firstTarget.instanceID)
 	}
 
 	client, err := d.channelClient(firstTarget.instanceName)

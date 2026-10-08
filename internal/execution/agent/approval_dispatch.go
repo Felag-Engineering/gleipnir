@@ -39,6 +39,10 @@ type ApprovalDispatchRequest struct {
 	// as meaningful; it exists only so a hand-built request in a test can
 	// omit it.
 	ExpiresAt *time.Time
+	// OnPluginRoute, when non-nil, is called by the dispatcher as soon as it
+	// has handed the request to a plugin channel entry, with that entry's
+	// plugin instance ID. It is never called for an in-app fallback.
+	OnPluginRoute func(instanceID string)
 }
 
 // ApprovalSettlement is what DispatchApproval resolved to.
@@ -93,6 +97,8 @@ type FeedbackDispatchRequest struct {
 	// field on ApprovalDispatchRequest for why it is always set, never left
 	// nil, by FeedbackHandler.Wait.
 	ExpiresAt *time.Time
+	// OnPluginRoute mirrors ApprovalDispatchRequest.OnPluginRoute.
+	OnPluginRoute func(instanceID string)
 }
 
 // FeedbackSettlement is what DispatchFeedback resolved to.
