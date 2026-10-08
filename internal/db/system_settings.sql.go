@@ -9,6 +9,33 @@ import (
 	"context"
 )
 
+const clearSystemSettingIfPrefix = `-- name: ClearSystemSettingIfPrefix :execrows
+UPDATE system_settings
+SET value = '', updated_at = ?1
+WHERE key = ?2
+  AND value != ''
+  AND substr(value, 1, length(CAST(?3 AS TEXT))) = CAST(?3 AS TEXT)
+`
+
+type ClearSystemSettingIfPrefixParams struct {
+	UpdatedAt string `json:"updated_at"`
+	Key       string `json:"key"`
+	Prefix    string `json:"prefix"`
+}
+
+// Blanks the value (the "unset" form SetSystemSettingIfEmpty treats as empty)
+// only while it still starts with the given prefix, in one statement so a
+// concurrent re-point to another value is never clobbered. substr compares
+// literally, unlike LIKE, where '_' and '%' in a prefix would be wildcards.
+// Returns rows affected (0 = value absent or no longer matches).
+func (q *Queries) ClearSystemSettingIfPrefix(ctx context.Context, arg ClearSystemSettingIfPrefixParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, clearSystemSettingIfPrefix, arg.UpdatedAt, arg.Key, arg.Prefix)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deleteSystemSetting = `-- name: DeleteSystemSetting :exec
 DELETE FROM system_settings WHERE key = ?
 `

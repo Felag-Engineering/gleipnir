@@ -53,6 +53,15 @@ func (m *mockQuerier) SetSystemSettingIfEmpty(_ context.Context, key, value, upd
 	return true, nil
 }
 
+func (m *mockQuerier) ClearSystemSettingIfPrefix(_ context.Context, key, prefix, updatedAt string) (bool, error) {
+	row, ok := m.settings[key]
+	if !ok || row.Value == "" || !strings.HasPrefix(row.Value, prefix) {
+		return false, nil
+	}
+	m.settings[key] = db.SystemSetting{Key: key, Value: "", UpdatedAt: updatedAt}
+	return true, nil
+}
+
 func (m *mockQuerier) DeleteSystemSetting(_ context.Context, key string) error {
 	delete(m.settings, key)
 	return nil
@@ -679,6 +688,68 @@ func TestDeleteProviderKey_DisablesProviderModels(t *testing.T) {
 		t.Error("openai gpt-4o should remain enabled")
 	}
 }
+
+func TestDeleteProviderKey_ClearsOwnedDefaultModel(t *testing.T) {
+	tests := []struct {
+		name        string
+		existing    *string // nil = no default_model row
+		deleted     string
+		wantDefault string
+	}{
+		{name: "default owned by deleted provider is cleared", existing: strPtr("anthropic:claude-a"), deleted: "anthropic", wantDefault: ""},
+		{name: "default owned by another provider is untouched", existing: strPtr("openai:gpt-a"), deleted: "anthropic", wantDefault: "openai:gpt-a"},
+		{name: "provider name that is only a prefix of the owner is untouched", existing: strPtr("openai-compat:m"), deleted: "openai", wantDefault: "openai-compat:m"},
+		{name: "no default is a no-op", existing: nil, deleted: "anthropic", wantDefault: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			q := newMockQuerier()
+			if tc.existing != nil {
+				q.settings["default_model"] = db.SystemSetting{Key: "default_model", Value: *tc.existing}
+			}
+			h := newTestHandler(q)
+
+			rec := deleteProviderKeyRequest(h, tc.deleted)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+			}
+
+			if got := q.settings["default_model"].Value; got != tc.wantDefault {
+				t.Fatalf("default_model = %q, want %q", got, tc.wantDefault)
+			}
+			if tc.existing == nil {
+				if _, ok := q.settings["default_model"]; ok {
+					t.Fatal("no-op delete must not create a default_model row")
+				}
+			}
+		})
+	}
+}
+
+func TestDeleteProviderKey_DefaultIsReseededByNextKey(t *testing.T) {
+	q := newMockQuerier()
+	h := newTestHandlerWithLister(q, &stubLister{models: map[string][]llm.ModelInfo{
+		"anthropic": {{Name: "claude-a"}},
+		"openai":    {{Name: "gpt-a"}},
+	}})
+
+	setProviderKeyRequest(h, "anthropic", "sk-1")
+	if got := q.settings["default_model"].Value; got != "anthropic:claude-a" {
+		t.Fatalf("after first key default_model = %q, want anthropic:claude-a", got)
+	}
+
+	deleteProviderKeyRequest(h, "anthropic")
+	if got := q.settings["default_model"].Value; got != "" {
+		t.Fatalf("after delete default_model = %q, want cleared", got)
+	}
+
+	setProviderKeyRequest(h, "openai", "sk-2")
+	if got := q.settings["default_model"].Value; got != "openai:gpt-a" {
+		t.Fatalf("after re-add default_model = %q, want openai:gpt-a", got)
+	}
+}
+
+func strPtr(s string) *string { return &s }
 
 // --- public_url validation tests ---
 
