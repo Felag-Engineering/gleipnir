@@ -53,6 +53,8 @@ type McpServer struct {
 	CaCertPem            *string `json:"ca_cert_pem"`
 	CallTimeoutSeconds   *int64  `json:"call_timeout_seconds"`
 	RunAttribution       *string `json:"run_attribution"`
+	ServerName           *string `json:"server_name"`
+	ServerVersion        *string `json:"server_version"`
 }
 
 type McpTask struct {

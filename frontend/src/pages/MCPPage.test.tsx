@@ -206,6 +206,21 @@ describe('ToolsPage — servers loaded', () => {
     expect(screen.getByText('Protocol unknown')).toBeInTheDocument()
   })
 
+  it('shows the server-reported name and version next to the protocol badge', () => {
+    mockServersLoaded(
+      [{ ...SERVER_1, server_info: { name: 'acme-mcp', version: '2.3.1' } }],
+      new Map([['srv-1', [TOOL_1]]]),
+    )
+    mockNoopMutations()
+    renderPage()
+    expect(screen.getByText('acme-mcp 2.3.1')).toBeInTheDocument()
+  })
+
+  it('shows no server info badge when the server reported none', () => {
+    renderPage()
+    expect(screen.queryByTitle(/Reported by the server/)).not.toBeInTheDocument()
+  })
+
   it('shows the legacy protocol badge for a server pinned to an older revision', () => {
     mockServersLoaded([{ ...SERVER_1, protocol_version: '2024-11-05' }], new Map([['srv-1', [TOOL_1]]]))
     mockNoopMutations()

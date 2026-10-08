@@ -151,6 +151,11 @@ export interface ApiCaCertificate {
 }
 
 // Matches mcp_handler.go → mcpServerResponse (GET /api/v1/mcp/servers)
+export interface ApiMcpServerInfo {
+  name: string
+  version: string
+}
+
 export interface ApiMcpServer {
   id: string
   name: string
@@ -161,6 +166,9 @@ export interface ApiMcpServer {
   auth_header_keys?: string[] // sorted header names; values are never returned
   is_arcade_gateway: boolean
   protocol_version: string | null // pinned MCP revision; null = never probed
+  // Self-reported by the server at its last probe; null = it reported none.
+  // UNTRUSTED server-controlled text (<= 128 bytes each): render as text only.
+  server_info?: ApiMcpServerInfo | null
 
   // ca_cert_pem is the full, unredacted PEM (nil when no CA is pinned) —
   // public, unlike auth_header_keys above, so it is read back in full rather

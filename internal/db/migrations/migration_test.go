@@ -1738,3 +1738,96 @@ func TestAddMCPServerRunAttributionSkipsOnFreshSchema(t *testing.T) {
 		t.Fatal("ShouldSkip returned false on a fresh initial schema — did 0001_initial.sql forget the run_attribution column?")
 	}
 }
+
+// seedPreServerInfoMCPServers hand-creates the end-of-0055 mcp_servers shape
+// (everything through run_attribution) so AddMCPServerInfo's Up() actually runs.
+func seedPreServerInfoMCPServers(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	stmts := []string{
+		`CREATE TABLE schema_migrations (
+			version     INTEGER PRIMARY KEY,
+			applied_at  TEXT    NOT NULL
+		)`,
+		`INSERT INTO schema_migrations(version, applied_at) VALUES (1, '2024-01-01T00:00:00Z')`,
+		`CREATE TABLE mcp_servers (
+			id                      TEXT    PRIMARY KEY,
+			name                    TEXT    NOT NULL UNIQUE,
+			url                     TEXT    NOT NULL,
+			created_at              TEXT    NOT NULL,
+			run_attribution         TEXT
+		)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seedPreServerInfoMCPServers: %v\nstatement: %s", err, stmt)
+		}
+	}
+}
+
+// TestAddMCPServerInfo verifies migration 0056 adds server_name and
+// server_version on the upgrade path, leaves existing rows NULL, and is
+// idempotent.
+func TestAddMCPServerInfo(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	seedPreServerInfoMCPServers(t, db)
+
+	m := &migrations.AddMCPServerInfo{}
+	skip, err := m.ShouldSkip(ctx, db)
+	if err != nil {
+		t.Fatalf("ShouldSkip: %v", err)
+	}
+	if skip {
+		t.Fatal("ShouldSkip returned true against the pre-target baseline — the hand-crafted DDL must omit server_name")
+	}
+
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO mcp_servers(id, name, url, created_at) VALUES ('s1', 'srv', 'https://localhost:9443', '2024-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("seed mcp_servers row: %v", err)
+	}
+
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	var name, version sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT server_name, server_version FROM mcp_servers WHERE id = 's1'`).Scan(&name, &version); err != nil {
+		t.Fatalf("read server info columns: %v", err)
+	}
+	if name.Valid || version.Valid {
+		t.Errorf("existing row server info = %v/%v after migration, want NULL/NULL", name, version)
+	}
+
+	if _, err := db.ExecContext(ctx, `UPDATE mcp_servers SET server_name = 'acme', server_version = '1.2.3' WHERE id = 's1'`); err != nil {
+		t.Fatalf("set server info: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT server_name, server_version FROM mcp_servers WHERE id = 's1'`).Scan(&name, &version); err != nil {
+		t.Fatalf("read after set: %v", err)
+	}
+	if name.String != "acme" || version.String != "1.2.3" {
+		t.Errorf("server info = %q/%q after set, want acme/1.2.3", name.String, version.String)
+	}
+
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("second Apply (idempotency): %v", err)
+	}
+}
+
+// TestAddMCPServerInfoSkipsOnFreshSchema is the regression gate for forgetting
+// to hand-sync 0001_initial.sql (which sqlc reads): a fresh schema must already
+// carry server_name.
+func TestAddMCPServerInfoSkipsOnFreshSchema(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	applyInitialSchema(t, db)
+
+	skip, err := (&migrations.AddMCPServerInfo{}).ShouldSkip(ctx, db)
+	if err != nil {
+		t.Fatalf("ShouldSkip: %v", err)
+	}
+	if !skip {
+		t.Fatal("ShouldSkip returned false on a fresh initial schema — did 0001_initial.sql forget the server_name column?")
+	}
+}

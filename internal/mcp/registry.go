@@ -752,6 +752,10 @@ func (r *Registry) refreshProtocolVersion(ctx context.Context, srv *db.McpServer
 		return
 	}
 
+	// Persisted before the unchanged-pin early return below: the identity can
+	// change (a server upgrade) while the negotiated protocol version does not.
+	r.refreshServerInfo(ctx, srv, res.ServerInfo)
+
 	previous := ""
 	if srv.ProtocolVersion != nil {
 		previous = *srv.ProtocolVersion
@@ -779,6 +783,34 @@ func (r *Registry) refreshProtocolVersion(ctx context.Context, srv *db.McpServer
 	slog.Warn("mcp protocol version pin changed",
 		"server_id", srv.ID, "server_name", srv.Name, "previous_pin", previous, "new_pin", res.Version, "era", res.Era)
 	srv.ProtocolVersion = &res.Version
+}
+
+// ServerInfoParams builds the UpdateMCPServerInfo arguments for a probe's
+// reported identity. An empty field becomes NULL so "the server reported
+// nothing" is stored as absence, never as an empty string.
+func ServerInfoParams(serverID string, info ServerInfo) db.UpdateMCPServerInfoParams {
+	params := db.UpdateMCPServerInfoParams{ID: serverID}
+	if info.Name != "" {
+		params.ServerName = &info.Name
+	}
+	if info.Version != "" {
+		params.ServerVersion = &info.Version
+	}
+	return params
+}
+
+// refreshServerInfo overwrites srv's stored identity with what the latest
+// probe reported (NULL when it reported none) and updates srv in place. Like
+// the pin write it is fail-open: a persistence error is logged, never fatal.
+func (r *Registry) refreshServerInfo(ctx context.Context, srv *db.McpServer, info ServerInfo) {
+	params := ServerInfoParams(srv.ID, info)
+	if err := r.queries.UpdateMCPServerInfo(ctx, params); err != nil {
+		slog.Warn("failed to persist mcp server info",
+			"server_id", srv.ID, "server_name", srv.Name, "err", err)
+		return
+	}
+	srv.ServerName = params.ServerName
+	srv.ServerVersion = params.ServerVersion
 }
 
 // RefreshTools re-discovers tools for a registered server, computes the diff

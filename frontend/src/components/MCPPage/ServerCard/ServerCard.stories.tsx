@@ -55,6 +55,10 @@ export const UnknownProtocol: Story = {
   args: { ...Healthy.args, server: { ...server, protocol_version: null } },
 }
 
+export const WithServerInfo: Story = {
+  args: { ...Healthy.args, server: { ...server, server_info: { name: 'acme-mcp', version: '2.3.1' } } },
+}
+
 export const Discovering: Story = {
   args: { ...Healthy.args, isDiscovering: true },
 }

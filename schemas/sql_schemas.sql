@@ -59,7 +59,12 @@ CREATE TABLE mcp_servers (
     call_timeout_seconds    INTEGER,
     -- Nullable; per-server run attribution setting as canonical JSON
     -- {mode, *_header}; NULL = off (issue #943)
-    run_attribution         TEXT
+    run_attribution         TEXT,
+    -- Nullable; the server's self-reported identity from server/discover
+    -- (issue #772). UNTRUSTED, bounded to 128 bytes by the MCP client.
+    -- NULL = the server reported none, or was never probed.
+    server_name             TEXT,
+    server_version          TEXT
 );
 -- Partial: every external row's NULL stays out of the index entirely. The row
 -- is per INSTANCE, not per generation -- a rotation updates url in place.

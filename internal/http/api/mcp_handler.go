@@ -101,6 +101,27 @@ type caCertificateResponse struct {
 	NotAfter          string `json:"not_after"` // RFC3339 UTC
 }
 
+// serverInfoResponse is the name/version a server reported about itself. Either
+// field may be empty when the server sent only the other.
+type serverInfoResponse struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+func serverInfoToResponse(s db.McpServer) *serverInfoResponse {
+	if s.ServerName == nil && s.ServerVersion == nil {
+		return nil
+	}
+	info := &serverInfoResponse{}
+	if s.ServerName != nil {
+		info.Name = *s.ServerName
+	}
+	if s.ServerVersion != nil {
+		info.Version = *s.ServerVersion
+	}
+	return info
+}
+
 type mcpServerResponse struct {
 	ID               string   `json:"id"`
 	Name             string   `json:"name"`
@@ -111,6 +132,12 @@ type mcpServerResponse struct {
 	AuthHeaderKeys   []string `json:"auth_header_keys"` // sorted header names; never includes values
 	IsArcadeGateway  bool     `json:"is_arcade_gateway"`
 	ProtocolVersion  *string  `json:"protocol_version"` // negotiated MCP revision pinned at probe time; null = never probed
+
+	// ServerInfo is the server's self-reported identity from its last probe
+	// (issue #772); null when it reported none. Both strings are UNTRUSTED,
+	// server-controlled and already bounded to 128 bytes — clients must render
+	// them as plain text.
+	ServerInfo *serverInfoResponse `json:"server_info"`
 
 	// CACertPEM is the full, unredacted PEM (nil when no CA is pinned). Unlike
 	// AuthHeaderKeys above, this is not a secret — it is a public certificate
@@ -270,6 +297,7 @@ func (h *MCPHandler) serverToResponse(s db.McpServer) mcpServerResponse {
 		AuthHeaderKeys:              keys,
 		IsArcadeGateway:             arcade.IsArcadeGateway(s.Url, keys),
 		ProtocolVersion:             s.ProtocolVersion,
+		ServerInfo:                  serverInfoToResponse(s),
 		CACertPEM:                   s.CaCertPem,
 		CACertificates:              certs,
 		TrustTier:                   string(mcp.TrustTierOf(s)),
@@ -533,12 +561,16 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// the pin, discovery already runs under the negotiated version. A
 	// protocol-probe failure must NOT populate discoveryError — that field
 	// is about tools and is surfaced in the 201 body.
-	var pinnedVersion *string
+	var (
+		pinnedVersion *string
+		reportedInfo  mcp.ServerInfo
+	)
 	if res, err := h.registry.ProbeProtocol(probeCtx, body.Name, body.URL, ciphertext, normalizedCACertPEM); err != nil {
 		slog.Warn("MCP protocol probe failed on server create", "server_name", body.Name, "err", err)
 	} else {
 		v := res.Version
 		pinnedVersion = &v
+		reportedInfo = res.ServerInfo
 	}
 
 	// Step 3: pre-flight probe — discover tools without writing any DB rows.
@@ -611,6 +643,17 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 			db.UpdateMCPServerProtocolVersionParams{ProtocolVersion: pinnedVersion, ID: server.ID}); err != nil {
 			slog.Warn("failed to persist MCP protocol version after create",
 				"server_id", server.ID, "err", err)
+		}
+	}
+
+	if reportedInfo != (mcp.ServerInfo{}) {
+		infoParams := mcp.ServerInfoParams(server.ID, reportedInfo)
+		if err := h.store.UpdateMCPServerInfo(r.Context(), infoParams); err != nil {
+			slog.Warn("failed to persist MCP server info after create",
+				"server_id", server.ID, "err", err)
+		} else {
+			server.ServerName = infoParams.ServerName
+			server.ServerVersion = infoParams.ServerVersion
 		}
 	}
 

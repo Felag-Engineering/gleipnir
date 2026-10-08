@@ -24,7 +24,7 @@ func (q *Queries) CountMCPServers(ctx context.Context) (int64, error) {
 const createMCPServer = `-- name: CreateMCPServer :one
 INSERT INTO mcp_servers (id, name, url, created_at, auth_headers_encrypted, ca_cert_pem, call_timeout_seconds, run_attribution)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-RETURNING id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem, call_timeout_seconds, run_attribution
+RETURNING id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem, call_timeout_seconds, run_attribution, server_name, server_version
 `
 
 type CreateMCPServerParams struct {
@@ -63,6 +63,8 @@ func (q *Queries) CreateMCPServer(ctx context.Context, arg CreateMCPServerParams
 		&i.CaCertPem,
 		&i.CallTimeoutSeconds,
 		&i.RunAttribution,
+		&i.ServerName,
+		&i.ServerVersion,
 	)
 	return i, err
 }
@@ -70,7 +72,7 @@ func (q *Queries) CreateMCPServer(ctx context.Context, arg CreateMCPServerParams
 const createManagedMCPServer = `-- name: CreateManagedMCPServer :one
 INSERT INTO mcp_servers (id, name, url, created_at, plugin_instance_id, protocol_version)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-RETURNING id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem, call_timeout_seconds, run_attribution
+RETURNING id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem, call_timeout_seconds, run_attribution, server_name, server_version
 `
 
 type CreateManagedMCPServerParams struct {
@@ -110,6 +112,8 @@ func (q *Queries) CreateManagedMCPServer(ctx context.Context, arg CreateManagedM
 		&i.CaCertPem,
 		&i.CallTimeoutSeconds,
 		&i.RunAttribution,
+		&i.ServerName,
+		&i.ServerVersion,
 	)
 	return i, err
 }
@@ -136,7 +140,7 @@ func (q *Queries) DeleteManagedMCPServer(ctx context.Context, pluginInstanceID *
 }
 
 const getMCPServer = `-- name: GetMCPServer :one
-SELECT id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem, call_timeout_seconds, run_attribution FROM mcp_servers WHERE id = ?1
+SELECT id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem, call_timeout_seconds, run_attribution, server_name, server_version FROM mcp_servers WHERE id = ?1
 `
 
 func (q *Queries) GetMCPServer(ctx context.Context, id string) (McpServer, error) {
@@ -155,12 +159,14 @@ func (q *Queries) GetMCPServer(ctx context.Context, id string) (McpServer, error
 		&i.CaCertPem,
 		&i.CallTimeoutSeconds,
 		&i.RunAttribution,
+		&i.ServerName,
+		&i.ServerVersion,
 	)
 	return i, err
 }
 
 const getMCPServerByPluginInstance = `-- name: GetMCPServerByPluginInstance :one
-SELECT id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem, call_timeout_seconds, run_attribution FROM mcp_servers WHERE plugin_instance_id = ?1
+SELECT id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem, call_timeout_seconds, run_attribution, server_name, server_version FROM mcp_servers WHERE plugin_instance_id = ?1
 `
 
 // GetMCPServerByPluginInstance finds the registry entry backing a managed
@@ -183,12 +189,14 @@ func (q *Queries) GetMCPServerByPluginInstance(ctx context.Context, pluginInstan
 		&i.CaCertPem,
 		&i.CallTimeoutSeconds,
 		&i.RunAttribution,
+		&i.ServerName,
+		&i.ServerVersion,
 	)
 	return i, err
 }
 
 const listMCPServers = `-- name: ListMCPServers :many
-SELECT id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem, call_timeout_seconds, run_attribution FROM mcp_servers ORDER BY created_at ASC
+SELECT id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem, call_timeout_seconds, run_attribution, server_name, server_version FROM mcp_servers ORDER BY created_at ASC
 `
 
 // ListMCPServers is ordered ASC: MCP servers are administrative objects registered
@@ -215,6 +223,8 @@ func (q *Queries) ListMCPServers(ctx context.Context) ([]McpServer, error) {
 			&i.CaCertPem,
 			&i.CallTimeoutSeconds,
 			&i.RunAttribution,
+			&i.ServerName,
+			&i.ServerVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -266,7 +276,7 @@ func (q *Queries) ListMCPServersWithAuthHeaders(ctx context.Context) ([]ListMCPS
 }
 
 const listManagedMCPServers = `-- name: ListManagedMCPServers :many
-SELECT id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem, call_timeout_seconds, run_attribution FROM mcp_servers WHERE plugin_instance_id IS NOT NULL ORDER BY created_at ASC
+SELECT id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem, call_timeout_seconds, run_attribution, server_name, server_version FROM mcp_servers WHERE plugin_instance_id IS NOT NULL ORDER BY created_at ASC
 `
 
 func (q *Queries) ListManagedMCPServers(ctx context.Context) ([]McpServer, error) {
@@ -291,6 +301,8 @@ func (q *Queries) ListManagedMCPServers(ctx context.Context) ([]McpServer, error
 			&i.CaCertPem,
 			&i.CallTimeoutSeconds,
 			&i.RunAttribution,
+			&i.ServerName,
+			&i.ServerVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -310,9 +322,11 @@ UPDATE mcp_servers
 SET name = ?1,
     protocol_version = CASE WHEN url <> ?2 THEN NULL ELSE protocol_version END,
     auth_headers_encrypted = CASE WHEN url <> ?2 THEN NULL ELSE auth_headers_encrypted END,
+    server_name = CASE WHEN url <> ?2 THEN NULL ELSE server_name END,
+    server_version = CASE WHEN url <> ?2 THEN NULL ELSE server_version END,
     url = ?2, ca_cert_pem = ?3, call_timeout_seconds = ?4, run_attribution = ?5
 WHERE id = ?6
-RETURNING id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem, call_timeout_seconds, run_attribution
+RETURNING id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem, call_timeout_seconds, run_attribution, server_name, server_version
 `
 
 type UpdateMCPServerParams struct {
@@ -334,6 +348,9 @@ type UpdateMCPServerParams struct {
 // statement: header values are write-only over the API, so keeping them across
 // a repoint would let an operator who cannot read them exfiltrate them to a
 // collector URL. No window exists where the new url runs with the old headers.
+//
+// server_name / server_version describe the endpoint, so they are cleared on a
+// repoint too rather than showing the old backend's identity until a re-probe.
 func (q *Queries) UpdateMCPServer(ctx context.Context, arg UpdateMCPServerParams) (McpServer, error) {
 	row := q.db.QueryRowContext(ctx, updateMCPServer,
 		arg.Name,
@@ -357,6 +374,8 @@ func (q *Queries) UpdateMCPServer(ctx context.Context, arg UpdateMCPServerParams
 		&i.CaCertPem,
 		&i.CallTimeoutSeconds,
 		&i.RunAttribution,
+		&i.ServerName,
+		&i.ServerVersion,
 	)
 	return i, err
 }
@@ -386,6 +405,25 @@ type UpdateMCPServerDriftParams struct {
 
 func (q *Queries) UpdateMCPServerDrift(ctx context.Context, arg UpdateMCPServerDriftParams) error {
 	_, err := q.db.ExecContext(ctx, updateMCPServerDrift, arg.HasDrift, arg.ID)
+	return err
+}
+
+const updateMCPServerInfo = `-- name: UpdateMCPServerInfo :exec
+UPDATE mcp_servers SET server_name = ?1, server_version = ?2 WHERE id = ?3
+`
+
+type UpdateMCPServerInfoParams struct {
+	ServerName    *string `json:"server_name"`
+	ServerVersion *string `json:"server_version"`
+	ID            string  `json:"id"`
+}
+
+// UpdateMCPServerInfo overwrites the server's self-reported identity with what
+// the latest probe saw. NULLs are written as-is: the values describe the
+// current endpoint, so a server that stopped reporting must not keep showing a
+// stale name (issue #772).
+func (q *Queries) UpdateMCPServerInfo(ctx context.Context, arg UpdateMCPServerInfoParams) error {
+	_, err := q.db.ExecContext(ctx, updateMCPServerInfo, arg.ServerName, arg.ServerVersion, arg.ID)
 	return err
 }
 
