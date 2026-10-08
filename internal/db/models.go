@@ -251,6 +251,7 @@ type Policy struct {
 	CreatedAt              string  `json:"created_at"`
 	UpdatedAt              string  `json:"updated_at"`
 	PausedAt               *string `json:"paused_at"`
+	DeletedAt              *string `json:"deleted_at"`
 }
 
 type PollState struct {

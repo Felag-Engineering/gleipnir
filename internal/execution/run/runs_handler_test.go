@@ -2026,3 +2026,59 @@ func TestRunsHandler_SubmitFeedback_AudienceRoutedPolicy_InAppGateStillDelivers(
 		t.Fatalf("status = %d, want 202; body: %s", w.Code, w.Body.String())
 	}
 }
+
+// A deleted (archived) agent keeps its runs readable and attributable: list and
+// detail still carry the agent name and flag it as deleted (#1052).
+func TestRunsHandler_ArchivedPolicyRunsStayReadable(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, store, "p-arch", "policy-p-arch", "webhook", testutil.MinimalWebhookPolicy)
+	testutil.InsertRun(t, store, "r-arch", "p-arch", model.RunStatusComplete)
+	testutil.InsertRunStep(t, store, "s-arch", "r-arch", 1)
+	if err := store.ArchivePolicy(context.Background(), "p-arch", "2026-01-01T00:00:00Z"); err != nil {
+		t.Fatalf("ArchivePolicy: %v", err)
+	}
+
+	router := newRunsRouter(run.NewRunsHandler(store, run.NewRunManager(), nil))
+	get := func(path string) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want 200; body: %s", path, w.Code, w.Body.String())
+		}
+		return w
+	}
+
+	var list struct {
+		Data run.PaginatedRunsResponse `json:"data"`
+	}
+	if err := json.NewDecoder(get("/api/v1/runs").Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list.Data.Runs) != 1 {
+		t.Fatalf("len(runs) = %d, want 1", len(list.Data.Runs))
+	}
+	if got := list.Data.Runs[0]; got.PolicyName != "policy-p-arch" || !got.PolicyDeleted {
+		t.Errorf("list run = name %q deleted %v, want policy-p-arch/true", got.PolicyName, got.PolicyDeleted)
+	}
+
+	var detail struct {
+		Data run.RunSummary `json:"data"`
+	}
+	if err := json.NewDecoder(get("/api/v1/runs/r-arch").Body).Decode(&detail); err != nil {
+		t.Fatalf("decode detail: %v", err)
+	}
+	if detail.Data.PolicyName != "policy-p-arch" || !detail.Data.PolicyDeleted {
+		t.Errorf("detail run = name %q deleted %v, want policy-p-arch/true", detail.Data.PolicyName, detail.Data.PolicyDeleted)
+	}
+
+	var steps struct {
+		Data []run.StepSummary `json:"data"`
+	}
+	if err := json.NewDecoder(get("/api/v1/runs/r-arch/steps").Body).Decode(&steps); err != nil {
+		t.Fatalf("decode steps: %v", err)
+	}
+	if len(steps.Data) != 1 {
+		t.Errorf("len(steps) = %d, want 1", len(steps.Data))
+	}
+}

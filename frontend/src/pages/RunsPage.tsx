@@ -11,7 +11,7 @@ import { QueryBoundary } from '@/components/QueryBoundary'
 import { StatusBadge } from '@/components/dashboard/StatusBadge'
 import EmptyState from '@/components/EmptyState/EmptyState'
 import type { RunStatus } from '@/constants/status'
-import { formatTimeAgo, formatTokens, formatDuration, formatTimestamp, computeRunDuration } from '@/utils/format'
+import { formatTimeAgo, formatTokens, formatDuration, formatTimestamp, computeRunDuration, runAgentLabel } from '@/utils/format'
 import { computePageNumbers, rangeToSince } from '@/utils/pagination'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import { getRunRowClasses } from './runsUtils'
@@ -188,8 +188,8 @@ export default function RunsPage() {
 
                 {/* Agent name (primary) + run ID and trigger type (secondary) */}
                 <div className={styles.identity}>
-                  <div className={styles.policyName} title={run.policy_name ?? run.policy_id}>
-                    {run.policy_name || run.policy_id}
+                  <div className={styles.policyName} title={runAgentLabel(run)}>
+                    {runAgentLabel(run)}
                   </div>
                   <div className={styles.subtext}>
                     {run.id.slice(0, 8)} · {run.trigger_type}

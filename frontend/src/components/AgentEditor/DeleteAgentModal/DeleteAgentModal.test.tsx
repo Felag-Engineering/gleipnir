@@ -58,6 +58,14 @@ describe('DeleteAgentModal — rendering', () => {
     expect(screen.getByText(/no runs in audit trail/)).toBeInTheDocument()
   })
 
+  it('says run history is kept', () => {
+    mockRuns(3)
+    renderModal()
+    expect(screen.getByText(/Run history is kept/)).toBeInTheDocument()
+    expect(screen.getByText(/will stay in the audit trail/)).toBeInTheDocument()
+    expect(screen.queryByText(/permanently/)).not.toBeInTheDocument()
+  })
+
   it('shows singular run count when there is 1 run', () => {
     mockRuns(1)
     renderModal()

@@ -1,5 +1,19 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { formatDuration, formatDurationMs, formatTokens, formatTimestamp, formatTimeAgo, formatCountdown, computeRunDuration, formatDate, getPreferredTimezone, formatProviderName, formatBytes } from '@/utils/format'
+import { formatDuration, formatDurationMs, formatTokens, formatTimestamp, formatTimeAgo, formatCountdown, computeRunDuration, formatDate, getPreferredTimezone, formatProviderName, formatBytes, runAgentLabel } from '@/utils/format'
+
+describe('runAgentLabel', () => {
+  it('returns the agent name for a live agent', () => {
+    expect(runAgentLabel({ policy_id: 'p1', policy_name: 'my-agent' })).toBe('my-agent')
+  })
+
+  it('marks a deleted agent', () => {
+    expect(runAgentLabel({ policy_id: 'p1', policy_name: 'my-agent', policy_deleted: true })).toBe('my-agent (deleted)')
+  })
+
+  it('falls back to the policy id when the name is missing', () => {
+    expect(runAgentLabel({ policy_id: 'p1' })).toBe('p1')
+  })
+})
 
 describe('formatDuration', () => {
   it('returns — for null', () => {

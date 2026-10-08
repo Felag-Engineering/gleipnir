@@ -172,6 +172,13 @@ export function formatBytes(bytes: number): string {
   return `${+gb.toFixed(1)} GB`
 }
 
+// runAgentLabel is the agent name shown next to a run. A deleted (archived)
+// agent keeps its runs, so the name is marked rather than dropped.
+export function runAgentLabel(run: { policy_id: string; policy_name?: string; policy_deleted?: boolean }): string {
+  const name = run.policy_name || run.policy_id
+  return run.policy_deleted ? `${name} (deleted)` : name
+}
+
 // computeRunDuration returns the run duration in seconds, or null if the run has not completed.
 // started_at is required on ApiRun (non-nullable).
 export function computeRunDuration(run: { completed_at: string | null; started_at: string }): number | null {

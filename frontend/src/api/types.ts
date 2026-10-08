@@ -37,6 +37,8 @@ export interface ApiRun {
   id: string
   policy_id: string
   policy_name?: string
+  /** True when the agent was deleted; its runs stay readable. */
+  policy_deleted?: boolean
   status: string
   trigger_type: string
   trigger_payload?: string

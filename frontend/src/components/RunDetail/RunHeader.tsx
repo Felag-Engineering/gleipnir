@@ -6,7 +6,7 @@ import { StatusBadge } from '@/components/dashboard/StatusBadge/StatusBadge'
 import { TriggerChip } from '@/components/dashboard/TriggerChip/TriggerChip'
 import { Button } from '@/components/Button'
 import type { RunStatus, TriggerType } from '@/constants/status'
-import { formatDurationMs, formatTokens, formatTimestamp, formatProviderName } from '@/utils/format'
+import { formatDurationMs, formatTokens, formatTimestamp, formatProviderName, runAgentLabel } from '@/utils/format'
 import { CAPABILITY_SNAPSHOT_ANCHOR } from './CapabilitySnapshotCard'
 import styles from './RunHeader.module.css'
 
@@ -72,11 +72,11 @@ export function RunHeader({ run, toolCallCount, tokenTotal, duration, capability
           <ArrowLeft size={14} aria-hidden /> Runs
         </button>
         <span className={styles.policyName}>
-          {run.policy_name || run.policy_id}
+          {runAgentLabel(run)}
         </span>
         <StatusBadge status={run.status as RunStatus} awaitingPermission={awaitingPermission} />
         <TriggerChip type={run.trigger_type as TriggerType} />
-        {showRetry && onRetry && (
+        {showRetry && onRetry && !run.policy_deleted && (
           <Button variant="secondary" size="small" onClick={onRetry}>
             Retry
           </Button>
@@ -139,9 +139,13 @@ export function RunHeader({ run, toolCallCount, tokenTotal, duration, capability
             <div className={styles.adminCell}>
               <dt className={styles.adminLabel}>Policy</dt>
               <dd className={styles.adminValue}>
-                <Link to={`/agents/${run.policy_id}`} className={styles.adminLink}>
-                  {run.policy_name || run.policy_id}
-                </Link>
+                {run.policy_deleted ? (
+                  runAgentLabel(run)
+                ) : (
+                  <Link to={`/agents/${run.policy_id}`} className={styles.adminLink}>
+                    {runAgentLabel(run)}
+                  </Link>
+                )}
               </dd>
             </div>
             <div className={styles.adminCell}>

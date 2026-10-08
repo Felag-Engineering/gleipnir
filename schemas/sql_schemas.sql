@@ -99,7 +99,7 @@ CREATE INDEX idx_mcp_tools_server_id ON mcp_tools(server_id);
 
 CREATE TABLE policies (
     id              TEXT    PRIMARY KEY,  -- ULID
-    name            TEXT    NOT NULL UNIQUE,
+    name            TEXT    NOT NULL,  -- unique among live (non-archived) policies; see idx_policies_name_active
     trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled', 'poll', 'cron', 'subscribed')),
     yaml            TEXT    NOT NULL,
     -- Encrypted webhook shared secret (AES-256-GCM, key from GLEIPNIR_ENCRYPTION_KEY).
@@ -107,10 +107,15 @@ CREATE TABLE policies (
     webhook_secret_encrypted TEXT,
     created_at      TEXT    NOT NULL,     -- ISO 8601 UTC
     updated_at      TEXT    NOT NULL,     -- ISO 8601 UTC
-    paused_at       TEXT                  -- nullable, ISO 8601 UTC; set when a scheduled policy exhausts all fire times
+    paused_at       TEXT,                 -- nullable, ISO 8601 UTC; set when a scheduled policy exhausts all fire times
+    -- Set when the agent is deleted (#1052). Deleting archives rather than removes so runs and
+    -- their steps/approvals/feedback stay readable; archived policies are invisible to every
+    -- policy query except GetPolicyIncludingArchived, which run read paths use for attribution.
+    deleted_at      TEXT
 );
 
 CREATE INDEX idx_policies_trigger_type ON policies(trigger_type);
+CREATE UNIQUE INDEX idx_policies_name_active ON policies(name) WHERE deleted_at IS NULL;
 
 -- ---------------------------------------------------------------------------
 -- Runs

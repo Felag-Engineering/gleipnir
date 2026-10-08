@@ -189,8 +189,8 @@ func TestCronRunner_Notify(t *testing.T) {
 			t.Fatal("setup: loop not started")
 		}
 
-		if err := store.DeletePolicy(context.Background(), "pol-cron-delete"); err != nil {
-			t.Fatalf("DeletePolicy: %v", err)
+		if err := store.ArchivePolicy(context.Background(), "pol-cron-delete", "2026-01-01T00:00:00Z"); err != nil {
+			t.Fatalf("ArchivePolicy: %v", err)
 		}
 
 		runner.Notify(context.Background(), "pol-cron-delete")
