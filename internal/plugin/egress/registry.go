@@ -91,6 +91,23 @@ func (r *GatewayRegistry) Len() int {
 	return len(r.entries)
 }
 
+// instanceSubnetBits is the prefix length of every per-instance subnet; the
+// reconciler's SubnetAllocator carves one /24 per instance.
+const instanceSubnetBits = 24
+
+// InstanceSubnetOf returns the per-instance /24 that contains Gleipnir's
+// address on that instance's network (GleipnirAddrOf). The proxy requires a
+// caller to be inside it. Nil for anything that is not an IPv4 address, so an
+// IPv6 or malformed input fails closed at the caller.
+func InstanceSubnetOf(gleipnirAddr net.IP) *net.IPNet {
+	v4 := gleipnirAddr.To4()
+	if v4 == nil {
+		return nil
+	}
+	mask := net.CIDRMask(instanceSubnetBits, 32)
+	return &net.IPNet{IP: v4.Mask(mask), Mask: mask}
+}
+
 // GleipnirAddrOf returns the address Gleipnir occupies on a per-instance
 // subnet: the SECOND usable address, one past the network's own gateway.
 //
