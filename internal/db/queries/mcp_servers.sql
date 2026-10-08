@@ -20,9 +20,16 @@ UPDATE mcp_servers SET has_drift = :has_drift WHERE id = :id;
 -- name: DeleteMCPServer :exec
 DELETE FROM mcp_servers WHERE id = :id;
 
+-- UpdateMCPServer clears protocol_version in the same statement when the url
+-- changes: the pin selects the whole transport, so a pin negotiated against the
+-- old backend must not outlive a repoint (the no-downgrade guard would
+-- otherwise keep a modern pin on a legacy backend forever, #764). The CASE
+-- reads the row's pre-update url.
 -- name: UpdateMCPServer :one
 UPDATE mcp_servers
-SET name = :name, url = :url, ca_cert_pem = :ca_cert_pem, call_timeout_seconds = :call_timeout_seconds, run_attribution = :run_attribution
+SET name = :name,
+    protocol_version = CASE WHEN url <> :url THEN NULL ELSE protocol_version END,
+    url = :url, ca_cert_pem = :ca_cert_pem, call_timeout_seconds = :call_timeout_seconds, run_attribution = :run_attribution
 WHERE id = :id
 RETURNING *;
 

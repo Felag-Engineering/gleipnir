@@ -307,7 +307,9 @@ func (q *Queries) ListManagedMCPServers(ctx context.Context) ([]McpServer, error
 
 const updateMCPServer = `-- name: UpdateMCPServer :one
 UPDATE mcp_servers
-SET name = ?1, url = ?2, ca_cert_pem = ?3, call_timeout_seconds = ?4, run_attribution = ?5
+SET name = ?1,
+    protocol_version = CASE WHEN url <> ?2 THEN NULL ELSE protocol_version END,
+    url = ?2, ca_cert_pem = ?3, call_timeout_seconds = ?4, run_attribution = ?5
 WHERE id = ?6
 RETURNING id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem, call_timeout_seconds, run_attribution
 `
@@ -321,6 +323,11 @@ type UpdateMCPServerParams struct {
 	ID                 string  `json:"id"`
 }
 
+// UpdateMCPServer clears protocol_version in the same statement when the url
+// changes: the pin selects the whole transport, so a pin negotiated against the
+// old backend must not outlive a repoint (the no-downgrade guard would
+// otherwise keep a modern pin on a legacy backend forever, #764). The CASE
+// reads the row's pre-update url.
 func (q *Queries) UpdateMCPServer(ctx context.Context, arg UpdateMCPServerParams) (McpServer, error) {
 	row := q.db.QueryRowContext(ctx, updateMCPServer,
 		arg.Name,

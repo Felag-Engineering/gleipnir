@@ -22,6 +22,71 @@ func (q *Queries) CountActiveRuns(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const countPurgeableRunSteps = `-- name: CountPurgeableRunSteps :one
+SELECT COUNT(*) FROM run_steps
+WHERE run_id IN (
+  SELECT id FROM runs
+  WHERE COALESCE(completed_at, started_at) < ?1
+    AND status IN (/*SLICE:statuses*/?)
+)
+`
+
+type CountPurgeableRunStepsParams struct {
+	Cutoff   *string  `json:"cutoff"`
+	Statuses []string `json:"statuses"`
+}
+
+func (q *Queries) CountPurgeableRunSteps(ctx context.Context, arg CountPurgeableRunStepsParams) (int64, error) {
+	query := countPurgeableRunSteps
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.Cutoff)
+	if len(arg.Statuses) > 0 {
+		for _, v := range arg.Statuses {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:statuses*/?", strings.Repeat(",?", len(arg.Statuses))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:statuses*/?", "NULL", 1)
+	}
+	row := q.db.QueryRowContext(ctx, query, queryParams...)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countPurgeableRuns = `-- name: CountPurgeableRuns :one
+SELECT COUNT(*) FROM runs
+WHERE COALESCE(completed_at, started_at) < ?1
+  AND status IN (/*SLICE:statuses*/?)
+`
+
+type CountPurgeableRunsParams struct {
+	Cutoff   *string  `json:"cutoff"`
+	Statuses []string `json:"statuses"`
+}
+
+// Age is completed_at, falling back to started_at for terminal runs that never
+// recorded a completion time (e.g. interrupted on restart). Callers must pass
+// only terminal statuses (cutoff is listed first: sqlc mis-numbers a named
+// parameter that follows a slice); gleipnirctl purge-runs validates this.
+func (q *Queries) CountPurgeableRuns(ctx context.Context, arg CountPurgeableRunsParams) (int64, error) {
+	query := countPurgeableRuns
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.Cutoff)
+	if len(arg.Statuses) > 0 {
+		for _, v := range arg.Statuses {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:statuses*/?", strings.Repeat(",?", len(arg.Statuses))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:statuses*/?", "NULL", 1)
+	}
+	row := q.db.QueryRowContext(ctx, query, queryParams...)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countRuns = `-- name: CountRuns :one
 SELECT COUNT(*) FROM runs
 WHERE (?1 IS NULL OR policy_id = ?1)
@@ -96,6 +161,39 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (Run, erro
 		&i.Version,
 	)
 	return i, err
+}
+
+const deletePurgeableRuns = `-- name: DeletePurgeableRuns :execrows
+DELETE FROM runs
+WHERE COALESCE(completed_at, started_at) < ?1
+  AND status IN (/*SLICE:statuses*/?)
+`
+
+type DeletePurgeableRunsParams struct {
+	Cutoff   *string  `json:"cutoff"`
+	Statuses []string `json:"statuses"`
+}
+
+// Dependent rows (run_steps, approval/feedback/tool-input requests, MCP tasks,
+// pending plugin requests) go via ON DELETE CASCADE; plugin_audit_events.run_id
+// is set to NULL so oversight records survive.
+func (q *Queries) DeletePurgeableRuns(ctx context.Context, arg DeletePurgeableRunsParams) (int64, error) {
+	query := deletePurgeableRuns
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.Cutoff)
+	if len(arg.Statuses) > 0 {
+		for _, v := range arg.Statuses {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:statuses*/?", strings.Repeat(",?", len(arg.Statuses))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:statuses*/?", "NULL", 1)
+	}
+	result, err := q.db.ExecContext(ctx, query, queryParams...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const getRun = `-- name: GetRun :one

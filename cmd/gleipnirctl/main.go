@@ -24,6 +24,10 @@ func main() {
 	root.AddCommand(newRotateKeyCmd())
 	root.AddCommand(newResetPasswordCmd())
 	root.AddCommand(newCreateUserCmd())
+	root.AddCommand(newListUsersCmd())
+	root.AddCommand(newPurgeRunsCmd())
+	root.AddCommand(newVerifyKeysCmd())
+	root.AddCommand(newCheckCmd())
 	if err := root.Execute(); err != nil {
 		root.PrintErrln("error:", err)
 		os.Exit(1)

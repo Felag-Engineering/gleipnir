@@ -19,6 +19,10 @@ The web UI handles day-to-day operations: managing policies, reviewing runs, app
 | `rotate-key` | Re-encrypt all at-rest secrets under a new encryption key |
 | `reset-password` | Reset a user's password directly in the database |
 | `create-user` | Create a new user with an assigned role directly in the database |
+| `list-users` | List all users with roles and status (never prints credentials) |
+| `purge-runs` | Delete old terminal runs and their steps (supports `--dry-run`) |
+| `verify-keys` | Check that `GLEIPNIR_ENCRYPTION_KEY` decrypts every stored secret (read-only) |
+| `check` | Read-only health check: DB, schema, encryption key, stored secrets, admin user |
 
 ---
 
@@ -40,6 +44,7 @@ Re-encrypts every at-rest secret in the Gleipnir database under a new `GLEIPNIR_
 | OpenAI-compatible backend API keys | `openai_compat_providers.api_key_encrypted` |
 | Per-policy webhook secrets | `policies.webhook_secret_encrypted` |
 | MCP server auth headers | `mcp_servers.auth_headers_encrypted` |
+| Plugin credentials (all strategies, incl. OAuth tokens) | `plugin_instances.credentials_encrypted` |
 
 User passwords and session tokens are **not** affected — they use a separate one-way hash and do not need rotation here.
 
@@ -69,7 +74,7 @@ printf '%s\n%s\n' "$OLD_KEY" "$NEW_KEY" | \
 Keys are piped via stdin so they never appear in process listings or shell history. On success you'll see:
 
 ```
-re-encrypted 3 provider keys, 1 openai-compat keys, 12 webhook secrets, 2 MCP auth header sets
+re-encrypted 3 provider keys, 1 openai-compat keys, 12 webhook secrets, 2 MCP auth header sets, 1 plugin credential sets
 ```
 
 **4. Update `GLEIPNIR_ENCRYPTION_KEY`** in your `.env` to the new key.
@@ -91,7 +96,7 @@ printf '%s\n%s\n' "$OLD_KEY" "$NEW_KEY" | \
 
 Output on success:
 ```
-re-encrypted 3 provider keys, 1 openai-compat keys, 12 webhook secrets, 2 MCP auth header sets (dry-run; no changes written)
+re-encrypted 3 provider keys, 1 openai-compat keys, 12 webhook secrets, 2 MCP auth header sets, 1 plugin credential sets (dry-run; no changes written)
 ```
 
 ### Inline flags (less secure)
@@ -242,3 +247,165 @@ The server does not need to be stopped. This command performs a short INSERT tha
 
 - **Generated password is secret material.** It is printed to stdout so it can be captured by downstream tools (`... | tee password.txt`). Do not share terminal output containing this line.
 - **Role validation happens before the database is opened.** Supplying an unrecognised role exits with code 2 without writing anything to the database.
+
+---
+
+## list-users
+
+Prints a table of all users read directly from the database: username, roles, creation time, and status.
+
+```bash
+docker compose run --rm api gleipnirctl list-users
+```
+
+Example output:
+```
+USERNAME  ROLES           CREATED_AT            STATUS
+alice     admin,operator  2026-01-02T03:04:05Z  active
+bob       auditor         2026-01-03T03:04:05Z  deactivated
+```
+
+- Rows are ordered by username.
+- A user holds one or more roles; they are printed comma-separated in alphabetical order (`-` if the user has none).
+- `STATUS` is `deactivated` when the account has been deactivated, otherwise `active`. Deactivated users are included.
+- With no users, the header is printed followed by a `no users` line.
+- Password hashes and other credential material are never read or printed.
+
+The server does not need to be stopped; the command only reads.
+
+### Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--db-path` | `$GLEIPNIR_DB_PATH` or `/data/gleipnir.db` | Path to the SQLite database file. |
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success (including an empty user table) |
+| 1 | Unexpected error (I/O failure, DB error) |
+
+---
+
+## purge-runs
+
+Deletes old terminal runs and their steps directly from the database, to keep it from growing without bound.
+
+```bash
+# See what would go, then do it
+docker compose run --rm api gleipnirctl purge-runs --older-than 90d --dry-run
+docker compose run --rm api gleipnirctl purge-runs --older-than 90d
+```
+
+Output:
+```
+dry run: would delete 120 runs and 3401 steps older than 90d
+deleted 120 runs and 3401 steps older than 90d
+```
+
+- **`--older-than` is required.** It takes a Go duration (`36h`, `90m`) or a whole number of days (`90d`). Zero, negative and fractional-day values are rejected.
+- **What "older" means:** a run's age is measured from `completed_at`, falling back to `started_at` when no completion time was recorded (for example runs marked `interrupted` by a restart). A long-running run that finished recently is therefore not purged.
+- **Only terminal runs are deleted:** `complete`, `failed` and `interrupted` by default. `--status` (comma-separated) narrows the set. Naming `pending`, `running`, `waiting_for_approval` or `waiting_for_feedback` is an error and nothing is deleted; active runs are never touched, however old.
+- **Dependent rows:** steps, approval requests, feedback requests, tool-input requests, MCP tasks and pending plugin channel requests are removed with the run (`ON DELETE CASCADE`). The reported step count is `run_steps` only.
+- **Plugin audit events are kept.** They are security and oversight records (including tool-initiated HITL decision records). Their `run_id` is set to `NULL` when the run goes; the events themselves are not deleted.
+- The purge is a single write transaction: it either fully applies or not at all. The server does not need to be stopped; the command waits up to 10 seconds for the write lock. A dry run takes no write lock.
+
+### Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--older-than` | *(required)* | Age threshold: Go duration or whole days such as `90d`. |
+| `--status` | `complete,failed,interrupted` | Comma-separated terminal statuses to purge. |
+| `--dry-run` | `false` | Print counts without deleting anything. |
+| `--db-path` | `$GLEIPNIR_DB_PATH` or `/data/gleipnir.db` | Path to the SQLite database file. |
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success (including nothing to purge) |
+| 1 | Invalid flags, or an I/O or DB error (nothing is deleted) |
+
+---
+
+## verify-keys
+
+Checks that the key in `GLEIPNIR_ENCRYPTION_KEY` decrypts every at-rest secret in the database — the same set of columns `rotate-key` re-encrypts (both read one shared list, so they cannot drift apart). Run it after a restore, a key rotation, or before a risky change.
+
+```bash
+docker compose run --rm api gleipnirctl verify-keys
+```
+
+Success:
+```
+verified 12 secrets OK
+```
+
+Failure lists each row that did not decrypt, by table, column and row identifier (never plaintext or ciphertext):
+```
+FAILED mcp_servers.auth_headers_encrypted id=01J...
+error: 1 secrets failed to decrypt (11 verified OK)
+```
+
+- The key is read from the environment only; there is deliberately no `--key` flag, so it cannot leak into shell history or process listings. It may be hex or base64.
+- The database is opened read-only and is never migrated or created, so the server does not need to be stopped.
+- A database with no stored secrets verifies `0 secrets OK` and exits 0.
+
+### Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--db-path` | `$GLEIPNIR_DB_PATH` or `/data/gleipnir.db` | Path to the SQLite database file. |
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Every secret decrypted |
+| 1 | One or more secrets failed, `GLEIPNIR_ENCRYPTION_KEY` missing or invalid, or an unexpected error |
+
+---
+
+## check
+
+Runs read-only health checks and prints one line per check.
+
+```bash
+docker compose run --rm api gleipnirctl check
+```
+
+Example output:
+```
+PASS  encryption key present and valid
+PASS  database reachable: /data/gleipnir.db
+PASS  schema migrated
+PASS  encryption key decrypts stored secrets: 12 secrets
+WARN  active admin user: none found; create one with gleipnirctl create-user
+```
+
+| Check | PASS when | Otherwise |
+|---|---|---|
+| database reachable | the file exists and a trivial query succeeds | FAIL |
+| schema migrated | no registered migration is pending | FAIL |
+| encryption key present and valid | `GLEIPNIR_ENCRYPTION_KEY` is set and is a 32-byte hex or base64 key | FAIL |
+| encryption key decrypts stored secrets | every secret `verify-keys` covers decrypts | FAIL, with one line per undecryptable row |
+| active admin user | at least one non-deactivated user holds the `admin` role | WARN |
+
+- A check that cannot run because one it depends on failed (for example, secrets when the key is missing) prints `SKIP`; the root cause carries the failure.
+- The secrets check decrypts every stored secret rather than a sample, so a single corrupt row is always found.
+- No admin user is a `WARN`, not a failure: the instance is otherwise healthy, and a fresh install has no admin until first-run setup. Warnings do not affect the exit code.
+- Nothing is written. The database is opened read-only and is never migrated or created, so a pending migration is reported, not applied, and the server does not need to be stopped. Migrations that only fix up data and have no schema probe cannot be detected as pending.
+
+### Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--db-path` | `$GLEIPNIR_DB_PATH` or `/data/gleipnir.db` | Path to the SQLite database file. |
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | No check failed (warnings allowed) |
+| 1 | At least one check failed |

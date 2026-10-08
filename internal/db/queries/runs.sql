@@ -216,3 +216,28 @@ JOIN policies p ON r.policy_id = p.id
 WHERE tir.status = 'pending' AND r.status = 'waiting_for_feedback'
 ORDER BY 9 ASC;
 
+
+-- name: CountPurgeableRuns :one
+-- Age is completed_at, falling back to started_at for terminal runs that never
+-- recorded a completion time (e.g. interrupted on restart). Callers must pass
+-- only terminal statuses (cutoff is listed first: sqlc mis-numbers a named
+-- parameter that follows a slice); gleipnirctl purge-runs validates this.
+SELECT COUNT(*) FROM runs
+WHERE COALESCE(completed_at, started_at) < sqlc.arg('cutoff')
+  AND status IN (sqlc.slice('statuses'));
+
+-- name: CountPurgeableRunSteps :one
+SELECT COUNT(*) FROM run_steps
+WHERE run_id IN (
+  SELECT id FROM runs
+  WHERE COALESCE(completed_at, started_at) < sqlc.arg('cutoff')
+    AND status IN (sqlc.slice('statuses'))
+);
+
+-- name: DeletePurgeableRuns :execrows
+-- Dependent rows (run_steps, approval/feedback/tool-input requests, MCP tasks,
+-- pending plugin requests) go via ON DELETE CASCADE; plugin_audit_events.run_id
+-- is set to NULL so oversight records survive.
+DELETE FROM runs
+WHERE COALESCE(completed_at, started_at) < sqlc.arg('cutoff')
+  AND status IN (sqlc.slice('statuses'));
