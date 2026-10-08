@@ -12,6 +12,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+
+	"github.com/felag-engineering/gleipnir/internal/infra/clientip"
 )
 
 // captureLogger replaces slog.Default() with a handler that writes JSON to buf
@@ -57,8 +59,7 @@ func TestSlogContext_InjectsLoggerWithRequestFields(t *testing.T) {
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
-	//lint:ignore SA1019 test mirrors the production middleware stack; replacement tracked in #758
-	r.Use(middleware.RealIP)
+	r.Use(clientip.New(nil).Middleware)
 	r.Use(slogContext)
 	r.Get("/ping", inner)
 
@@ -116,8 +117,7 @@ func TestSlogAccess_EmitsStructuredAccessLog(t *testing.T) {
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
-	//lint:ignore SA1019 test mirrors the production middleware stack; replacement tracked in #758
-	r.Use(middleware.RealIP)
+	r.Use(clientip.New(nil).Middleware)
 	r.Use(slogContext)
 	r.Use(slogAccess)
 	r.Get("/thing", func(w http.ResponseWriter, r *http.Request) {
@@ -183,8 +183,7 @@ func TestSlogAccess_CapturesStatusCode(t *testing.T) {
 			code := tc.code
 			r := chi.NewRouter()
 			r.Use(middleware.RequestID)
-			//lint:ignore SA1019 test mirrors the production middleware stack; replacement tracked in #758
-			r.Use(middleware.RealIP)
+			r.Use(clientip.New(nil).Middleware)
 			r.Use(slogContext)
 			r.Use(slogAccess)
 			r.Get("/check", func(w http.ResponseWriter, r *http.Request) {
@@ -226,8 +225,7 @@ func TestSlogAccess_UsesRawPathNotRoutePattern(t *testing.T) {
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
-	//lint:ignore SA1019 test mirrors the production middleware stack; replacement tracked in #758
-	r.Use(middleware.RealIP)
+	r.Use(clientip.New(nil).Middleware)
 	r.Use(slogContext)
 	r.Use(slogAccess)
 	r.Get("/items/{id}", func(w http.ResponseWriter, r *http.Request) {

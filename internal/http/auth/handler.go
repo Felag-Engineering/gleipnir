@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"regexp"
 	"sync"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
+	"github.com/felag-engineering/gleipnir/internal/infra/clientip"
 	"github.com/felag-engineering/gleipnir/internal/model"
 )
 
@@ -156,12 +156,9 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	expiresAt := now.Add(SessionDuration)
 
-	// Capture the client's IP (RemoteAddr may be "host:port") and User-Agent
-	// for session management UI display.
-	ipAddress := r.RemoteAddr
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		ipAddress = host
-	}
+	// Capture the client's IP (trusted-proxy-aware, #758) and User-Agent for
+	// session management UI display.
+	ipAddress := clientip.FromRequest(r)
 
 	_, err = h.q.CreateSession(r.Context(), db.CreateSessionParams{
 		ID:        model.NewULID(),
