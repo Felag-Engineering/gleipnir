@@ -2,9 +2,9 @@
 // vs cosmetic per the same rules diff.go applies to v1. It is a SEPARATE entry
 // point rather than a Diff overload: v1's sdkmanifest and v2's manifestv2 are
 // different Go types describing different substrates, and this only covers
-// the slice of v2's surface the material-change hot-reload block (ADR-045)
-// needs from the event-source profile today — event_kinds and the profile's
-// subscription_schema. Widen it as more of v2 gets wired to hot-reload.
+// the material-change hot-reload block (ADR-045). Every manifest field is
+// classified in v2FieldCoverage (diff_v2_fields.go) and a test fails when a
+// field is added without a classification (#1035).
 package manifest
 
 import (
@@ -26,6 +26,12 @@ func DiffV2(old, new *manifestv2.Manifest) []Change {
 	changes = append(changes, diffEventSourceProfileV2(old, new)...)
 	changes = append(changes, diffAuthV2(old, new)...)
 	changes = append(changes, diffTier2V2(old, new)...)
+	changes = append(changes, diffResourcesV2(old, new)...)
+	changes = append(changes, diffEgressV2(old, new)...)
+	changes = append(changes, diffToolsV2(old, new)...)
+	changes = append(changes, diffProfilesV2(old, new)...)
+	changes = append(changes, diffSchemasV2(old, new)...)
+	changes = append(changes, diffIdentityV2(old, new)...)
 	return changes
 }
 
