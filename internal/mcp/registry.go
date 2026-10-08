@@ -723,9 +723,10 @@ func (r *Registry) ProbeProtocol(ctx context.Context, name, urlStr string, encry
 // not be able to silently and permanently demote a server that has already
 // proven itself modern; that would drop #741's header-binding protections
 // for all subsequent tool traffic with no visible trace. Demoting a modern
-// pin requires explicit operator action (re-registering the server, or a
-// future "reset pin" affordance); this probe only WARNs and leaves the
-// existing pin untouched. Every OTHER pin write (a brand new pin, a legacy
+// pin requires explicit operator action: repointing the server at a new url
+// via PUT /api/v1/mcp/servers/{id}, which clears the pin atomically with the
+// url write (UpdateMCPServer, #764) so the next probe re-negotiates. This
+// probe only WARNs and leaves the existing pin untouched. Every OTHER pin write (a brand new pin, a legacy
 // re-negotiation, or an upgrade to modern) is logged at WARN too, so any pin
 // change is visible in the logs even though there is no dedicated audit
 // event for it: mcp_servers config changes have no audit-event path in this
