@@ -42,6 +42,12 @@ type StateEnvelope struct {
 	Nonce      string `json:"nonce"`
 	ExpiresAt  int64  `json:"expires_at"` // Unix seconds
 	ReturnURL  string `json:"return_url"`
+	// ActorUserID is the admin who started the flow, written by BeginAuthcode
+	// from the authenticated session. It rides inside the HMAC-signed payload,
+	// so the unauthenticated callback can attribute the issued token without
+	// ever trusting the callback request. Empty for envelopes minted before this
+	// field existed, which attribute to the system (NULL actor).
+	ActorUserID string `json:"actor_user_id,omitempty"`
 }
 
 // EncodeState serialises and HMAC-signs the envelope. The returned string is

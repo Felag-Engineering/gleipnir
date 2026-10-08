@@ -118,6 +118,10 @@ func (m *Manager) BeginAuthcode(ctx context.Context, instanceID, returnURL strin
 		return "", fmt.Errorf("oauth begin: %w", err)
 	}
 
+	if actor := actorFromContext(ctx); actor != nil {
+		env.ActorUserID = *actor
+	}
+
 	encodedState, err := EncodeState(env, m.hmacKey)
 	if err != nil {
 		return "", fmt.Errorf("oauth begin: encode state: %w", err)
@@ -216,7 +220,13 @@ func (m *Manager) HandleCallback(ctx context.Context, rawState, code string) (st
 		}
 	}
 
-	m.store.EmitIssued(ctx, env.InstanceID)
+	// The actor comes from the signed envelope BeginAuthcode wrote, never from
+	// the (unauthenticated) callback request.
+	issuedCtx := ctx
+	if env.ActorUserID != "" {
+		issuedCtx = WithActor(ctx, env.ActorUserID)
+	}
+	m.store.EmitIssued(issuedCtx, env.InstanceID)
 
 	// Transition the instance to healthy if it was waiting for authorization.
 	// ErrIllegalTransition is silently ignored — the instance may already be healthy.
