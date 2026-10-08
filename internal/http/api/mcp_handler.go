@@ -1439,6 +1439,20 @@ type mcpToolResponse struct {
 	// "schema_uncompilable". Anything but "exact" means only the ADR-017
 	// key-presence check applies. Policy-independent; computed on read.
 	ArgEnforcement mcp.ArgEnforcement `json:"arg_enforcement"`
+	// OutboundHeaders lists the parameters whose values a call to this tool
+	// sends as outbound HTTP headers (#780), after the same name validation
+	// the call path applies. Always non-nil. Presentation only.
+	OutboundHeaders []outboundHeaderResponse `json:"outbound_headers"`
+	// OutboundHeadersRejected is true when the tool declares an outbound
+	// header that cannot be used (reserved name, collision, malformed), in
+	// which case every call to the tool is rejected and OutboundHeaders is
+	// empty.
+	OutboundHeadersRejected bool `json:"outbound_headers_rejected"`
+}
+
+type outboundHeaderResponse struct {
+	Parameter string `json:"parameter"`
+	Header    string `json:"header"`
 }
 
 func toolToResponse(t db.McpTool, serverName string, simplifiedFor []string, argEnforcement mcp.ArgEnforcement) mcpToolResponse {
@@ -1646,9 +1660,10 @@ func (h *MCPHandler) ListTools(w http.ResponseWriter, r *http.Request) {
 		restricted = restrictedFeatureSets(h.features.SchemaFeaturesByProvider())
 	}
 
+	headerParams := h.registry.HeaderParamsFor(server)
 	items := make([]mcpToolResponse, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, h.toolResponse(server, row, restricted))
+		items = append(items, h.toolResponse(server, row, restricted, headerParams))
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, items)
@@ -1727,17 +1742,28 @@ func (h *MCPHandler) SetToolEnabled(w http.ResponseWriter, r *http.Request) {
 	if h.features != nil {
 		restricted = restrictedFeatureSets(h.features.SchemaFeaturesByProvider())
 	}
-	httputil.WriteJSON(w, http.StatusOK, h.toolResponse(srv, updated, restricted))
+	httputil.WriteJSON(w, http.StatusOK, h.toolResponse(srv, updated, restricted, h.registry.HeaderParamsFor(srv)))
 }
 
 // toolResponse builds the full tool DTO, including the per-request computed
 // fields. ListTools and SetToolEnabled share it so the mutation response
 // matches the list response.
-func (h *MCPHandler) toolResponse(server db.McpServer, row db.McpTool, restricted map[llm.SchemaFeatureSet][]string) mcpToolResponse {
+func (h *MCPHandler) toolResponse(server db.McpServer, row db.McpTool, restricted map[llm.SchemaFeatureSet][]string, headerParams mcp.ServerHeaderParams) mcpToolResponse {
 	canonical := canonicalSchemaForSimplification(row)
 	simplifiedFor := simplifiedForProviders(server.ID, row.Name, canonical, restricted)
 	enforcement := h.enforcement.classify(json.RawMessage(row.InputSchema), canonical)
-	return toolToResponse(row, server.Name, simplifiedFor, enforcement)
+	resp := toolToResponse(row, server.Name, simplifiedFor, enforcement)
+
+	resp.OutboundHeaders = make([]outboundHeaderResponse, 0)
+	decls, err := headerParams.Declared(json.RawMessage(row.InputSchema), canonical)
+	if err != nil {
+		resp.OutboundHeadersRejected = true
+		return resp
+	}
+	for _, d := range decls {
+		resp.OutboundHeaders = append(resp.OutboundHeaders, outboundHeaderResponse{Parameter: d.Property, Header: d.HeaderName})
+	}
+	return resp
 }
 
 // policyReferencesServer returns true if the raw policy YAML contains any tool

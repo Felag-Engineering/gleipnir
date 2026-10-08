@@ -32,6 +32,11 @@ export function ToolDetail({
   const topLevelCount = params.filter((p) => p.depth === 0).length
   const isDisabled = tool.enabled === false
   const enforcement = explainArgEnforcement(tool.arg_enforcement)
+  // Only top-level parameters can carry an outbound header.
+  const outboundHeaders = useMemo(
+    () => new Map((tool.outbound_headers ?? []).map((h) => [h.parameter, h.header])),
+    [tool.outbound_headers],
+  )
   // The name an agent's policy grants: "<server>.<tool>".
   const reference = `${serverName}.${tool.name}`
 
@@ -111,10 +116,20 @@ export function ToolDetail({
             incomplete. The input schema further down is the full definition.
           </p>
         )}
+        {tool.outbound_headers_rejected && (
+          <p className={styles.note}>
+            This tool asks for a parameter to be sent as an outbound header under a name that is not
+            allowed, so every call to it is rejected.
+          </p>
+        )}
         {params.length > 0 ? (
           <ul className={styles.paramList}>
             {params.map((p) => (
-              <ParamRow key={p.path} param={p} />
+              <ParamRow
+                key={p.path}
+                param={p}
+                outboundHeader={p.depth === 0 ? outboundHeaders.get(p.path) : undefined}
+              />
             ))}
           </ul>
         ) : (
@@ -130,7 +145,7 @@ export function ToolDetail({
   )
 }
 
-function ParamRow({ param }: { param: ParsedParam }) {
+function ParamRow({ param, outboundHeader }: { param: ParsedParam; outboundHeader?: string }) {
   const depthClass = param.depth === 1 ? styles.depth1 : param.depth >= 2 ? styles.depth2 : ''
   return (
     <li className={`${styles.param} ${depthClass}`}>
@@ -144,6 +159,11 @@ function ParamRow({ param }: { param: ParsedParam }) {
         )}
       </div>
       {param.description && <p className={styles.paramDescription}>{param.description}</p>}
+      {outboundHeader && (
+        <p className={styles.outboundHeader}>
+          Sends an outbound header: <code className={styles.value}>{outboundHeader}</code>
+        </p>
+      )}
       {(param.allowedValues || param.defaultValue !== undefined || param.constraints.length > 0) && (
         <dl className={styles.facts}>
           {param.allowedValues && (

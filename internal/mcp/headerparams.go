@@ -289,10 +289,25 @@ type headerParamSchema struct {
 	Properties map[string]json.RawMessage `json:"properties"`
 }
 
-// extractHeaderParams reads schema for SEP-2243 x-mcp-header annotations and
-// resolves each annotated property present in input to a headerParam. The
-// annotated property is NOT removed from input by this function -- it stays
-// in the JSON-RPC arguments object too (see CallTool).
+// HeaderParamDecl is one x-mcp-header declaration that passed every name
+// check, so a call to the tool would actually send it.
+type HeaderParamDecl struct {
+	Property   string // the schema property that carries the annotation
+	HeaderName string // the header name as declared
+}
+
+// DeclaredHeaderParams lists the x-mcp-header declarations in schema using the
+// exact validation extractHeaderParams applies on every call. A non-nil error
+// (always a *HeaderParamError) means a call to this tool would be rejected, so
+// no header from it would be sent. It reads no argument values.
+func DeclaredHeaderParams(schema json.RawMessage, authHeaders []AuthHeader, attributionNames []string) ([]HeaderParamDecl, error) {
+	return resolveHeaderParamDecls(schema, authHeaders, attributionNames)
+}
+
+// resolveHeaderParamDecls reads schema for SEP-2243 x-mcp-header annotations
+// and validates every declaration, whether or not any input supplies a value.
+// It is the single source of truth for "would this header be sent", shared by
+// extractHeaderParams (per call) and DeclaredHeaderParams (operator display).
 //
 // authHeaders is the server's ADR-039 auth headers (Client.authHeaders),
 // passed in so a declared x-mcp-header name that collides with one of them
@@ -321,7 +336,7 @@ type headerParamSchema struct {
 // validates header NAMES only, by design, and is shared with
 // internal/plugin/oauth, which has no concept of a per-call agent-supplied
 // value.
-func extractHeaderParams(schema json.RawMessage, input map[string]any, authHeaders []AuthHeader, attributionNames []string) ([]headerParam, error) {
+func resolveHeaderParamDecls(schema json.RawMessage, authHeaders []AuthHeader, attributionNames []string) ([]HeaderParamDecl, error) {
 	if len(schema) > maxHeaderParamSchemaBytes {
 		return nil, nil
 	}
@@ -344,7 +359,7 @@ func extractHeaderParams(schema json.RawMessage, input map[string]any, authHeade
 	sort.Strings(names) // deterministic iteration, so wire bytes are deterministic too
 
 	seen := make(map[string]bool, len(names)) // canonicalized header name -> declared
-	var out []headerParam
+	var out []HeaderParamDecl
 	for _, propName := range names {
 		var propSchema map[string]json.RawMessage
 		if err := json.Unmarshal(parsed.Properties[propName], &propSchema); err != nil {
@@ -400,6 +415,28 @@ func extractHeaderParams(schema json.RawMessage, input map[string]any, authHeade
 		}
 		seen[canonical] = true
 
+		out = append(out, HeaderParamDecl{Property: propName, HeaderName: headerName})
+	}
+	return out, nil
+}
+
+// extractHeaderParams resolves each validated declaration (see
+// resolveHeaderParamDecls) whose property is present in input to a
+// headerParam. The annotated property is NOT removed from input by this
+// function -- it stays in the JSON-RPC arguments object too (see CallTool).
+//
+// Value validation (type coercion, a length bound, then a CRLF/control-character
+// check) is deliberately NOT delegated to headervalidate; see
+// resolveHeaderParamDecls for the name-side rules.
+func extractHeaderParams(schema json.RawMessage, input map[string]any, authHeaders []AuthHeader, attributionNames []string) ([]headerParam, error) {
+	decls, err := resolveHeaderParamDecls(schema, authHeaders, attributionNames)
+	if err != nil {
+		return nil, err
+	}
+
+	var out []headerParam
+	for _, d := range decls {
+		propName, headerName := d.Property, d.HeaderName
 		v, ok := input[propName]
 		if !ok {
 			// Absent from input: no header to send. An absent-but-required

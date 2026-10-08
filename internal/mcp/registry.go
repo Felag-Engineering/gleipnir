@@ -338,51 +338,14 @@ func (r *Registry) newClientForServer(srv db.McpServer) *Client {
 		WithServerLimits(r.limitsFor(srv)),
 	)
 
-	var authHeaders []AuthHeader
-	if srv.AuthHeadersEncrypted != nil {
-		if r.encKey == nil {
-			slog.Warn("encryption key unset; mcp server has stored auth headers but they will not be sent",
-				"server_id", srv.ID, "server_name", srv.Name)
-		} else {
-			plaintext, err := crypto.Decrypt(r.encKey, *srv.AuthHeadersEncrypted)
-			if err != nil {
-				slog.Warn("failed to decrypt mcp server auth headers; headers will not be sent",
-					"server_id", srv.ID, "server_name", srv.Name, "err", err)
-			} else {
-				headers, err := UnmarshalAuthHeaders([]byte(plaintext))
-				if err != nil {
-					slog.Warn("failed to unmarshal mcp server auth headers; headers will not be sent",
-						"server_id", srv.ID, "server_name", srv.Name, "err", err)
-				} else {
-					// Finding 2 (security review, #737 cycle 2/3):
-					// headervalidate.ValidateName gates new writes at
-					// POST/PUT config time, but rows persisted before a
-					// header name was reserved — or before this filter
-					// existed — are grandfathered in the DB. This is the
-					// injection-time backstop: a reserved-name header can
-					// never reach the wire regardless of when it was stored.
-					authHeaders = dropReservedAuthHeaders(headers, srv.ID, srv.Name)
-					if len(authHeaders) > 0 {
-						opts = append(opts, WithAuthHeaders(authHeaders))
-					}
-				}
-			}
-		}
+	authHeaders := r.authHeadersFor(srv)
+	if len(authHeaders) > 0 {
+		opts = append(opts, WithAuthHeaders(authHeaders))
 	}
 
-	// Run attribution (issue #943). An unparseable stored value is treated
-	// as off (with a warning) rather than failing client construction —
-	// matching runtime, where nothing is sent for a value that no longer
-	// parses.
-	attrCfg, err := ParseRunAttributionColumn(srv.RunAttribution)
-	if err != nil {
-		slog.Warn("stored run attribution does not parse; sending none",
-			"server_id", srv.ID, "server_name", srv.Name, "err", err)
-	} else {
-		names := dropUnsafeAttributionNames(attrCfg.EffectiveHeaderNames(), authHeaders, srv.ID, srv.Name)
-		if !names.IsZero() {
-			opts = append(opts, WithRunAttributionHeaders(names))
-		}
+	// Run attribution (issue #943).
+	if names := attributionNamesFor(srv, authHeaders); !names.IsZero() {
+		opts = append(opts, WithRunAttributionHeaders(names))
 	}
 
 	// NULL or empty protocol_version means unpinned, which keeps legacy
@@ -408,6 +371,80 @@ func (r *Registry) newClientForServer(srv db.McpServer) *Client {
 	cl := NewClient(srv.Url, opts...)
 	cl.serverName = srv.Name
 	return cl
+}
+
+// authHeadersFor decrypts srv's stored ADR-039 auth headers and drops any
+// whose name is reserved. A failure at any step is logged and yields no
+// headers, matching what the client would actually send.
+func (r *Registry) authHeadersFor(srv db.McpServer) []AuthHeader {
+	if srv.AuthHeadersEncrypted == nil {
+		return nil
+	}
+	if r.encKey == nil {
+		slog.Warn("encryption key unset; mcp server has stored auth headers but they will not be sent",
+			"server_id", srv.ID, "server_name", srv.Name)
+		return nil
+	}
+	plaintext, err := crypto.Decrypt(r.encKey, *srv.AuthHeadersEncrypted)
+	if err != nil {
+		slog.Warn("failed to decrypt mcp server auth headers; headers will not be sent",
+			"server_id", srv.ID, "server_name", srv.Name, "err", err)
+		return nil
+	}
+	headers, err := UnmarshalAuthHeaders([]byte(plaintext))
+	if err != nil {
+		slog.Warn("failed to unmarshal mcp server auth headers; headers will not be sent",
+			"server_id", srv.ID, "server_name", srv.Name, "err", err)
+		return nil
+	}
+	// Finding 2 (security review, #737 cycle 2/3):
+	// headervalidate.ValidateName gates new writes at POST/PUT config time,
+	// but rows persisted before a header name was reserved, or before this
+	// filter existed, are grandfathered in the DB. This is the
+	// injection-time backstop: a reserved-name header can never reach the
+	// wire regardless of when it was stored.
+	return dropReservedAuthHeaders(headers, srv.ID, srv.Name)
+}
+
+// attributionNamesFor returns the run attribution header names srv's client
+// sends. An unparseable stored value is treated as off (with a warning)
+// rather than failing client construction, matching runtime, where nothing
+// is sent for a value that no longer parses.
+func attributionNamesFor(srv db.McpServer, authHeaders []AuthHeader) AttributionHeaderNames {
+	attrCfg, err := ParseRunAttributionColumn(srv.RunAttribution)
+	if err != nil {
+		slog.Warn("stored run attribution does not parse; sending none",
+			"server_id", srv.ID, "server_name", srv.Name, "err", err)
+		return AttributionHeaderNames{}
+	}
+	return dropUnsafeAttributionNames(attrCfg.EffectiveHeaderNames(), authHeaders, srv.ID, srv.Name)
+}
+
+// ServerHeaderParams answers, for one server's tools, which x-mcp-header
+// parameters a call would actually send. Presentation only; enforcement is
+// extractHeaderParams. It resolves the server's auth-header and attribution
+// names once, because a declaration colliding with either is rejected.
+type ServerHeaderParams struct {
+	authHeaders      []AuthHeader
+	attributionNames []string
+}
+
+// HeaderParamsFor builds the per-server context used by Declared.
+func (r *Registry) HeaderParamsFor(srv db.McpServer) ServerHeaderParams {
+	authHeaders := r.authHeadersFor(srv)
+	return ServerHeaderParams{
+		authHeaders:      authHeaders,
+		attributionNames: attributionNamesFor(srv, authHeaders).list(),
+	}
+}
+
+// Declared lists the outbound-header parameters of a tool with the given
+// stored schemas, reading the same schema extractHeaderParams reads at call
+// time (canonical when stored, else raw). A non-nil error means a call to the
+// tool would be rejected, so no header would be sent.
+func (p ServerHeaderParams) Declared(raw, canonical json.RawMessage) ([]HeaderParamDecl, error) {
+	schema := ResolvedTool{InputSchema: raw, CanonicalSchema: canonical}.SchemaForHeaderParams()
+	return DeclaredHeaderParams(schema, p.authHeaders, p.attributionNames)
 }
 
 // dropReservedAuthHeaders filters headers down to only those whose name is

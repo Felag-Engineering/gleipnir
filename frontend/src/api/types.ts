@@ -367,6 +367,13 @@ export interface ApiMcpTool {
   enabled: boolean
   simplified_for?: string[] // LLM providers shown a simplified parameter schema
   arg_enforcement?: ApiArgEnforcement // how exactly call arguments are checked (#776)
+  outbound_headers?: ApiOutboundHeader[] // parameters a call sends as outbound HTTP headers (#780)
+  outbound_headers_rejected?: boolean // an outbound-header declaration is unusable; calls are rejected
+}
+
+export interface ApiOutboundHeader {
+  parameter: string
+  header: string
 }
 
 // Matches mcp.ArgEnforcement. Anything other than 'exact' means only

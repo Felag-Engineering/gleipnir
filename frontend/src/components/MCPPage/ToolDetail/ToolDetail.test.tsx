@@ -30,6 +30,33 @@ describe('ToolDetail', () => {
     expect(screen.getByText(/Run a command\.\s+Second line\./)).toBeInTheDocument()
   })
 
+  it('marks a parameter that is sent as an outbound header, by name', () => {
+    render(
+      <ToolDetail
+        tool={{ ...tool, outbound_headers: [{ parameter: 'shell', header: 'X-Shell' }] }}
+        serverName="fleet"
+      />,
+    )
+    const items = screen.getAllByRole('listitem')
+    expect(items[1]).toHaveTextContent('Sends an outbound header: X-Shell')
+    expect(items[0]).not.toHaveTextContent('outbound header')
+  })
+
+  it('does not mark a nested parameter that shares a name with an outbound-header parameter', () => {
+    render(
+      <ToolDetail
+        tool={{ ...tool, outbound_headers: [{ parameter: 'dir', header: 'X-Dir' }] }}
+        serverName="fleet"
+      />,
+    )
+    expect(screen.queryByText(/Sends an outbound header/)).not.toBeInTheDocument()
+  })
+
+  it('warns that calls are rejected when an outbound-header declaration is unusable', () => {
+    render(<ToolDetail tool={{ ...tool, outbound_headers: [], outbound_headers_rejected: true }} serverName="fleet" />)
+    expect(screen.getByText(/every call to it is rejected/)).toBeInTheDocument()
+  })
+
   it('says nothing about argument checking when enforcement is exact', () => {
     render(<ToolDetail tool={{ ...tool, arg_enforcement: 'exact' }} serverName="fleet" />)
     expect(screen.queryByText(/Argument checking/)).not.toBeInTheDocument()
