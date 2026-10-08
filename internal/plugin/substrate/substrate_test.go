@@ -734,12 +734,12 @@ func TestSubstrate_SelfAttachPinsAddressAndDetachesOnTeardown(t *testing.T) {
 		t.Fatalf("NewSubnetAllocator: %v", err)
 	}
 	rec, err := reconciler.New(reconciler.Config{
-		Runtime:            h.rt,
-		Store:              h.store.Queries(),
-		Subnets:            alloc,
-		Posture:            container.PostureRootlessPodman,
-		SelfContainerID:    selfID,
-		OperatorAPIGuarded: true,
+		Runtime:          h.rt,
+		Store:            h.store.Queries(),
+		Subnets:          alloc,
+		Posture:          container.PostureRootlessPodman,
+		SelfContainerID:  selfID,
+		OperatorAPIGuard: guardedOperatorAPI(t),
 		// The runner's own host forwarding sysctls are not this test's
 		// concern — internal/plugin/container/forwarding_test.go covers that
 		// check in isolation, with an injectable seam of its own.

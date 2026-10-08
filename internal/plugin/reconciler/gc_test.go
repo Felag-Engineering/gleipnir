@@ -429,6 +429,7 @@ func TestReconcileGC_ReleasesOnlyUnclaimedSubnets(t *testing.T) {
 		Name:     "gleipnir-plugin-" + ids[1],
 		Labels:   map[string]string{LabelManaged: ManagedValue, LabelInstance: ids[1]},
 		Subnet:   "10.83.1.0/24",
+		IPRange:  "10.83.1.128/25",
 		Internal: true,
 	}); err != nil {
 		t.Fatalf("CreateNetwork: %v", err)

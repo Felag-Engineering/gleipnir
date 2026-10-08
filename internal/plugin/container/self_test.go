@@ -376,7 +376,7 @@ func TestSelfAttacher_AttachAndDetachManagedNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	netID, err := fake.CreateNetwork(ctx, NetworkOptions{Name: "instance-net", Internal: true, Subnet: "10.83.4.0/24"})
+	netID, err := fake.CreateNetwork(ctx, NetworkOptions{Name: "instance-net", Internal: true, Subnet: "10.83.4.0/24", IPRange: "10.83.4.128/25"})
 	if err != nil {
 		t.Fatalf("CreateNetwork: %v", err)
 	}

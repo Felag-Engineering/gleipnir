@@ -28,11 +28,42 @@ func digestOf(seed string) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+// dockerImageArchive builds a minimal single-image `docker save` archive whose
+// config digest is sha256(config), the shape the loader inspects before load.
+func dockerImageArchive(t *testing.T, config []byte) []byte {
+	t.Helper()
+
+	sum := sha256.Sum256(config)
+	configName := hex.EncodeToString(sum[:]) + ".json"
+	manifest := fmt.Sprintf(`[{"Config":%q,"RepoTags":null,"Layers":[]}]`, configName)
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, e := range []struct {
+		name    string
+		content []byte
+	}{
+		{"manifest.json", []byte(manifest)},
+		{configName, config},
+	} {
+		if err := tw.WriteHeader(&tar.Header{Name: e.name, Mode: 0o644, Size: int64(len(e.content))}); err != nil {
+			t.Fatalf("write tar header %q: %v", e.name, err)
+		}
+		if _, err := tw.Write(e.content); err != nil {
+			t.Fatalf("write tar body %q: %v", e.name, err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar: %v", err)
+	}
+	return buf.Bytes()
+}
+
 // writeUnsignedV2Bundle writes an unsigned v2 bundle tarball (manifest.yaml +
 // image.tar, no signing.pub/.minisig) into dir. Unsigned keeps the test
 // focused on the BundleInstaller wiring rather than on Minisign, by installing
 // under AllowUnsigned permissive mode.
-func writeUnsignedV2Bundle(t *testing.T, dir, name, digest string) {
+func writeUnsignedV2Bundle(t *testing.T, dir, name, digest string, imageConfig []byte) {
 	t.Helper()
 
 	manifest := fmt.Sprintf(`schema_version: "2"
@@ -57,7 +88,7 @@ gleipnir:
 		content []byte
 	}{
 		{"manifest.yaml", []byte(manifest)},
-		{"image.tar", []byte("fake OCI image archive for " + name)},
+		{"image.tar", dockerImageArchive(t, imageConfig)},
 	} {
 		hdr := &tar.Header{Name: e.name, Mode: 0o644, Size: int64(len(e.content))}
 		if err := tw.WriteHeader(hdr); err != nil {
@@ -103,7 +134,7 @@ func TestOCIInstallerAdapter_WatcherInstallsV2Bundle(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- w.Run(ctx, fw) }()
 
-	writeUnsignedV2Bundle(t, dropDir, "acme-tool", digest)
+	writeUnsignedV2Bundle(t, dropDir, "acme-tool", digest, []byte("lifecycle-adapter-test"))
 
 	// Poll for the installed row, mirroring internal/plugin/loader's own
 	// watcher tests (stubInstaller.waitForCount) — there is no publisher wired

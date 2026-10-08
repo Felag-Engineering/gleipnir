@@ -25,6 +25,14 @@ const (
 	// against anyone's grants.
 	DenyUnknownInstance DenyReason = "unknown_instance"
 
+	// DenyCallerNotOnInstanceNetwork — the connection arrived on an instance's
+	// proxy address but its peer is not inside that instance's own subnet. Under
+	// the Linux weak-host model the host answers for its addresses on every
+	// interface, so a container on instance A's network can dial the address
+	// Gleipnir holds on instance B's network and arrive with B's LocalAddr.
+	// LocalAddr alone would then hand A the grants of B. Fail closed.
+	DenyCallerNotOnInstanceNetwork DenyReason = "caller_not_on_instance_network"
+
 	// DenyNotGranted — the host is not on this instance's consented list.
 	DenyNotGranted DenyReason = "not_granted"
 
@@ -52,9 +60,11 @@ const (
 // the network's own gateway address — to the instance that owns that network,
 // and to its consented allowlist.
 //
-// The local address is the identity, not the peer address: the kernel picks it
-// from which interface the packet arrived on, so a plugin cannot claim another
-// instance's grants by lying about where it is from. See
+// The local address names the instance but is not sufficient on its own: under
+// the weak-host model the kernel accepts a packet for any local address on any
+// interface, so a plugin on another instance's network can arrive carrying this
+// instance's local address. The proxy therefore also requires the peer to sit
+// inside the resolved instance's own subnet (InstanceSubnetOf). See
 // docs/developer/egress-containment.md.
 type Resolver interface {
 	// InstanceForGateway returns the instance ID and allowlist for the network
@@ -151,9 +161,9 @@ func systemLookup(ctx context.Context, host string) ([]net.IP, error) {
 // ServeHTTP implements the proxy. It handles CONNECT itself (hijacking the
 // connection to tunnel bytes) and forwards absolute-form plain HTTP requests.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	instanceID, list, ok := p.identify(r)
-	if !ok {
-		p.refuse(r.Context(), w, r, "", targetHostOf(r), DenyUnknownInstance)
+	instanceID, list, denyReason := p.identify(r)
+	if denyReason != "" {
+		p.refuse(r.Context(), w, r, instanceID, targetHostOf(r), denyReason)
 		return
 	}
 
@@ -176,21 +186,39 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // identify establishes which instance is calling, from the address the
-// connection arrived on.
-func (p *Proxy) identify(r *http.Request) (string, Allowlist, bool) {
+// connection arrived on, then confirms the peer belongs to that instance's
+// network. A non-empty DenyReason means the connection must be refused; the
+// instance ID is returned alongside a caller-network refusal so the audit
+// record names whose proxy address was probed.
+func (p *Proxy) identify(r *http.Request) (string, Allowlist, DenyReason) {
 	local, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
 	if !ok {
-		return "", Allowlist{}, false
+		return "", Allowlist{}, DenyUnknownInstance
 	}
-	host, _, err := net.SplitHostPort(local.String())
+	localIP := ipOfAddr(local.String())
+	if localIP == nil {
+		return "", Allowlist{}, DenyUnknownInstance
+	}
+	instanceID, list, ok := p.resolver.InstanceForGateway(localIP)
+	if !ok {
+		return "", Allowlist{}, DenyUnknownInstance
+	}
+
+	subnet := InstanceSubnetOf(localIP)
+	remoteIP := ipOfAddr(r.RemoteAddr)
+	if subnet == nil || remoteIP == nil || !subnet.Contains(remoteIP) {
+		return instanceID, Allowlist{}, DenyCallerNotOnInstanceNetwork
+	}
+	return instanceID, list, ""
+}
+
+// ipOfAddr parses "host:port" or a bare host into an IP; nil when it is not one.
+func ipOfAddr(addr string) net.IP {
+	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
-		host = local.String()
+		host = addr
 	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return "", Allowlist{}, false
-	}
-	return p.resolver.InstanceForGateway(ip)
+	return net.ParseIP(host)
 }
 
 // check runs the full decision: grant match first, then the address guard.

@@ -128,9 +128,24 @@ instance exactly. Crucially the peer does not choose it — the kernel does, fro
 which interface the packet arrived on. A plugin cannot make its traffic appear on
 a network it is not attached to, so it cannot claim another instance's grants.
 
-The alternative — trusting the source address — would be weaker for no benefit,
-and a token in a `Proxy-Authorization` header would only be as good as the
-plugin's willingness to send an honest one.
+`LocalAddr` alone is not enough, though (#1022). Under the Linux weak-host
+model the host accepts a packet addressed to any of its local addresses on any
+interface, so a container on instance A's network can dial the address Gleipnir
+holds on instance B's network and arrive with B's `LocalAddr`. The proxy
+therefore also requires `RemoteAddr` to fall inside the resolved instance's own
+`/24` (`InstanceSubnetOf`), and refuses otherwise with reason
+`caller_not_on_instance_network` — same warn log, counter, and audit event as
+every other denial. An IPv6, unparseable, or missing peer address fails closed.
+The source address is only trusted *as a membership check against a subnet the
+kernel-chosen `LocalAddr` already selected*, never as an identity of its own.
+
+A token in a `Proxy-Authorization` header would only be as good as the plugin's
+willingness to send an honest one.
+
+Follow-up for the real-daemon suite (`internal/plugin/substrate`): attach a probe
+container to instance A's network only, have it connect to the proxy address of
+instance B, and assert a 403 `caller_not_on_instance_network` plus an
+`EgressDenied` audit record naming instance B.
 
 ## The east-west trap
 

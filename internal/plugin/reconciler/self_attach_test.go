@@ -51,7 +51,7 @@ func TestReconcile_SelfAttachBringUpAndTeardown(t *testing.T) {
 		Subnets:                 testAllocator(t),
 		Posture:                 container.PostureRootlessPodman,
 		SelfContainerID:         selfID,
-		OperatorAPIGuarded:      true,
+		OperatorAPIGuard:        guardedOperatorAPI(t),
 		CheckForwardingDisabled: func() error { return nil },
 	})
 	if err != nil {
@@ -126,12 +126,12 @@ func TestNew_RefusesSelfAttachWhenForwardingEnabled(t *testing.T) {
 	store.set(*desiredRow("i1", DesiredRunning))
 
 	r, err := New(Config{
-		Runtime:            rt,
-		Store:              store,
-		Subnets:            testAllocator(t),
-		Posture:            container.PostureRootlessPodman,
-		SelfContainerID:    selfID,
-		OperatorAPIGuarded: true,
+		Runtime:          rt,
+		Store:            store,
+		Subnets:          testAllocator(t),
+		Posture:          container.PostureRootlessPodman,
+		SelfContainerID:  selfID,
+		OperatorAPIGuard: guardedOperatorAPI(t),
 		CheckForwardingDisabled: func() error {
 			return &container.ForwardingEnabledError{Path: "/proc/sys/net/ipv4/ip_forward", Value: "1"}
 		},
@@ -177,7 +177,7 @@ func TestNew_RefusesSelfAttachWithoutOperatorAPIGuard(t *testing.T) {
 		Subnets:         testAllocator(t),
 		Posture:         container.PostureRootlessPodman,
 		SelfContainerID: selfID,
-		// OperatorAPIGuarded deliberately left unset (false, the fail-closed
+		// OperatorAPIGuard deliberately left unset (zero Guard, the fail-closed
 		// default) — forwarding checks out fine, but that alone must not be
 		// enough.
 		CheckForwardingDisabled: func() error { return nil },
@@ -232,7 +232,7 @@ func TestReconcile_SelfInspectFailureDegradesGracefully(t *testing.T) {
 		Subnets:                 testAllocator(t),
 		Posture:                 container.PostureRootlessPodman,
 		SelfContainerID:         selfID,
-		OperatorAPIGuarded:      true,
+		OperatorAPIGuard:        guardedOperatorAPI(t),
 		CheckForwardingDisabled: func() error { return nil },
 	})
 	if err != nil {
@@ -275,7 +275,7 @@ func TestReconcile_SelfInspectFailureRefusesCreateOnceNetworkExists(t *testing.T
 		Subnets:                 testAllocator(t),
 		Posture:                 container.PostureRootlessPodman,
 		SelfContainerID:         selfID,
-		OperatorAPIGuarded:      true,
+		OperatorAPIGuard:        guardedOperatorAPI(t),
 		CheckForwardingDisabled: func() error { return nil },
 	})
 	if err != nil {

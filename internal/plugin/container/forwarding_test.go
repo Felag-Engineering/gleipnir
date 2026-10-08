@@ -2,6 +2,9 @@ package container
 
 import (
 	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -26,9 +29,9 @@ func withSysctls(t *testing.T, values map[string]string) {
 func withIPv6Present(t *testing.T, present bool) {
 	t.Helper()
 	old := pathExists
-	pathExists = func(path string) bool {
+	pathExists = func(path string) (bool, error) {
 		if path == ipv6SysctlDir {
-			return present
+			return present, nil
 		}
 		return old(path)
 	}
@@ -181,6 +184,76 @@ func TestCheckForwardingDisabled(t *testing.T) {
 			}
 			if fwdErr.Path != tc.wantPath {
 				t.Errorf("ForwardingEnabledError.Path = %q, want %q", fwdErr.Path, tc.wantPath)
+			}
+		})
+	}
+}
+
+// #1033 c: only fs.ErrNotExist may mean "this kernel has no IPv6". Any other
+// stat failure (EACCES, a masked /proc) must fail closed.
+func TestCheckForwardingDisabled_IPv6StatErrorFailsClosed(t *testing.T) {
+	statErr := errors.New("stat: permission denied")
+	tests := []struct {
+		name    string
+		stat    func(string) (bool, error)
+		wantErr error
+	}{
+		{"not exist skips ipv6 checks", func(string) (bool, error) { return false, nil }, nil},
+		{"other stat error refuses", func(string) (bool, error) { return false, statErr }, statErr},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			withSysctls(t, allSysctlsSatisfied())
+			old := pathExists
+			pathExists = tc.stat
+			t.Cleanup(func() { pathExists = old })
+
+			err := CheckForwardingDisabled()
+			if tc.wantErr == nil {
+				if err != nil {
+					t.Fatalf("CheckForwardingDisabled() = %v, want nil", err)
+				}
+				return
+			}
+			var fwdErr *ForwardingEnabledError
+			if !errors.As(err, &fwdErr) || !errors.Is(err, tc.wantErr) {
+				t.Fatalf("CheckForwardingDisabled() = %v, want *ForwardingEnabledError wrapping %v", err, tc.wantErr)
+			}
+			if fwdErr.Path != ipv6SysctlDir {
+				t.Errorf("Path = %q, want %q", fwdErr.Path, ipv6SysctlDir)
+			}
+		})
+	}
+}
+
+func TestPathExists(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name       string
+		path       string
+		wantExists bool
+		wantErr    bool
+	}{
+		{"existing dir", dir, true, false},
+		{"missing path", filepath.Join(dir, "missing"), false, false},
+		// ENOTDIR is a stat failure that is not fs.ErrNotExist.
+		{"non-ErrNotExist stat error", filepath.Join(file, "child"), false, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := pathExists(tc.path)
+			if got != tc.wantExists {
+				t.Errorf("exists = %v, want %v", got, tc.wantExists)
+			}
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if err != nil && errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("err %v must not be ErrNotExist", err)
 			}
 		})
 	}

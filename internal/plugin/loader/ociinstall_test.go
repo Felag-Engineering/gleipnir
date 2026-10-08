@@ -49,6 +49,12 @@ type ociBundleOptions struct {
 	name    string
 	version string
 	digest  string // what the manifest pins
+	// seed is the image config content of the default archive, so the archive's
+	// config digest equals digestOf(seed). Empty yields an archive that matches
+	// no pin, for tests that never reach inspection.
+	seed string
+	// archive replaces the default image archive wholesale.
+	archive []byte
 
 	// unsigned omits signing.pub and the .minisig entirely.
 	unsigned bool
@@ -71,7 +77,14 @@ func buildOCIBundle(t *testing.T, opts ociBundleOptions) string {
 	if manifestBytes == nil {
 		manifestBytes = v2Manifest(opts.name, opts.version, opts.digest)
 	}
-	archiveBytes := []byte("fake OCI image archive for " + opts.name)
+	archiveBytes := opts.archive
+	if archiveBytes == nil {
+		config := []byte(opts.seed)
+		if opts.seed == "" {
+			config = []byte("unpinned image for " + opts.name)
+		}
+		archiveBytes = dockerArchive(t, config, nil)
+	}
 
 	entries := []tarEntry{{name: ociManifestFilename, content: manifestBytes, mode: 0o644}}
 	if !opts.omitArchive {
@@ -121,7 +134,7 @@ func TestOCIInstall_SignedBundleLoadsAndPins(t *testing.T) {
 	store, rt, in := newOCIFixture(t, false)
 
 	digest := digestOf("happy")
-	tarPath := buildOCIBundle(t, ociBundleOptions{name: "acme-plugin", version: "1.0.0", digest: digest})
+	tarPath := buildOCIBundle(t, ociBundleOptions{name: "acme-plugin", version: "1.0.0", digest: digest, seed: "happy"})
 	rt.PendingImages = []container.ImageInfo{{ID: digest, SizeBytes: 4096}}
 
 	res, err := in.Install(ctx, tarPath)
@@ -181,7 +194,7 @@ func TestOCIInstall_DigestMismatchRejectsAndLeavesNothing(t *testing.T) {
 	store, rt, in := newOCIFixture(t, false)
 
 	pinned := digestOf("pinned")
-	tarPath := buildOCIBundle(t, ociBundleOptions{name: "sneaky", version: "1.0.0", digest: pinned})
+	tarPath := buildOCIBundle(t, ociBundleOptions{name: "sneaky", version: "1.0.0", digest: pinned, seed: "pinned"})
 	// The archive contained something else entirely.
 	rt.PendingImages = []container.ImageInfo{{ID: digestOf("actually-this")}}
 
@@ -218,7 +231,7 @@ func TestOCIInstall_MissingPinnedImageIsAMismatch(t *testing.T) {
 	ctx := context.Background()
 	store, rt, in := newOCIFixture(t, false)
 
-	tarPath := buildOCIBundle(t, ociBundleOptions{name: "empty-archive", version: "1.0.0", digest: digestOf("nothing")})
+	tarPath := buildOCIBundle(t, ociBundleOptions{name: "empty-archive", version: "1.0.0", digest: digestOf("nothing"), seed: "nothing"})
 	rt.PendingImages = nil // the load reports success and produces no image
 
 	_, err := in.Install(ctx, tarPath)
@@ -239,7 +252,7 @@ func TestOCIInstall_RepoDigestMatchIsAccepted(t *testing.T) {
 	_, rt, in := newOCIFixture(t, false)
 
 	digest := digestOf("repo-digest")
-	tarPath := buildOCIBundle(t, ociBundleOptions{name: "layout-plugin", version: "1.0.0", digest: digest})
+	tarPath := buildOCIBundle(t, ociBundleOptions{name: "layout-plugin", version: "1.0.0", digest: digest, seed: "repo-digest"})
 	rt.PendingImages = []container.ImageInfo{{
 		ID:          digestOf("some-config-digest"),
 		RepoDigests: []string{"ghcr.io/acme/layout-plugin@" + digest},
@@ -315,7 +328,7 @@ func TestOCIInstall_UnsignedBundle(t *testing.T) {
 		store, rt, in := newOCIFixture(t, true)
 		digest := digestOf("u2")
 		tarPath := buildOCIBundle(t, ociBundleOptions{
-			name: "unsigned-ok", version: "1.0.0", digest: digest, unsigned: true,
+			name: "unsigned-ok", version: "1.0.0", digest: digest, seed: "u2", unsigned: true,
 		})
 		rt.PendingImages = []container.ImageInfo{{ID: digest}}
 
@@ -338,7 +351,7 @@ func TestOCIInstall_RotatedKeyRequiresApproval(t *testing.T) {
 	store, rt, in := newOCIFixture(t, false)
 
 	digest := digestOf("v1")
-	first := buildOCIBundle(t, ociBundleOptions{name: "rotato", version: "1.0.0", digest: digest})
+	first := buildOCIBundle(t, ociBundleOptions{name: "rotato", version: "1.0.0", digest: digest, seed: "v1"})
 	rt.PendingImages = []container.ImageInfo{{ID: digest}}
 	if _, err := in.Install(ctx, first); err != nil {
 		t.Fatalf("first Install: %v", err)
@@ -346,7 +359,7 @@ func TestOCIInstall_RotatedKeyRequiresApproval(t *testing.T) {
 
 	// A second release of the same plugin, signed with a fresh keypair.
 	nextDigest := digestOf("v2")
-	second := buildOCIBundle(t, ociBundleOptions{name: "rotato", version: "1.1.0", digest: nextDigest})
+	second := buildOCIBundle(t, ociBundleOptions{name: "rotato", version: "1.1.0", digest: nextDigest, seed: "v2"})
 	rt.PendingImages = []container.ImageInfo{{ID: nextDigest}}
 
 	_, err := in.Install(ctx, second)
@@ -379,7 +392,7 @@ func TestOCIInstall_ManualPostureSkipsTheLoad(t *testing.T) {
 	in := NewOCIInstaller(base, container.NewReadOnlyRuntime(inner))
 
 	digest := digestOf("manual")
-	tarPath := buildOCIBundle(t, ociBundleOptions{name: "manual-plugin", version: "1.0.0", digest: digest})
+	tarPath := buildOCIBundle(t, ociBundleOptions{name: "manual-plugin", version: "1.0.0", digest: digest, seed: "manual"})
 
 	res, err := in.Install(ctx, tarPath)
 	if err != nil {
@@ -409,7 +422,7 @@ func TestOCIInstall_LoadFailureLeavesNothing(t *testing.T) {
 	ctx := context.Background()
 	store, rt, in := newOCIFixture(t, false)
 
-	tarPath := buildOCIBundle(t, ociBundleOptions{name: "flaky", version: "1.0.0", digest: digestOf("f")})
+	tarPath := buildOCIBundle(t, ociBundleOptions{name: "flaky", version: "1.0.0", digest: digestOf("f"), seed: "f"})
 	rt.LoadErr = errors.New("socket closed mid-load")
 
 	if _, err := in.Install(ctx, tarPath); err == nil {
