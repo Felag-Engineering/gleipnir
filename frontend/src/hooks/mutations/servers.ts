@@ -80,8 +80,12 @@ export function useDeleteMcpServer() {
       const path = `/mcp/servers/${encodeURIComponent(id)}${force ? '?force=true' : ''}`
       return apiFetchVoid(path, { method: 'DELETE' })
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.servers.all })
+    onSuccess: (_data, { id }) => {
+      // Drop the deleted server's per-server queries (tools, toolsAll) before
+      // invalidating the list. A prefix-matching invalidate of ['servers']
+      // would refetch those still-observed queries against the deleted id (404).
+      queryClient.removeQueries({ queryKey: [...queryKeys.servers.all, id] })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.servers.all, exact: true })
     },
   })
 }
