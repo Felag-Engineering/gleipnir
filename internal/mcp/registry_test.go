@@ -2055,3 +2055,58 @@ func TestDropUnsafeAttributionNames(t *testing.T) {
 		})
 	}
 }
+
+// TestRefreshTools_OverwritesServerInfo covers #772: every refresh stores what
+// the server currently reports, including NULL when it stops reporting, and a
+// name-only report leaves the version NULL. The pin is unchanged between
+// refreshes, so this also proves identity is persisted past the unchanged-pin
+// early return.
+func TestRefreshTools_OverwritesServerInfo(t *testing.T) {
+	reg, store := newTestRegistry(t)
+	ctx := context.Background()
+
+	if _, err := store.DB().Exec(
+		`INSERT INTO mcp_servers (id, name, url, created_at) VALUES ('srv-info', 'info-server', 'http://placeholder', ?)`,
+		"2024-01-01T00:00:00Z",
+	); err != nil {
+		t.Fatalf("insert server: %v", err)
+	}
+
+	str := func(p *string) string {
+		if p == nil {
+			return "<NULL>"
+		}
+		return *p
+	}
+	steps := []struct {
+		name, version string
+		wantName      string
+		wantVersion   string
+	}{
+		{"acme-mcp", "1.0.0", "acme-mcp", "1.0.0"},
+		{"acme-mcp", "1.1.0", "acme-mcp", "1.1.0"},
+		{"acme-mcp", "", "acme-mcp", "<NULL>"},
+		{"", "", "<NULL>", "<NULL>"},
+	}
+	for _, st := range steps {
+		// A fresh fake per step; the url is repointed with raw SQL so the
+		// protocol pin (and so the early-return path) is carried over.
+		srv := httptest.NewServer(NewFakeMCPServer(WithFakeMode(FakeModern), WithFakeServerInfo(st.name, st.version)))
+		t.Cleanup(srv.Close)
+		if _, err := store.DB().Exec(`UPDATE mcp_servers SET url = ? WHERE id = 'srv-info'`, srv.URL); err != nil {
+			t.Fatalf("repoint server: %v", err)
+		}
+
+		if _, err := reg.RefreshTools(ctx, "srv-info"); err != nil {
+			t.Fatalf("RefreshTools: %v", err)
+		}
+		got, err := store.GetMCPServer(ctx, "srv-info")
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if str(got.ServerName) != st.wantName || str(got.ServerVersion) != st.wantVersion {
+			t.Errorf("after reporting %q/%q: stored %s/%s, want %s/%s",
+				st.name, st.version, str(got.ServerName), str(got.ServerVersion), st.wantName, st.wantVersion)
+		}
+	}
+}

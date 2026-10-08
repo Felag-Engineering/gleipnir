@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import FocusTrap from 'focus-trap-react'
 import { Search } from 'lucide-react'
 import type { ApiMcpServer, ApiMcpTool, ApiPolicyListItem } from '@/api/types'
+import { explainArgEnforcement } from '@/components/MCPPage/ArgEnforcementBadge'
 import { ToolDetail } from '@/components/MCPPage/ToolDetail'
 import { topLevelParamCount } from '@/components/MCPPage/ToolDetail/schemaParams'
 import { Tabs, tabId, panelId } from '@/components/Tabs'
@@ -363,6 +364,14 @@ export function ServerDetailModal({
                               <span className={styles.toolItemMeta}>
                                 {tool.enabled === false && (
                                   <span className={styles.toolItemDisabledTag}>Disabled</span>
+                                )}
+                                {explainArgEnforcement(tool.arg_enforcement) && (
+                                  <span
+                                    className={styles.toolItemDisabledTag}
+                                    title="Argument values are not fully checked for this tool"
+                                  >
+                                    Reduced checking
+                                  </span>
                                 )}
                                 {paramCount === 0 ? 'no params' : `${paramCount} param${paramCount === 1 ? '' : 's'}`}
                               </span>

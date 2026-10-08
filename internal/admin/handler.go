@@ -30,6 +30,9 @@ type AdminQuerier interface {
 	// SetSystemSettingIfEmpty writes only when the key is absent or empty and
 	// reports whether it wrote.
 	SetSystemSettingIfEmpty(ctx context.Context, key, value, updatedAt string) (bool, error)
+	// ClearSystemSettingIfPrefix blanks the key's value only while it still
+	// starts with prefix, and reports whether it did.
+	ClearSystemSettingIfPrefix(ctx context.Context, key, prefix, updatedAt string) (bool, error)
 	DeleteSystemSetting(ctx context.Context, key string) error
 	ListSystemSettings(ctx context.Context) ([]db.SystemSetting, error)
 	ListEnabledModels(ctx context.Context) ([]db.ListEnabledModelsRow, error)
@@ -205,15 +208,34 @@ func (h *Handler) DeleteProviderKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Best-effort: disable the provider's models and clear default_model if it
-	// points to this provider. Errors are logged but never fail the response.
+	// Best-effort, like the model disabling: the key is already gone, so a
+	// failure here is logged rather than reported as a failed delete. Clearing
+	// the default is a conditional single statement, so a retry is harmless.
 	h.disableModelsForProvider(r.Context(), name)
+	h.clearDefaultModelForProvider(r.Context(), name)
 
 	if h.removeProvider != nil {
 		h.removeProvider(name)
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// clearDefaultModelForProvider unsets default_model when it names a model of
+// the given provider, so the system does not keep pointing at a disabled,
+// keyless model. The value is blanked (not deleted) because that is what
+// SetSystemSettingIfEmpty treats as unset, letting the next provider key
+// re-seed a default. A default owned by another provider is left alone.
+func (h *Handler) clearDefaultModelForProvider(ctx context.Context, provider string) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	cleared, err := h.q.ClearSystemSettingIfPrefix(ctx, "default_model", provider+":", now)
+	if err != nil {
+		slog.Warn("clear-default-model: write failed", "provider", provider, "err", err)
+		return
+	}
+	if cleared {
+		slog.Info("default model cleared because its provider key was deleted", "provider", provider)
+	}
 }
 
 // disableModelsForProvider sets enabled=0 for every model belonging to the

@@ -30,11 +30,16 @@ DELETE FROM mcp_servers WHERE id = :id;
 -- statement: header values are write-only over the API, so keeping them across
 -- a repoint would let an operator who cannot read them exfiltrate them to a
 -- collector URL. No window exists where the new url runs with the old headers.
+--
+-- server_name / server_version describe the endpoint, so they are cleared on a
+-- repoint too rather than showing the old backend's identity until a re-probe.
 -- name: UpdateMCPServer :one
 UPDATE mcp_servers
 SET name = :name,
     protocol_version = CASE WHEN url <> :url THEN NULL ELSE protocol_version END,
     auth_headers_encrypted = CASE WHEN url <> :url THEN NULL ELSE auth_headers_encrypted END,
+    server_name = CASE WHEN url <> :url THEN NULL ELSE server_name END,
+    server_version = CASE WHEN url <> :url THEN NULL ELSE server_version END,
     url = :url, ca_cert_pem = :ca_cert_pem, call_timeout_seconds = :call_timeout_seconds, run_attribution = :run_attribution
 WHERE id = :id
 RETURNING *;
@@ -51,6 +56,13 @@ UPDATE mcp_servers SET auth_headers_encrypted = :auth_headers_encrypted WHERE id
 
 -- name: CountMCPServers :one
 SELECT COUNT(*) FROM mcp_servers;
+
+-- UpdateMCPServerInfo overwrites the server's self-reported identity with what
+-- the latest probe saw. NULLs are written as-is: the values describe the
+-- current endpoint, so a server that stopped reporting must not keep showing a
+-- stale name (issue #772).
+-- name: UpdateMCPServerInfo :exec
+UPDATE mcp_servers SET server_name = :server_name, server_version = :server_version WHERE id = :id;
 
 -- UpdateMCPServerProtocolVersion pins the negotiated MCP protocol version
 -- for a registry entry. NULL clears the pin (re-probe on next discovery).

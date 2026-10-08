@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
 	"database/sql"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -37,6 +39,8 @@ type MCPHandler struct {
 	arbiter  *toolregistry.Registry // cross-source namespace arbiter; nil when not configured
 	encKey   []byte                 // AES-256-GCM key; nil when GLEIPNIR_ENCRYPTION_KEY is unset
 	features SchemaFeatureLister    // nil disables simplified_for
+
+	enforcement argEnforcementCache
 }
 
 // NewMCPHandler creates an MCPHandler backed by the given store, registry, and
@@ -101,6 +105,27 @@ type caCertificateResponse struct {
 	NotAfter          string `json:"not_after"` // RFC3339 UTC
 }
 
+// serverInfoResponse is the name/version a server reported about itself. Either
+// field may be empty when the server sent only the other.
+type serverInfoResponse struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+func serverInfoToResponse(s db.McpServer) *serverInfoResponse {
+	if s.ServerName == nil && s.ServerVersion == nil {
+		return nil
+	}
+	info := &serverInfoResponse{}
+	if s.ServerName != nil {
+		info.Name = *s.ServerName
+	}
+	if s.ServerVersion != nil {
+		info.Version = *s.ServerVersion
+	}
+	return info
+}
+
 type mcpServerResponse struct {
 	ID               string   `json:"id"`
 	Name             string   `json:"name"`
@@ -111,6 +136,12 @@ type mcpServerResponse struct {
 	AuthHeaderKeys   []string `json:"auth_header_keys"` // sorted header names; never includes values
 	IsArcadeGateway  bool     `json:"is_arcade_gateway"`
 	ProtocolVersion  *string  `json:"protocol_version"` // negotiated MCP revision pinned at probe time; null = never probed
+
+	// ServerInfo is the server's self-reported identity from its last probe
+	// (issue #772); null when it reported none. Both strings are UNTRUSTED,
+	// server-controlled and already bounded to 128 bytes — clients must render
+	// them as plain text.
+	ServerInfo *serverInfoResponse `json:"server_info"`
 
 	// CACertPEM is the full, unredacted PEM (nil when no CA is pinned). Unlike
 	// AuthHeaderKeys above, this is not a secret — it is a public certificate
@@ -270,6 +301,7 @@ func (h *MCPHandler) serverToResponse(s db.McpServer) mcpServerResponse {
 		AuthHeaderKeys:              keys,
 		IsArcadeGateway:             arcade.IsArcadeGateway(s.Url, keys),
 		ProtocolVersion:             s.ProtocolVersion,
+		ServerInfo:                  serverInfoToResponse(s),
 		CACertPEM:                   s.CaCertPem,
 		CACertificates:              certs,
 		TrustTier:                   string(mcp.TrustTierOf(s)),
@@ -533,12 +565,16 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// the pin, discovery already runs under the negotiated version. A
 	// protocol-probe failure must NOT populate discoveryError — that field
 	// is about tools and is surfaced in the 201 body.
-	var pinnedVersion *string
+	var (
+		pinnedVersion *string
+		reportedInfo  mcp.ServerInfo
+	)
 	if res, err := h.registry.ProbeProtocol(probeCtx, body.Name, body.URL, ciphertext, normalizedCACertPEM); err != nil {
 		slog.Warn("MCP protocol probe failed on server create", "server_name", body.Name, "err", err)
 	} else {
 		v := res.Version
 		pinnedVersion = &v
+		reportedInfo = res.ServerInfo
 	}
 
 	// Step 3: pre-flight probe — discover tools without writing any DB rows.
@@ -611,6 +647,17 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 			db.UpdateMCPServerProtocolVersionParams{ProtocolVersion: pinnedVersion, ID: server.ID}); err != nil {
 			slog.Warn("failed to persist MCP protocol version after create",
 				"server_id", server.ID, "err", err)
+		}
+	}
+
+	if reportedInfo != (mcp.ServerInfo{}) {
+		infoParams := mcp.ServerInfoParams(server.ID, reportedInfo)
+		if err := h.store.UpdateMCPServerInfo(r.Context(), infoParams); err != nil {
+			slog.Warn("failed to persist MCP server info after create",
+				"server_id", server.ID, "err", err)
+		} else {
+			server.ServerName = infoParams.ServerName
+			server.ServerVersion = infoParams.ServerVersion
 		}
 	}
 
@@ -1387,9 +1434,28 @@ type mcpToolResponse struct {
 	// (ListTools returns only db.McpTool rows scoped to an MCP server), so
 	// they never carry this field.
 	SimplifiedFor []string `json:"simplified_for"`
+	// ArgEnforcement says how exactly this tool's call arguments are checked
+	// before dispatch (#776): "exact", "no_schema", "no_canonical_schema" or
+	// "schema_uncompilable". Anything but "exact" means only the ADR-017
+	// key-presence check applies. Policy-independent; computed on read.
+	ArgEnforcement mcp.ArgEnforcement `json:"arg_enforcement"`
+	// OutboundHeaders lists the parameters whose values a call to this tool
+	// sends as outbound HTTP headers (#780), after the same name validation
+	// the call path applies. Always non-nil. Presentation only.
+	OutboundHeaders []outboundHeaderResponse `json:"outbound_headers"`
+	// OutboundHeadersRejected is true when the tool declares an outbound
+	// header that cannot be used (reserved name, collision, malformed), in
+	// which case every call to the tool is rejected and OutboundHeaders is
+	// empty.
+	OutboundHeadersRejected bool `json:"outbound_headers_rejected"`
 }
 
-func toolToResponse(t db.McpTool, serverName string, simplifiedFor []string) mcpToolResponse {
+type outboundHeaderResponse struct {
+	Parameter string `json:"parameter"`
+	Header    string `json:"header"`
+}
+
+func toolToResponse(t db.McpTool, serverName string, simplifiedFor []string, argEnforcement mcp.ArgEnforcement) mcpToolResponse {
 	return mcpToolResponse{
 		ID:       t.ID,
 		ServerID: t.ServerID,
@@ -1401,7 +1467,50 @@ func toolToResponse(t db.McpTool, serverName string, simplifiedFor []string) mcp
 		Enabled:       t.Enabled != 0,
 		Source:        "mcp:" + serverName,
 		SimplifiedFor: simplifiedFor,
+
+		ArgEnforcement: argEnforcement,
 	}
+}
+
+// maxArgEnforcementCacheEntries bounds argEnforcementCache. Entries are keyed
+// by schema content, so the bound only matters under heavy schema churn.
+const maxArgEnforcementCacheEntries = 4096
+
+// argEnforcementCache memoizes the compile half of mcp.ClassifyArgEnforcement
+// by canonical-schema hash. The state is a pure function of the stored
+// schemas, and classifying compiles a JSON Schema; ListTools is reachable by
+// every role and the Tools page fans out one request per server, so
+// recompiling every row per request is avoided. Computing on read (instead of
+// storing a column at discovery) needs no migration, cannot go stale when the
+// compiler or its limits change, and is the very same check the run-start
+// gate performs.
+type argEnforcementCache struct {
+	mu      sync.Mutex
+	entries map[[sha256.Size]byte]mcp.ArgEnforcement
+}
+
+func (c *argEnforcementCache) classify(raw, canonical json.RawMessage) mcp.ArgEnforcement {
+	if len(strings.TrimSpace(string(canonical))) == 0 {
+		return mcp.ClassifyArgEnforcement(raw, canonical)
+	}
+
+	key := sha256.Sum256(canonical)
+	c.mu.Lock()
+	state, ok := c.entries[key]
+	c.mu.Unlock()
+	if ok {
+		return state
+	}
+
+	state = mcp.ClassifyArgEnforcement(raw, canonical)
+
+	c.mu.Lock()
+	if c.entries == nil || len(c.entries) >= maxArgEnforcementCacheEntries {
+		c.entries = make(map[[sha256.Size]byte]mcp.ArgEnforcement)
+	}
+	c.entries[key] = state
+	c.mu.Unlock()
+	return state
 }
 
 // canonicalSchemaForSimplification returns t.CanonicalSchema, or an empty
@@ -1551,10 +1660,10 @@ func (h *MCPHandler) ListTools(w http.ResponseWriter, r *http.Request) {
 		restricted = restrictedFeatureSets(h.features.SchemaFeaturesByProvider())
 	}
 
+	headerParams := h.registry.HeaderParamsFor(server)
 	items := make([]mcpToolResponse, 0, len(rows))
 	for _, row := range rows {
-		simplifiedFor := simplifiedForProviders(server.ID, row.Name, canonicalSchemaForSimplification(row), restricted)
-		items = append(items, toolToResponse(row, server.Name, simplifiedFor))
+		items = append(items, h.toolResponse(server, row, restricted, headerParams))
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, items)
@@ -1633,9 +1742,28 @@ func (h *MCPHandler) SetToolEnabled(w http.ResponseWriter, r *http.Request) {
 	if h.features != nil {
 		restricted = restrictedFeatureSets(h.features.SchemaFeaturesByProvider())
 	}
-	simplifiedFor := simplifiedForProviders(srv.ID, updated.Name, canonicalSchemaForSimplification(updated), restricted)
+	httputil.WriteJSON(w, http.StatusOK, h.toolResponse(srv, updated, restricted, h.registry.HeaderParamsFor(srv)))
+}
 
-	httputil.WriteJSON(w, http.StatusOK, toolToResponse(updated, srv.Name, simplifiedFor))
+// toolResponse builds the full tool DTO, including the per-request computed
+// fields. ListTools and SetToolEnabled share it so the mutation response
+// matches the list response.
+func (h *MCPHandler) toolResponse(server db.McpServer, row db.McpTool, restricted map[llm.SchemaFeatureSet][]string, headerParams mcp.ServerHeaderParams) mcpToolResponse {
+	canonical := canonicalSchemaForSimplification(row)
+	simplifiedFor := simplifiedForProviders(server.ID, row.Name, canonical, restricted)
+	enforcement := h.enforcement.classify(json.RawMessage(row.InputSchema), canonical)
+	resp := toolToResponse(row, server.Name, simplifiedFor, enforcement)
+
+	resp.OutboundHeaders = make([]outboundHeaderResponse, 0)
+	decls, err := headerParams.Declared(json.RawMessage(row.InputSchema), canonical)
+	if err != nil {
+		resp.OutboundHeadersRejected = true
+		return resp
+	}
+	for _, d := range decls {
+		resp.OutboundHeaders = append(resp.OutboundHeaders, outboundHeaderResponse{Parameter: d.Property, Header: d.HeaderName})
+	}
+	return resp
 }
 
 // policyReferencesServer returns true if the raw policy YAML contains any tool

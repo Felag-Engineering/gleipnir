@@ -64,6 +64,12 @@ func translateJSONSchemaToGenaiSchema(schema map[string]any) (*genai.Schema, err
 
 	if rawEnum, ok := schema["enum"].([]any); ok && len(rawEnum) > 0 {
 		enums := make([]string, len(rawEnum))
+		// %v on a json.Number prints its literal, so enum values keep their
+		// original text (1.500 stays "1.500"). genai.Schema is built here from
+		// only type/description/enum/required/properties/items: minimum,
+		// maximum and multipleOf are never translated, so an enum is the only
+		// place a number reaches Gemini. Other numeric literals are dropped by
+		// this wire, not re-rendered.
 		for i, v := range rawEnum {
 			enums[i] = fmt.Sprintf("%v", v)
 		}

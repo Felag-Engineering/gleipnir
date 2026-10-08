@@ -4577,3 +4577,113 @@ func TestHumanizeMCPError_TLS(t *testing.T) {
 		t.Error("TLS verification failure must not flatten to the generic unreachable-server message")
 	}
 }
+
+// TestListTools_OutboundHeaders checks the outbound_headers DTO fields: a
+// valid declaration is listed, an unusable one marks the tool rejected and
+// lists nothing, and a tool without annotations gets an empty array.
+func TestListTools_OutboundHeaders(t *testing.T) {
+	valid := `{"type":"object","properties":{"tenant":{"type":"string","x-mcp-header":"X-Tenant-Id"}}}`
+	reserved := `{"type":"object","properties":{"a":{"type":"string","x-mcp-header":"Authorization"},"b":{"type":"string","x-mcp-header":"X-Ok"}}}`
+	plain := `{"type":"object","properties":{"a":{"type":"string"}}}`
+
+	store := testutil.NewTestStore(t)
+	registry := mcp.NewRegistry(store.Queries())
+	serverID := insertTestMCPServer(t, store, "srv", "http://localhost:9999")
+	insertTestMCPToolWithSchema(t, store, serverID, "valid-tool", valid, &valid)
+	insertTestMCPToolWithSchema(t, store, serverID, "reserved-tool", reserved, &reserved)
+	insertTestMCPToolWithSchema(t, store, serverID, "plain-tool", plain, &plain)
+	// No canonical form: the raw schema is read, as at call time.
+	insertTestMCPToolWithSchema(t, store, serverID, "raw-only-tool", valid, nil)
+
+	h := api.NewMCPHandler(store, registry, nil)
+	req := httptest.NewRequest(http.MethodGet, "/?include_disabled=true", nil)
+	req = setChiURLParams(req, "id", serverID)
+	w := httptest.NewRecorder()
+	h.ListTools(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	type outbound struct {
+		Parameter string `json:"parameter"`
+		Header    string `json:"header"`
+	}
+	var envelope struct {
+		Data []struct {
+			Name     string     `json:"name"`
+			Outbound []outbound `json:"outbound_headers"`
+			Rejected bool       `json:"outbound_headers_rejected"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	wantHeaders := map[string][]outbound{
+		"valid-tool":    {{Parameter: "tenant", Header: "X-Tenant-Id"}},
+		"raw-only-tool": {{Parameter: "tenant", Header: "X-Tenant-Id"}},
+		"reserved-tool": {},
+		"plain-tool":    {},
+	}
+	for _, tool := range envelope.Data {
+		if tool.Outbound == nil {
+			t.Errorf("%s: outbound_headers = null, want an array", tool.Name)
+		}
+		if len(tool.Outbound) != len(wantHeaders[tool.Name]) || (len(tool.Outbound) > 0 && !reflect.DeepEqual(tool.Outbound, wantHeaders[tool.Name])) {
+			t.Errorf("%s: outbound_headers = %v, want %v", tool.Name, tool.Outbound, wantHeaders[tool.Name])
+		}
+		if wantRejected := tool.Name == "reserved-tool"; tool.Rejected != wantRejected {
+			t.Errorf("%s: outbound_headers_rejected = %v, want %v", tool.Name, tool.Rejected, wantRejected)
+		}
+	}
+	if len(envelope.Data) != 4 {
+		t.Fatalf("got %d tools, want 4", len(envelope.Data))
+	}
+}
+
+// TestListTools_ArgEnforcement checks the per-tool arg_enforcement state at
+// the HTTP level, including that the two reduced causes stay distinct.
+func TestListTools_ArgEnforcement(t *testing.T) {
+	good := `{"type":"object"}`
+	badRef := `{"$ref":"#/$defs/missing"}`
+
+	store := testutil.NewTestStore(t)
+	registry := mcp.NewRegistry(store.Queries())
+	serverID := insertTestMCPServer(t, store, "srv", "http://localhost:9999")
+	insertTestMCPToolWithSchema(t, store, serverID, "exact-tool", good, &good)
+	insertTestMCPToolWithSchema(t, store, serverID, "no-canonical-tool", good, nil)
+	insertTestMCPToolWithSchema(t, store, serverID, "uncompilable-tool", badRef, &badRef)
+
+	h := api.NewMCPHandler(store, registry, nil)
+	// Twice: the second pass is served from the cache and must agree.
+	for pass := 0; pass < 2; pass++ {
+		req := httptest.NewRequest(http.MethodGet, "/?include_disabled=true", nil)
+		req = setChiURLParams(req, "id", serverID)
+		w := httptest.NewRecorder()
+		h.ListTools(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		var envelope struct {
+			Data []struct {
+				Name           string `json:"name"`
+				ArgEnforcement string `json:"arg_enforcement"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		got := map[string]string{}
+		for _, tool := range envelope.Data {
+			got[tool.Name] = tool.ArgEnforcement
+		}
+		want := map[string]string{
+			"exact-tool":        "exact",
+			"no-canonical-tool": "no_canonical_schema",
+			"uncompilable-tool": "schema_uncompilable",
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("pass %d: arg_enforcement = %v, want %v", pass, got, want)
+		}
+	}
+}

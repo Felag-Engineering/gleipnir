@@ -490,8 +490,8 @@ func buildToolInputSchema(schema json.RawMessage) (anthropic.ToolInputSchemaPara
 		return anthropic.ToolInputSchemaParam{}, nil
 	}
 
-	var raw map[string]any
-	if err := json.Unmarshal(schema, &raw); err != nil {
+	raw, err := llm.DecodeSchemaObjectRawNumbers(schema)
+	if err != nil {
 		return anthropic.ToolInputSchemaParam{}, fmt.Errorf("unmarshal schema: %w", err)
 	}
 

@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import type { ApiMcpTool } from '@/api/types'
 import { CopyBlock } from '@/components/CopyBlock'
 import { CollapsibleJSON } from '@/components/CollapsibleJSON'
+import { ArgEnforcementBadge, explainArgEnforcement } from '@/components/MCPPage/ArgEnforcementBadge'
 import { SimplifiedBadge } from '@/components/MCPPage/SimplifiedBadge'
 import { parseSchema, type ParsedParam } from './schemaParams'
 import styles from './ToolDetail.module.css'
@@ -30,6 +31,12 @@ export function ToolDetail({
   const { params, combinator } = useMemo(() => parseSchema(tool.input_schema), [tool.input_schema])
   const topLevelCount = params.filter((p) => p.depth === 0).length
   const isDisabled = tool.enabled === false
+  const enforcement = explainArgEnforcement(tool.arg_enforcement)
+  // Only top-level parameters can carry an outbound header.
+  const outboundHeaders = useMemo(
+    () => new Map((tool.outbound_headers ?? []).map((h) => [h.parameter, h.header])),
+    [tool.outbound_headers],
+  )
   // The name an agent's policy grants: "<server>.<tool>".
   const reference = `${serverName}.${tool.name}`
 
@@ -42,6 +49,7 @@ export function ToolDetail({
             {isDisabled ? 'Disabled' : 'Enabled'}
           </span>
           <SimplifiedBadge providers={tool.simplified_for ?? []} />
+          <ArgEnforcementBadge state={tool.arg_enforcement} />
           {canManage && onSetEnabled && (
             <button
               type="button"
@@ -58,6 +66,11 @@ export function ToolDetail({
         {isDisabled && (
           <p className={styles.disabledNote}>
             Disabled tools are never registered with an agent, even when its policy grants them.
+          </p>
+        )}
+        {enforcement && (
+          <p className={styles.disabledNote}>
+            Argument checking: reduced — {enforcement.reason}. {enforcement.detail}
           </p>
         )}
       </header>
@@ -103,10 +116,20 @@ export function ToolDetail({
             incomplete. The input schema further down is the full definition.
           </p>
         )}
+        {tool.outbound_headers_rejected && (
+          <p className={styles.note}>
+            This tool asks for a parameter to be sent as an outbound header under a name that is not
+            allowed, so every call to it is rejected.
+          </p>
+        )}
         {params.length > 0 ? (
           <ul className={styles.paramList}>
             {params.map((p) => (
-              <ParamRow key={p.path} param={p} />
+              <ParamRow
+                key={p.path}
+                param={p}
+                outboundHeader={p.depth === 0 ? outboundHeaders.get(p.path) : undefined}
+              />
             ))}
           </ul>
         ) : (
@@ -122,7 +145,7 @@ export function ToolDetail({
   )
 }
 
-function ParamRow({ param }: { param: ParsedParam }) {
+function ParamRow({ param, outboundHeader }: { param: ParsedParam; outboundHeader?: string }) {
   const depthClass = param.depth === 1 ? styles.depth1 : param.depth >= 2 ? styles.depth2 : ''
   return (
     <li className={`${styles.param} ${depthClass}`}>
@@ -136,6 +159,11 @@ function ParamRow({ param }: { param: ParsedParam }) {
         )}
       </div>
       {param.description && <p className={styles.paramDescription}>{param.description}</p>}
+      {outboundHeader && (
+        <p className={styles.outboundHeader}>
+          Sends an outbound header: <code className={styles.value}>{outboundHeader}</code>
+        </p>
+      )}
       {(param.allowedValues || param.defaultValue !== undefined || param.constraints.length > 0) && (
         <dl className={styles.facts}>
           {param.allowedValues && (

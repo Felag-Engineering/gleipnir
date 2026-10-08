@@ -42,6 +42,18 @@ func (a *QuerierAdapter) SetSystemSettingIfEmpty(ctx context.Context, key, value
 	return n > 0, nil
 }
 
+func (a *QuerierAdapter) ClearSystemSettingIfPrefix(ctx context.Context, key, prefix, updatedAt string) (bool, error) {
+	n, err := a.q.ClearSystemSettingIfPrefix(ctx, db.ClearSystemSettingIfPrefixParams{
+		Key:       key,
+		Prefix:    prefix,
+		UpdatedAt: updatedAt,
+	})
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 func (a *QuerierAdapter) DeleteSystemSetting(ctx context.Context, key string) error {
 	return a.q.DeleteSystemSetting(ctx, key)
 }

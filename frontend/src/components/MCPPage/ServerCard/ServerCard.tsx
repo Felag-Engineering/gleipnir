@@ -1,5 +1,6 @@
 import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
 import { ProtocolBadge } from '@/components/MCPPage/ProtocolBadge'
+import { ServerInfoBadge } from '@/components/MCPPage/ServerInfoBadge'
 import { SkeletonBlock } from '@/components/SkeletonBlock'
 import { formatTimeAgo } from '@/utils/format'
 import styles from './ServerCard.module.css'
@@ -53,6 +54,7 @@ export function ServerCard({
             {toolCount} {toolCount === 1 ? 'tool' : 'tools'}
           </span>
           <ProtocolBadge version={server.protocol_version} />
+          <ServerInfoBadge info={server.server_info} />
           {isManaged && (
             <span className={styles.managedBadge} title="Managed by a plugin's lifecycle">
               Plugin

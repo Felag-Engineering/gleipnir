@@ -165,7 +165,9 @@ func buildTools(tools []llm.ToolDefinition) ([]responses.ToolUnionParam, llm.Too
 		// The SDK's FunctionToolParam.Parameters is map[string]any.
 		var params map[string]any
 		if len(t.InputSchema) > 0 {
-			if err := json.Unmarshal(t.InputSchema, &params); err != nil {
+			var err error
+			params, err = llm.DecodeSchemaObjectRawNumbers(t.InputSchema)
+			if err != nil {
 				return nil, llm.ToolNameMapping{}, fmt.Errorf("unmarshalling schema for tool %s: %w", t.Name, err)
 			}
 		}
