@@ -127,6 +127,41 @@ type TaskChannelAdapters struct {
 	entries   AudienceEntriesResolver
 	store     decision.Store
 	decisions *decision.Recorder
+	actors    ActorUserResolver
+}
+
+// ActorUserResolver maps a channel's external actor id to the Gleipnir user an
+// admin linked it to (ADR-058: admin-set or verified mappings only).
+// hostendpoint.DBActorDirectory satisfies it.
+type ActorUserResolver interface {
+	ResolveUserID(ctx context.Context, actorExternalID string) (userID string, found bool, err error)
+}
+
+// WithActorResolver enables stamping decided_by / responded_by on plugin-routed
+// settlements. Without it those columns stay NULL: an external id the host
+// cannot map is never recorded as a user.
+func (a *TaskChannelAdapters) WithActorResolver(r ActorUserResolver) *TaskChannelAdapters {
+	a.actors = r
+	return a
+}
+
+// resolveDecider returns the Gleipnir user id for a settlement's actor, or nil
+// when there is no mapping. A lookup failure is logged and treated as no
+// mapping: the settlement itself already happened and must not fail on a
+// bookkeeping lookup.
+func (a *TaskChannelAdapters) resolveDecider(ctx context.Context, actorExternalID string) *string {
+	if a.actors == nil || actorExternalID == "" {
+		return nil
+	}
+	userID, found, err := a.actors.ResolveUserID(ctx, actorExternalID)
+	if err != nil {
+		logctx.Logger(ctx).WarnContext(ctx, "task channel adapter: resolving decider identity failed", "err", err)
+		return nil
+	}
+	if !found {
+		return nil
+	}
+	return &userID
 }
 
 // NewTaskChannelAdapters constructs a TaskChannelAdapters. router and waiter
@@ -253,7 +288,8 @@ func (a *TaskChannelAdapters) DispatchApproval(ctx context.Context, req agent.Ap
 
 	actorExternalID := result.resolution.ActorExternalID
 	return agent.ApprovalSettlement{
-		Approved: approved,
+		Approved:      approved,
+		DeciderUserID: a.resolveDecider(ctx, actorExternalID),
 		Settle: func(settleCtx context.Context, won bool) {
 			// won=false means ApprovalHandler's own approval_requests CAS
 			// lost the race with the timeout scanner: this decision never
@@ -333,7 +369,8 @@ func (a *TaskChannelAdapters) DispatchFeedback(ctx context.Context, req agent.Fe
 	response := string(result.resolution.Content)
 	actorExternalID := result.resolution.ActorExternalID
 	return agent.FeedbackSettlement{
-		Response: response,
+		Response:        response,
+		ResponderUserID: a.resolveDecider(ctx, actorExternalID),
 		Settle: func(settleCtx context.Context, won bool) {
 			if !won {
 				logctx.Logger(settleCtx).WarnContext(settleCtx, "task channel adapter: feedback CAS lost the race with the timeout scanner; decision not recorded as answered",

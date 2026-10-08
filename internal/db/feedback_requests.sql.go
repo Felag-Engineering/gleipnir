@@ -23,7 +23,7 @@ func (q *Queries) CountPendingFeedbackRequests(ctx context.Context) (int64, erro
 const createFeedbackRequest = `-- name: CreateFeedbackRequest :one
 INSERT INTO feedback_requests (id, run_id, tool_name, proposed_input, message, status, expires_at, created_at)
 VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7)
-RETURNING id, run_id, tool_name, proposed_input, message, status, response, resolved_at, expires_at, created_at
+RETURNING id, run_id, tool_name, proposed_input, message, status, response, resolved_at, expires_at, created_at, responded_by
 `
 
 type CreateFeedbackRequestParams struct {
@@ -58,12 +58,13 @@ func (q *Queries) CreateFeedbackRequest(ctx context.Context, arg CreateFeedbackR
 		&i.ResolvedAt,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.RespondedBy,
 	)
 	return i, err
 }
 
 const getFeedbackRequest = `-- name: GetFeedbackRequest :one
-SELECT id, run_id, tool_name, proposed_input, message, status, response, resolved_at, expires_at, created_at FROM feedback_requests WHERE id = ?1
+SELECT id, run_id, tool_name, proposed_input, message, status, response, resolved_at, expires_at, created_at, responded_by FROM feedback_requests WHERE id = ?1
 `
 
 func (q *Queries) GetFeedbackRequest(ctx context.Context, id string) (FeedbackRequest, error) {
@@ -80,12 +81,13 @@ func (q *Queries) GetFeedbackRequest(ctx context.Context, id string) (FeedbackRe
 		&i.ResolvedAt,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.RespondedBy,
 	)
 	return i, err
 }
 
 const getPendingFeedbackRequestsByRun = `-- name: GetPendingFeedbackRequestsByRun :many
-SELECT id, run_id, tool_name, proposed_input, message, status, response, resolved_at, expires_at, created_at FROM feedback_requests WHERE run_id = ?1 AND status = 'pending'
+SELECT id, run_id, tool_name, proposed_input, message, status, response, resolved_at, expires_at, created_at, responded_by FROM feedback_requests WHERE run_id = ?1 AND status = 'pending'
 `
 
 func (q *Queries) GetPendingFeedbackRequestsByRun(ctx context.Context, runID string) ([]FeedbackRequest, error) {
@@ -108,6 +110,7 @@ func (q *Queries) GetPendingFeedbackRequestsByRun(ctx context.Context, runID str
 			&i.ResolvedAt,
 			&i.ExpiresAt,
 			&i.CreatedAt,
+			&i.RespondedBy,
 		); err != nil {
 			return nil, err
 		}
@@ -123,7 +126,7 @@ func (q *Queries) GetPendingFeedbackRequestsByRun(ctx context.Context, runID str
 }
 
 const listExpiredFeedbackRequests = `-- name: ListExpiredFeedbackRequests :many
-SELECT id, run_id, tool_name, proposed_input, message, status, response, resolved_at, expires_at, created_at FROM feedback_requests WHERE status = 'pending' AND expires_at IS NOT NULL AND expires_at <= ?1
+SELECT id, run_id, tool_name, proposed_input, message, status, response, resolved_at, expires_at, created_at, responded_by FROM feedback_requests WHERE status = 'pending' AND expires_at IS NOT NULL AND expires_at <= ?1
 `
 
 // ListExpiredFeedbackRequests returns all pending feedback requests whose
@@ -149,6 +152,53 @@ func (q *Queries) ListExpiredFeedbackRequests(ctx context.Context, cutoff *strin
 			&i.ResolvedAt,
 			&i.ExpiresAt,
 			&i.CreatedAt,
+			&i.RespondedBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listFeedbackRespondersByRun = `-- name: ListFeedbackRespondersByRun :many
+SELECT fr.id, fr.status, fr.resolved_at, fr.responded_by, u.username AS responded_by_username
+FROM feedback_requests fr
+LEFT JOIN users u ON u.id = fr.responded_by
+WHERE fr.run_id = ?1
+ORDER BY fr.created_at ASC
+`
+
+type ListFeedbackRespondersByRunRow struct {
+	ID                  string  `json:"id"`
+	Status              string  `json:"status"`
+	ResolvedAt          *string `json:"resolved_at"`
+	RespondedBy         *string `json:"responded_by"`
+	RespondedByUsername *string `json:"responded_by_username"`
+}
+
+// ListFeedbackRespondersByRun mirrors ListApprovalDecidersByRun for feedback.
+func (q *Queries) ListFeedbackRespondersByRun(ctx context.Context, runID string) ([]ListFeedbackRespondersByRunRow, error) {
+	rows, err := q.db.QueryContext(ctx, listFeedbackRespondersByRun, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListFeedbackRespondersByRunRow
+	for rows.Next() {
+		var i ListFeedbackRespondersByRunRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Status,
+			&i.ResolvedAt,
+			&i.RespondedBy,
+			&i.RespondedByUsername,
 		); err != nil {
 			return nil, err
 		}
@@ -165,15 +215,16 @@ func (q *Queries) ListExpiredFeedbackRequests(ctx context.Context, cutoff *strin
 
 const updateFeedbackRequestStatus = `-- name: UpdateFeedbackRequestStatus :execrows
 UPDATE feedback_requests
-SET status = ?1, response = ?2, resolved_at = ?3
-WHERE id = ?4 AND status = 'pending'
+SET status = ?1, response = ?2, resolved_at = ?3, responded_by = ?4
+WHERE id = ?5 AND status = 'pending'
 `
 
 type UpdateFeedbackRequestStatusParams struct {
-	Status     string  `json:"status"`
-	Response   *string `json:"response"`
-	ResolvedAt *string `json:"resolved_at"`
-	ID         string  `json:"id"`
+	Status      string  `json:"status"`
+	Response    *string `json:"response"`
+	ResolvedAt  *string `json:"resolved_at"`
+	RespondedBy *string `json:"responded_by"`
+	ID          string  `json:"id"`
 }
 
 // UpdateFeedbackRequestStatus transitions a pending feedback request to a terminal
@@ -184,6 +235,7 @@ func (q *Queries) UpdateFeedbackRequestStatus(ctx context.Context, arg UpdateFee
 		arg.Status,
 		arg.Response,
 		arg.ResolvedAt,
+		arg.RespondedBy,
 		arg.ID,
 	)
 	if err != nil {

@@ -71,6 +71,7 @@ export interface CapabilitySnapshotV2 {
 export type CapabilitySnapshotContent = GrantedToolEntry[] | CapabilitySnapshotV2
 
 export interface ApprovalRequestContent {
+  approval_id?: string
   tool: string
   input: Record<string, unknown>
 }

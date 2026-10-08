@@ -21,7 +21,7 @@ SELECT * FROM approval_requests WHERE status = 'pending' AND expires_at <= :cuto
 -- caller must treat that as "already resolved, skip downstream side-effects".
 -- name: UpdateApprovalRequestStatus :execrows
 UPDATE approval_requests
-SET status = :status, decided_at = :decided_at, note = :note
+SET status = :status, decided_at = :decided_at, note = :note, decided_by = :decided_by
 WHERE id = :id AND status = 'pending';
 
 -- name: GetPendingApprovalRequestsByRun :many
@@ -31,3 +31,13 @@ ORDER BY created_at ASC;
 
 -- name: CountPendingApprovalRequests :one
 SELECT COUNT(*) FROM approval_requests WHERE status = 'pending';
+
+-- ListApprovalDecidersByRun returns each approval of a run with the username of
+-- the user who decided it. decided_by is NULL for a timeout, a row that predates
+-- the column, or a since-deleted account; LEFT JOIN keeps those rows.
+-- name: ListApprovalDecidersByRun :many
+SELECT ar.id, ar.status, ar.decided_at, ar.decided_by, u.username AS decided_by_username
+FROM approval_requests ar
+LEFT JOIN users u ON u.id = ar.decided_by
+WHERE ar.run_id = :run_id
+ORDER BY ar.created_at ASC;

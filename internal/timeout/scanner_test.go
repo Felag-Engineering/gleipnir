@@ -8,6 +8,7 @@ package timeout_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -176,6 +177,15 @@ func TestScanner_ExpiredRequest_MarksTimeoutAndFails(t *testing.T) {
 		} else if ts.Before(before) {
 			t.Errorf("decided_at %v is before test start %v", ts, before)
 		}
+	}
+
+	// A timeout is a system decision: no user is recorded (#684).
+	var decidedBy sql.NullString
+	if err := s.DB().QueryRow(`SELECT decided_by FROM approval_requests WHERE id = 'a1'`).Scan(&decidedBy); err != nil {
+		t.Fatalf("query decided_by: %v", err)
+	}
+	if decidedBy.Valid {
+		t.Errorf("decided_by = %q, want NULL for a timeout", decidedBy.String)
 	}
 
 	// Run must be marked failed with completed_at and an error message.

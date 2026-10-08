@@ -252,7 +252,8 @@ CREATE TABLE approval_requests (
     decided_at        TEXT,                 -- nullable, ISO 8601 UTC
     expires_at        TEXT    NOT NULL,     -- ISO 8601 UTC
     note              TEXT,                 -- nullable
-    created_at        TEXT    NOT NULL      -- ISO 8601 UTC
+    created_at        TEXT    NOT NULL,     -- ISO 8601 UTC
+    decided_by        TEXT    REFERENCES users(id) ON DELETE SET NULL  -- nullable; NULL = system/timeout
 );
 
 CREATE INDEX idx_approval_requests_run_id         ON approval_requests(run_id);
@@ -274,7 +275,8 @@ CREATE TABLE feedback_requests (
     response        TEXT,                 -- nullable, operator's freeform text response
     resolved_at     TEXT,                 -- nullable, ISO 8601 UTC
     expires_at      TEXT,                 -- nullable, ISO 8601 UTC; set when a timeout is configured
-    created_at      TEXT    NOT NULL      -- ISO 8601 UTC
+    created_at      TEXT    NOT NULL,     -- ISO 8601 UTC
+    responded_by    TEXT    REFERENCES users(id) ON DELETE SET NULL  -- nullable; NULL = system/timeout
 );
 
 CREATE INDEX idx_feedback_requests_run_id         ON feedback_requests(run_id);

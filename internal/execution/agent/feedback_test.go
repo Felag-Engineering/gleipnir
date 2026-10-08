@@ -25,6 +25,9 @@ type mockFeedbackDispatcher struct {
 	response string
 	err      error
 
+	// responderUserID is the verified Gleipnir user the settlement carries, if any.
+	responderUserID *string
+
 	settleCalls []bool
 }
 
@@ -33,7 +36,8 @@ func (m *mockFeedbackDispatcher) DispatchFeedback(_ context.Context, _ FeedbackD
 		return FeedbackSettlement{}, m.err
 	}
 	return FeedbackSettlement{
-		Response: m.response,
+		Response:        m.response,
+		ResponderUserID: m.responderUserID,
 		Settle: func(_ context.Context, won bool) {
 			m.settleCalls = append(m.settleCalls, won)
 		},

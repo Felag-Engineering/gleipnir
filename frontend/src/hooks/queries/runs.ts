@@ -1,7 +1,7 @@
 import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { useState, useEffect, useMemo } from 'react'
 import { apiFetch, ApiError } from '@/api/fetch'
-import type { ApiRun, ApiRunDecision, ApiRunsResponse, ApiRunStep, ApiToolInputRequest } from '@/api/types'
+import type { ApiRun, ApiRunDecision, ApiRunResponder, ApiRunsResponse, ApiRunStep, ApiToolInputRequest } from '@/api/types'
 import { queryKeys } from '../queryKeys'
 
 // PAGE_SIZE_STEPS is the number of steps fetched per request, used by both the
@@ -35,6 +35,24 @@ export function useRunDecisions(id?: string) {
   })
 
   return { ...query, decisions: query.data ?? [] }
+}
+
+// useRunResponders loads who settled each of a run's approval and feedback
+// requests, keyed by request id. Separate from useRunSteps for the same reason
+// as useRunDecisions: the answerer's identity is operator-facing evidence, not
+// part of the trace the model was replayed (ADR-046).
+export function useRunResponders(id?: string) {
+  const query = useQuery({
+    queryKey: queryKeys.runs.responders(id ?? ''),
+    queryFn: () => apiFetch<ApiRunResponder[]>(`/runs/${encodeURIComponent(id!)}/responders`),
+    enabled: Boolean(id),
+  })
+
+  const responders = useMemo(
+    () => new Map((query.data ?? []).map((r) => [r.request_id, r])),
+    [query.data],
+  )
+  return { ...query, responders }
 }
 
 // useToolInput loads the tool-initiated request a run is paused on

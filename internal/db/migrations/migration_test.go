@@ -1917,3 +1917,107 @@ func TestAddPolicyArchiveFromAll(t *testing.T) {
 		t.Fatal("policies.deleted_at missing after applying all migrations")
 	}
 }
+
+// seedPreDeciderIdentityTables hand-creates the approval/feedback request
+// tables as they stood before migration 0058 so Up() actually runs.
+func seedPreDeciderIdentityTables(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	stmts := []string{
+		`CREATE TABLE schema_migrations (
+			version     INTEGER PRIMARY KEY,
+			applied_at  TEXT    NOT NULL
+		)`,
+		`INSERT INTO schema_migrations(version, applied_at) VALUES (1, '2024-01-01T00:00:00Z')`,
+		`CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT NOT NULL)`,
+		`CREATE TABLE approval_requests (
+			id         TEXT PRIMARY KEY,
+			status     TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE feedback_requests (
+			id         TEXT PRIMARY KEY,
+			status     TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		)`,
+		`INSERT INTO approval_requests(id, status, created_at) VALUES ('a1', 'approved', '2024-01-01T00:00:00Z')`,
+		`INSERT INTO feedback_requests(id, status, created_at) VALUES ('f1', 'resolved', '2024-01-01T00:00:00Z')`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seedPreDeciderIdentityTables: %v\nstatement: %s", err, stmt)
+		}
+	}
+}
+
+// TestAddDeciderIdentity verifies migration 0058 adds decided_by and
+// responded_by, leaves existing rows NULL, nulls the reference when the user is
+// removed, and is idempotent.
+func TestAddDeciderIdentity(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	seedPreDeciderIdentityTables(t, db)
+
+	m := &migrations.AddDeciderIdentity{}
+	skip, err := m.ShouldSkip(ctx, db)
+	if err != nil {
+		t.Fatalf("ShouldSkip: %v", err)
+	}
+	if skip {
+		t.Fatal("ShouldSkip returned true against the pre-target baseline")
+	}
+
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	var decidedBy, respondedBy sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT decided_by FROM approval_requests WHERE id = 'a1'`).Scan(&decidedBy); err != nil {
+		t.Fatalf("read decided_by: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT responded_by FROM feedback_requests WHERE id = 'f1'`).Scan(&respondedBy); err != nil {
+		t.Fatalf("read responded_by: %v", err)
+	}
+	if decidedBy.Valid || respondedBy.Valid {
+		t.Errorf("existing rows = %v/%v after migration, want NULL/NULL", decidedBy, respondedBy)
+	}
+
+	// ON DELETE SET NULL: removing the user keeps the decision row.
+	for _, stmt := range []string{
+		`PRAGMA foreign_keys = ON`,
+		`INSERT INTO users(id, username) VALUES ('u1', 'alice')`,
+		`UPDATE approval_requests SET decided_by = 'u1' WHERE id = 'a1'`,
+		`UPDATE feedback_requests SET responded_by = 'u1' WHERE id = 'f1'`,
+		`DELETE FROM users WHERE id = 'u1'`,
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if err := db.QueryRowContext(ctx, `SELECT decided_by FROM approval_requests WHERE id = 'a1'`).Scan(&decidedBy); err != nil {
+		t.Fatalf("read decided_by after user removal: %v", err)
+	}
+	if decidedBy.Valid {
+		t.Errorf("decided_by = %q after user removal, want NULL", decidedBy.String)
+	}
+
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("second Apply (idempotency): %v", err)
+	}
+}
+
+// TestAddDeciderIdentitySkipsOnFreshSchema is the regression gate for
+// forgetting to hand-sync 0001_initial.sql (which sqlc reads).
+func TestAddDeciderIdentitySkipsOnFreshSchema(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	applyInitialSchema(t, db)
+
+	skip, err := (&migrations.AddDeciderIdentity{}).ShouldSkip(ctx, db)
+	if err != nil {
+		t.Fatalf("ShouldSkip: %v", err)
+	}
+	if !skip {
+		t.Fatal("ShouldSkip returned false on a fresh initial schema — did 0001_initial.sql forget decided_by / responded_by?")
+	}
+}

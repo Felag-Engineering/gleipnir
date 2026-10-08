@@ -15,6 +15,7 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/execution/agent"
+	"github.com/felag-engineering/gleipnir/internal/http/auth"
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	"github.com/felag-engineering/gleipnir/internal/model"
@@ -588,6 +589,19 @@ func (h *RunsHandler) resolveRequest(w http.ResponseWriter, r *http.Request, run
 	httputil.WriteJSON(w, http.StatusAccepted, spec.successResponse)
 }
 
+// callerUserID returns the authenticated caller's user id for stamping onto a
+// decision record (decided_by / responded_by). It reads only the identity the
+// auth middleware put on the context, never the request body. nil means no
+// authenticated user was attached, recorded the same as a system decision.
+func callerUserID(ctx context.Context) *string {
+	user, ok := auth.UserFromContext(ctx)
+	if !ok || user == nil {
+		return nil
+	}
+	id := user.ID
+	return &id
+}
+
 // SubmitApproval handles POST /api/v1/runs/{runID}/approval.
 // It routes the approval decision to the BoundAgent's approval gate via the
 // RunManager. Returns 409 if no goroutine is waiting on the approval gate.
@@ -634,6 +648,7 @@ func (h *RunsHandler) SubmitApproval(w http.ResponseWriter, r *http.Request) {
 				Status:    dbStatus,
 				DecidedAt: &now,
 				Note:      nil,
+				DecidedBy: callerUserID(ctx),
 				ID:        requestID,
 			})
 		},
@@ -749,10 +764,11 @@ func (h *RunsHandler) SubmitFeedback(w http.ResponseWriter, r *http.Request) {
 	// consistency is secondary to unblocking the agent.
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	rows, err := h.store.UpdateFeedbackRequestStatus(ctx, db.UpdateFeedbackRequestStatusParams{
-		Status:     "resolved",
-		Response:   &req.Response,
-		ResolvedAt: &now,
-		ID:         pendingID,
+		Status:      "resolved",
+		Response:    &req.Response,
+		ResolvedAt:  &now,
+		RespondedBy: callerUserID(ctx),
+		ID:          pendingID,
 	})
 	if err != nil {
 		slog.Warn("UpdateFeedbackRequestStatus failed", "feedback_id", pendingID, "run_id", runID, "err", err)

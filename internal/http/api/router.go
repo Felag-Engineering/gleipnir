@@ -253,6 +253,10 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 		// an auditor cannot read is not one.
 		r.With(auth.RequireRole(model.RoleOperator, model.RoleApprover, model.RoleAuditor)).
 			Get("/api/v1/runs/{runID}/decisions", runsHandler.ListDecisions)
+		// Who settled each approval/feedback request of the run (#684). Same
+		// read access as the rest of run detail.
+		r.With(auth.RequireRole(model.RoleOperator, model.RoleApprover, model.RoleAuditor)).
+			Get("/api/v1/runs/{runID}/responders", runsHandler.ListResponders)
 		r.With(auth.RequireRole(model.RoleOperator)).Post("/api/v1/runs/{runID}/cancel", runsHandler.Cancel)
 		r.With(httputil.BodySizeLimit(httputil.MaxRequestBodySize), auth.RequireRole(model.RoleApprover)).
 			Post("/api/v1/runs/{runID}/approval", runsHandler.SubmitApproval)

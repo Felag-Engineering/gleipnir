@@ -51,5 +51,6 @@ func All() []Migration {
 		&AddMCPServerRunAttribution{},
 		&AddMCPServerInfo{},
 		&AddPolicyArchive{},
+		&AddDeciderIdentity{},
 	}
 }

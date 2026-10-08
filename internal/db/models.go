@@ -15,6 +15,7 @@ type ApprovalRequest struct {
 	ExpiresAt        string  `json:"expires_at"`
 	Note             *string `json:"note"`
 	CreatedAt        string  `json:"created_at"`
+	DecidedBy        *string `json:"decided_by"`
 }
 
 type AudienceEntry struct {
@@ -38,6 +39,7 @@ type FeedbackRequest struct {
 	ResolvedAt    *string `json:"resolved_at"`
 	ExpiresAt     *string `json:"expires_at"`
 	CreatedAt     string  `json:"created_at"`
+	RespondedBy   *string `json:"responded_by"`
 }
 
 type McpServer struct {
