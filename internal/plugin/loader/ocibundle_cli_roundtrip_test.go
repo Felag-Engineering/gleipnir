@@ -144,7 +144,7 @@ func buildDockerLayoutArchive(t *testing.T, dir string) (archivePath, digest str
 
 	manifestEntries := []map[string]any{{
 		"Config":   configName,
-		"RepoTags": []string{"example/roundtrip:latest"},
+		"RepoTags": []string{"ghcr.io/acme/roundtrip-plugin:latest"},
 		"Layers":   []string{},
 	}}
 	manifestJSON, err := json.Marshal(manifestEntries)

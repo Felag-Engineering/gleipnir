@@ -20,11 +20,16 @@ const (
 	auditImageLoaded         = "plugin_image_loaded"
 	auditImageDigestMismatch = "plugin_image_digest_mismatch"
 	auditImageLoadSkipped    = "plugin_image_load_skipped"
+	auditImageArchiveRefused = "plugin_image_archive_rejected"
 )
 
 // rejectImageDigestMismatch is the InstallRejectedError reason for a bundle
 // whose loaded image is not the one its manifest pinned.
 const rejectImageDigestMismatch = "image_digest_mismatch"
+
+// rejectImageArchiveInvalid is the InstallRejectedError reason for a bundle
+// whose image archive failed inspection before it was offered to the runtime.
+const rejectImageArchiveInvalid = "image_archive_invalid"
 
 // ErrImageDigestMismatch reports that the image the runtime ended up holding is
 // not the image the manifest pinned.
@@ -158,6 +163,19 @@ func (in *OCIInstaller) Install(ctx context.Context, tarPath string) (OCIInstall
 				Message: "the image loaded from this bundle is not the image its manifest pins; the bundle was not installed",
 			}
 		}
+		if errors.Is(err, ErrImageArchiveInvalid) {
+			if auditErr := insertAuditRow(ctx, in.base.q, auditImageArchiveRefused, severityHigh, nowStr, map[string]any{
+				"name":    bundle.Manifest.Name,
+				"version": bundle.Manifest.Version,
+				"reason":  err.Error(),
+			}); auditErr != nil {
+				slog.ErrorContext(ctx, "record plugin_image_archive_rejected audit", "err", auditErr)
+			}
+			return OCIInstallResult{}, &InstallRejectedError{
+				Reason:  rejectImageArchiveInvalid,
+				Message: "the image archive in this bundle failed inspection; the bundle was not installed",
+			}
+		}
 		return OCIInstallResult{}, err
 	}
 
@@ -204,6 +222,13 @@ func (e *imageDigestMismatchError) Unwrap() error { return ErrImageDigestMismatc
 // identity out of it would make a security check depend on a log format. Asking
 // "is the image I expect present?" has a yes/no answer and no parser.
 func (in *OCIInstaller) loadAndVerifyImage(ctx context.Context, bundle *OCIBundle) (loadedImage, error) {
+	// Inspected before the runtime is consulted at all, and even when there is
+	// none: the archive is part of what the admin is asked to approve, so a
+	// malformed one is refused whatever would later have loaded it.
+	if err := inspectImageArchive(bundle.ArchivePath, bundle.Manifest.Package); err != nil {
+		return loadedImage{}, err
+	}
+
 	if in.images == nil {
 		return loadedImage{}, nil
 	}
