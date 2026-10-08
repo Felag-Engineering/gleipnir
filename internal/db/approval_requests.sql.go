@@ -23,7 +23,7 @@ func (q *Queries) CountPendingApprovalRequests(ctx context.Context) (int64, erro
 const createApprovalRequest = `-- name: CreateApprovalRequest :one
 INSERT INTO approval_requests (id, run_id, tool_name, proposed_input, reasoning_summary, status, expires_at, created_at)
 VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7)
-RETURNING id, run_id, tool_name, proposed_input, reasoning_summary, status, decided_at, expires_at, note, created_at
+RETURNING id, run_id, tool_name, proposed_input, reasoning_summary, status, decided_at, expires_at, note, created_at, decided_by
 `
 
 type CreateApprovalRequestParams struct {
@@ -58,12 +58,13 @@ func (q *Queries) CreateApprovalRequest(ctx context.Context, arg CreateApprovalR
 		&i.ExpiresAt,
 		&i.Note,
 		&i.CreatedAt,
+		&i.DecidedBy,
 	)
 	return i, err
 }
 
 const getApprovalRequest = `-- name: GetApprovalRequest :one
-SELECT id, run_id, tool_name, proposed_input, reasoning_summary, status, decided_at, expires_at, note, created_at FROM approval_requests WHERE id = ?1
+SELECT id, run_id, tool_name, proposed_input, reasoning_summary, status, decided_at, expires_at, note, created_at, decided_by FROM approval_requests WHERE id = ?1
 `
 
 func (q *Queries) GetApprovalRequest(ctx context.Context, id string) (ApprovalRequest, error) {
@@ -80,12 +81,13 @@ func (q *Queries) GetApprovalRequest(ctx context.Context, id string) (ApprovalRe
 		&i.ExpiresAt,
 		&i.Note,
 		&i.CreatedAt,
+		&i.DecidedBy,
 	)
 	return i, err
 }
 
 const getPendingApprovalRequestsByRun = `-- name: GetPendingApprovalRequestsByRun :many
-SELECT id, run_id, tool_name, proposed_input, reasoning_summary, status, decided_at, expires_at, note, created_at FROM approval_requests
+SELECT id, run_id, tool_name, proposed_input, reasoning_summary, status, decided_at, expires_at, note, created_at, decided_by FROM approval_requests
 WHERE run_id = ?1 AND status = 'pending'
 ORDER BY created_at ASC
 `
@@ -110,6 +112,55 @@ func (q *Queries) GetPendingApprovalRequestsByRun(ctx context.Context, runID str
 			&i.ExpiresAt,
 			&i.Note,
 			&i.CreatedAt,
+			&i.DecidedBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listApprovalDecidersByRun = `-- name: ListApprovalDecidersByRun :many
+SELECT ar.id, ar.status, ar.decided_at, ar.decided_by, u.username AS decided_by_username
+FROM approval_requests ar
+LEFT JOIN users u ON u.id = ar.decided_by
+WHERE ar.run_id = ?1
+ORDER BY ar.created_at ASC
+`
+
+type ListApprovalDecidersByRunRow struct {
+	ID                string  `json:"id"`
+	Status            string  `json:"status"`
+	DecidedAt         *string `json:"decided_at"`
+	DecidedBy         *string `json:"decided_by"`
+	DecidedByUsername *string `json:"decided_by_username"`
+}
+
+// ListApprovalDecidersByRun returns each approval of a run with the username of
+// the user who decided it. decided_by is NULL for a timeout, a row that predates
+// the column, or a since-deleted account; LEFT JOIN keeps those rows.
+func (q *Queries) ListApprovalDecidersByRun(ctx context.Context, runID string) ([]ListApprovalDecidersByRunRow, error) {
+	rows, err := q.db.QueryContext(ctx, listApprovalDecidersByRun, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListApprovalDecidersByRunRow
+	for rows.Next() {
+		var i ListApprovalDecidersByRunRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Status,
+			&i.DecidedAt,
+			&i.DecidedBy,
+			&i.DecidedByUsername,
 		); err != nil {
 			return nil, err
 		}
@@ -125,7 +176,7 @@ func (q *Queries) GetPendingApprovalRequestsByRun(ctx context.Context, runID str
 }
 
 const listExpiredApprovalRequests = `-- name: ListExpiredApprovalRequests :many
-SELECT id, run_id, tool_name, proposed_input, reasoning_summary, status, decided_at, expires_at, note, created_at FROM approval_requests WHERE status = 'pending' AND expires_at <= ?1
+SELECT id, run_id, tool_name, proposed_input, reasoning_summary, status, decided_at, expires_at, note, created_at, decided_by FROM approval_requests WHERE status = 'pending' AND expires_at <= ?1
 `
 
 // ListExpiredApprovalRequests accepts a cutoff timestamp and returns all pending
@@ -151,6 +202,7 @@ func (q *Queries) ListExpiredApprovalRequests(ctx context.Context, cutoff string
 			&i.ExpiresAt,
 			&i.Note,
 			&i.CreatedAt,
+			&i.DecidedBy,
 		); err != nil {
 			return nil, err
 		}
@@ -166,7 +218,7 @@ func (q *Queries) ListExpiredApprovalRequests(ctx context.Context, cutoff string
 }
 
 const listPendingApprovalRequests = `-- name: ListPendingApprovalRequests :many
-SELECT id, run_id, tool_name, proposed_input, reasoning_summary, status, decided_at, expires_at, note, created_at FROM approval_requests WHERE status = 'pending' ORDER BY created_at ASC
+SELECT id, run_id, tool_name, proposed_input, reasoning_summary, status, decided_at, expires_at, note, created_at, decided_by FROM approval_requests WHERE status = 'pending' ORDER BY created_at ASC
 `
 
 func (q *Queries) ListPendingApprovalRequests(ctx context.Context) ([]ApprovalRequest, error) {
@@ -189,6 +241,7 @@ func (q *Queries) ListPendingApprovalRequests(ctx context.Context) ([]ApprovalRe
 			&i.ExpiresAt,
 			&i.Note,
 			&i.CreatedAt,
+			&i.DecidedBy,
 		); err != nil {
 			return nil, err
 		}
@@ -205,14 +258,15 @@ func (q *Queries) ListPendingApprovalRequests(ctx context.Context) ([]ApprovalRe
 
 const updateApprovalRequestStatus = `-- name: UpdateApprovalRequestStatus :execrows
 UPDATE approval_requests
-SET status = ?1, decided_at = ?2, note = ?3
-WHERE id = ?4 AND status = 'pending'
+SET status = ?1, decided_at = ?2, note = ?3, decided_by = ?4
+WHERE id = ?5 AND status = 'pending'
 `
 
 type UpdateApprovalRequestStatusParams struct {
 	Status    string  `json:"status"`
 	DecidedAt *string `json:"decided_at"`
 	Note      *string `json:"note"`
+	DecidedBy *string `json:"decided_by"`
 	ID        string  `json:"id"`
 }
 
@@ -225,6 +279,7 @@ func (q *Queries) UpdateApprovalRequestStatus(ctx context.Context, arg UpdateApp
 		arg.Status,
 		arg.DecidedAt,
 		arg.Note,
+		arg.DecidedBy,
 		arg.ID,
 	)
 	if err != nil {

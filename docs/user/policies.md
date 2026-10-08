@@ -225,6 +225,10 @@ Set `folder` to group policies in the UI. Policies with the same `folder` value 
 folder: homelab
 ```
 
+## Deleting an agent
+
+Deleting an agent archives it. The agent disappears from the agents list, can no longer be triggered (its webhook URL returns 404, and its schedule, poll and cron loops stop), its webhook secret is revoked, and any queued triggers are dropped. Its **run history is kept**: runs, steps, approvals and feedback stay readable under Runs, shown with the agent's name and a "(deleted)" marker. The name becomes free for a new agent. An agent with active runs cannot be deleted until they finish or are cancelled. There is no undelete.
+
 ## Audience
 
 When a plugin provides a notification channel (e.g. Slack), set `audience` to the name of an audience defined under **Admin → Audiences**. The audience is an ordered list of channel entries used for notification fan-out and operator-request routing. Omit it for policies that do not use the channel system.

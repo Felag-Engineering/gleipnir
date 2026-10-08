@@ -815,8 +815,8 @@ func TestPolicyQueries(t *testing.T) {
 		t.Errorf("GetPolicy after update: yaml=%q updated_at=%q", confirmed.Yaml, confirmed.UpdatedAt)
 	}
 
-	if err := s.DeletePolicy(ctx, "pol1"); err != nil {
-		t.Fatalf("DeletePolicy: %v", err)
+	if err := s.ArchivePolicy(ctx, "pol1", "2026-01-01T00:00:00Z"); err != nil {
+		t.Fatalf("ArchivePolicy: %v", err)
 	}
 
 	_, err = s.GetPolicy(ctx, "pol1")

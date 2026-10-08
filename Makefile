@@ -13,7 +13,7 @@ help:
 	@echo "  ci-local-full              same gate with no narrowing — every lane, every"
 	@echo "                             package (what ci-local did before scoping)"
 	@echo "  ci-local-scope-self-test   prove the gate scoper never drops coverage"
-	@echo "  tools                      install the pinned sqlc + buf versions the"
+	@echo "  tools                      install the pinned sqlc + protoc plugin versions the"
 	@echo "                             ci-local drift lanes require (fresh worktrees"
 	@echo "                             lack both)"
 	@echo "  security                   run all security scans (govulncheck + npm audit)"
@@ -47,6 +47,10 @@ test:
 # signal.
 SQLC_VERSION               ?= v1.30.0
 BUF_VERSION                ?= v1.47.2
+# buf is run via `go run` at BUF_VERSION, never from PATH: generated file
+# headers embed the buf version, so a newer PATH buf reports version-stamp-only
+# drift (#1027). GOWORK=off keeps the run independent of the workspace.
+BUF                        := GOWORK=off go run github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
 PROTOC_GEN_GO_VERSION      ?= v1.36.10
 PROTOC_GEN_GO_GRPC_VERSION ?= v1.5.1
 
@@ -56,7 +60,6 @@ PROTOC_GEN_GO_GRPC_VERSION ?= v1.5.1
 # $(go env GOPATH)/bin) — make sure that directory is on PATH.
 tools:
 	go install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
-	go install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
 	go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
 	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GO_GRPC_VERSION)
 
@@ -69,12 +72,13 @@ security-frontend:
 	cd frontend && npm audit --omit=dev
 
 # Regenerate gRPC/protobuf stubs from .proto sources.
-# Requires buf plus the local protoc-gen-go plugins — `make tools` installs
-# all of them at the pinned versions (buf.gen.yaml names the plugins; the
-# version pins live above so CI and local installs share one list).
+# Runs buf at the pinned BUF_VERSION via `go run`. Requires the local
+# protoc-gen-go plugins on PATH — `make tools` installs them at the pinned
+# versions (buf.gen.yaml names the plugins; the version pins live above so CI
+# and local installs share one list).
 # The proto-gen-drift CI job ensures checked-in stubs are never stale.
 proto:
-	buf generate
+	$(BUF) generate
 
 lint-plugins:
 	./scripts/lint-plugins.sh
@@ -230,7 +234,7 @@ ci-local-scope-self-test:
 
 ci-local-drift:
 	@command -v sqlc >/dev/null || { echo "ci-local: sqlc is required for the sqlc-drift lane — run 'make tools' (installs the pinned $(SQLC_VERSION))"; exit 1; }
-	@command -v buf  >/dev/null || { echo "ci-local: buf is required for the proto lanes — run 'make tools' (installs the pinned $(BUF_VERSION))"; exit 1; }
+	@command -v protoc-gen-go >/dev/null && command -v protoc-gen-go-grpc >/dev/null || { echo "ci-local: protoc-gen-go and protoc-gen-go-grpc are required for the proto lanes — run 'make tools' (installs the pinned versions)"; exit 1; }
 	@before=$$( (git status --porcelain -- internal/db/; git diff -- internal/db/) | sha256sum); \
 	sqlc generate || { echo "ci-local: 'sqlc generate' failed — a failed generation produces no output and would read as no-drift, so the lane fails instead of passing vacuously"; exit 1; }; \
 	after=$$( (git status --porcelain -- internal/db/; git diff -- internal/db/) | sha256sum); \
@@ -239,15 +243,16 @@ ci-local-drift:
 		exit 1; \
 	fi
 	@if find . -type f -name '*.proto' -not -path './.git/*' | grep -q .; then \
-		buf lint || exit 1; \
+		$(BUF) lint || exit 1; \
 	else \
 		echo "ci-local: no .proto files; skipping buf lint (mirrors CI)"; \
 	fi
 	@before=$$( (git status --porcelain -- plugin-sdk/gen/; git diff -- plugin-sdk/gen/) | sha256sum); \
-	buf generate || { echo "ci-local: 'buf generate' failed (BSR unreachable?) — a failed generation produces no output and would read as no-drift, so the lane fails instead of passing vacuously"; exit 1; }; \
+	echo "ci-local: proto drift using $$($(BUF) --version) (pinned $(BUF_VERSION))"; \
+	$(BUF) generate || { echo "ci-local: 'buf generate' failed (buf download or plugin error?) — a failed generation produces no output and would read as no-drift, so the lane fails instead of passing vacuously"; exit 1; }; \
 	after=$$( (git status --porcelain -- plugin-sdk/gen/; git diff -- plugin-sdk/gen/) | sha256sum); \
 	if [ "$$before" != "$$after" ]; then \
-		echo "ci-local: proto gen drift — 'buf generate' changed plugin-sdk/gen/; stage the regenerated files"; \
+		echo "ci-local: proto gen drift — 'buf generate' ($(BUF_VERSION)) changed plugin-sdk/gen/; stage the regenerated files"; \
 		exit 1; \
 	fi
 

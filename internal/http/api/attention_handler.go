@@ -114,7 +114,7 @@ func (h *AttentionHandler) Get(w http.ResponseWriter, r *http.Request) {
 	// failures we look up individually (at most 10 runs, so N+1 is acceptable).
 	for _, run := range failedRuns {
 		policyName := run.PolicyID // fallback if lookup fails
-		if pol, err := h.store.GetPolicy(ctx, run.PolicyID); err == nil {
+		if pol, err := h.store.GetPolicyIncludingArchived(ctx, run.PolicyID); err == nil {
 			policyName = pol.Name
 		}
 

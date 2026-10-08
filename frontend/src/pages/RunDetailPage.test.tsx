@@ -15,7 +15,7 @@ import type { ApiRun, ApiRunStep } from '@/api/types'
 vi.mock('@/hooks/queries/runs')
 
 import { useRun } from '@/hooks/queries/runs'
-import { useRunSteps, useToolInput, useRunDecisions } from '@/hooks/queries/runs'
+import { useRunSteps, useToolInput, useRunDecisions, useRunResponders } from '@/hooks/queries/runs'
 
 // --- Helpers ---
 
@@ -68,6 +68,9 @@ beforeEach(() => {
     decisions: [],
     status: 'success',
   } as unknown as ReturnType<typeof useRunDecisions>)
+  vi.mocked(useRunResponders).mockReturnValue({
+    responders: new Map(),
+  } as unknown as ReturnType<typeof useRunResponders>)
 })
 
 function renderPage(queryClient = makeQueryClient()) {

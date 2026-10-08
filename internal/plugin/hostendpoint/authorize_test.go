@@ -464,6 +464,27 @@ func TestDBActorDirectory_Resolve(t *testing.T) {
 	})
 }
 
+func TestDBActorDirectory_ResolveUserID(t *testing.T) {
+	q := &fakeSlackUserQuerier{
+		bySlackID: map[string][]db.GetUserBySlackUserIDRow{
+			"U-KNOWN": {{ID: "user-1", Username: "ann", Role: "operator"}},
+		},
+	}
+	dir := DBActorDirectory{Querier: q}
+
+	id, found, err := dir.ResolveUserID(context.Background(), "U-KNOWN")
+	if err != nil || !found || id != "user-1" {
+		t.Errorf("ResolveUserID(known) = %q, %v, %v; want user-1, true, nil", id, found, err)
+	}
+	if _, found, err := dir.ResolveUserID(context.Background(), "U-UNKNOWN"); err != nil || found {
+		t.Errorf("ResolveUserID(unknown) found=%v err=%v; want false, nil", found, err)
+	}
+	q.err = errors.New("db down")
+	if _, _, err := dir.ResolveUserID(context.Background(), "U-KNOWN"); err == nil {
+		t.Error("want a propagated error")
+	}
+}
+
 type fakeSlackUserQuerier struct {
 	bySlackID map[string][]db.GetUserBySlackUserIDRow
 	err       error

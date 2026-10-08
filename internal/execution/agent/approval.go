@@ -92,7 +92,7 @@ func NewApprovalHandler(audit *AuditWriter, sm *RunStateMachine, approvalCh <-ch
 // stakes: it is text the agent goes on to reason about, not a grant, so
 // resolveFeedbackRecord treats the same kind of write error as best-effort
 // and still lets the run resume with the answer already in hand.
-func (h *ApprovalHandler) resolveApprovalRecord(ctx context.Context, runID, approvalID string, approved bool) (won bool) {
+func (h *ApprovalHandler) resolveApprovalRecord(ctx context.Context, runID, approvalID string, approved bool, decidedBy *string) (won bool) {
 	dbStatus := string(model.ApprovalStatusApproved)
 	if !approved {
 		dbStatus = string(model.ApprovalStatusRejected)
@@ -102,6 +102,7 @@ func (h *ApprovalHandler) resolveApprovalRecord(ctx context.Context, runID, appr
 		Status:    dbStatus,
 		DecidedAt: &now,
 		Note:      nil,
+		DecidedBy: decidedBy,
 		ID:        approvalID,
 	})
 	if err != nil {
@@ -203,7 +204,7 @@ func (h *ApprovalHandler) Wait(ctx context.Context, runID string, entry resolved
 	if err := h.audit.Write(ctx, Step{
 		RunID:   runID,
 		Type:    model.StepTypeApprovalRequest,
-		Content: map[string]any{"tool": internalName, "input": input},
+		Content: map[string]any{"approval_id": approvalID, "tool": internalName, "input": input},
 	}); err != nil {
 		return fmt.Errorf("writing approval request step: %w", err)
 	}
@@ -240,7 +241,7 @@ func (h *ApprovalHandler) Wait(ctx context.Context, runID string, entry resolved
 			// branching, and only THEN let the dispatcher record its own
 			// decision evidence (settlement.Settle), so a decision that lost
 			// the race with the scanner is never recorded as one that won.
-			won := h.resolveApprovalRecord(ctx, runID, approvalID, settlement.Approved)
+			won := h.resolveApprovalRecord(ctx, runID, approvalID, settlement.Approved, settlement.DeciderUserID)
 			if settlement.Settle != nil {
 				settlement.Settle(ctx, won)
 			}

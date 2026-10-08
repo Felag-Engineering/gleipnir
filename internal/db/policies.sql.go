@@ -9,6 +9,28 @@ import (
 	"context"
 )
 
+const archivePolicy = `-- name: ArchivePolicy :execrows
+UPDATE policies
+SET deleted_at = ?1, updated_at = ?2, webhook_secret_encrypted = NULL
+WHERE id = ?3 AND deleted_at IS NULL
+`
+
+type ArchivePolicyParams struct {
+	DeletedAt *string `json:"deleted_at"`
+	UpdatedAt string  `json:"updated_at"`
+	ID        string  `json:"id"`
+}
+
+// The webhook secret is cleared so the archived agent's webhook can never
+// authenticate again, and so key rotation has nothing to carry for it.
+func (q *Queries) ArchivePolicy(ctx context.Context, arg ArchivePolicyParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, archivePolicy, arg.DeletedAt, arg.UpdatedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const clearPolicyPausedAt = `-- name: ClearPolicyPausedAt :exec
 UPDATE policies SET paused_at = NULL WHERE id = ?1
 `
@@ -33,7 +55,7 @@ func (q *Queries) ClearPolicyWebhookSecret(ctx context.Context, arg ClearPolicyW
 }
 
 const countPolicies = `-- name: CountPolicies :one
-SELECT COUNT(*) FROM policies
+SELECT COUNT(*) FROM policies WHERE deleted_at IS NULL
 `
 
 func (q *Queries) CountPolicies(ctx context.Context) (int64, error) {
@@ -46,7 +68,7 @@ func (q *Queries) CountPolicies(ctx context.Context) (int64, error) {
 const createPolicy = `-- name: CreatePolicy :one
 INSERT INTO policies (id, name, trigger_type, yaml, created_at, updated_at)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-RETURNING id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at
+RETURNING id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at, deleted_at
 `
 
 type CreatePolicyParams struct {
@@ -77,21 +99,13 @@ func (q *Queries) CreatePolicy(ctx context.Context, arg CreatePolicyParams) (Pol
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PausedAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }
 
-const deletePolicy = `-- name: DeletePolicy :exec
-DELETE FROM policies WHERE id = ?1
-`
-
-func (q *Queries) DeletePolicy(ctx context.Context, id string) error {
-	_, err := q.db.ExecContext(ctx, deletePolicy, id)
-	return err
-}
-
 const getCronActivePolicies = `-- name: GetCronActivePolicies :many
-SELECT id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at FROM policies WHERE trigger_type = 'cron' AND paused_at IS NULL
+SELECT id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at, deleted_at FROM policies WHERE trigger_type = 'cron' AND paused_at IS NULL AND deleted_at IS NULL
 `
 
 func (q *Queries) GetCronActivePolicies(ctx context.Context) ([]Policy, error) {
@@ -112,6 +126,7 @@ func (q *Queries) GetCronActivePolicies(ctx context.Context) ([]Policy, error) {
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.PausedAt,
+			&i.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -127,9 +142,14 @@ func (q *Queries) GetCronActivePolicies(ctx context.Context) ([]Policy, error) {
 }
 
 const getPolicy = `-- name: GetPolicy :one
-SELECT id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at FROM policies WHERE id = ?1
+SELECT id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at, deleted_at FROM policies WHERE id = ?1 AND deleted_at IS NULL
 `
 
+// Deleting an agent archives it (deleted_at) so its run history survives
+// (#1052). Every policy query below filters archived rows out by default, so a
+// path that forgets to think about archival fails closed (not found). Only
+// GetPolicyIncludingArchived - for read-only attribution of historical runs -
+// sees them.
 func (q *Queries) GetPolicy(ctx context.Context, id string) (Policy, error) {
 	row := q.db.QueryRowContext(ctx, getPolicy, id)
 	var i Policy
@@ -142,12 +162,13 @@ func (q *Queries) GetPolicy(ctx context.Context, id string) (Policy, error) {
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PausedAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }
 
 const getPolicyByName = `-- name: GetPolicyByName :one
-SELECT id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at FROM policies WHERE name = ?1
+SELECT id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at, deleted_at FROM policies WHERE name = ?1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetPolicyByName(ctx context.Context, name string) (Policy, error) {
@@ -162,12 +183,34 @@ func (q *Queries) GetPolicyByName(ctx context.Context, name string) (Policy, err
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PausedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const getPolicyIncludingArchived = `-- name: GetPolicyIncludingArchived :one
+SELECT id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at, deleted_at FROM policies WHERE id = ?1
+`
+
+func (q *Queries) GetPolicyIncludingArchived(ctx context.Context, id string) (Policy, error) {
+	row := q.db.QueryRowContext(ctx, getPolicyIncludingArchived, id)
+	var i Policy
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.TriggerType,
+		&i.Yaml,
+		&i.WebhookSecretEncrypted,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.PausedAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }
 
 const getPolicyWebhookSecret = `-- name: GetPolicyWebhookSecret :one
-SELECT webhook_secret_encrypted FROM policies WHERE id = ?1
+SELECT webhook_secret_encrypted FROM policies WHERE id = ?1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetPolicyWebhookSecret(ctx context.Context, id string) (*string, error) {
@@ -178,7 +221,7 @@ func (q *Queries) GetPolicyWebhookSecret(ctx context.Context, id string) (*strin
 }
 
 const getPollActivePolicies = `-- name: GetPollActivePolicies :many
-SELECT id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at FROM policies WHERE trigger_type = 'poll' AND paused_at IS NULL
+SELECT id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at, deleted_at FROM policies WHERE trigger_type = 'poll' AND paused_at IS NULL AND deleted_at IS NULL
 `
 
 func (q *Queries) GetPollActivePolicies(ctx context.Context) ([]Policy, error) {
@@ -199,6 +242,7 @@ func (q *Queries) GetPollActivePolicies(ctx context.Context) ([]Policy, error) {
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.PausedAt,
+			&i.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -214,7 +258,7 @@ func (q *Queries) GetPollActivePolicies(ctx context.Context) ([]Policy, error) {
 }
 
 const getScheduledActivePolicies = `-- name: GetScheduledActivePolicies :many
-SELECT id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at FROM policies WHERE trigger_type = 'scheduled' AND paused_at IS NULL
+SELECT id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at, deleted_at FROM policies WHERE trigger_type = 'scheduled' AND paused_at IS NULL AND deleted_at IS NULL
 `
 
 func (q *Queries) GetScheduledActivePolicies(ctx context.Context) ([]Policy, error) {
@@ -235,6 +279,7 @@ func (q *Queries) GetScheduledActivePolicies(ctx context.Context) ([]Policy, err
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.PausedAt,
+			&i.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -250,7 +295,7 @@ func (q *Queries) GetScheduledActivePolicies(ctx context.Context) ([]Policy, err
 }
 
 const getSubscribedActivePolicies = `-- name: GetSubscribedActivePolicies :many
-SELECT id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at FROM policies WHERE trigger_type = 'subscribed' AND paused_at IS NULL
+SELECT id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at, deleted_at FROM policies WHERE trigger_type = 'subscribed' AND paused_at IS NULL AND deleted_at IS NULL
 `
 
 func (q *Queries) GetSubscribedActivePolicies(ctx context.Context) ([]Policy, error) {
@@ -271,6 +316,7 @@ func (q *Queries) GetSubscribedActivePolicies(ctx context.Context) ([]Policy, er
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.PausedAt,
+			&i.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -286,7 +332,7 @@ func (q *Queries) GetSubscribedActivePolicies(ctx context.Context) ([]Policy, er
 }
 
 const listPolicies = `-- name: ListPolicies :many
-SELECT id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at FROM policies ORDER BY created_at DESC
+SELECT id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at, deleted_at FROM policies WHERE deleted_at IS NULL ORDER BY created_at DESC
 `
 
 func (q *Queries) ListPolicies(ctx context.Context) ([]Policy, error) {
@@ -307,6 +353,7 @@ func (q *Queries) ListPolicies(ctx context.Context) ([]Policy, error) {
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.PausedAt,
+			&i.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -344,6 +391,7 @@ LEFT JOIN runs r ON r.id = (
     ORDER BY created_at DESC
     LIMIT 1
 )
+WHERE p.deleted_at IS NULL
 ORDER BY p.created_at DESC
 `
 
@@ -450,7 +498,7 @@ func (q *Queries) SetPolicyPausedAt(ctx context.Context, arg SetPolicyPausedAtPa
 }
 
 const setPolicyWebhookSecret = `-- name: SetPolicyWebhookSecret :exec
-UPDATE policies SET webhook_secret_encrypted = ?1, updated_at = ?2 WHERE id = ?3
+UPDATE policies SET webhook_secret_encrypted = ?1, updated_at = ?2 WHERE id = ?3 AND deleted_at IS NULL
 `
 
 type SetPolicyWebhookSecretParams struct {
@@ -467,8 +515,8 @@ func (q *Queries) SetPolicyWebhookSecret(ctx context.Context, arg SetPolicyWebho
 const updatePolicy = `-- name: UpdatePolicy :one
 UPDATE policies
 SET name = ?1, trigger_type = ?2, yaml = ?3, updated_at = ?4
-WHERE id = ?5
-RETURNING id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at
+WHERE id = ?5 AND deleted_at IS NULL
+RETURNING id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at, deleted_at
 `
 
 type UpdatePolicyParams struct {
@@ -500,6 +548,7 @@ func (q *Queries) UpdatePolicy(ctx context.Context, arg UpdatePolicyParams) (Pol
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PausedAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }

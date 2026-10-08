@@ -8,6 +8,8 @@ import { parseFanOutResult } from './fanOutResult'
 import type { FanOutResult } from './fanOutResult'
 import type { NodeHostnameIndex } from './nodeHostnames'
 import { parseToolOutput } from './toolOutput'
+import type { ApiRunResponder } from '@/api/types'
+import { DeciderLabel } from './DeciderLabel'
 import type { ToolBlockData } from './types'
 import styles from './ToolBlock.module.css'
 
@@ -18,6 +20,8 @@ interface Props {
   // Hostnames learned from list_nodes results in the same run, per server.
   // Only the entry for this block's own server is ever used.
   nodeHostnames?: NodeHostnameIndex
+  // request id -> who settled it; looked up by this block's approval_id.
+  responders?: ReadonlyMap<string, ApiRunResponder>
 }
 
 type BlockStatus = 'success' | 'error' | 'approval_pending' | 'denied' | 'pending'
@@ -69,12 +73,14 @@ function renderOutputBody(
   )
 }
 
-export function ToolBlock({ block, runId, runStatus, nodeHostnames }: Props) {
+export function ToolBlock({ block, runId, runStatus, nodeHostnames, responders }: Props) {
   const status = deriveStatus(block, runStatus)
   const [showRaw, setShowRaw] = useState(false)
 
   const toolName = block.call?.content.tool_name ?? block.approval?.content.tool ?? 'unknown'
   const serverId = block.call?.content.server_id
+  const approvalId = block.approval?.content.approval_id
+  const responder = approvalId ? responders?.get(approvalId) : undefined
 
   // Duration: diff between call created_at and result created_at.
   let duration: string | null = null
@@ -143,6 +149,12 @@ export function ToolBlock({ block, runId, runStatus, nodeHostnames }: Props) {
         )}
         {nothingRan && (
           <span className={styles.deniedPill}>Nothing ran</span>
+        )}
+        {responder?.decided_by && (responder.status === 'approved' || responder.status === 'rejected') && (
+          <DeciderLabel
+            verb={responder.status === 'approved' ? 'Approved' : 'Denied'}
+            username={responder.decided_by.username}
+          />
         )}
         <div className={styles.headerRight}>
           {status === 'success' && !nothingRan && (

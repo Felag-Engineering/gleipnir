@@ -12,8 +12,7 @@ import {
   formatTimeAgo,
   formatTokens,
   formatDuration,
-  computeRunDuration,
-} from '@/utils/format'
+  computeRunDuration, runAgentLabel } from '@/utils/format'
 import styles from './RecentRunsFeed.module.css'
 
 const EMPTY_STATE_BY_STEP = {
@@ -106,7 +105,7 @@ export function RecentRunsFeed() {
               onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') navigate(`/runs/${run.id}`) }}
             >
               <span className={styles.colPolicy}>
-                {run.policy_name || run.policy_id}
+                {runAgentLabel(run)}
               </span>
               <span className={styles.colStatus}>
                 <StatusBadge status={run.status as RunStatus} awaitingPermission={permissionAskRunIds.has(run.id)} />

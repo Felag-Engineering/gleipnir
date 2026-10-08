@@ -8,6 +8,7 @@ import { ThoughtBlock } from './ThoughtBlock'
 import { ToolBlock } from './ToolBlock'
 import { TriggerBlock } from './TriggerBlock'
 import { isToolBlock } from './types'
+import type { ApiRunResponder } from '@/api/types'
 import type { NodeHostnameIndex } from './nodeHostnames'
 import type { ParsedStep, ToolBlockData } from './types'
 import styles from './StepTimeline.module.css'
@@ -31,9 +32,11 @@ interface Props {
   // the visible items, so a filter or page boundary cannot hide the list_nodes
   // result a fan-out table takes its hostnames from.
   nodeHostnames?: NodeHostnameIndex
+  // request id -> who settled it, for the "Approved by" / "Answered by" labels.
+  responders?: ReadonlyMap<string, ApiRunResponder>
 }
 
-export function StepTimeline({ items, snapshot, systemPrompt, runId, runStatus, triggerType, triggerPayload, durationMs, nodeHostnames }: Props) {
+export function StepTimeline({ items, snapshot, systemPrompt, runId, runStatus, triggerType, triggerPayload, durationMs, nodeHostnames, responders }: Props) {
   const snapshotContent = snapshot?.type === 'capability_snapshot' ? snapshot.content : null
 
   if (items.length === 0 && !triggerType && !snapshotContent) {
@@ -69,6 +72,7 @@ export function StepTimeline({ items, snapshot, systemPrompt, runId, runStatus, 
               systemPrompt,
               durationMs,
               nodeHostnames,
+              responders,
               isFinalThought: idx === finalThoughtIndex,
             })}
           </li>
@@ -84,6 +88,7 @@ interface RenderContext {
   systemPrompt?: string | null
   durationMs?: number | null
   nodeHostnames?: NodeHostnameIndex
+  responders?: ReadonlyMap<string, ApiRunResponder>
   isFinalThought: boolean
 }
 
@@ -107,7 +112,7 @@ function findFinalThoughtIndex(items: (ParsedStep | ToolBlockData)[]): number {
 // future step types) that should degrade gracefully.
 function renderBlock(item: ParsedStep | ToolBlockData, ctx: RenderContext) {
   if (isToolBlock(item)) {
-    return <ToolBlock block={item} runId={ctx.runId} runStatus={ctx.runStatus} nodeHostnames={ctx.nodeHostnames} />
+    return <ToolBlock block={item} runId={ctx.runId} runStatus={ctx.runStatus} nodeHostnames={ctx.nodeHostnames} responders={ctx.responders} />
   }
 
   switch (item.type) {
@@ -122,7 +127,7 @@ function renderBlock(item: ParsedStep | ToolBlockData, ctx: RenderContext) {
     case 'complete':
       return <CompleteBlock step={item} durationMs={ctx.durationMs ?? null} />
     case 'feedback_request':
-      return <FeedbackBlock step={item} runId={ctx.runId} runStatus={ctx.runStatus} />
+      return <FeedbackBlock step={item} runId={ctx.runId} runStatus={ctx.runStatus} responders={ctx.responders} />
     case 'feedback_response':
       return <FeedbackBlock step={item} runId={ctx.runId} runStatus={ctx.runStatus} />
     default:

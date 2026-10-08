@@ -122,13 +122,14 @@ func (h *FeedbackHandler) Resolve(requestID, body string) error {
 // it is text the agent goes on to reason about, not a grant — so failing the
 // run over a transient write failure here would be strictly worse than the
 // stale-row risk it would avoid.
-func (h *FeedbackHandler) resolveFeedbackRecord(ctx context.Context, runID, feedbackID, responseText string) (won bool) {
+func (h *FeedbackHandler) resolveFeedbackRecord(ctx context.Context, runID, feedbackID, responseText string, respondedBy *string) (won bool) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	rows, err := h.sm.Queries().UpdateFeedbackRequestStatus(ctx, db.UpdateFeedbackRequestStatusParams{
-		Status:     "resolved",
-		Response:   &responseText,
-		ResolvedAt: &now,
-		ID:         feedbackID,
+		Status:      "resolved",
+		Response:    &responseText,
+		ResolvedAt:  &now,
+		RespondedBy: respondedBy,
+		ID:          feedbackID,
 	})
 	if err != nil {
 		logctx.Logger(ctx).WarnContext(ctx, "plugin feedback: UpdateFeedbackRequestStatus failed",
@@ -257,7 +258,7 @@ func (h *FeedbackHandler) Wait(ctx context.Context, runID, toolName, inputJSON, 
 			// hostsvc.WriteAuditStep (called by the Slack plugin) has already written
 			// it — writing another would create a duplicate (BLOCKING #4).
 			parsedText := parseFeedbackResponse(settlement.Response)
-			won := h.resolveFeedbackRecord(ctx, runID, feedbackID, parsedText)
+			won := h.resolveFeedbackRecord(ctx, runID, feedbackID, parsedText, settlement.ResponderUserID)
 			if settlement.Settle != nil {
 				settlement.Settle(ctx, won)
 			}

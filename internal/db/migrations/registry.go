@@ -50,5 +50,7 @@ func All() []Migration {
 		&AddMCPServerCallTimeout{},
 		&AddMCPServerRunAttribution{},
 		&AddMCPServerInfo{},
+		&AddPolicyArchive{},
+		&AddDeciderIdentity{},
 	}
 }

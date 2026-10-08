@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router'
 import { useRun } from '@/hooks/queries/runs'
-import { useRunSteps, useToolInput } from '@/hooks/queries/runs'
+import { useRunSteps, useRunResponders, useToolInput } from '@/hooks/queries/runs'
 import { useCancelRun } from '@/hooks/mutations/runs'
 import { useRunTimeline } from '@/hooks/useRunTimeline'
 import { useScrollSentinel } from '@/hooks/useScrollSentinel'
@@ -40,6 +40,8 @@ export default function RunDetailPage() {
     hasMore: hasOlderSteps,
     loadMore: loadOlderSteps,
   } = useRunSteps(id)
+
+  const { responders } = useRunResponders(id)
 
   // Only asked for while the run is actually parked on a human. A run that is
   // running or finished has no pending request, and polling for one on every
@@ -225,7 +227,7 @@ export default function RunDetailPage() {
                   </button>
                 )}
 
-                <StepTimeline items={timelineItems} snapshot={snapshotSteps[0] ?? null} systemPrompt={run.system_prompt} runId={id!} runStatus={run.status} triggerType={run.trigger_type} triggerPayload={run.trigger_payload} durationMs={duration} nodeHostnames={nodeHostnames} />
+                <StepTimeline items={timelineItems} snapshot={snapshotSteps[0] ?? null} systemPrompt={run.system_prompt} runId={id!} runStatus={run.status} triggerType={run.trigger_type} triggerPayload={run.trigger_payload} durationMs={duration} nodeHostnames={nodeHostnames} responders={responders} />
 
                 {hasMore && (
                   <button

@@ -149,6 +149,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: bufbuild/buf-setup-action@v1
         with:
+          # Pinned to the Makefile's BUF_VERSION: generated headers carry the
+          # buf binary's version, so an unpinned buf reports false drift (#1027).
+          version: '1.47.2'
           # Authenticate the buf release download to avoid the unauthenticated
           # GitHub API per-IP rate limit, which intermittently fails setup on
           # busy shared runners before buf ever runs.
@@ -176,6 +179,8 @@ jobs:
 
       - uses: bufbuild/buf-setup-action@v1
         with:
+          # Keep in step with BUF_VERSION in the Makefile (#1027).
+          version: '1.47.2'
           # See proto-lint: authenticate the release download to dodge the
           # unauthenticated GitHub API rate limit on shared runners.
           github_token: ${{ secrets.GITHUB_TOKEN }}

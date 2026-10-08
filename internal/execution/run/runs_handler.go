@@ -15,6 +15,7 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/execution/agent"
+	"github.com/felag-engineering/gleipnir/internal/http/auth"
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	"github.com/felag-engineering/gleipnir/internal/model"
@@ -33,6 +34,7 @@ type RunSummary struct {
 	ID                string  `json:"id"`
 	PolicyID          string  `json:"policy_id"`
 	PolicyName        string  `json:"policy_name"`
+	PolicyDeleted     bool    `json:"policy_deleted"` // the agent was deleted (archived); its runs stay readable
 	Status            string  `json:"status"`
 	TriggerType       string  `json:"trigger_type"`
 	TriggerPayload    string  `json:"trigger_payload"`
@@ -274,26 +276,30 @@ func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fetch policy names for all unique policy IDs in the result set.
-	// A missing policy (deleted after runs were created) is non-fatal.
-	policyNames := make(map[string]string)
+	// Archived (deleted) policies are included so their runs stay attributable.
+	// A policy row that is missing entirely is non-fatal.
+	policies := make(map[string]db.Policy)
 	for _, run := range rows {
-		if _, seen := policyNames[run.PolicyID]; !seen {
-			policyNames[run.PolicyID] = ""
+		if _, seen := policies[run.PolicyID]; seen {
+			continue
 		}
-	}
-	for pid := range policyNames {
-		policy, err := h.store.GetPolicy(ctx, pid)
+		policy, err := h.store.GetPolicyIncludingArchived(ctx, run.PolicyID)
 		if err == nil {
-			policyNames[pid] = policy.Name
-		} else if !errors.Is(err, sql.ErrNoRows) {
-			slog.Warn("GetPolicy for run list failed", "policy_id", pid, "err", err)
+			policies[run.PolicyID] = policy
+		} else if errors.Is(err, sql.ErrNoRows) {
+			policies[run.PolicyID] = db.Policy{}
+		} else {
+			slog.Warn("GetPolicyIncludingArchived for run list failed", "policy_id", run.PolicyID, "err", err)
+			policies[run.PolicyID] = db.Policy{}
 		}
 	}
 
 	result := make([]RunSummary, 0, len(rows))
 	for _, run := range rows {
 		s := toRunSummary(run)
-		s.PolicyName = policyNames[run.PolicyID]
+		policy := policies[run.PolicyID]
+		s.PolicyName = policy.Name
+		s.PolicyDeleted = policy.DeletedAt != nil
 		result = append(result, s)
 	}
 
@@ -321,12 +327,13 @@ func (h *RunsHandler) Get(w http.ResponseWriter, r *http.Request) {
 	// Fetch the associated policy name for the run detail view. A missing policy
 	// (e.g. deleted after the run was created) is non-fatal — the frontend can
 	// fall back to the policy_id.
-	policy, err := h.store.GetPolicy(ctx, run.PolicyID)
+	policy, err := h.store.GetPolicyIncludingArchived(ctx, run.PolicyID)
 	if err == nil {
 		summary.PolicyName = policy.Name
+		summary.PolicyDeleted = policy.DeletedAt != nil
 		summary.PolicyUpdatedAt = &policy.UpdatedAt
 	} else if !errors.Is(err, sql.ErrNoRows) {
-		slog.Warn("GetPolicy for run detail failed", "policy_id", run.PolicyID, "err", err)
+		slog.Warn("GetPolicyIncludingArchived for run detail failed", "policy_id", run.PolicyID, "err", err)
 	}
 
 	// Populate approval_expires_at only for runs actively waiting for approval.
@@ -582,6 +589,19 @@ func (h *RunsHandler) resolveRequest(w http.ResponseWriter, r *http.Request, run
 	httputil.WriteJSON(w, http.StatusAccepted, spec.successResponse)
 }
 
+// callerUserID returns the authenticated caller's user id for stamping onto a
+// decision record (decided_by / responded_by). It reads only the identity the
+// auth middleware put on the context, never the request body. nil means no
+// authenticated user was attached, recorded the same as a system decision.
+func callerUserID(ctx context.Context) *string {
+	user, ok := auth.UserFromContext(ctx)
+	if !ok || user == nil {
+		return nil
+	}
+	id := user.ID
+	return &id
+}
+
 // SubmitApproval handles POST /api/v1/runs/{runID}/approval.
 // It routes the approval decision to the BoundAgent's approval gate via the
 // RunManager. Returns 409 if no goroutine is waiting on the approval gate.
@@ -628,6 +648,7 @@ func (h *RunsHandler) SubmitApproval(w http.ResponseWriter, r *http.Request) {
 				Status:    dbStatus,
 				DecidedAt: &now,
 				Note:      nil,
+				DecidedBy: callerUserID(ctx),
 				ID:        requestID,
 			})
 		},
@@ -743,10 +764,11 @@ func (h *RunsHandler) SubmitFeedback(w http.ResponseWriter, r *http.Request) {
 	// consistency is secondary to unblocking the agent.
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	rows, err := h.store.UpdateFeedbackRequestStatus(ctx, db.UpdateFeedbackRequestStatusParams{
-		Status:     "resolved",
-		Response:   &req.Response,
-		ResolvedAt: &now,
-		ID:         pendingID,
+		Status:      "resolved",
+		Response:    &req.Response,
+		ResolvedAt:  &now,
+		RespondedBy: callerUserID(ctx),
+		ID:          pendingID,
 	})
 	if err != nil {
 		slog.Warn("UpdateFeedbackRequestStatus failed", "feedback_id", pendingID, "run_id", runID, "err", err)

@@ -891,12 +891,13 @@ func TestPolicyDeleteHandler(t *testing.T) {
 		}
 	})
 
-	t.Run("delete cascades to run, run_steps, and approval_requests", func(t *testing.T) {
+	t.Run("delete keeps run, run_steps, and approval_requests and archives the policy", func(t *testing.T) {
 		store := newPolicyHandlerStore(t)
 		insertTestPolicy(t, store, "pol1", "my-policy", "trigger: webhook\n")
 		insertTestRun(t, store, "run1", "pol1", "complete")
 		testutil.InsertRunStep(t, store, "step1", "run1", 1)
 		testutil.InsertApprovalRequest(t, store, "apr1", "run1", "some_tool")
+		testutil.InsertQueueEntry(t, store, "pol1", "webhook")
 
 		srv := httptest.NewServer(newPolicyRouter(store))
 		t.Cleanup(srv.Close)
@@ -912,36 +913,125 @@ func TestPolicyDeleteHandler(t *testing.T) {
 			t.Fatalf("status = %d, want 204", resp.StatusCode)
 		}
 
-		// Verify all records are gone.
-		var n int
-		db := store.DB()
-
-		if err := db.QueryRow(`SELECT COUNT(*) FROM policies WHERE id = 'pol1'`).Scan(&n); err != nil {
-			t.Fatalf("query policies: %v", err)
+		counts := map[string]int{
+			`SELECT COUNT(*) FROM policies WHERE id = 'pol1' AND deleted_at IS NOT NULL`: 1,
+			`SELECT COUNT(*) FROM runs WHERE id = 'run1'`:                                1,
+			`SELECT COUNT(*) FROM run_steps WHERE id = 'step1'`:                          1,
+			`SELECT COUNT(*) FROM approval_requests WHERE id = 'apr1'`:                   1,
+			`SELECT COUNT(*) FROM trigger_queue WHERE policy_id = 'pol1'`:                0,
 		}
-		if n != 0 {
-			t.Errorf("policies: got %d rows, want 0", n)
-		}
-
-		if err := db.QueryRow(`SELECT COUNT(*) FROM runs WHERE id = 'run1'`).Scan(&n); err != nil {
-			t.Fatalf("query runs: %v", err)
-		}
-		if n != 0 {
-			t.Errorf("runs: got %d rows, want 0", n)
-		}
-
-		if err := db.QueryRow(`SELECT COUNT(*) FROM run_steps WHERE id = 'step1'`).Scan(&n); err != nil {
-			t.Fatalf("query run_steps: %v", err)
-		}
-		if n != 0 {
-			t.Errorf("run_steps: got %d rows, want 0", n)
+		for query, want := range counts {
+			var n int
+			if err := store.DB().QueryRow(query).Scan(&n); err != nil {
+				t.Fatalf("%s: %v", query, err)
+			}
+			if n != want {
+				t.Errorf("%s = %d, want %d", query, n, want)
+			}
 		}
 
-		if err := db.QueryRow(`SELECT COUNT(*) FROM approval_requests WHERE id = 'apr1'`).Scan(&n); err != nil {
-			t.Fatalf("query approval_requests: %v", err)
+		// The archived policy is still resolvable for attributing its runs.
+		archived, err := store.GetPolicyIncludingArchived(context.Background(), "pol1")
+		if err != nil {
+			t.Fatalf("GetPolicyIncludingArchived: %v", err)
 		}
-		if n != 0 {
-			t.Errorf("approval_requests: got %d rows, want 0", n)
+		if archived.Name != "my-policy" || archived.DeletedAt == nil {
+			t.Errorf("archived policy = name %q deleted_at %v", archived.Name, archived.DeletedAt)
+		}
+	})
+
+	t.Run("archived policy is hidden from list, get, update, pause and a second delete", func(t *testing.T) {
+		store := newPolicyHandlerStore(t)
+		insertTestPolicy(t, store, "pol1", "my-policy", "trigger: webhook\n")
+		srv := httptest.NewServer(newPolicyRouter(store))
+		t.Cleanup(srv.Close)
+
+		doReq := func(method, path, body string) *http.Response {
+			t.Helper()
+			req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/yaml")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("%s %s: %v", method, path, err)
+			}
+			t.Cleanup(func() { resp.Body.Close() })
+			return resp
+		}
+
+		if resp := doReq(http.MethodDelete, "/policies/pol1", ""); resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("delete status = %d, want 204", resp.StatusCode)
+		}
+
+		for _, tc := range []struct{ method, path, body string }{
+			{http.MethodGet, "/policies/pol1", ""},
+			{http.MethodPut, "/policies/pol1", validPolicyYAML},
+			{http.MethodPost, "/policies/pol1/pause", ""},
+			{http.MethodDelete, "/policies/pol1", ""},
+		} {
+			if resp := doReq(tc.method, tc.path, tc.body); resp.StatusCode != http.StatusNotFound {
+				t.Errorf("%s %s status = %d, want 404", tc.method, tc.path, resp.StatusCode)
+			}
+		}
+
+		resp := doReq(http.MethodGet, "/policies", "")
+		var envelope struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode list: %v", err)
+		}
+		if len(envelope.Data) != 0 {
+			t.Errorf("list returned %d policies, want 0", len(envelope.Data))
+		}
+	})
+
+	t.Run("name of a deleted policy can be reused", func(t *testing.T) {
+		store := newPolicyHandlerStore(t)
+		srv := httptest.NewServer(newPolicyRouter(store))
+		t.Cleanup(srv.Close)
+
+		create := func() (int, string) {
+			t.Helper()
+			resp, err := http.Post(srv.URL+"/policies", "application/yaml", strings.NewReader(validPolicyYAML))
+			if err != nil {
+				t.Fatalf("POST /policies: %v", err)
+			}
+			defer resp.Body.Close()
+			var envelope struct {
+				Data struct {
+					ID string `json:"id"`
+				} `json:"data"`
+			}
+			_ = json.NewDecoder(resp.Body).Decode(&envelope)
+			return resp.StatusCode, envelope.Data.ID
+		}
+
+		status, firstID := create()
+		if status != http.StatusCreated {
+			t.Fatalf("first create status = %d, want 201", status)
+		}
+		if status, _ := create(); status == http.StatusCreated {
+			t.Fatal("duplicate live name was accepted")
+		}
+
+		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/policies/"+firstID, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("delete status = %d, want 204", resp.StatusCode)
+		}
+
+		status, secondID := create()
+		if status != http.StatusCreated {
+			t.Fatalf("re-create after delete status = %d, want 201", status)
+		}
+		if secondID == firstID {
+			t.Error("re-created policy reused the archived ID")
 		}
 	})
 }

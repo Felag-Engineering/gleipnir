@@ -37,6 +37,8 @@ export interface ApiRun {
   id: string
   policy_id: string
   policy_name?: string
+  /** True when the agent was deleted; its runs stay readable. */
+  policy_deleted?: boolean
   status: string
   trigger_type: string
   trigger_payload?: string
@@ -60,6 +62,20 @@ export interface ApiRunStep {
   content: string
   token_cost: number
   created_at: string
+}
+
+// Matches responders_handler.go → ResponderSummary
+// (GET /api/v1/runs/:runID/responders).
+//
+// Who settled an approval or feedback request. decided_by is null when the
+// system settled it (timeout), when the request predates the column, or when
+// the deciding account has since been deleted; the UI shows nothing for null.
+export interface ApiRunResponder {
+  request_id: string
+  kind: 'approval' | 'feedback'
+  status: string
+  decided_at: string | null
+  decided_by: { id: string; username: string } | null
 }
 
 // Matches decisions_handler.go → DecisionSummary

@@ -107,6 +107,18 @@ func TestManualTriggerHandler(t *testing.T) {
 			wantStatus: http.StatusNotFound,
 		},
 		{
+			name: "404 for archived policy",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestManualPolicy(t, store, "mp-archived", minimalManualPolicy)
+				if err := store.ArchivePolicy(context.Background(), "mp-archived", "2026-01-01T00:00:00Z"); err != nil {
+					t.Fatalf("ArchivePolicy: %v", err)
+				}
+			},
+			policyID:   "mp-archived",
+			body:       `{"message": "test"}`,
+			wantStatus: http.StatusNotFound,
+		},
+		{
 			name:       "400 for non-JSON body",
 			body:       "not json",
 			wantStatus: http.StatusBadRequest,

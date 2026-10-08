@@ -43,14 +43,14 @@ export function DeleteAgentModal({ policyId, policyName, onClose, onConfirm, isP
     <Modal title="Delete agent?" onClose={onClose} footer={footer}>
       <div className={styles.body}>
         <p className={styles.message}>
-          This will permanently delete <strong className={styles.name}>{policyName}</strong>
+          This will delete <strong className={styles.name}>{policyName}</strong> and stop it from running.
           {runsStatus === 'success' && runCount > 0 && (
-            <> and all <strong>{runCount} {runCount === 1 ? 'run' : 'runs'}</strong> in its audit trail</>
+            <> Its <strong>{runCount} {runCount === 1 ? 'run' : 'runs'}</strong> will stay in the audit trail.</>
           )}
           {runsStatus === 'success' && runCount === 0 && (
             <> (no runs in audit trail)</>
           )}
-          . This cannot be undone.
+          {' '}Run history is kept. The agent itself cannot be restored.
         </p>
 
         {requiresNameConfirm && (

@@ -48,6 +48,12 @@ type ApprovalSettlement struct {
 	// the request actually settled through this call — see Settle.
 	Approved bool
 
+	// DeciderUserID is the Gleipnir user the channel's actor resolved to via
+	// the admin-managed identity mapping, stamped onto approval_requests.decided_by.
+	// nil when the dispatcher has no verified mapping for the actor; it is
+	// never derived from an identity the plugin merely asserted.
+	DeciderUserID *string
+
 	// Settle, when non-nil, is called exactly once by ApprovalHandler.Wait
 	// after it attempts the approval_requests CAS: won=true means this
 	// call's decision is the one that is actually taking effect; won=false
@@ -94,6 +100,10 @@ type FeedbackSettlement struct {
 	// Response is the operator's freeform reply, valid only once won=true
 	// reaches Settle — see ApprovalSettlement.Settle's doc for why.
 	Response string
+
+	// ResponderUserID mirrors ApprovalSettlement.DeciderUserID for
+	// feedback_requests.responded_by.
+	ResponderUserID *string
 
 	// Settle mirrors ApprovalSettlement.Settle for the feedback path.
 	Settle func(ctx context.Context, won bool)

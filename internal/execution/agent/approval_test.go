@@ -317,6 +317,9 @@ type mockApprovalDispatcher struct {
 	approved bool
 	err      error
 
+	// deciderUserID is the verified Gleipnir user the settlement carries, if any.
+	deciderUserID *string
+
 	settleCalls []bool
 }
 
@@ -325,7 +328,8 @@ func (m *mockApprovalDispatcher) DispatchApproval(_ context.Context, _ ApprovalD
 		return ApprovalSettlement{}, m.err
 	}
 	return ApprovalSettlement{
-		Approved: m.approved,
+		Approved:      m.approved,
+		DeciderUserID: m.deciderUserID,
 		Settle: func(_ context.Context, won bool) {
 			m.settleCalls = append(m.settleCalls, won)
 		},

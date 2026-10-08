@@ -152,8 +152,8 @@ func TestPoller_Notify(t *testing.T) {
 			t.Fatal("setup: loop not started")
 		}
 
-		if err := store.DeletePolicy(context.Background(), "pol-notify-delete"); err != nil {
-			t.Fatalf("DeletePolicy: %v", err)
+		if err := store.ArchivePolicy(context.Background(), "pol-notify-delete", "2026-01-01T00:00:00Z"); err != nil {
+			t.Fatalf("ArchivePolicy: %v", err)
 		}
 
 		// Must not panic and must cancel the loop.
@@ -303,8 +303,8 @@ func TestScheduler_Notify(t *testing.T) {
 			t.Fatal("setup: expected 1 timer")
 		}
 
-		if err := store.DeletePolicy(context.Background(), "pol-notify-sched-del"); err != nil {
-			t.Fatalf("DeletePolicy: %v", err)
+		if err := store.ArchivePolicy(context.Background(), "pol-notify-sched-del", "2026-01-01T00:00:00Z"); err != nil {
+			t.Fatalf("ArchivePolicy: %v", err)
 		}
 
 		// Must not panic; timers should be cancelled.

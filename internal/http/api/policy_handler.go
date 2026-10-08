@@ -485,12 +485,16 @@ func (h *PolicyHandler) Resume(w http.ResponseWriter, r *http.Request) {
 }
 
 // Delete handles DELETE /api/v1/policies/{id}.
+//
+// Delete archives the policy (sets deleted_at) rather than removing the row:
+// runs, steps, approvals and feedback reference the policy and must stay
+// readable for audit. Archiving also clears the webhook secret, queued
+// triggers and poll state, and the notify below stops the background loops.
 func (h *PolicyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
-	// Capture trigger type before deleting — we need it to notify the right
-	// background component after the row is gone (Notify will observe ErrNoRows
-	// and cancel any running loop/timers cleanly).
+	// Capture trigger type before archiving so Notify can address the right
+	// background component.
 	existing, err := h.store.GetPolicy(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -512,14 +516,19 @@ func (h *PolicyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ON DELETE CASCADE handles runs, run_steps, and approval_requests automatically.
-	if err := h.store.DeletePolicy(r.Context(), id); err != nil {
+	deletedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := h.store.ArchivePolicy(r.Context(), id, deletedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httputil.WriteError(w, http.StatusNotFound, "policy not found", "")
+			return
+		}
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete policy", err.Error())
 		return
 	}
 
-	// Notify after delete so the background component cancels any running loop
-	// or pending timers. Notify reads ErrNoRows from the DB and cancels cleanly.
+	// Notify after archiving so the background component cancels any running
+	// loop or pending timers. Notify reads ErrNoRows (archived policies are
+	// invisible to GetPolicy) and cancels cleanly.
 	h.notifyTriggers(r.Context(), id, model.TriggerType(existing.TriggerType))
 
 	w.WriteHeader(http.StatusNoContent)

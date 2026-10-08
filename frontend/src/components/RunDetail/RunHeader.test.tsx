@@ -153,3 +153,31 @@ describe('RunHeader — status badge for a tool-initiated permission ask', () =>
     expect(screen.getByText('Running')).toBeInTheDocument()
   })
 })
+
+describe('RunHeader — deleted agent', () => {
+  function renderDeleted() {
+    return render(
+      <MemoryRouter>
+        <RunHeader
+          run={{ ...BASE_RUN, status: 'failed', policy_deleted: true }}
+          toolCallCount={0}
+          tokenTotal={0}
+          duration={60_000}
+          capabilitySnapshot={null}
+          showRetry
+          onRetry={vi.fn()}
+        />
+      </MemoryRouter>,
+    )
+  }
+
+  it('marks the agent name as deleted', () => {
+    renderDeleted()
+    expect(screen.getByText('test-policy (deleted)')).toBeInTheDocument()
+  })
+
+  it('does not offer retry for a deleted agent', () => {
+    renderDeleted()
+    expect(screen.queryByRole('button', { name: /retry/i })).not.toBeInTheDocument()
+  })
+})
