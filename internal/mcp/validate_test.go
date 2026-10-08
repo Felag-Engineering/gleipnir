@@ -117,43 +117,31 @@ func TestNewArgValidator_Compile(t *testing.T) {
 			},
 		},
 		{
-			// NUMERIC FIDELITY, non-empty params: KNOWN, DISCLOSED limitation
-			// of NarrowSchema (see its doc comment) — narrowing round-trips
-			// the schema through json.Unmarshal/json.Marshal WITHOUT
-			// UseNumber, so the 32-digit const is re-rendered to "1e+31".
-			// The exact original literal no longer satisfies the compiled
-			// schema; the re-rendered value does. This is a value change,
-			// not cosmetic re-rendering (contrast the "1.500"/"1e-21" cases
-			// documented on NarrowSchema, which are semantically identical).
-			// A future fix to NarrowSchema (see the caveat in its doc
-			// comment) should make this assertion fail loudly rather than
-			// silently pass, which is why it is pinned here explicitly.
-			name:   "numeric fidelity lost with non-empty params (disclosed NarrowSchema limitation)",
+			// NUMERIC FIDELITY, non-empty params (#777): NarrowSchema decodes
+			// with UseNumber, so the 32-digit const survives narrowing. The
+			// exact literal validates; the float64-rendered 1e+31 does not.
+			name:   "numeric fidelity preserved with non-empty params",
 			schema: json.RawMessage(`{"type":"object","properties":{"n":{"const":10000000000000000000000000000001}}}`),
 			params: map[string]any{"n": true},
 			check: func(t *testing.T, v *ArgValidator) {
 				t.Helper()
 				exact := map[string]any{"n": json.Number("10000000000000000000000000000001")}
-				if err := v.Validate(exact); err == nil {
-					t.Error("exact 32-digit literal should now be REJECTED — narrowing re-rendered the const through float64")
+				if err := v.Validate(exact); err != nil {
+					t.Errorf("exact 32-digit literal should satisfy the narrowed schema's const: %v", err)
 				}
 				rerendered := map[string]any{"n": json.Number("1e+31")}
-				if err := v.Validate(rerendered); err != nil {
-					t.Errorf("re-rendered 1e+31 constant should now be accepted: %v", err)
+				if err := v.Validate(rerendered); err == nil {
+					t.Error("1e+31 is a different value from the 32-digit const and should be rejected")
 				}
 			},
 		},
 		{
-			// NUMERIC OVERFLOW: once params is non-empty, NarrowSchema's
-			// plain json.Unmarshal into map[string]any rejects a numeric
-			// literal outside float64 range outright. This is exactly the
-			// failure decision (d) is designed to catch and degrade from —
-			// compileArgValidator falls back to key-presence for this tool.
-			name:        "numeric literal exceeding float64 range fails to compile once narrowed",
-			schema:      json.RawMessage(`{"type":"object","properties":{"n":{"const":1e400}}}`),
-			params:      map[string]any{"n": true},
-			wantErr:     true,
-			errContains: "narrowing schema",
+			// A literal outside float64 range used to fail narrowing; it now
+			// survives and compiles (the validator library keeps arbitrary
+			// precision).
+			name:   "numeric literal exceeding float64 range compiles once narrowed",
+			schema: json.RawMessage(`{"type":"object","properties":{"n":{"const":1e400}}}`),
+			params: map[string]any{"n": true},
 		},
 	}
 

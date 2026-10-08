@@ -336,6 +336,60 @@ func TestValidateCall(t *testing.T) {
 	}
 }
 
+// TestNarrowSchema_PreservesNumericLiterals pins that narrowing keeps numeric
+// literals byte-for-byte. Re-rendering them through float64 changed
+// 10000000000000000000000000000001 to 1e+31 (a real const/enum value change)
+// and made 1e400 an unmarshal error (#777).
+func TestNarrowSchema_PreservesNumericLiterals(t *testing.T) {
+	tests := []struct {
+		name    string
+		literal string
+	}{
+		{name: "trailing zeros", literal: "1.500"},
+		{name: "tiny exponent form", literal: "0.000000000000000000001"},
+		{name: "beyond float64 precision", literal: "10000000000000000000000000000001"},
+		{name: "beyond float64 range", literal: "1e400"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			schema := json.RawMessage(`{"type":"object","properties":{` +
+				`"kept":{"const":` + tc.literal + `,"enum":[` + tc.literal + `],"minimum":` + tc.literal + `},` +
+				`"dropped":{"const":` + tc.literal + `}},` +
+				`"required":["kept","dropped"]}`)
+			params := map[string]any{"kept": true}
+
+			got, err := NarrowSchema(schema, params)
+			if err != nil {
+				t.Fatalf("NarrowSchema: %v", err)
+			}
+
+			want := `{"properties":{"kept":{"const":` + tc.literal + `,"enum":[` + tc.literal + `],"minimum":` + tc.literal + `}},"required":["kept"],"type":"object"}`
+			if string(got) != want {
+				t.Errorf("narrowed schema\ngot:  %s\nwant: %s", got, want)
+			}
+
+			if err := ValidateCall(got, params, map[string]any{"kept": 1.0}); err != nil {
+				t.Errorf("ValidateCall on narrowed schema: %v", err)
+			}
+
+			// Downstream: even 1e400 compiles (the validator library keeps
+			// numbers as big rationals), so a preserved literal never forces
+			// the degrade-to-allowlist path in compileArgValidator.
+			if _, err := NewArgValidator(schema, params); err != nil {
+				t.Errorf("NewArgValidator: %v", err)
+			}
+		})
+	}
+}
+
+func TestNarrowSchema_RejectsTrailingData(t *testing.T) {
+	_, err := NarrowSchema(json.RawMessage(`{"properties":{"a":{}}} {}`), map[string]any{"a": true})
+	if err == nil {
+		t.Fatal("expected error for trailing data, got nil")
+	}
+}
+
 // containsStr is a simple substring check to avoid importing strings in tests.
 func containsStr(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || len(sub) == 0 ||
