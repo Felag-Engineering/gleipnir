@@ -45,6 +45,14 @@ func (m *mockQuerier) UpsertSystemSetting(_ context.Context, key, value, updated
 	return nil
 }
 
+func (m *mockQuerier) SetSystemSettingIfEmpty(_ context.Context, key, value, updatedAt string) (bool, error) {
+	if row, ok := m.settings[key]; ok && row.Value != "" {
+		return false, nil
+	}
+	m.settings[key] = db.SystemSetting{Key: key, Value: value, UpdatedAt: updatedAt}
+	return true, nil
+}
+
 func (m *mockQuerier) DeleteSystemSetting(_ context.Context, key string) error {
 	delete(m.settings, key)
 	return nil
@@ -554,6 +562,72 @@ func TestSetProviderKey_AutoEnablesModels(t *testing.T) {
 			t.Errorf("model %q should be enabled after SetProviderKey", modelName)
 		}
 	}
+}
+
+func TestSetProviderKey_SeedsDefaultModel(t *testing.T) {
+	anthropicModels := []llm.ModelInfo{{Name: "claude-a"}, {Name: "claude-b"}}
+	openaiModels := []llm.ModelInfo{{Name: "gpt-a"}}
+
+	tests := []struct {
+		name         string
+		existing     string // pre-set default_model value; "" means no row
+		emptyRow     bool   // pre-set default_model row holding ""
+		provider     string
+		models       map[string][]llm.ModelInfo
+		wantDefault  string
+		wantNoRowSet bool
+	}{
+		{name: "first key with empty default sets first curated model", provider: "anthropic",
+			models: map[string][]llm.ModelInfo{"anthropic": anthropicModels}, wantDefault: "anthropic:claude-a"},
+		{name: "empty-string row is treated as unset", emptyRow: true, provider: "anthropic",
+			models: map[string][]llm.ModelInfo{"anthropic": anthropicModels}, wantDefault: "anthropic:claude-a"},
+		{name: "existing default is untouched", existing: "openai:gpt-a", provider: "anthropic",
+			models: map[string][]llm.ModelInfo{"anthropic": anthropicModels}, wantDefault: "openai:gpt-a"},
+		{name: "provider with no models leaves default unset", provider: "anthropic",
+			models: map[string][]llm.ModelInfo{"anthropic": nil}, wantNoRowSet: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			q := newMockQuerier()
+			if tc.existing != "" {
+				q.settings["default_model"] = db.SystemSetting{Key: "default_model", Value: tc.existing}
+			}
+			if tc.emptyRow {
+				q.settings["default_model"] = db.SystemSetting{Key: "default_model", Value: ""}
+			}
+			h := newTestHandlerWithLister(q, &stubLister{models: tc.models})
+
+			rec := setProviderKeyRequest(h, tc.provider, "sk-test")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+			}
+
+			got, ok := q.settings["default_model"]
+			if tc.wantNoRowSet {
+				if ok && got.Value != "" {
+					t.Fatalf("default_model = %q, want unset", got.Value)
+				}
+				return
+			}
+			if got.Value != tc.wantDefault {
+				t.Fatalf("default_model = %q, want %q", got.Value, tc.wantDefault)
+			}
+		})
+	}
+
+	t.Run("second provider key does not change the seeded default", func(t *testing.T) {
+		q := newMockQuerier()
+		h := newTestHandlerWithLister(q, &stubLister{models: map[string][]llm.ModelInfo{
+			"anthropic": anthropicModels, "openai": openaiModels,
+		}})
+
+		setProviderKeyRequest(h, "anthropic", "sk-1")
+		setProviderKeyRequest(h, "openai", "sk-2")
+
+		if got := q.settings["default_model"].Value; got != "anthropic:claude-a" {
+			t.Fatalf("default_model = %q, want anthropic:claude-a", got)
+		}
+	})
 }
 
 func TestSetProviderKey_ListerErrorDoesNotFailRequest(t *testing.T) {

@@ -15,6 +15,9 @@ export function useSetProviderKey() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.admin.providers })
       void queryClient.invalidateQueries({ queryKey: queryKeys.models.all })
       void queryClient.invalidateQueries({ queryKey: queryKeys.admin.modelsAll })
+      // The server seeds default_model when the first provider key is saved.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.admin.settings })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.config.all })
     },
   })
 }

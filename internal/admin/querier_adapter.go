@@ -30,6 +30,18 @@ func (a *QuerierAdapter) UpsertSystemSetting(ctx context.Context, key, value, up
 	})
 }
 
+func (a *QuerierAdapter) SetSystemSettingIfEmpty(ctx context.Context, key, value, updatedAt string) (bool, error) {
+	n, err := a.q.SetSystemSettingIfEmpty(ctx, db.SetSystemSettingIfEmptyParams{
+		Key:       key,
+		Value:     value,
+		UpdatedAt: updatedAt,
+	})
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 func (a *QuerierAdapter) DeleteSystemSetting(ctx context.Context, key string) error {
 	return a.q.DeleteSystemSetting(ctx, key)
 }

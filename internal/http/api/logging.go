@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
+
+	"github.com/felag-engineering/gleipnir/internal/infra/clientip"
 )
 
 // loggerContextKey is the private key type used to store the per-request
@@ -31,18 +33,15 @@ func LoggerFromContext(ctx context.Context) *slog.Logger {
 
 // slogContext is middleware that enriches the request context with a structured
 // logger carrying request_id and remote_addr. It must run after middleware.RequestID
-// and middleware.RealIP in the chain so those values are available.
+// and the clientip middleware in the chain so those values are available.
 //
 // It does not emit any log line — that responsibility belongs to slogAccess.
 func slogContext(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqID := middleware.GetReqID(r.Context())
-		// middleware.RealIP mutates r.RemoteAddr directly — no separate context value.
-		remoteAddr := r.RemoteAddr
-
 		lg := slog.Default().With(
 			"request_id", reqID,
-			"remote_addr", remoteAddr,
+			"remote_addr", clientip.FromRequest(r),
 		)
 
 		next.ServeHTTP(w, r.WithContext(withLogger(r.Context(), lg)))

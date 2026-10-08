@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -16,6 +17,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/http/auth"
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
 	"github.com/felag-engineering/gleipnir/internal/http/sse"
+	"github.com/felag-engineering/gleipnir/internal/infra/clientip"
 	"github.com/felag-engineering/gleipnir/internal/llm"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
@@ -124,6 +126,10 @@ type RouterConfig struct {
 	Handlers HandlerBundle
 	Services BackgroundServices
 	Metadata Metadata
+
+	// TrustedProxies are the reverse proxies whose forwarding headers are
+	// believed when resolving a client IP. Empty trusts none (#758).
+	TrustedProxies []netip.Prefix
 }
 
 // BuildRouter constructs the complete chi.Router for the application.
@@ -143,10 +149,9 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	r := chi.NewRouter()
 	r.Use(httputil.SecurityHeaders)
 	r.Use(middleware.RequestID)
-	// RemoteAddr feeds the access log / logctx only — never an authorization
-	// input — so the XFF-spoofing hazard is limited to log pollution here.
-	//lint:ignore SA1019 deprecated upstream for XFF spoofing; replacement with a trusted-proxy-aware resolver is tracked in #758
-	r.Use(middleware.RealIP)
+	// The resolved client IP (trusted-proxy-aware, #758) feeds the access log and
+	// the login/setup rate limiter. r.RemoteAddr is never rewritten.
+	r.Use(clientip.New(cfg.TrustedProxies).Middleware)
 	r.Use(slogContext) // enriches context with request_id + remote_addr logger
 	r.Use(httpMetrics) // records Prometheus duration histogram and request counter
 	r.Use(slogAccess)  // emits structured JSON access log after each response
@@ -189,15 +194,15 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	// Auth routes that do not require an existing session.
 	//
 	// /setup and /login are brute-force / credential-stuffing targets, so they
-	// carry a per-IP rate limit (httprate, keyed by middleware.RealIP) returning
+	// carry a per-IP rate limit (httprate, keyed by the resolved client IP) returning
 	// 429 once the window is exhausted (#491). This is the real rate limiter;
 	// middleware.Throttle only caps concurrent in-flight requests and is kept
 	// alongside it purely to bound concurrent bcrypt work (CPU), not as a
 	// brute-force control. Setup is effectively one-time, so its window is tighter.
 	r.Route("/api/v1/auth", func(r chi.Router) {
 		r.Get("/status", cfg.Handlers.AuthHandler.Status)
-		r.With(httprate.LimitByIP(5, time.Minute), middleware.Throttle(5), httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Post("/setup", cfg.Handlers.AuthHandler.Setup)
-		r.With(httprate.LimitByIP(10, time.Minute), middleware.Throttle(10), httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Post("/login", cfg.Handlers.AuthHandler.Login)
+		r.With(httprate.Limit(5, time.Minute, httprate.WithKeyFuncs(rateLimitKeyByClientIP)), middleware.Throttle(5), httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Post("/setup", cfg.Handlers.AuthHandler.Setup)
+		r.With(httprate.Limit(10, time.Minute, httprate.WithKeyFuncs(rateLimitKeyByClientIP)), middleware.Throttle(10), httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Post("/login", cfg.Handlers.AuthHandler.Login)
 		r.Post("/logout", cfg.Handlers.AuthHandler.Logout)
 	})
 

@@ -577,3 +577,47 @@ func TestLoad_PluginSubnetPoolValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestLoad_TrustedProxies(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   string
+		want    []string
+		wantErr bool
+	}{
+		{"unset trusts nobody", "", nil, false},
+		{"whitespace only trusts nobody", "  ", nil, false},
+		{"cidr", "10.0.0.0/8", []string{"10.0.0.0/8"}, false},
+		{"bare ipv4 becomes /32", "192.168.1.5", []string{"192.168.1.5/32"}, false},
+		{"bare ipv6 becomes /128", "fd00::1", []string{"fd00::1/128"}, false},
+		{"mixed list with spaces", "10.0.0.0/8, 192.168.1.5 ,fd00::/8", []string{"10.0.0.0/8", "192.168.1.5/32", "fd00::/8"}, false},
+		{"non-canonical cidr is masked", "10.1.2.3/8", []string{"10.0.0.0/8"}, false},
+		{"garbage", "not-an-ip", nil, true},
+		{"one bad entry fails the lot", "10.0.0.0/8,300.1.1.1", nil, true},
+		{"empty entry", "10.0.0.0/8,,192.168.1.5", nil, true},
+		{"hostname", "proxy.example.com", nil, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GLEIPNIR_ENCRYPTION_KEY", strings.Repeat("a", 64))
+			t.Setenv("GLEIPNIR_TRUSTED_PROXIES", tc.value)
+			cfg, err := Load()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("Load() succeeded, want error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load() error: %v", err)
+			}
+			var got []string
+			for _, p := range cfg.TrustedProxies {
+				got = append(got, p.String())
+			}
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Errorf("TrustedProxies = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

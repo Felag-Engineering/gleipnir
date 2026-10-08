@@ -578,8 +578,8 @@ func TestBuildRouter(t *testing.T) {
 	}
 }
 
-// postLogin fires a login request from the given client IP (via X-Real-IP, which
-// middleware.RealIP folds into RemoteAddr for the rate limiter to key on).
+// postLogin fires a login request from the given client IP (as the TCP peer; with no
+// trusted proxies configured, forwarding headers are ignored).
 //
 // The body intentionally omits the password so the handler short-circuits with a
 // 400 ("password is required") BEFORE the constant-time dummy-bcrypt branch
@@ -594,7 +594,7 @@ func postLogin(t *testing.T, router http.Handler, ip string) int {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"username":"nobody"}`))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Real-IP", ip)
+	req.RemoteAddr = ip + ":40000"
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	return w.Code
@@ -626,5 +626,26 @@ func TestLoginRateLimitedPerIP(t *testing.T) {
 	// A different IP is keyed separately and must still be allowed through.
 	if code := postLogin(t, router, "203.0.113.5"); code == http.StatusTooManyRequests {
 		t.Error("a fresh IP was rate-limited; the limit is global, not per-IP")
+	}
+}
+
+// TestLoginRateLimit_NotBypassedByForwardingHeaders guards #758: with no trusted
+// proxies configured, rotating X-Forwarded-For / X-Real-IP must not mint fresh
+// rate-limit buckets.
+func TestLoginRateLimit_NotBypassedByForwardingHeaders(t *testing.T) {
+	router := buildTestRouter(t)
+
+	const limit = 10
+	for i := range limit + 1 {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"username":"nobody"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "198.51.100.77:40000"
+		req.Header.Set("X-Forwarded-For", fmt.Sprintf("192.0.2.%d", i+1))
+		req.Header.Set("X-Real-IP", fmt.Sprintf("192.0.2.%d", i+100))
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if i == limit && w.Code != http.StatusTooManyRequests {
+			t.Errorf("request %d with rotated forwarding headers: status = %d, want 429", i+1, w.Code)
+		}
 	}
 }

@@ -126,10 +126,17 @@ All variables are read at startup. Changing a value requires restarting the stac
 | `GLEIPNIR_OAUTH_REFRESH_LEAD` | `15m` | Lead-time window before OAuth token expiry within which the scanner triggers a refresh attempt. |
 | `GLEIPNIR_PLUGIN_REQUEST_SCAN_INTERVAL` | `30s` | How often to scan for plugin channel requests that have timed out. |
 | `GLEIPNIR_PLUGIN_DEDUP_SWEEP_INTERVAL` | `10m` | How often the dedup sweeper evicts entries older than the 1-hour dedup window. |
+| `GLEIPNIR_TRUSTED_PROXIES` | *(empty)* | Comma-separated IPs/CIDRs of reverse proxies whose `X-Forwarded-For` / `X-Real-IP` headers are believed. Empty trusts none: the client IP is the direct TCP peer. See [Running behind a reverse proxy](#running-behind-a-reverse-proxy). |
 
 `GLEIPNIR_PORT` is a Docker Compose variable (not read by the Go server directly). It controls which host port the container exposes and defaults to `8080` (matching the container's internal port).
 
 Installing and managing plugins — see [Plugins](plugins.md).
+
+## Running behind a reverse proxy
+
+Gleipnir uses the client IP in the access log, the login/setup rate limiter, and the IP shown on each session. By default it uses the address of the direct TCP connection and ignores `X-Forwarded-For` and `X-Real-IP`, so a client cannot choose its own IP. Behind a reverse proxy that means every request appears to come from the proxy, and the login rate limit is shared by all users.
+
+Set `GLEIPNIR_TRUSTED_PROXIES` to the proxy's address (or network) to fix that, for example `GLEIPNIR_TRUSTED_PROXIES=172.18.0.0/16,192.168.1.5`. Headers are honoured only on connections from those addresses. `X-Forwarded-For` is read from the right, skipping trusted hops, and the first untrusted address is the client; an unparseable entry stops the walk at the last trusted hop. `True-Client-IP` is never used. An invalid entry stops the server at startup. Your proxy must append to (not blindly pass through) `X-Forwarded-For`, which nginx (`$proxy_add_x_forwarded_for`), Caddy and Traefik do by default.
 
 ## Viewing structured logs
 

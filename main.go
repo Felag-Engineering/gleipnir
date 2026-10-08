@@ -490,8 +490,9 @@ func run(cfg config.Config, pluginSubnetPool netip.Prefix) error {
 
 	// Phase 3: build the router.
 	r := api.BuildRouter(api.RouterConfig{
-		Handlers: handlers,
-		Services: services,
+		Handlers:       handlers,
+		Services:       services,
+		TrustedProxies: cfg.TrustedProxies,
 		Metadata: api.Metadata{
 			Version:                       version.Version,
 			StartTime:                     startTime,

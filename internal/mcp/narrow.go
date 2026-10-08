@@ -1,8 +1,10 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 )
 
@@ -12,26 +14,18 @@ import (
 // no "properties" key, or it is not a map, the original schema is also
 // returned unchanged.
 //
-// Numeric-literal caveat: when params is non-empty this function round-trips
-// the schema through json.Unmarshal/json.Marshal into map[string]any WITHOUT
-// json.Decoder.UseNumber, so numeric literals are re-rendered through
-// float64. Verified: "10000000000000000000000000000001" -> "1e+31" and
-// "0.000000000000000000001" -> "1e-21" are cosmetic (semantically
-// identical), but the first is a genuine value change -- an instance equal to
-// the original 32-digit literal would no longer satisfy a schema const/enum
-// built from it -- and a literal outside float64 range fails to unmarshal at
-// all ("1e400" -> "cannot unmarshal number 1e400 into Go value of type
-// float64"). This is pre-existing behavior that already applied to the
-// LLM-facing narrowed schema; #744 (ArgValidator, validate.go) is the first
-// consumer for which it can affect enforcement rather than only presentation.
-// Not fixed here -- see validate.go and the #744 PR description.
+// Numeric literals are preserved byte-for-byte: the schema is decoded with
+// UseNumber, so a json.Number keeps its original text through re-marshalling
+// (1.500, 1e-21, a 32-digit const, and 1e400 all survive). Decoding through
+// float64 would silently change const/enum values and reject out-of-range
+// literals, which matters now that ArgValidator enforces against this output.
 func NarrowSchema(schema json.RawMessage, params map[string]any) (json.RawMessage, error) {
 	if len(params) == 0 {
 		return schema, nil
 	}
 
-	var schemaMap map[string]any
-	if err := json.Unmarshal(schema, &schemaMap); err != nil {
+	schemaMap, err := decodeSchemaObject(schema)
+	if err != nil {
 		return nil, fmt.Errorf("unmarshal schema: %w", err)
 	}
 
@@ -77,6 +71,22 @@ func NarrowSchema(schema json.RawMessage, params map[string]any) (json.RawMessag
 		return nil, fmt.Errorf("marshal narrowed schema: %w", err)
 	}
 	return out, nil
+}
+
+// decodeSchemaObject decodes a JSON Schema object with UseNumber so numeric
+// literals stay verbatim json.Number values. Trailing data after the value is
+// rejected, as json.Unmarshal did.
+func decodeSchemaObject(schema json.RawMessage) (map[string]any, error) {
+	dec := json.NewDecoder(bytes.NewReader(schema))
+	dec.UseNumber()
+	var m map[string]any
+	if err := dec.Decode(&m); err != nil {
+		return nil, err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, fmt.Errorf("unexpected trailing data after JSON value")
+	}
+	return m, nil
 }
 
 // ValidateCall is the ADR-017 key-allowlist gate: it enforces the operator's
@@ -145,8 +155,8 @@ func ValidateCall(narrowedSchema json.RawMessage, params map[string]any, input m
 		return nil
 	}
 
-	var schemaMap map[string]any
-	if err := json.Unmarshal(narrowedSchema, &schemaMap); err != nil {
+	schemaMap, err := decodeSchemaObject(narrowedSchema)
+	if err != nil {
 		return fmt.Errorf("unmarshal schema: %w", err)
 	}
 

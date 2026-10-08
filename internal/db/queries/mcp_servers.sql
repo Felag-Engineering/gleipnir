@@ -25,10 +25,16 @@ DELETE FROM mcp_servers WHERE id = :id;
 -- old backend must not outlive a repoint (the no-downgrade guard would
 -- otherwise keep a modern pin on a legacy backend forever, #764). The CASE
 -- reads the row's pre-update url.
+--
+-- auth_headers_encrypted is cleared on the same condition and in the same
+-- statement: header values are write-only over the API, so keeping them across
+-- a repoint would let an operator who cannot read them exfiltrate them to a
+-- collector URL. No window exists where the new url runs with the old headers.
 -- name: UpdateMCPServer :one
 UPDATE mcp_servers
 SET name = :name,
     protocol_version = CASE WHEN url <> :url THEN NULL ELSE protocol_version END,
+    auth_headers_encrypted = CASE WHEN url <> :url THEN NULL ELSE auth_headers_encrypted END,
     url = :url, ca_cert_pem = :ca_cert_pem, call_timeout_seconds = :call_timeout_seconds, run_attribution = :run_attribution
 WHERE id = :id
 RETURNING *;

@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -67,6 +68,11 @@ type Config struct {
 	// networks, which is why Gleipnir allocates explicitly instead of letting
 	// the daemon choose.
 	PluginSubnetPool string // GLEIPNIR_PLUGIN_SUBNET_POOL, default 10.83.0.0/16
+
+	// TrustedProxies lists the reverse proxies whose X-Forwarded-For /
+	// X-Real-IP headers are believed when resolving a client address (#758).
+	// Empty means trust nobody: the client is the direct TCP peer.
+	TrustedProxies []netip.Prefix // GLEIPNIR_TRUSTED_PROXIES, default empty
 }
 
 // Load reads configuration from environment variables, applies defaults for
@@ -90,6 +96,11 @@ func Load() (Config, error) {
 	// netguard.CheckPoolOverlap.
 	pluginSubnetPool := envOrDefault("GLEIPNIR_PLUGIN_SUBNET_POOL", "10.83.0.0/16")
 	if err := validatePluginSubnetPool(pluginSubnetPool); err != nil {
+		return Config{}, err
+	}
+
+	trustedProxies, err := parseTrustedProxies(os.Getenv("GLEIPNIR_TRUSTED_PROXIES"))
+	if err != nil {
 		return Config{}, err
 	}
 
@@ -117,6 +128,7 @@ func Load() (Config, error) {
 		LLMRetryInitialBackoff:    envDuration("GLEIPNIR_LLM_RETRY_INITIAL_BACKOFF", 1*time.Second),
 		LLMRetryMaxBackoff:        envDuration("GLEIPNIR_LLM_RETRY_MAX_BACKOFF", 30*time.Second),
 		PluginSubnetPool:          pluginSubnetPool,
+		TrustedProxies:            trustedProxies,
 
 		ElicitationMaxRequestStateBytes: envInt("GLEIPNIR_ELICITATION_MAX_REQUEST_STATE_BYTES", 16<<10),
 		ElicitationMaxRequests:          envInt("GLEIPNIR_ELICITATION_MAX_REQUESTS", 8),
@@ -154,6 +166,35 @@ func validateEncryptionKey(raw string) error {
 	}
 
 	return nil
+}
+
+// parseTrustedProxies parses GLEIPNIR_TRUSTED_PROXIES: a comma-separated list
+// of CIDRs or bare IPs (a bare IP is a single-host /32 or /128). An empty value
+// yields no trusted proxies. A malformed entry is a startup error rather than
+// being skipped: a typo that silently dropped a proxy would make every client
+// appear to be that proxy.
+func parseTrustedProxies(raw string) ([]netip.Prefix, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var out []netip.Prefix
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			return nil, fmt.Errorf("GLEIPNIR_TRUSTED_PROXIES %q contains an empty entry", raw)
+		}
+		if prefix, err := netip.ParsePrefix(entry); err == nil {
+			out = append(out, prefix.Masked())
+			continue
+		}
+		addr, err := netip.ParseAddr(entry)
+		if err != nil {
+			return nil, fmt.Errorf("GLEIPNIR_TRUSTED_PROXIES entry %q is not a valid IP or CIDR", entry)
+		}
+		addr = addr.Unmap()
+		out = append(out, netip.PrefixFrom(addr, addr.BitLen()))
+	}
+	return out, nil
 }
 
 // minPluginSubnetPoolBits is the narrowest prefix length (i.e. the widest
