@@ -157,8 +157,14 @@ func buildTestRouterWithAdminAndSubscribedValidator(t *testing.T, store *db.Stor
 	if subscribedValidator == nil {
 		subscribedValidator = policy.NewSubscribedBindingValidator(emptyInstanceResolver{}, nil)
 	}
-	policyService := policy.NewService(store, registry, providerRegistry, providerRegistry, systemSettings)
-	policyService.WithSubscribedBindingValidator(subscribedValidator)
+	policyService := policy.NewService(policy.ServiceDeps{
+		Store:               store,
+		Lookup:              registry,
+		ModelValidator:      providerRegistry,
+		OptionsValidator:    providerRegistry,
+		Settings:            systemSettings,
+		SubscribedValidator: subscribedValidator,
+	})
 	policyWebhookHandler := api.NewPolicyWebhookHandler(policyService)
 
 	return api.BuildRouter(api.RouterConfig{

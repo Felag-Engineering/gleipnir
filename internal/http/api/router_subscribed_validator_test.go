@@ -95,7 +95,7 @@ func TestPolicySaveRunsSubscribedBindingValidation(t *testing.T) {
 		// above with a 201. BuildRouter now refuses it, so "binding validation
 		// is off" cannot be reached by forgetting something.
 		store := testutil.NewTestStore(t)
-		incomplete := policy.NewService(store, nil, nil, nil, nil)
+		incomplete := policy.NewService(policy.ServiceDeps{Store: store})
 
 		defer func() {
 			r := recover()

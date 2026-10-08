@@ -40,8 +40,7 @@ func (f *fakeWebhookEncrypter) DecryptWebhookSecret(ciphertext string) (string, 
 func newWebhookSecretRouter(t *testing.T) (http.Handler, *policy.Service) {
 	t.Helper()
 	store := testutil.NewTestStore(t)
-	svc := policy.NewService(store, nil, nil, nil, nil)
-	svc.WithWebhookSecretEncrypter(&fakeWebhookEncrypter{})
+	svc := policy.NewService(policy.ServiceDeps{Store: store, WebhookSecretEncrypter: &fakeWebhookEncrypter{}})
 
 	h := api.NewPolicyWebhookHandler(svc)
 	r := chi.NewRouter()
@@ -236,7 +235,7 @@ func TestPolicyWebhookRotate_PolicyNotFound(t *testing.T) {
 func TestPolicyWebhookRotate_EncryptionUnavailable(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	// No encrypter set — simulates GLEIPNIR_ENCRYPTION_KEY absent.
-	svc := policy.NewService(store, nil, nil, nil, nil)
+	svc := policy.NewService(policy.ServiceDeps{Store: store})
 
 	h := api.NewPolicyWebhookHandler(svc)
 	r := chi.NewRouter()

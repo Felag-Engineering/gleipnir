@@ -60,7 +60,7 @@ agent:
 
 func TestService_Create(t *testing.T) {
 	store := testutil.NewTestStore(t)
-	svc := NewService(store, nil, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store})
 
 	result, err := svc.Create(context.Background(), validYAML)
 	if err != nil {
@@ -82,7 +82,7 @@ func TestService_Create(t *testing.T) {
 
 func TestService_Create_ValidationError(t *testing.T) {
 	store := testutil.NewTestStore(t)
-	svc := NewService(store, nil, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store})
 
 	_, err := svc.Create(context.Background(), `name: ""`)
 	if err == nil {
@@ -92,7 +92,7 @@ func TestService_Create_ValidationError(t *testing.T) {
 
 func TestService_Create_ParseError(t *testing.T) {
 	store := testutil.NewTestStore(t)
-	svc := NewService(store, nil, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store})
 
 	_, err := svc.Create(context.Background(), "{{bad yaml")
 	if err == nil {
@@ -103,7 +103,7 @@ func TestService_Create_ParseError(t *testing.T) {
 func TestService_Create_ToolWarnings(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	lookup := &stubLookup{existing: map[string]bool{}}
-	svc := NewService(store, lookup, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store, Lookup: lookup})
 
 	result, err := svc.Create(context.Background(), validYAML)
 	if err != nil {
@@ -120,7 +120,7 @@ func TestService_Create_ToolWarnings(t *testing.T) {
 func TestService_Create_NoWarningWhenToolExists(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	lookup := &stubLookup{existing: map[string]bool{"github.list_repos": true}}
-	svc := NewService(store, lookup, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store, Lookup: lookup})
 
 	result, err := svc.Create(context.Background(), validYAML)
 	if err != nil {
@@ -161,7 +161,7 @@ func TestService_Create_UnknownParamKeyWarnsAndSaves(t *testing.T) {
 		existing:  map[string]bool{"github.list_repos": true},
 		canonical: map[string]json.RawMessage{"github.list_repos": json.RawMessage(`{"type":"object","properties":{"b":{}}}`)},
 	}
-	svc := NewService(store, lookup, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store, Lookup: lookup})
 
 	result, err := svc.Create(context.Background(), validYAMLWithParams)
 	if err != nil {
@@ -184,7 +184,7 @@ func TestService_Create_OneOfGovernedParamKeyWarnsAndSaves(t *testing.T) {
 		existing:  map[string]bool{"github.list_repos": true},
 		canonical: map[string]json.RawMessage{"github.list_repos": json.RawMessage(`{"oneOf":[{"properties":{"a":{}}},{"properties":{"b":{}}}]}`)},
 	}
-	svc := NewService(store, lookup, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store, Lookup: lookup})
 
 	result, err := svc.Create(context.Background(), validYAMLWithParams)
 	if err != nil {
@@ -198,7 +198,7 @@ func TestService_Create_OneOfGovernedParamKeyWarnsAndSaves(t *testing.T) {
 func TestService_Create_MissingCanonicalSchemaWarnsAndSaves(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	lookup := &stubLookup{existing: map[string]bool{"github.list_repos": true}}
-	svc := NewService(store, lookup, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store, Lookup: lookup})
 
 	result, err := svc.Create(context.Background(), validYAMLWithParams)
 	if err != nil {
@@ -219,7 +219,7 @@ func TestService_Create_MissingCanonicalSchemaWarnsAndSaves(t *testing.T) {
 func TestService_Create_AllowsToolWithoutParamsWhenCanonicalSchemaMissing(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	lookup := &stubLookup{existing: map[string]bool{"github.list_repos": true}}
-	svc := NewService(store, lookup, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store, Lookup: lookup})
 
 	result, err := svc.Create(context.Background(), validYAML)
 	if err != nil {
@@ -236,7 +236,7 @@ func TestService_Create_AcceptsPlainTopLevelParamKeys(t *testing.T) {
 		existing:  map[string]bool{"github.list_repos": true},
 		canonical: map[string]json.RawMessage{"github.list_repos": json.RawMessage(`{"type":"object","properties":{"a":{},"b":{}}}`)},
 	}
-	svc := NewService(store, lookup, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store, Lookup: lookup})
 
 	result, err := svc.Create(context.Background(), validYAMLWithParams)
 	if err != nil {
@@ -253,7 +253,7 @@ func TestService_Update_UnknownParamKeyWarnsAndPersists(t *testing.T) {
 		existing:  map[string]bool{"github.list_repos": true},
 		canonical: map[string]json.RawMessage{"github.list_repos": json.RawMessage(`{"type":"object","properties":{"a":{},"b":{}}}`)},
 	}
-	svc := NewService(store, lookup, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store, Lookup: lookup})
 
 	createResult, err := svc.Create(context.Background(), validYAMLWithParams)
 	if err != nil {
@@ -284,7 +284,7 @@ func TestService_Update_UnknownParamKeyWarnsAndPersists(t *testing.T) {
 func TestService_Create_ParamsSkippedWhenToolNotInRegistry(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	lookup := &stubLookup{existing: map[string]bool{}}
-	svc := NewService(store, lookup, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store, Lookup: lookup})
 
 	result, err := svc.Create(context.Background(), validYAMLWithParams)
 	if err != nil {
@@ -306,7 +306,7 @@ func TestService_Create_LookupErrorWithParamsWarnsAndSaves(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	lookupErr := errors.New("db unavailable")
 	lookup := &stubLookup{err: lookupErr}
-	svc := NewService(store, lookup, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store, Lookup: lookup})
 
 	result, err := svc.Create(context.Background(), validYAMLWithParams)
 	if err != nil {
@@ -328,7 +328,7 @@ func TestService_Create_LookupErrorWithoutParamsIsNonBlocking(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	lookupErr := errors.New("db unavailable")
 	lookup := &stubLookup{err: lookupErr}
-	svc := NewService(store, lookup, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store, Lookup: lookup})
 
 	result, err := svc.Create(context.Background(), validYAML)
 	if err != nil {
@@ -345,7 +345,7 @@ func TestService_Create_LookupErrorWithoutParamsIsNonBlocking(t *testing.T) {
 
 func TestService_Update(t *testing.T) {
 	store := testutil.NewTestStore(t)
-	svc := NewService(store, nil, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store})
 
 	createResult, err := svc.Create(context.Background(), validYAML)
 	if err != nil {
@@ -377,7 +377,7 @@ agent:
 
 func TestService_Update_ChangedTriggerType_WebhookToManual(t *testing.T) {
 	store := testutil.NewTestStore(t)
-	svc := NewService(store, nil, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store})
 
 	createResult, err := svc.Create(context.Background(), validYAML)
 	if err != nil {
@@ -418,7 +418,7 @@ func TestService_Create_ContextCancelled(t *testing.T) {
 
 	store := testutil.NewTestStore(t)
 	lookup := &stubLookup{existing: map[string]bool{}}
-	svc := NewService(store, lookup, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store, Lookup: lookup})
 
 	// Parse + validate don't use context, so we test checkToolRefs directly.
 	// a.three carries a params block: since ctx is already cancelled, none of
@@ -472,7 +472,7 @@ func TestService_Create_ContextCancelled_NoParamsNoIssues(t *testing.T) {
 
 	store := testutil.NewTestStore(t)
 	lookup := &stubLookup{existing: map[string]bool{}}
-	svc := NewService(store, lookup, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store, Lookup: lookup})
 
 	yamlWithManyTools := `
 name: ctx-test
@@ -505,7 +505,7 @@ agent:
 func TestService_Create_ModelValidatorCalled(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	mv := &stubModelValidator{err: errors.New("model not found")}
-	svc := NewService(store, nil, mv, nil, nil)
+	svc := NewService(ServiceDeps{Store: store, ModelValidator: mv})
 
 	// Model validation failures are non-blocking — the policy is saved and
 	// the error is reported as a warning so a missing API key doesn't hard-block saves.
@@ -526,7 +526,7 @@ func TestService_Create_ModelValidatorCalled(t *testing.T) {
 
 func TestService_Create_NilModelValidatorSkipsCheck(t *testing.T) {
 	store := testutil.NewTestStore(t)
-	svc := NewService(store, nil, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store})
 
 	result, err := svc.Create(context.Background(), validYAML)
 	if err != nil {
@@ -540,7 +540,7 @@ func TestService_Create_NilModelValidatorSkipsCheck(t *testing.T) {
 func TestService_Create_ModelValidationWarningIncludesContext(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	mv := &stubModelValidator{err: fmt.Errorf("unknown Anthropic model %q", "claude-sonnet-4-6")}
-	svc := NewService(store, nil, mv, nil, nil)
+	svc := NewService(ServiceDeps{Store: store, ModelValidator: mv})
 
 	result, err := svc.Create(context.Background(), validYAMLWithOptions)
 	if err != nil {
@@ -556,7 +556,7 @@ func TestService_Create_ModelValidationWarningIncludesContext(t *testing.T) {
 
 func TestService_Update_ModelValidatorCalled(t *testing.T) {
 	store := testutil.NewTestStore(t)
-	svc := NewService(store, nil, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store})
 
 	createResult, err := svc.Create(context.Background(), validYAML)
 	if err != nil {
@@ -564,7 +564,7 @@ func TestService_Update_ModelValidatorCalled(t *testing.T) {
 	}
 
 	mv := &stubModelValidator{err: errors.New("model not found")}
-	svcWithMV := NewService(store, nil, mv, nil, nil)
+	svcWithMV := NewService(ServiceDeps{Store: store, ModelValidator: mv})
 
 	// Model validation failures are non-blocking — the update succeeds and the
 	// error surfaces as a warning.
@@ -611,7 +611,7 @@ agent:
 func TestService_Create_ValidOptionsPass(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	ov := &stubOptionsValidator{err: nil}
-	svc := NewService(store, nil, nil, ov, nil)
+	svc := NewService(ServiceDeps{Store: store, OptionsValidator: ov})
 
 	result, err := svc.Create(context.Background(), validYAMLWithOptions)
 	if err != nil {
@@ -625,7 +625,7 @@ func TestService_Create_ValidOptionsPass(t *testing.T) {
 func TestService_Create_InvalidOptionsError(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	ov := &stubOptionsValidator{err: fmt.Errorf("provider %q: temperature must be between 0 and 1", "anthropic")}
-	svc := NewService(store, nil, nil, ov, nil)
+	svc := NewService(ServiceDeps{Store: store, OptionsValidator: ov})
 
 	_, err := svc.Create(context.Background(), validYAMLWithOptions)
 	if err == nil {
@@ -648,7 +648,7 @@ func TestService_Create_InvalidOptionsError(t *testing.T) {
 func TestService_Create_UnknownProviderError(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	ov := &stubOptionsValidator{err: fmt.Errorf("unknown provider %q: cannot validate model options", "fake")}
-	svc := NewService(store, nil, nil, ov, nil)
+	svc := NewService(ServiceDeps{Store: store, OptionsValidator: ov})
 
 	_, err := svc.Create(context.Background(), validYAMLWithOptions)
 	if err == nil {
@@ -661,7 +661,7 @@ func TestService_Create_UnknownProviderError(t *testing.T) {
 
 func TestService_Create_NilOptionsValidatorSkipsCheck(t *testing.T) {
 	store := testutil.NewTestStore(t)
-	svc := NewService(store, nil, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store})
 
 	result, err := svc.Create(context.Background(), validYAMLWithOptions)
 	if err != nil {
@@ -675,7 +675,7 @@ func TestService_Create_NilOptionsValidatorSkipsCheck(t *testing.T) {
 func TestService_Create_WithModelSectionPasses(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	ov := &stubOptionsValidator{err: nil}
-	svc := NewService(store, nil, nil, ov, nil)
+	svc := NewService(ServiceDeps{Store: store, OptionsValidator: ov})
 
 	// validYAML includes a model section; verify the policy is created successfully.
 	result, err := svc.Create(context.Background(), validYAML)
@@ -730,7 +730,7 @@ func TestCreate_NoModelInYAMLAndNoSystemDefault(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	// nil settings means resolveDefaults returns ("", ""), and the validator
 	// must surface a clear error rather than silently passing empty strings.
-	svc := NewService(store, nil, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store})
 
 	_, err := svc.Create(context.Background(), noModelYAML)
 	if err == nil {
@@ -754,7 +754,7 @@ func TestCreate_NoModelInYAMLAndNoSystemDefault(t *testing.T) {
 
 func TestCreate_UsesSystemDefault_WhenYAMLModelOmitted(t *testing.T) {
 	store := testutil.NewTestStore(t)
-	svc := NewService(store, nil, nil, nil, newTestSettings("anthropic", "claude-sonnet-4-6"))
+	svc := NewService(ServiceDeps{Store: store, Settings: newTestSettings("anthropic", "claude-sonnet-4-6")})
 
 	result, err := svc.Create(context.Background(), noModelYAML)
 	if err != nil {
@@ -782,7 +782,7 @@ func TestService_Update_InvalidOptionsError(t *testing.T) {
 	store := testutil.NewTestStore(t)
 
 	// Create with nil validator first so the initial save succeeds.
-	svc := NewService(store, nil, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store})
 	createResult, err := svc.Create(context.Background(), validYAML)
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -790,7 +790,7 @@ func TestService_Update_InvalidOptionsError(t *testing.T) {
 
 	// Now update with a validator that rejects the options.
 	ov := &stubOptionsValidator{err: fmt.Errorf("provider %q: temperature must be between 0 and 1", "anthropic")}
-	svcWithOV := NewService(store, nil, nil, ov, nil)
+	svcWithOV := NewService(ServiceDeps{Store: store, OptionsValidator: ov})
 
 	_, err = svcWithOV.Update(context.Background(), createResult.Policy.ID, validYAMLWithOptions)
 	if err == nil {
@@ -957,8 +957,7 @@ agent:
 func newWebhookService(t *testing.T) (*Service, *db.Store) {
 	t.Helper()
 	store := testutil.NewTestStore(t)
-	svc := NewService(store, nil, nil, nil, nil)
-	svc.WithWebhookSecretEncrypter(&fakeEncrypter{key: 0xAB})
+	svc := NewService(ServiceDeps{Store: store, WebhookSecretEncrypter: &fakeEncrypter{key: 0xAB}})
 	return svc, store
 }
 
@@ -1008,7 +1007,7 @@ func TestService_RotateWebhookSecret_NotWebhook(t *testing.T) {
 func TestService_RotateWebhookSecret_NoEncrypter(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	// No encrypter set.
-	svc := NewService(store, nil, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store})
 	ctx := context.Background()
 
 	createResult, err := svc.Create(ctx, webhookYAML)
@@ -1050,7 +1049,7 @@ func TestService_GetWebhookSecret_NullColumn(t *testing.T) {
 
 func TestService_GetWebhookSecret_NoEncrypter(t *testing.T) {
 	store := testutil.NewTestStore(t)
-	svc := NewService(store, nil, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store})
 	ctx := context.Background()
 
 	createResult, err := svc.Create(ctx, webhookYAML)
@@ -1107,7 +1106,7 @@ func TestService_UpdatePreservesWebhookSecretEncrypted(t *testing.T) {
 
 func TestService_Create_RejectsLegacyWebhookSecret(t *testing.T) {
 	store := testutil.NewTestStore(t)
-	svc := NewService(store, nil, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store})
 
 	legacyYAML := `
 name: legacy
@@ -1134,7 +1133,7 @@ agent:
 
 func TestService_Update_RejectsLegacyWebhookSecret(t *testing.T) {
 	store := testutil.NewTestStore(t)
-	svc := NewService(store, nil, nil, nil, nil)
+	svc := NewService(ServiceDeps{Store: store})
 
 	// Create clean policy first.
 	createResult, err := svc.Create(context.Background(), webhookYAML)
