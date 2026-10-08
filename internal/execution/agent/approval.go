@@ -30,6 +30,7 @@ type ApprovalHandler struct {
 	channelDispatcher ApprovalChannelDispatcher
 	policyID          string
 	audienceID        string
+	gateRoutes        GateRouteRecorder // nil = route not tracked (tests, no run manager)
 
 	// gatesOpened counts how many gates THIS handler has opened via Wait. It
 	// exists solely to skip the stale-value drain (issue #961 review R2) on
@@ -54,6 +55,13 @@ func WithApprovalChannelDispatch(d ApprovalChannelDispatcher, audienceID, policy
 		h.audienceID = audienceID
 		h.policyID = policyID
 	}
+}
+
+// WithApprovalGateRoutes makes the handler report where each open gate is
+// waiting (plugin channel or in-app) so the UI answer path can refuse a
+// request a plugin channel owns.
+func WithApprovalGateRoutes(r GateRouteRecorder) ApprovalHandlerOption {
+	return func(h *ApprovalHandler) { h.gateRoutes = r }
 }
 
 // NewApprovalHandler constructs an ApprovalHandler. approvalCh must be
@@ -224,16 +232,27 @@ func (h *ApprovalHandler) Wait(ctx context.Context, runID string, entry resolved
 	// below; all other results (approved, denied, error) are terminal.
 	if h.channelDispatcher != nil && h.audienceID != "" {
 		prompt := formatApprovalPrompt(internalName, input)
+		// Marked plugin-owned before dispatching: the dispatcher only learns
+		// the chosen entry partway through, and a UI answer slipping in before
+		// then would win the CAS the plugin's answer later loses.
+		if h.gateRoutes != nil {
+			h.gateRoutes.RecordGateRoute(runID, GateRoute{Plugin: true})
+			defer h.gateRoutes.ClearGateRoute(runID)
+		}
 		settlement, dispatchErr := h.channelDispatcher.DispatchApproval(ctx, ApprovalDispatchRequest{
-			AudienceID: h.audienceID,
-			RunID:      runID,
-			PolicyID:   h.policyID,
-			ToolName:   internalName,
-			Prompt:     prompt,
-			ExpiresAt:  &deadline,
+			AudienceID:    h.audienceID,
+			RunID:         runID,
+			PolicyID:      h.policyID,
+			ToolName:      internalName,
+			Prompt:        prompt,
+			ExpiresAt:     &deadline,
+			OnPluginRoute: pluginRouteRecorder(h.gateRoutes, runID),
 		})
 		if errors.Is(dispatchErr, ErrApprovalRouteToInApp) {
 			// Audience resolved to in-app; fall through to the approvalCh select.
+			if h.gateRoutes != nil {
+				h.gateRoutes.ClearGateRoute(runID)
+			}
 		} else if dispatchErr != nil {
 			return fmt.Errorf("plugin approval dispatch for tool %s: %w", internalName, dispatchErr)
 		} else {

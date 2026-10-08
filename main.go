@@ -340,29 +340,14 @@ func run(cfg config.Config, pluginSubnetPool netip.Prefix) error {
 	// up wired to a service that nothing routed through. One construction site
 	// is what makes RequireComplete below able to speak for the whole system.
 	//
-	// *mcp.Registry satisfies policy.ToolLookup. Assign through a nil check: a
-	// typed-nil *mcp.Registry stored in the interface would make Service.lookup
-	// non-nil and panic on first use.
-	var toolLookup policy.ToolLookup
-	if registry != nil {
-		toolLookup = registry
-	}
 	// adminDeps is fetched once, here, because ManifestSnap is needed before
 	// the plugin admin surface itself is built below.
 	pluginAdminDeps := pluginSys.adminDeps()
 
 	subscribedResolver := &pluginInstanceResolver{q: store.Queries()}
-	policyService := policy.NewService(store, toolLookup, providerRegistry, providerRegistry, systemSettings)
-	policyService.WithSubscribedBindingValidator(
-		policy.NewSubscribedBindingValidator(subscribedResolver, pluginAdminDeps.ManifestSnap),
-	)
-	if webhookEncrypter != nil {
-		policyService.WithWebhookSecretEncrypter(webhookEncrypter)
-	}
-	// Refuse to serve with a collaborator missing. A nil one does not fail —
-	// it makes its check quietly do nothing, which is exactly what nobody
-	// noticed twice (#871).
-	if err := policyService.RequireComplete(); err != nil {
+	policyService, err := newPolicyService(store, registry, providerRegistry, systemSettings,
+		policy.NewSubscribedBindingValidator(subscribedResolver, pluginAdminDeps.ManifestSnap), webhookEncrypter)
+	if err != nil {
 		return fmt.Errorf("wire policy service: %w", err)
 	}
 	policyWebhookHandler := api.NewPolicyWebhookHandler(policyService)
@@ -836,4 +821,42 @@ func (r *pluginInstanceResolver) ResolveInstanceByName(ctx context.Context, name
 		return "", fmt.Errorf("resolve instance %q: %w", name, err)
 	}
 	return inst.ID, nil
+}
+
+// newPolicyService is the one place the policy.Service is assembled, shared by
+// run() and the wiring test. It refuses an incomplete service: a nil
+// collaborator does not fail, it makes its check quietly do nothing, which is
+// what went unnoticed twice (#871).
+//
+// webhookEncrypter is the single optional collaborator (nil without an
+// encryption key); it is passed as the concrete adapter so the nil check
+// happens here, where a typed-nil pointer cannot leak into the interface.
+func newPolicyService(
+	store *db.Store,
+	registry *mcp.Registry,
+	providerRegistry *llm.ProviderRegistry,
+	systemSettings *settings.Service,
+	subscribedValidator *policy.SubscribedBindingValidator,
+	webhookEncrypter *webhookSecretEncrypterAdapter,
+) (*policy.Service, error) {
+	deps := policy.ServiceDeps{
+		Store:               store,
+		ModelValidator:      providerRegistry,
+		OptionsValidator:    providerRegistry,
+		Settings:            systemSettings,
+		SubscribedValidator: subscribedValidator,
+	}
+	// Assign through nil checks: a typed-nil pointer stored in an interface
+	// field would be non-nil and panic on first use.
+	if registry != nil {
+		deps.Lookup = registry
+	}
+	if webhookEncrypter != nil {
+		deps.WebhookSecretEncrypter = webhookEncrypter
+	}
+	svc := policy.NewService(deps)
+	if err := svc.RequireComplete(); err != nil {
+		return nil, err
+	}
+	return svc, nil
 }

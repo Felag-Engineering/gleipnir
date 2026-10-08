@@ -466,6 +466,7 @@ type resolveSpec struct {
 	waitingRunStatus   model.RunStatus
 	sendToGate         func() error
 	gateErrorMsg       string
+	requestNoun        string // "approval" or "feedback", for the plugin-routed refusal message
 	fetchPending       func(ctx context.Context) (string, error)
 	updateStatus       func(ctx context.Context, requestID string) (int64, error)
 	alreadyResolvedMsg string
@@ -539,6 +540,10 @@ func (h *RunsHandler) resolveRequest(w http.ResponseWriter, r *http.Request, run
 		return
 	}
 
+	if h.refusePluginRouted(w, ctx, runID, spec.requestNoun) {
+		return
+	}
+
 	requestID, err := spec.fetchPending(ctx)
 	if err != nil {
 		slog.Error(spec.logTagPending, "run_id", runID, "err", err)
@@ -589,6 +594,32 @@ func (h *RunsHandler) resolveRequest(w http.ResponseWriter, r *http.Request, run
 	httputil.WriteJSON(w, http.StatusAccepted, spec.successResponse)
 }
 
+// refusePluginRouted writes a 409 and returns true when the run's open gate is
+// actually waiting on a plugin channel. An in-app answer there would win the
+// request's CAS and the plugin's later answer would lose it, failing a run the
+// operator just saw approved. The decision keys on the route the gate really
+// took (RunManager.GateRoute), not on the policy's configured audience: a
+// request that fell back to in-app is answerable here whatever the policy says.
+func (h *RunsHandler) refusePluginRouted(w http.ResponseWriter, ctx context.Context, runID, noun string) bool {
+	route := h.manager.GateRoute(runID)
+	if !route.Plugin {
+		return false
+	}
+
+	where := "a plugin channel"
+	if route.InstanceID != "" {
+		instance, err := h.store.GetPluginInstanceByID(ctx, route.InstanceID)
+		if err != nil {
+			slog.Warn("plugin instance lookup for routed gate failed", "run_id", runID, "instance_id", route.InstanceID, "err", err)
+		} else {
+			where = fmt.Sprintf("the %q plugin channel", instance.InstanceName)
+		}
+	}
+	httputil.WriteError(w, http.StatusConflict,
+		fmt.Sprintf("this %s request is waiting on %s; answer it there", noun, where), "")
+	return true
+}
+
 // callerUserID returns the authenticated caller's user id for stamping onto a
 // decision record (decided_by / responded_by). It reads only the identity the
 // auth middleware put on the context, never the request body. nil means no
@@ -631,6 +662,7 @@ func (h *RunsHandler) SubmitApproval(w http.ResponseWriter, r *http.Request) {
 		waitingRunStatus: model.RunStatusWaitingForApproval,
 		sendToGate:       func() error { return h.manager.SendApproval(runID, approved) },
 		gateErrorMsg:     "no active approval gate for this run",
+		requestNoun:      "approval",
 		fetchPending: func(ctx context.Context) (string, error) {
 			pendingApprovals, err := h.store.GetPendingApprovalRequestsByRun(ctx, runID)
 			if err != nil {
@@ -689,6 +721,10 @@ func (h *RunsHandler) SubmitFeedback(w http.ResponseWriter, r *http.Request) {
 		}
 		slog.Error("GetRun query failed", "run_id", runID, "err", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "internal server error", "")
+		return
+	}
+
+	if h.refusePluginRouted(w, ctx, runID, "feedback") {
 		return
 	}
 

@@ -58,6 +58,7 @@ func (a *FeedbackChannelAdapter) DispatchFeedback(ctx context.Context, req agent
 		RunID:    req.RunID,
 		PolicyID: req.PolicyID,
 		ToolName: req.ToolName,
+		OnRouted: req.OnPluginRoute,
 		// "mode":"feedback" tells the Slack plugin to use the threaded-reply UX
 		// instead of button blocks.  Injected transiently — not persisted in the
 		// audience entry's config_json and not declared in the manifest ConfigSchema.

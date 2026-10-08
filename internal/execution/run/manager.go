@@ -54,6 +54,11 @@ type trackedRun struct {
 	// (ADR-055). Same lifecycle as feedbackResolver: set atomically with
 	// Register, nilled by CancelAll.
 	toolInputResolver ToolInputResolver
+	// gateRoute is where the run's open approval/feedback gate is waiting
+	// right now. The zero value (not plugin-routed) means the in-app path can
+	// answer it. In-memory only: a restart marks in-flight runs interrupted
+	// (ADR-011), so no gate outlives the process that recorded its route.
+	gateRoute agent.GateRoute
 	// waiters are closed by Deregister to unblock callers of WaitForDeregistration.
 	waiters []chan struct{}
 }
@@ -225,6 +230,33 @@ func (m *RunManager) Cancel(runID string) error {
 		m.pluginCanceller.CancelRun(runID)
 	}
 	return nil
+}
+
+// RecordGateRoute implements agent.GateRouteRecorder. No-op for an
+// unregistered run.
+func (m *RunManager) RecordGateRoute(runID string, route agent.GateRoute) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if tr, ok := m.runs[runID]; ok {
+		tr.gateRoute = route
+	}
+}
+
+// ClearGateRoute implements agent.GateRouteRecorder: the gate is closed or
+// answerable in-app.
+func (m *RunManager) ClearGateRoute(runID string) {
+	m.RecordGateRoute(runID, agent.GateRoute{})
+}
+
+// GateRoute reports where the run's open gate is waiting. The zero GateRoute
+// is returned for an unregistered run.
+func (m *RunManager) GateRoute(runID string) agent.GateRoute {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if tr, ok := m.runs[runID]; ok {
+		return tr.gateRoute
+	}
+	return agent.GateRoute{}
 }
 
 // Deregister removes the entry for the given run ID and signals the WaitGroup.

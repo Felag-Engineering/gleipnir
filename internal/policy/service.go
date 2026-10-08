@@ -87,19 +87,40 @@ type Service struct {
 	subscribedValidator *SubscribedBindingValidator // nil skips plugin binding validation
 }
 
-// NewService returns a policy Service. lookup may be nil if MCP registry
-// checking is not yet available — tool reference warnings will be skipped.
-// modelValidator may be nil — model name validation will be skipped.
-// optionsValidator may be nil — provider options validation will be skipped.
-// s may be nil — model defaults will be unset, causing policies that
-// omit the model block to fail validation with a clear error.
-func NewService(store *db.Store, lookup ToolLookup, modelValidator ModelValidator, optionsValidator OptionsValidator, s *settings.Service) *Service {
+// ServiceDeps names every collaborator of Service. Fields are named rather than
+// positional so that two collaborators satisfied by the same concrete value
+// (the provider registry backs both ModelValidator and OptionsValidator)
+// cannot be swapped or dropped silently.
+//
+// Every field except WebhookSecretEncrypter is required in a deployment:
+// Service.RequireComplete rejects a nil one. Unit tests may leave fields they
+// do not exercise nil, which skips the corresponding check.
+type ServiceDeps struct {
+	Store               *db.Store
+	Lookup              ToolLookup // tool-reference warnings (ADR-017)
+	ModelValidator      ModelValidator
+	OptionsValidator    OptionsValidator
+	Settings            *settings.Service // model defaults for policies that omit the model block
+	SubscribedValidator *SubscribedBindingValidator
+
+	// WebhookSecretEncrypter is the one genuinely optional collaborator: it is
+	// absent when GLEIPNIR_ENCRYPTION_KEY is unset, and webhook secret
+	// rotate/reveal then return ErrEncryptionUnavailable. It must be left as a
+	// true nil interface, not a typed-nil pointer.
+	WebhookSecretEncrypter SecretCipher
+}
+
+// NewService returns a policy Service holding the given collaborators.
+// Production wiring must follow it with RequireComplete.
+func NewService(deps ServiceDeps) *Service {
 	return &Service{
-		store:            store,
-		lookup:           lookup,
-		modelValidator:   modelValidator,
-		optionsValidator: optionsValidator,
-		settings:         s,
+		store:               deps.Store,
+		lookup:              deps.Lookup,
+		modelValidator:      deps.ModelValidator,
+		optionsValidator:    deps.OptionsValidator,
+		settings:            deps.Settings,
+		encrypter:           deps.WebhookSecretEncrypter,
+		subscribedValidator: deps.SubscribedValidator,
 	}
 }
 
@@ -336,19 +357,6 @@ func generateWebhookSecret() (string, error) {
 		return "", fmt.Errorf("generate random bytes: %w", err)
 	}
 	return hex.EncodeToString(buf), nil
-}
-
-// WithWebhookSecretEncrypter sets the encrypter used for rotate/reveal operations.
-// When nil (the default), those operations return ErrEncryptionUnavailable.
-func (s *Service) WithWebhookSecretEncrypter(e SecretCipher) {
-	s.encrypter = e
-}
-
-// WithSubscribedBindingValidator sets the validator used for subscribed-trigger
-// binding validation. When nil (the default), subscribed binding validation is
-// skipped — structural checks in Validate still run.
-func (s *Service) WithSubscribedBindingValidator(v *SubscribedBindingValidator) {
-	s.subscribedValidator = v
 }
 
 // RotateWebhookSecret generates a fresh 64-hex secret, encrypts it, and persists

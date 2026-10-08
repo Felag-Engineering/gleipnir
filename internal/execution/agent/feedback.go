@@ -61,6 +61,7 @@ type FeedbackHandler struct {
 	channelDispatcher FeedbackChannelDispatcher
 	policyID          string
 	audienceID        string
+	gateRoutes        GateRouteRecorder // nil = route not tracked (tests, no run manager)
 }
 
 // FeedbackHandlerOption is a functional option for NewFeedbackHandler.
@@ -76,6 +77,11 @@ func WithFeedbackChannelDispatch(d FeedbackChannelDispatcher, audienceID, policy
 		h.audienceID = audienceID
 		h.policyID = policyID
 	}
+}
+
+// WithFeedbackGateRoutes mirrors WithApprovalGateRoutes for feedback gates.
+func WithFeedbackGateRoutes(r GateRouteRecorder) FeedbackHandlerOption {
+	return func(h *FeedbackHandler) { h.gateRoutes = r }
 }
 
 // NewFeedbackHandler constructs a FeedbackHandler.
@@ -240,16 +246,25 @@ func (h *FeedbackHandler) Wait(ctx context.Context, runID, toolName, inputJSON, 
 
 	// Phase 2a: plugin channel path.
 	if h.channelDispatcher != nil && h.audienceID != "" {
+		// Marked plugin-owned before dispatching — see ApprovalHandler.Wait.
+		if h.gateRoutes != nil {
+			h.gateRoutes.RecordGateRoute(runID, GateRoute{Plugin: true})
+			defer h.gateRoutes.ClearGateRoute(runID)
+		}
 		settlement, dispatchErr := h.channelDispatcher.DispatchFeedback(ctx, FeedbackDispatchRequest{
-			AudienceID: h.audienceID,
-			RunID:      runID,
-			PolicyID:   h.policyID,
-			ToolName:   toolName,
-			Prompt:     mcpOutput,
-			ExpiresAt:  deadline,
+			AudienceID:    h.audienceID,
+			RunID:         runID,
+			PolicyID:      h.policyID,
+			ToolName:      toolName,
+			Prompt:        mcpOutput,
+			ExpiresAt:     deadline,
+			OnPluginRoute: pluginRouteRecorder(h.gateRoutes, runID),
 		})
 		if errors.Is(dispatchErr, ErrFeedbackRouteToInApp) {
 			// Audience resolved to in-app; fall through to the waiter select below.
+			if h.gateRoutes != nil {
+				h.gateRoutes.ClearGateRoute(runID)
+			}
 		} else if dispatchErr != nil {
 			return "", fmt.Errorf("plugin feedback dispatch: %w", dispatchErr)
 		} else {

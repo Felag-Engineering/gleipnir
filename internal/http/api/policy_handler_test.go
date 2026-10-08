@@ -32,7 +32,7 @@ func newPolicyHandlerStore(t *testing.T) *db.Store {
 // NewRouter mounts the routes in production.
 func newPolicyRouter(store *db.Store) http.Handler {
 	r := chi.NewRouter()
-	svc := policy.NewService(store, nil, nil, nil, nil)
+	svc := policy.NewService(policy.ServiceDeps{Store: store})
 	h := api.NewPolicyHandler(store, svc, nil, nil, nil)
 	r.Get("/policies", h.List)
 	r.Post("/policies", h.Create)
@@ -48,7 +48,7 @@ func newPolicyRouter(store *db.Store) http.Handler {
 // the service so that tool-reference warnings can be exercised in tests.
 func newPolicyRouterWithLookup(store *db.Store, lookup policy.ToolLookup) http.Handler {
 	r := chi.NewRouter()
-	svc := policy.NewService(store, lookup, nil, nil, nil)
+	svc := policy.NewService(policy.ServiceDeps{Store: store, Lookup: lookup})
 	h := api.NewPolicyHandler(store, svc, nil, nil, nil)
 	r.Get("/policies", h.List)
 	r.Post("/policies", h.Create)
@@ -1398,7 +1398,7 @@ func (r *recordingNotifier) calls() []string {
 // the given notifiers. All may be nil.
 func newPolicyRouterWithNotifiers(store *db.Store, poller, scheduler, cron api.PolicyNotifier) http.Handler {
 	r := chi.NewRouter()
-	svc := policy.NewService(store, nil, nil, nil, nil)
+	svc := policy.NewService(policy.ServiceDeps{Store: store})
 	h := api.NewPolicyHandler(store, svc, poller, scheduler, cron)
 	r.Get("/policies", h.List)
 	r.Post("/policies", h.Create)

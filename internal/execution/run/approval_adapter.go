@@ -61,6 +61,7 @@ func (a *ApprovalChannelAdapter) DispatchApproval(ctx context.Context, req agent
 		RunID:    req.RunID,
 		PolicyID: req.PolicyID,
 		ToolName: req.ToolName,
+		OnRouted: req.OnPluginRoute,
 	}
 
 	reqID, outcome, err := a.d.Request(ctx, req.AudienceID, rc, req.Prompt, req.ExpiresAt)

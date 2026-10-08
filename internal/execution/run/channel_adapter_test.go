@@ -326,10 +326,12 @@ func TestTaskChannelAdapters_DispatchApproval_AuthenticatedApproves(t *testing.T
 	adapters := newApprovalAdapters(t, f, []hitl.Entry{pluginEntry("inst-1", serverID)})
 
 	expiresAt := time.Now().Add(time.Minute)
+	routedTo := make(chan string, 1)
 	resultCh := runAsync(func() (agent.ApprovalSettlement, error) {
 		return adapters.DispatchApproval(context.Background(), agent.ApprovalDispatchRequest{
 			AudienceID: "aud-1", RunID: "r-approve", ToolName: "some.tool",
 			Prompt: "Approve?", ExpiresAt: &expiresAt,
+			OnPluginRoute: func(instanceID string) { routedTo <- instanceID },
 		})
 	})
 	waitForPersistedTask(t, f, "r-approve")
@@ -340,6 +342,9 @@ func TestTaskChannelAdapters_DispatchApproval_AuthenticatedApproves(t *testing.T
 	}
 	if !settlement.Approved {
 		t.Fatal("expected approved=true")
+	}
+	if got := <-routedTo; got != "inst-1" {
+		t.Errorf("OnPluginRoute instance = %q, want inst-1", got)
 	}
 	settle(t, approvalSettlement(settlement), true)
 
@@ -764,6 +769,7 @@ func TestTaskChannelAdapters_InAppOnlyEntriesReturnsSentinel(t *testing.T) {
 
 	_, err := adapters.DispatchApproval(context.Background(), agent.ApprovalDispatchRequest{
 		AudienceID: "aud-1", RunID: "r-inapp", ToolName: "some.tool", Prompt: "Approve?",
+		OnPluginRoute: func(string) { t.Error("OnPluginRoute must not be called for an in-app fallback") },
 	})
 	if !errors.Is(err, agent.ErrApprovalRouteToInApp) {
 		t.Fatalf("err = %v, want ErrApprovalRouteToInApp", err)
