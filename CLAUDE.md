@@ -6,8 +6,9 @@ Gleipnir is a homelab-scale autonomous agent orchestrator. It runs AI agents wit
 
 **Backend:**
 ```bash
-make tools               # install the pinned sqlc + buf the drift lanes need
+make tools               # install the pinned sqlc + protoc plugins the drift lanes need
                          # (fresh worktrees/containers have neither on PATH)
+                         # (buf itself runs pinned via `go run`, never from PATH)
 sqlc generate            # regenerate internal/db/ from internal/db/queries/*.sql
 make ci-local            # PR CI gate locally, narrowed to your diff; safe on a
                          # dirty tree — this is the dev-loop's pre-PR merge gate
