@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
 	"database/sql"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -37,6 +39,8 @@ type MCPHandler struct {
 	arbiter  *toolregistry.Registry // cross-source namespace arbiter; nil when not configured
 	encKey   []byte                 // AES-256-GCM key; nil when GLEIPNIR_ENCRYPTION_KEY is unset
 	features SchemaFeatureLister    // nil disables simplified_for
+
+	enforcement argEnforcementCache
 }
 
 // NewMCPHandler creates an MCPHandler backed by the given store, registry, and
@@ -1430,9 +1434,14 @@ type mcpToolResponse struct {
 	// (ListTools returns only db.McpTool rows scoped to an MCP server), so
 	// they never carry this field.
 	SimplifiedFor []string `json:"simplified_for"`
+	// ArgEnforcement says how exactly this tool's call arguments are checked
+	// before dispatch (#776): "exact", "no_schema", "no_canonical_schema" or
+	// "schema_uncompilable". Anything but "exact" means only the ADR-017
+	// key-presence check applies. Policy-independent; computed on read.
+	ArgEnforcement mcp.ArgEnforcement `json:"arg_enforcement"`
 }
 
-func toolToResponse(t db.McpTool, serverName string, simplifiedFor []string) mcpToolResponse {
+func toolToResponse(t db.McpTool, serverName string, simplifiedFor []string, argEnforcement mcp.ArgEnforcement) mcpToolResponse {
 	return mcpToolResponse{
 		ID:       t.ID,
 		ServerID: t.ServerID,
@@ -1444,7 +1453,50 @@ func toolToResponse(t db.McpTool, serverName string, simplifiedFor []string) mcp
 		Enabled:       t.Enabled != 0,
 		Source:        "mcp:" + serverName,
 		SimplifiedFor: simplifiedFor,
+
+		ArgEnforcement: argEnforcement,
 	}
+}
+
+// maxArgEnforcementCacheEntries bounds argEnforcementCache. Entries are keyed
+// by schema content, so the bound only matters under heavy schema churn.
+const maxArgEnforcementCacheEntries = 4096
+
+// argEnforcementCache memoizes the compile half of mcp.ClassifyArgEnforcement
+// by canonical-schema hash. The state is a pure function of the stored
+// schemas, and classifying compiles a JSON Schema; ListTools is reachable by
+// every role and the Tools page fans out one request per server, so
+// recompiling every row per request is avoided. Computing on read (instead of
+// storing a column at discovery) needs no migration, cannot go stale when the
+// compiler or its limits change, and is the very same check the run-start
+// gate performs.
+type argEnforcementCache struct {
+	mu      sync.Mutex
+	entries map[[sha256.Size]byte]mcp.ArgEnforcement
+}
+
+func (c *argEnforcementCache) classify(raw, canonical json.RawMessage) mcp.ArgEnforcement {
+	if len(strings.TrimSpace(string(canonical))) == 0 {
+		return mcp.ClassifyArgEnforcement(raw, canonical)
+	}
+
+	key := sha256.Sum256(canonical)
+	c.mu.Lock()
+	state, ok := c.entries[key]
+	c.mu.Unlock()
+	if ok {
+		return state
+	}
+
+	state = mcp.ClassifyArgEnforcement(raw, canonical)
+
+	c.mu.Lock()
+	if c.entries == nil || len(c.entries) >= maxArgEnforcementCacheEntries {
+		c.entries = make(map[[sha256.Size]byte]mcp.ArgEnforcement)
+	}
+	c.entries[key] = state
+	c.mu.Unlock()
+	return state
 }
 
 // canonicalSchemaForSimplification returns t.CanonicalSchema, or an empty
@@ -1596,8 +1648,7 @@ func (h *MCPHandler) ListTools(w http.ResponseWriter, r *http.Request) {
 
 	items := make([]mcpToolResponse, 0, len(rows))
 	for _, row := range rows {
-		simplifiedFor := simplifiedForProviders(server.ID, row.Name, canonicalSchemaForSimplification(row), restricted)
-		items = append(items, toolToResponse(row, server.Name, simplifiedFor))
+		items = append(items, h.toolResponse(server, row, restricted))
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, items)
@@ -1676,9 +1727,17 @@ func (h *MCPHandler) SetToolEnabled(w http.ResponseWriter, r *http.Request) {
 	if h.features != nil {
 		restricted = restrictedFeatureSets(h.features.SchemaFeaturesByProvider())
 	}
-	simplifiedFor := simplifiedForProviders(srv.ID, updated.Name, canonicalSchemaForSimplification(updated), restricted)
+	httputil.WriteJSON(w, http.StatusOK, h.toolResponse(srv, updated, restricted))
+}
 
-	httputil.WriteJSON(w, http.StatusOK, toolToResponse(updated, srv.Name, simplifiedFor))
+// toolResponse builds the full tool DTO, including the per-request computed
+// fields. ListTools and SetToolEnabled share it so the mutation response
+// matches the list response.
+func (h *MCPHandler) toolResponse(server db.McpServer, row db.McpTool, restricted map[llm.SchemaFeatureSet][]string) mcpToolResponse {
+	canonical := canonicalSchemaForSimplification(row)
+	simplifiedFor := simplifiedForProviders(server.ID, row.Name, canonical, restricted)
+	enforcement := h.enforcement.classify(json.RawMessage(row.InputSchema), canonical)
+	return toolToResponse(row, server.Name, simplifiedFor, enforcement)
 }
 
 // policyReferencesServer returns true if the raw policy YAML contains any tool

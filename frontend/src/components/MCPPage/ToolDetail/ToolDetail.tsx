@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import type { ApiMcpTool } from '@/api/types'
 import { CopyBlock } from '@/components/CopyBlock'
 import { CollapsibleJSON } from '@/components/CollapsibleJSON'
+import { ArgEnforcementBadge, explainArgEnforcement } from '@/components/MCPPage/ArgEnforcementBadge'
 import { SimplifiedBadge } from '@/components/MCPPage/SimplifiedBadge'
 import { parseSchema, type ParsedParam } from './schemaParams'
 import styles from './ToolDetail.module.css'
@@ -30,6 +31,7 @@ export function ToolDetail({
   const { params, combinator } = useMemo(() => parseSchema(tool.input_schema), [tool.input_schema])
   const topLevelCount = params.filter((p) => p.depth === 0).length
   const isDisabled = tool.enabled === false
+  const enforcement = explainArgEnforcement(tool.arg_enforcement)
   // The name an agent's policy grants: "<server>.<tool>".
   const reference = `${serverName}.${tool.name}`
 
@@ -42,6 +44,7 @@ export function ToolDetail({
             {isDisabled ? 'Disabled' : 'Enabled'}
           </span>
           <SimplifiedBadge providers={tool.simplified_for ?? []} />
+          <ArgEnforcementBadge state={tool.arg_enforcement} />
           {canManage && onSetEnabled && (
             <button
               type="button"
@@ -58,6 +61,11 @@ export function ToolDetail({
         {isDisabled && (
           <p className={styles.disabledNote}>
             Disabled tools are never registered with an agent, even when its policy grants them.
+          </p>
+        )}
+        {enforcement && (
+          <p className={styles.disabledNote}>
+            Argument checking: reduced — {enforcement.reason}. {enforcement.detail}
           </p>
         )}
       </header>

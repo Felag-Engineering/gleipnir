@@ -366,7 +366,16 @@ export interface ApiMcpTool {
   input_schema: Record<string, unknown>
   enabled: boolean
   simplified_for?: string[] // LLM providers shown a simplified parameter schema
+  arg_enforcement?: ApiArgEnforcement // how exactly call arguments are checked (#776)
 }
+
+// Matches mcp.ArgEnforcement. Anything other than 'exact' means only
+// parameter-name scoping applies, not value validation.
+export type ApiArgEnforcement =
+  | 'exact'
+  | 'no_schema'
+  | 'no_canonical_schema'
+  | 'schema_uncompilable'
 
 // --- Settings ---
 

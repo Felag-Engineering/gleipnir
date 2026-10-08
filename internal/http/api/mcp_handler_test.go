@@ -4577,3 +4577,50 @@ func TestHumanizeMCPError_TLS(t *testing.T) {
 		t.Error("TLS verification failure must not flatten to the generic unreachable-server message")
 	}
 }
+
+// TestListTools_ArgEnforcement checks the per-tool arg_enforcement state at
+// the HTTP level, including that the two reduced causes stay distinct.
+func TestListTools_ArgEnforcement(t *testing.T) {
+	good := `{"type":"object"}`
+	badRef := `{"$ref":"#/$defs/missing"}`
+
+	store := testutil.NewTestStore(t)
+	registry := mcp.NewRegistry(store.Queries())
+	serverID := insertTestMCPServer(t, store, "srv", "http://localhost:9999")
+	insertTestMCPToolWithSchema(t, store, serverID, "exact-tool", good, &good)
+	insertTestMCPToolWithSchema(t, store, serverID, "no-canonical-tool", good, nil)
+	insertTestMCPToolWithSchema(t, store, serverID, "uncompilable-tool", badRef, &badRef)
+
+	h := api.NewMCPHandler(store, registry, nil)
+	// Twice: the second pass is served from the cache and must agree.
+	for pass := 0; pass < 2; pass++ {
+		req := httptest.NewRequest(http.MethodGet, "/?include_disabled=true", nil)
+		req = setChiURLParams(req, "id", serverID)
+		w := httptest.NewRecorder()
+		h.ListTools(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		var envelope struct {
+			Data []struct {
+				Name           string `json:"name"`
+				ArgEnforcement string `json:"arg_enforcement"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		got := map[string]string{}
+		for _, tool := range envelope.Data {
+			got[tool.Name] = tool.ArgEnforcement
+		}
+		want := map[string]string{
+			"exact-tool":        "exact",
+			"no-canonical-tool": "no_canonical_schema",
+			"uncompilable-tool": "schema_uncompilable",
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("pass %d: arg_enforcement = %v, want %v", pass, got, want)
+		}
+	}
+}

@@ -30,6 +30,21 @@ describe('ToolDetail', () => {
     expect(screen.getByText(/Run a command\.\s+Second line\./)).toBeInTheDocument()
   })
 
+  it('says nothing about argument checking when enforcement is exact', () => {
+    render(<ToolDetail tool={{ ...tool, arg_enforcement: 'exact' }} serverName="fleet" />)
+    expect(screen.queryByText(/Argument checking/)).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['no_canonical_schema', "the tool's schema could not be processed"],
+    ['schema_uncompilable', "the tool's schema could not be used for validation"],
+    ['no_schema', 'the tool does not declare an argument schema'],
+  ] as const)('explains reduced argument checking for %s', (state, reason) => {
+    render(<ToolDetail tool={{ ...tool, arg_enforcement: state }} serverName="fleet" />)
+    expect(screen.getByText(`Argument checking: reduced — ${reason}.`, { exact: false })).toBeInTheDocument()
+    expect(screen.getByText('Reduced argument checking')).toBeInTheDocument()
+  })
+
   it('shows each parameter with its type, requirement, description and facts', () => {
     render(<ToolDetail tool={tool} serverName="fleet" />)
 
