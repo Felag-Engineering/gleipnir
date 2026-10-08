@@ -126,3 +126,41 @@ describe('CapabilitySnapshotCard — feedback filtering (V2 object shape)', () =
     expect(card().textContent).toContain('claude-sonnet-4-6')
   })
 })
+
+describe('CapabilitySnapshotCard — outbound headers', () => {
+  it('lists header-bearing parameters under the tool', () => {
+    render(
+      <CapabilitySnapshotCard
+        content={[
+          {
+            server_name: 'fs', tool_name: 'read_file', approval: 'none', timeout: 30, on_timeout: 'fail',
+            outbound_headers: [{ parameter: 'tenant', header: 'X-Tenant-Id' }],
+          },
+          { server_name: 'fs', tool_name: 'write_file', approval: 'none', timeout: 30, on_timeout: 'fail' },
+        ]}
+      />,
+    )
+    const note = screen.getByText(/sends outbound headers/i)
+    expect(note).toHaveTextContent('read_file sends outbound headers: X-Tenant-Id (from tenant)')
+    expect(screen.getAllByText(/outbound headers/i)).toHaveLength(1)
+  })
+
+  it('says so when the declaration was rejected', () => {
+    render(
+      <CapabilitySnapshotCard
+        content={[
+          {
+            server_name: 'fs', tool_name: 'read_file', approval: 'none', timeout: 30, on_timeout: 'fail',
+            outbound_headers_rejected: true,
+          },
+        ]}
+      />,
+    )
+    expect(screen.getByText(/was rejected, so none are sent/i)).toBeInTheDocument()
+  })
+
+  it('renders old-format snapshots without any note', () => {
+    render(<CapabilitySnapshotCard content={TWO_REAL_TOOLS} />)
+    expect(screen.queryByText(/outbound header/i)).not.toBeInTheDocument()
+  })
+})

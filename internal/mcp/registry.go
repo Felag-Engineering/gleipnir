@@ -545,6 +545,7 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 	// CA pin on one of them and leak the other's ADR-039 auth headers across
 	// server identities that happen to collide on URL (#928 security review).
 	clients := make(map[string]*Client)
+	headerParams := make(map[string]ServerHeaderParams)
 
 	for _, t := range p.Capabilities.Tools {
 		serverName, toolName, err := splitToolName(t.Tool)
@@ -591,20 +592,36 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 			canonical = json.RawMessage(*tool.CanonicalSchema)
 		}
 
+		// Same resolution dispatch applies on every call, so the capability
+		// snapshot cannot disagree with what is actually sent (#1067).
+		hp, ok := headerParams[srv.ID]
+		if !ok {
+			hp = r.HeaderParamsFor(srv)
+			headerParams[srv.ID] = hp
+		}
+		granted := model.GrantedTool{
+			ServerName: serverName,
+			ToolName:   toolName,
+			Approval:   t.Approval,
+			Timeout:    timeout,
+			OnTimeout:  t.OnTimeout,
+			Params:     t.Params,
+		}
+		decls, declErr := hp.Declared(json.RawMessage(tool.InputSchema), canonical)
+		if declErr != nil {
+			granted.OutboundHeadersRejected = true
+		}
+		for _, d := range decls {
+			granted.OutboundHeaders = append(granted.OutboundHeaders, model.OutboundHeader{Parameter: d.Property, Header: d.HeaderName})
+		}
+
 		// Elicitation is declared on every server pinned to 2026-07-28, with no
 		// per-policy opt-in (ADR-061): a granted tool that never asks for
 		// operator input costs nothing by declaring the capability, and a
 		// policy author has no way to predict which of a server's tools might
 		// someday pause on an MRTR input_required.
 		result = append(result, ResolvedTool{
-			GrantedTool: model.GrantedTool{
-				ServerName: serverName,
-				ToolName:   toolName,
-				Approval:   t.Approval,
-				Timeout:    timeout,
-				OnTimeout:  t.OnTimeout,
-				Params:     t.Params,
-			},
+			GrantedTool:     granted,
 			Client:          cl,
 			ServerID:        tool.ServerID,
 			Description:     tool.Description,

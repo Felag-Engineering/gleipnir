@@ -417,6 +417,20 @@ type GrantedTool struct {
 	OnTimeout  OnTimeout      `json:"on_timeout"`
 	Params     map[string]any `json:"params,omitempty"` // policy-level parameter scoping (ADR-017)
 	Source     string         `json:"source,omitempty"` // "mcp:<server>", "plugin:<instance>@<generation>", or empty for synthetic tools
+
+	// OutboundHeaders and OutboundHeadersRejected record, for the audit
+	// snapshot only, which tool parameters a call sends as outbound HTTP
+	// headers (#1067). Nothing renders them into the system prompt or tool
+	// definitions; the model never sees them. Absent in snapshots written
+	// before the field existed.
+	OutboundHeaders         []OutboundHeader `json:"outbound_headers,omitempty"`
+	OutboundHeadersRejected bool             `json:"outbound_headers_rejected,omitempty"`
+}
+
+// OutboundHeader names one tool parameter whose value is sent as an HTTP header.
+type OutboundHeader struct {
+	Parameter string `json:"parameter"`
+	Header    string `json:"header"`
 }
 
 // MCPServer represents a registered MCP tool server.
