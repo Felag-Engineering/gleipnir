@@ -20,6 +20,7 @@ The web UI handles day-to-day operations: managing policies, reviewing runs, app
 | `reset-password` | Reset a user's password directly in the database |
 | `create-user` | Create a new user with an assigned role directly in the database |
 | `list-users` | List all users with roles and status (never prints credentials) |
+| `purge-runs` | Delete old terminal runs and their steps (supports `--dry-run`) |
 
 ---
 
@@ -281,3 +282,44 @@ The server does not need to be stopped; the command only reads.
 |---|---|
 | 0 | Success (including an empty user table) |
 | 1 | Unexpected error (I/O failure, DB error) |
+
+---
+
+## purge-runs
+
+Deletes old terminal runs and their steps directly from the database, to keep it from growing without bound.
+
+```bash
+# See what would go, then do it
+docker compose run --rm api gleipnirctl purge-runs --older-than 90d --dry-run
+docker compose run --rm api gleipnirctl purge-runs --older-than 90d
+```
+
+Output:
+```
+dry run: would delete 120 runs and 3401 steps older than 90d
+deleted 120 runs and 3401 steps older than 90d
+```
+
+- **`--older-than` is required.** It takes a Go duration (`36h`, `90m`) or a whole number of days (`90d`). Zero, negative and fractional-day values are rejected.
+- **What "older" means:** a run's age is measured from `completed_at`, falling back to `started_at` when no completion time was recorded (for example runs marked `interrupted` by a restart). A long-running run that finished recently is therefore not purged.
+- **Only terminal runs are deleted:** `complete`, `failed` and `interrupted` by default. `--status` (comma-separated) narrows the set. Naming `pending`, `running`, `waiting_for_approval` or `waiting_for_feedback` is an error and nothing is deleted; active runs are never touched, however old.
+- **Dependent rows:** steps, approval requests, feedback requests, tool-input requests, MCP tasks and pending plugin channel requests are removed with the run (`ON DELETE CASCADE`). The reported step count is `run_steps` only.
+- **Plugin audit events are kept.** They are security and oversight records (including tool-initiated HITL decision records). Their `run_id` is set to `NULL` when the run goes; the events themselves are not deleted.
+- The purge is a single write transaction: it either fully applies or not at all. The server does not need to be stopped; the command waits up to 10 seconds for the write lock. A dry run takes no write lock.
+
+### Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--older-than` | *(required)* | Age threshold: Go duration or whole days such as `90d`. |
+| `--status` | `complete,failed,interrupted` | Comma-separated terminal statuses to purge. |
+| `--dry-run` | `false` | Print counts without deleting anything. |
+| `--db-path` | `$GLEIPNIR_DB_PATH` or `/data/gleipnir.db` | Path to the SQLite database file. |
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success (including nothing to purge) |
+| 1 | Invalid flags, or an I/O or DB error (nothing is deleted) |

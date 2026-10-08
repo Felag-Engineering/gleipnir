@@ -25,6 +25,7 @@ func main() {
 	root.AddCommand(newResetPasswordCmd())
 	root.AddCommand(newCreateUserCmd())
 	root.AddCommand(newListUsersCmd())
+	root.AddCommand(newPurgeRunsCmd())
 	if err := root.Execute(); err != nil {
 		root.PrintErrln("error:", err)
 		os.Exit(1)
