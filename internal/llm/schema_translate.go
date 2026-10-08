@@ -5,10 +5,63 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
 )
+
+// DecodeSchemaObject decodes a tool's JSON Schema object with UseNumber so
+// numeric literals stay verbatim json.Number values. Wires that hand the
+// decoded map to an SDK must use this rather than json.Unmarshal: float64
+// re-renders 10000000000000000000000000000001 as 1e+31 and rejects 1e400
+// outright, so the model would be shown a different bound than the one the
+// runtime enforces. Trailing data after the value is rejected, as
+// json.Unmarshal did.
+func DecodeSchemaObject(schema json.RawMessage) (map[string]any, error) {
+	dec := json.NewDecoder(bytes.NewReader(schema))
+	dec.UseNumber()
+	var m map[string]any
+	if err := dec.Decode(&m); err != nil {
+		return nil, err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, fmt.Errorf("unexpected trailing data after JSON value")
+	}
+	return m, nil
+}
+
+// DecodeSchemaObjectRawNumbers is DecodeSchemaObject for wires whose SDK
+// encoder does not honor json.Number: the Anthropic and OpenAI SDKs encode
+// by Kind, so a json.Number (a string kind) is emitted as a quoted string.
+// Every number is replaced with a json.RawMessage holding its literal, which
+// both SDKs emit verbatim.
+func DecodeSchemaObjectRawNumbers(schema json.RawMessage) (map[string]any, error) {
+	m, err := DecodeSchemaObject(schema)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range m {
+		m[k] = numbersToRaw(v)
+	}
+	return m, nil
+}
+
+func numbersToRaw(v any) any {
+	switch x := v.(type) {
+	case json.Number:
+		return json.RawMessage(x.String())
+	case map[string]any:
+		for k, e := range x {
+			x[k] = numbersToRaw(e)
+		}
+	case []any:
+		for i, e := range x {
+			x[i] = numbersToRaw(e)
+		}
+	}
+	return v
+}
 
 // ErrUnsupportedSchemaFeature is returned when a wire declares it cannot
 // represent a JSON Schema keyword that the canonical schema uses, and

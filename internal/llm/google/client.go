@@ -411,8 +411,8 @@ func buildTools(tools []llm.ToolDefinition) ([]*genai.Tool, error) {
 			// Anthropic and OpenAI providers. Registering a tool with a nil
 			// parameter schema would let the model call it with unvalidated
 			// arguments, silently weakening ADR-017's parameter enforcement (#490).
-			var schemaMap map[string]any
-			if err := json.Unmarshal(t.InputSchema, &schemaMap); err != nil {
+			schemaMap, err := llm.DecodeSchemaObject(t.InputSchema)
+			if err != nil {
 				return nil, fmt.Errorf("unmarshalling schema for tool %s: %w", t.Name, err)
 			}
 			schema, err := translateJSONSchemaToGenaiSchema(schemaMap)
