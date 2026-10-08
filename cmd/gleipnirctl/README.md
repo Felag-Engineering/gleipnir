@@ -22,6 +22,7 @@ The web UI handles day-to-day operations: managing policies, reviewing runs, app
 | `list-users` | List all users with roles and status (never prints credentials) |
 | `purge-runs` | Delete old terminal runs and their steps (supports `--dry-run`) |
 | `verify-keys` | Check that `GLEIPNIR_ENCRYPTION_KEY` decrypts every stored secret (read-only) |
+| `check` | Read-only health check: DB, schema, encryption key, stored secrets, admin user |
 
 ---
 
@@ -363,3 +364,48 @@ error: 1 secrets failed to decrypt (11 verified OK)
 |---|---|
 | 0 | Every secret decrypted |
 | 1 | One or more secrets failed, `GLEIPNIR_ENCRYPTION_KEY` missing or invalid, or an unexpected error |
+
+---
+
+## check
+
+Runs read-only health checks and prints one line per check.
+
+```bash
+docker compose run --rm api gleipnirctl check
+```
+
+Example output:
+```
+PASS  encryption key present and valid
+PASS  database reachable: /data/gleipnir.db
+PASS  schema migrated
+PASS  encryption key decrypts stored secrets: 12 secrets
+WARN  active admin user: none found; create one with gleipnirctl create-user
+```
+
+| Check | PASS when | Otherwise |
+|---|---|---|
+| database reachable | the file exists and a trivial query succeeds | FAIL |
+| schema migrated | no registered migration is pending | FAIL |
+| encryption key present and valid | `GLEIPNIR_ENCRYPTION_KEY` is set and is a 32-byte hex or base64 key | FAIL |
+| encryption key decrypts stored secrets | every secret `verify-keys` covers decrypts | FAIL, with one line per undecryptable row |
+| active admin user | at least one non-deactivated user holds the `admin` role | WARN |
+
+- A check that cannot run because one it depends on failed (for example, secrets when the key is missing) prints `SKIP`; the root cause carries the failure.
+- The secrets check decrypts every stored secret rather than a sample, so a single corrupt row is always found.
+- No admin user is a `WARN`, not a failure: the instance is otherwise healthy, and a fresh install has no admin until first-run setup. Warnings do not affect the exit code.
+- Nothing is written. The database is opened read-only and is never migrated or created, so a pending migration is reported, not applied, and the server does not need to be stopped. Migrations that only fix up data and have no schema probe cannot be detected as pending.
+
+### Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--db-path` | `$GLEIPNIR_DB_PATH` or `/data/gleipnir.db` | Path to the SQLite database file. |
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | No check failed (warnings allowed) |
+| 1 | At least one check failed |
