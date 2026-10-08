@@ -86,6 +86,30 @@ func (q *Queries) ListSystemSettings(ctx context.Context) ([]SystemSetting, erro
 	return items, nil
 }
 
+const setSystemSettingIfEmpty = `-- name: SetSystemSettingIfEmpty :execrows
+INSERT INTO system_settings (key, value, updated_at)
+VALUES (?, ?, ?)
+ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+WHERE system_settings.value = ''
+`
+
+type SetSystemSettingIfEmptyParams struct {
+	Key       string `json:"key"`
+	Value     string `json:"value"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// Writes the value only when the key is absent or holds an empty string, in
+// one statement so concurrent callers cannot both win. Returns rows affected
+// (0 = an existing non-empty value was left alone).
+func (q *Queries) SetSystemSettingIfEmpty(ctx context.Context, arg SetSystemSettingIfEmptyParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setSystemSettingIfEmpty, arg.Key, arg.Value, arg.UpdatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const upsertSystemSetting = `-- name: UpsertSystemSetting :exec
 INSERT INTO system_settings (key, value, updated_at)
 VALUES (?, ?, ?)

@@ -27,6 +27,9 @@ var ErrNotFound = sql.ErrNoRows
 type AdminQuerier interface {
 	GetSystemSetting(ctx context.Context, key string) (db.SystemSetting, error)
 	UpsertSystemSetting(ctx context.Context, key, value, updatedAt string) error
+	// SetSystemSettingIfEmpty writes only when the key is absent or empty and
+	// reports whether it wrote.
+	SetSystemSettingIfEmpty(ctx context.Context, key, value, updatedAt string) (bool, error)
 	DeleteSystemSetting(ctx context.Context, key string) error
 	ListSystemSettings(ctx context.Context) ([]db.SystemSetting, error)
 	ListEnabledModels(ctx context.Context) ([]db.ListEnabledModelsRow, error)
@@ -138,28 +141,54 @@ func (h *Handler) SetProviderKey(w http.ResponseWriter, r *http.Request) {
 
 	// Best-effort: enable all models for this provider and seed the default if
 	// none is set. Errors are logged but never fail the key-save response.
-	h.autoEnableModelsForProvider(r.Context(), name)
+	firstEnabled := h.autoEnableModelsForProvider(r.Context(), name)
+	h.seedDefaultModel(r.Context(), name, firstEnabled)
 
 	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // autoEnableModelsForProvider enables every model returned by the provider's
-// lister. It is best-effort: individual errors are logged and never surface to
-// the caller. A nil lister is valid — the function becomes a no-op.
-func (h *Handler) autoEnableModelsForProvider(ctx context.Context, provider string) {
+// lister and returns the first one (in the lister's curated order) that was
+// enabled successfully, or "" if none. It is best-effort: individual errors are
+// logged and never surface to the caller. A nil lister is valid — the function
+// becomes a no-op.
+func (h *Handler) autoEnableModelsForProvider(ctx context.Context, provider string) string {
 	if h.lister == nil {
-		return
+		return ""
 	}
 
 	models, err := h.lister.ListModels(ctx, provider)
 	if err != nil {
 		slog.Warn("auto-enable: list models failed", "provider", provider, "err", err)
-		return
+		return ""
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
+	first := ""
 	for _, m := range models {
-		h.upsertModelEnabled(ctx, "auto-enable", provider, m.Name, 1, now)
+		if h.upsertModelEnabled(ctx, "auto-enable", provider, m.Name, 1, now) && first == "" {
+			first = m.Name
+		}
+	}
+	return first
+}
+
+// seedDefaultModel makes provider:modelName the system default when no default
+// is set yet, so the first configured provider key yields a working default
+// without a separate step. The check-and-set is a single statement, so an
+// existing default (or a concurrent seed) is never overwritten. Best-effort.
+func (h *Handler) seedDefaultModel(ctx context.Context, provider, modelName string) {
+	if modelName == "" {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	seeded, err := h.q.SetSystemSettingIfEmpty(ctx, "default_model", provider+":"+modelName, now)
+	if err != nil {
+		slog.Warn("seed-default-model: write failed", "provider", provider, "model", modelName, "err", err)
+		return
+	}
+	if seeded {
+		slog.Info("default model set automatically", "provider", provider, "model", modelName)
 	}
 }
 
@@ -208,12 +237,14 @@ func (h *Handler) disableModelsForProvider(ctx context.Context, provider string)
 // upsertModelEnabled writes a single (provider, modelName) row with the
 // given enabled flag. The action label ("auto-enable" or "disable-models")
 // is propagated into the warn log so operators can grep enable vs disable
-// events the same way they do today.
-func (h *Handler) upsertModelEnabled(ctx context.Context, action, provider, modelName string, enabled int64, now string) {
+// events the same way they do today. It reports whether the write succeeded.
+func (h *Handler) upsertModelEnabled(ctx context.Context, action, provider, modelName string, enabled int64, now string) bool {
 	if err := h.q.UpsertModelSetting(ctx, provider, modelName, enabled, now); err != nil {
 		slog.Warn(action+": upsert model failed", "provider", provider, "model", modelName, "err", err)
 		// Continue — best-effort, other models should still be processed.
+		return false
 	}
+	return true
 }
 
 // GetSettings returns all system settings except API keys.
