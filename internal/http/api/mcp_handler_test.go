@@ -2036,7 +2036,7 @@ func TestMCPAuthHeaders_List(t *testing.T) {
 }
 
 func TestMCPAuthHeaders_Update(t *testing.T) {
-	t.Run("update changes name and url without touching auth headers", func(t *testing.T) {
+	t.Run("update changes name with same url without touching auth headers", func(t *testing.T) {
 		store := testutil.NewTestStore(t)
 		encKey := testEncKey(t)
 		registry := mcp.NewRegistry(store.Queries())
@@ -2048,10 +2048,11 @@ func TestMCPAuthHeaders_Update(t *testing.T) {
 		srv := httptest.NewServer(newMCPRouter(store, registry, encKey))
 		t.Cleanup(srv.Close)
 
-		// PUT with only name + url — auth_headers_encrypted must be preserved unchanged.
+		// PUT with only name + the same url — auth_headers_encrypted must be
+		// preserved unchanged (a url change wipes it, #764).
 		body, _ := json.Marshal(map[string]any{
 			"name": "upd-server-renamed",
-			"url":  "http://localhost:8888",
+			"url":  "http://localhost:9999",
 		})
 		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/servers/"+id, bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")

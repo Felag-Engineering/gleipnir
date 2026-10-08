@@ -309,6 +309,7 @@ const updateMCPServer = `-- name: UpdateMCPServer :one
 UPDATE mcp_servers
 SET name = ?1,
     protocol_version = CASE WHEN url <> ?2 THEN NULL ELSE protocol_version END,
+    auth_headers_encrypted = CASE WHEN url <> ?2 THEN NULL ELSE auth_headers_encrypted END,
     url = ?2, ca_cert_pem = ?3, call_timeout_seconds = ?4, run_attribution = ?5
 WHERE id = ?6
 RETURNING id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted, protocol_version, plugin_instance_id, ca_cert_pem, call_timeout_seconds, run_attribution
@@ -328,6 +329,11 @@ type UpdateMCPServerParams struct {
 // old backend must not outlive a repoint (the no-downgrade guard would
 // otherwise keep a modern pin on a legacy backend forever, #764). The CASE
 // reads the row's pre-update url.
+//
+// auth_headers_encrypted is cleared on the same condition and in the same
+// statement: header values are write-only over the API, so keeping them across
+// a repoint would let an operator who cannot read them exfiltrate them to a
+// collector URL. No window exists where the new url runs with the old headers.
 func (q *Queries) UpdateMCPServer(ctx context.Context, arg UpdateMCPServerParams) (McpServer, error) {
 	row := q.db.QueryRowContext(ctx, updateMCPServer,
 		arg.Name,
