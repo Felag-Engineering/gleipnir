@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { http, HttpResponse } from 'msw'
 import { server } from '@/test/server'
-import { apiFetch, apiFetchVoid, ApiError } from './fetch'
+import { apiFetch, apiFetchAuthProbe, apiFetchVoid, ApiError } from './fetch'
 import { login, setup, getAuthStatus } from './auth'
 
 const TEST_PATH = '/test'
@@ -315,5 +315,22 @@ describe('auth functions', () => {
     expect(apiErr.status).toBe(409)
     expect(apiErr.message).toBe('username taken')
     expect(apiErr.detail).toBe('choose another')
+  })
+})
+
+describe('apiFetchAuthProbe', () => {
+  it('unwraps the data envelope on 200', async () => {
+    server.use(http.get(TEST_URL, () => HttpResponse.json({ data: { id: '1' } })))
+    expect(await apiFetchAuthProbe<{ id: string }>(TEST_PATH)).toEqual({ id: '1' })
+  })
+
+  it('resolves null on 401 without redirecting', async () => {
+    server.use(http.get(TEST_URL, () => HttpResponse.json({ error: 'unauthorized' }, { status: 401 })))
+    expect(await apiFetchAuthProbe(TEST_PATH)).toBeNull()
+  })
+
+  it('still throws for other failures', async () => {
+    server.use(http.get(TEST_URL, () => HttpResponse.json({ error: 'boom' }, { status: 500 })))
+    await expect(apiFetchAuthProbe(TEST_PATH)).rejects.toMatchObject({ status: 500 })
   })
 })

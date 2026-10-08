@@ -383,6 +383,28 @@ describe('useSSE', () => {
   })
 
   // (e) Unmounting aborts the in-flight fetch and no state updates occur afterward.
+  it('opens no connection while disabled, and connects once enabled', async () => {
+    const stream = makeFakeStream()
+    const mockFetch = vi.fn().mockResolvedValue(stream.responseLike)
+    vi.stubGlobal('fetch', mockFetch)
+
+    const qc = makeQueryClient()
+    const { rerender } = renderHook(({ enabled }) => useSSE({ enabled }), {
+      wrapper: makeWrapper(qc),
+      initialProps: { enabled: false },
+    })
+    await act(async () => {
+      await flushPromises()
+    })
+    expect(mockFetch).not.toHaveBeenCalled()
+
+    rerender({ enabled: true })
+    await act(async () => {
+      await flushPromises()
+    })
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+  })
+
   it('aborts the fetch on unmount', async () => {
     const stream = makeFakeStream()
     const mockFetch = vi.fn().mockResolvedValueOnce(stream.responseLike)

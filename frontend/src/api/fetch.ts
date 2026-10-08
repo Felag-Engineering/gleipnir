@@ -108,6 +108,20 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   return body.data
 }
 
+// apiFetchAuthProbe is for the "who am I?" request. A 401 there is the normal
+// answer for a logged-out visitor, not a failure: it resolves to null instead
+// of redirecting or throwing, so the caller decides where a logged-out user goes.
+export async function apiFetchAuthProbe<T>(path: string): Promise<T | null> {
+  try {
+    const response = await baseRequest(path, undefined, { skipAuthRedirect: true })
+    const body = await response.json() as { data: T }
+    return body.data
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) return null
+    throw err
+  }
+}
+
 export async function apiFetchVoid(path: string, init?: RequestInit): Promise<void> {
   await baseRequest(path, init)
 }

@@ -1,14 +1,15 @@
-import { useCallback, useEffect, useState } from 'react'
+import { Suspense, useCallback, useEffect, useState } from 'react'
 import FocusTrap from 'focus-trap-react'
 import { Activity, Bot, ChevronUp, Cpu, History, Mail, Megaphone, Menu, Puzzle, Settings2, Users, Wrench } from 'lucide-react'
 import { Logo } from '@/components/Logo/Logo'
 import { ContactTray } from '@/components/ContactTray'
-import { NavLink, Outlet, useLocation } from 'react-router'
+import { Navigate, NavLink, Outlet, useLocation } from 'react-router'
 import { useSSE } from '@/hooks/useSSE'
 import { useCurrentUser } from '@/hooks/queries/users'
 import { useAttentionItems } from '@/hooks/useAttentionItems'
 import { useMcpServers } from '@/hooks/queries/servers'
 import { canAccess, type AppRoute } from '@/permissions/roleAccess'
+import { PageFallback } from '@/components/PageFallback'
 import { ToastRegion } from '@/components/Toast'
 import { UserMenu } from './UserMenu'
 import styles from './Layout.module.css'
@@ -38,15 +39,18 @@ const ADMIN_NAV_ITEMS: NavItem[] = [
 
 export default function Layout() {
   const location = useLocation()
-  const { connectionState } = useSSE()
-  const { data: currentUser } = useCurrentUser()
+  const { data: currentUser, isFetching: isCheckingSession, isError: sessionCheckFailed } = useCurrentUser()
+  // Nothing authenticated is requested until /auth/me has named a user; a
+  // logged-out visitor would only collect 401s from each of these.
+  const isAuthenticated = Boolean(currentUser)
+  const { connectionState } = useSSE({ enabled: isAuthenticated })
   const [menuOpen, setMenuOpen] = useState(false)
   const handleMenuClose = useCallback(() => setMenuOpen(false), [])
   const [contactOpen, setContactOpen] = useState(false)
   const handleContactClose = useCallback(() => setContactOpen(false), [])
   const [drawerOpen, setDrawerOpen] = useState(false)
   const closeDrawer = useCallback(() => setDrawerOpen(false), [])
-  const { items: attentionItems } = useAttentionItems()
+  const { items: attentionItems } = useAttentionItems({ enabled: isAuthenticated })
   // Until /auth/me answers, roles is empty: only the ungated Control Center
   // shows, and no role-gated link or request goes out on a guess.
   const roles = currentUser?.roles ?? []
@@ -54,7 +58,7 @@ export default function Layout() {
   const adminNavItems = ADMIN_NAV_ITEMS.filter(item => canAccess(roles, item.to))
   // The Tools health dot needs the server list, which only roles that can open
   // Tools may read.
-  const { data: mcpServers } = useMcpServers({ enabled: canAccess(roles, '/tools') })
+  const { data: mcpServers } = useMcpServers({ enabled: isAuthenticated && canAccess(roles, '/tools') })
 
   // Close the mobile drawer whenever navigation occurs so tapping a nav link
   // dismisses it. Keyed on pathname only — the drawer is a shell concern.
@@ -98,6 +102,12 @@ export default function Layout() {
       : location.pathname === to
     const base = active ? `${styles.navLink} ${styles.navLinkActive}` : styles.navLink
     return statusClass ? `${base} ${statusClass}` : base
+  }
+
+  // null = the probe answered "not logged in". A cached null that is being
+  // re-checked (just signed in) is still undecided, not a reason to bounce.
+  if (currentUser === null && !isCheckingSession) {
+    return <Navigate to="/login?expired=1" replace />
   }
 
   return (
@@ -232,7 +242,7 @@ export default function Layout() {
             <Logo variant="sidebar" />
           </div>
         </div>
-        {connectionState !== 'connected' && (
+        {isAuthenticated && connectionState !== 'connected' && (
           <div
             className={connectionState === 'disconnected'
               ? `${styles.disconnectBanner} ${styles.disconnectBannerCritical}`
@@ -252,7 +262,11 @@ export default function Layout() {
         )}
         <main className={styles.main}>
           <div key={location.pathname} className={styles.pageContent}>
-            <Outlet />
+            {(isAuthenticated || sessionCheckFailed) && (
+              <Suspense fallback={<PageFallback />}>
+                <Outlet />
+              </Suspense>
+            )}
           </div>
         </main>
       </div>
