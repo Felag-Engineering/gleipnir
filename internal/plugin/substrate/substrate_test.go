@@ -16,6 +16,7 @@ package substrate_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -30,6 +31,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/moby/moby/api/pkg/stdcopy"
 	dockerclient "github.com/moby/moby/client"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
@@ -835,11 +837,35 @@ func (h *harness) probeOutput(ctx context.Context, id container.ContainerID) str
 		return ""
 	}
 	defer rc.Close()
-	b, err := io.ReadAll(io.LimitReader(rc, 8<<10))
-	if err != nil {
+	return demuxProbeOutput(io.LimitReader(rc, 8<<10))
+}
+
+// demuxProbeOutput strips the daemon's stream framing from a probe's logs.
+// The probe runs without a TTY, so stdout and stderr arrive multiplexed, each
+// frame prefixed with an 8-byte header. Left in, those bytes are glued to the
+// first token of every frame and a parser looking for an exact token (e.g.
+// "CapEff:") never finds it.
+func demuxProbeOutput(r io.Reader) string {
+	var out bytes.Buffer
+	if _, err := stdcopy.StdCopy(&out, &out, r); err != nil {
 		return ""
 	}
-	return string(b)
+	return out.String()
+}
+
+func TestDemuxProbeOutput(t *testing.T) {
+	// One stdout frame as the daemon sends it: stream byte, three zero
+	// bytes, big-endian payload length, then the payload.
+	payload := []byte("CapEff:\t0000000000000000\n")
+	var framed bytes.Buffer
+	framed.Write([]byte{byte(stdcopy.Stdout), 0, 0, 0, 0, 0, 0, byte(len(payload))})
+	framed.Write(payload)
+	if got := capEffOf(framed.String()); got == "0000000000000000" {
+		t.Fatalf("capEffOf parsed framed output %q; the regression this guards against is gone from the fixture", framed.String())
+	}
+	if got := capEffOf(demuxProbeOutput(&framed)); got != "0000000000000000" {
+		t.Errorf("capEffOf(demuxed) = %q, want 0000000000000000", got)
+	}
 }
 
 // --- IPv6 link-local (#1033 item e) ------------------------------------------
