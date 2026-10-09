@@ -164,3 +164,20 @@ describe('CapabilitySnapshotCard — outbound headers', () => {
     expect(screen.queryByText(/outbound header/i)).not.toBeInTheDocument()
   })
 })
+
+describe('CapabilitySnapshotCard — argument enforcement chip', () => {
+  const tool = { server_name: 'fs', approval: 'none' as const, timeout: 30, on_timeout: 'fail' }
+
+  it('flags only the grants whose argument checking is reduced', () => {
+    render(
+      <CapabilitySnapshotCard
+        content={[
+          { ...tool, tool_name: 'read_file', arg_enforcement: 'exact' },
+          { ...tool, tool_name: 'write_file', arg_enforcement: 'schema_uncompilable' },
+          { ...tool, tool_name: 'legacy_tool' },
+        ]}
+      />,
+    )
+    expect(screen.getAllByText('Reduced argument checking')).toHaveLength(1)
+  })
+})

@@ -143,6 +143,9 @@ func buildCapabilitySnapshotTools(tools []mcp.ResolvedTool, pluginGranted []mode
 	for i, rt := range tools {
 		gt := rt.GrantedTool // copy: GrantedTool is a value type
 		gt.Source = sourceString(resolvedToolEntry{tool: rt})
+		// Classify against this grant's params: narrowing can change whether
+		// the schema compiles, so the Tools-page (unscoped) state may differ.
+		gt.ArgEnforcement = string(mcp.ClassifyArgEnforcementWithParams(rt.InputSchema, rt.CanonicalSchema, rt.Params))
 		out[i] = gt
 	}
 	// Include the synthetic ask_operator tool in the capability snapshot when

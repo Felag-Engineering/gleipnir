@@ -1437,7 +1437,10 @@ type mcpToolResponse struct {
 	// ArgEnforcement says how exactly this tool's call arguments are checked
 	// before dispatch (#776): "exact", "no_schema", "no_canonical_schema" or
 	// "schema_uncompilable". Anything but "exact" means only the ADR-017
-	// key-presence check applies. Policy-independent; computed on read.
+	// key-presence check applies. Describes the tool's UNSCOPED schema:
+	// a policy's params narrowing can change whether it compiles, so the
+	// per-run answer is on the capability snapshot's tools (#1068).
+	// Computed on read.
 	ArgEnforcement mcp.ArgEnforcement `json:"arg_enforcement"`
 	// OutboundHeaders lists the parameters whose values a call to this tool
 	// sends as outbound HTTP headers (#780), after the same name validation

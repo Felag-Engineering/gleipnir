@@ -70,7 +70,7 @@ export function ToolDetail({
         )}
         {enforcement && (
           <p className={styles.disabledNote}>
-            Argument checking: reduced — {enforcement.reason}. {enforcement.detail}
+            Argument checking: reduced — {enforcement.reason}. {enforcement.detail} This describes the tool's full schema; an agent that limits its parameters is checked against the narrowed schema, and each run's capability snapshot shows the result.
           </p>
         )}
       </header>
