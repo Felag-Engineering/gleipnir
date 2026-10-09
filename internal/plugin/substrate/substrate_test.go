@@ -530,12 +530,26 @@ func (h *harness) subnetOf(t *testing.T, instanceID string) netip.Prefix {
 func (h *harness) runProbe(ctx context.Context, name, network, image, addr string) (string, error) {
 	// nc with a 3s timeout: exits 0 only if the connection is established.
 	// Bounded so a silently-dropped packet ends the probe rather than the job.
+	out, err := h.runOnNetwork(ctx, name, network, image, fmt.Sprintf("nc -w 3 -z %s 8080; echo exit=$?", addr))
+	if err != nil {
+		return out, err
+	}
+	if !strings.Contains(out, "exit=0") {
+		return out, fmt.Errorf("probe reported no connection: %s", strings.TrimSpace(out))
+	}
+	return out, nil
+}
+
+// runOnNetwork starts a short-lived container on network running script under
+// sh, waits for it to exit, and returns its output. A non-nil error means the
+// container could not be run to completion, not that the script failed.
+func (h *harness) runOnNetwork(ctx context.Context, name, network, image, script string) (string, error) {
 	id, err := h.rt.Create(ctx, container.CreateOptions{
 		Name:    "gleipnir-substrate-" + h.runID + "-" + name,
 		Image:   image,
 		Network: network,
 		Labels:  map[string]string{labelRun: h.runID},
-		Command: []string{"sh", "-c", fmt.Sprintf("nc -w 3 -z %s 8080; echo exit=$?", addr)},
+		Command: []string{"sh", "-c", script},
 		// Self-constraint requires these on every create (#1021 review item
 		// V2) — without them the probe fails at CREATE, which reads
 		// identically to "the isolation held" to a caller checking only
@@ -558,11 +572,7 @@ func (h *harness) runProbe(ctx context.Context, name, network, image, addr strin
 			return "", fmt.Errorf("inspecting probe: %w", err)
 		}
 		if info.State == container.ContainerStateExited {
-			out := h.probeOutput(ctx, id)
-			if strings.Contains(out, "exit=0") {
-				return out, nil
-			}
-			return out, fmt.Errorf("probe reported no connection: %s", strings.TrimSpace(out))
+			return h.probeOutput(ctx, id), nil
 		}
 		if time.Now().After(deadline) {
 			return "", fmt.Errorf("probe did not exit within its budget")
@@ -582,6 +592,122 @@ func (h *harness) probeOutput(ctx context.Context, id container.ContainerID) str
 		return ""
 	}
 	return string(b)
+}
+
+// --- IPv6 link-local (#1033 item e) ------------------------------------------
+
+// netguard refuses operator-API connections from fe80::/10, but that is a
+// backstop: the instance network is created with IPv6 off precisely so no
+// link-local path to the host exists. Whether netavark (rootless Podman)
+// honours that per interface was unverified, so this asks the daemon and the
+// kernel rather than trusting the create option: the network's reported
+// EnableIPv6, the endpoint's IPv6 address, and /proc/net/if_inet6 as seen from
+// inside a container attached to the instance network (works on Docker and
+// Podman, and needs only sh+cat from the probe image).
+func TestSubstrate_InstanceInterfaceHasNoLinkLocalIPv6(t *testing.T) {
+	h := newHarness(t)
+	ref := requireProbeImage(t, h.rt)
+	instance := "inst-v6"
+
+	h.seedInstance(t, instance, ref, "")
+	t.Cleanup(func() { h.adoptForCleanup(t, instance) })
+
+	h.converge(t, "instance reaches running", func(ctx context.Context) bool {
+		info, ok := h.managedContainer(ctx, instance)
+		return ok && info.State == container.ContainerStateRunning
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), convergeBudget)
+	defer cancel()
+	netName := h.networkName(instance)
+
+	cli, err := dockerclient.New(dockerclient.WithHost("unix://" + h.socketPath))
+	if err != nil {
+		t.Fatalf("dialing %s for verification: %v", h.socketPath, err)
+	}
+	defer cli.Close()
+
+	netResp, err := cli.NetworkInspect(ctx, netName, dockerclient.NetworkInspectOptions{})
+	if err != nil {
+		t.Fatalf("NetworkInspect(%s): %v", netName, err)
+	}
+	if netResp.Network.EnableIPv6 {
+		t.Errorf("the daemon reports network %s with IPv6 enabled", netName)
+	}
+
+	info, ok := h.managedContainer(ctx, instance)
+	if !ok {
+		t.Fatalf("%s: container vanished", instance)
+	}
+	inspect, err := cli.ContainerInspect(ctx, string(info.ID), dockerclient.ContainerInspectOptions{})
+	if err != nil {
+		t.Fatalf("ContainerInspect(%s): %v", info.ID, err)
+	}
+	if inspect.Container.NetworkSettings == nil {
+		t.Fatalf("container %s has no NetworkSettings", info.ID)
+	}
+	ep, ok := inspect.Container.NetworkSettings.Networks[netName]
+	if !ok || ep == nil {
+		t.Fatalf("container %s has no endpoint on network %q", info.ID, netName)
+	}
+	if ep.GlobalIPv6Address.IsValid() {
+		t.Errorf("endpoint on %s carries IPv6 address %s", netName, ep.GlobalIPv6Address)
+	}
+
+	// The kernel's view from inside the instance network is the one that
+	// matters: an interface could acquire an fe80 address with nothing
+	// recorded in the inspect response.
+	out, err := h.runOnNetwork(ctx, "inst-v6-ifinet6", netName, ref, "cat /proc/net/if_inet6; echo done")
+	if err != nil {
+		t.Fatalf("reading /proc/net/if_inet6 from the instance network: %v", err)
+	}
+	if !strings.Contains(out, "done") {
+		t.Fatalf("probe did not complete, cannot judge interfaces: %q", out)
+	}
+	if bad := linkLocalInterfaces(out); len(bad) > 0 {
+		t.Errorf("interface(s) on instance network %s carry an fe80::/10 address: %v\nif_inet6:\n%s", netName, bad, out)
+	}
+}
+
+// linkLocalInterfaces parses /proc/net/if_inet6 output and returns the names
+// of non-loopback interfaces holding an fe80::/10 address. Each line is
+// "<32 hex digits> <ifindex> <prefixlen> <scope> <flags> <ifname>".
+func linkLocalInterfaces(ifInet6 string) []string {
+	var names []string
+	for _, line := range strings.Split(ifInet6, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 6 || len(fields[0]) != 32 || fields[5] == "lo" {
+			continue
+		}
+		// fe80::/10: first byte fe, next hex digit 8-b.
+		switch strings.ToLower(fields[0][:3]) {
+		case "fe8", "fe9", "fea", "feb":
+			names = append(names, fields[5])
+		}
+	}
+	return names
+}
+
+func TestLinkLocalInterfaces(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want int
+	}{
+		{"no interfaces", "done\n", 0},
+		{"loopback only", "00000000000000000000000000000001 01 80 10 80       lo\n", 0},
+		{"link-local on eth0", "fe800000000000000042acfffe110002 05 40 20 80     eth0\n", 1},
+		{"top of fe80::/10", "febf0000000000000000000000000001 05 40 20 80     eth0\n", 1},
+		{"fec0 is outside fe80::/10", "fec00000000000000000000000000001 05 40 20 80     eth0\n", 0},
+		{"unique-local only", "fd000000000000000000000000000002 05 40 00 80     eth0\n", 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := linkLocalInterfaces(tc.in); len(got) != tc.want {
+				t.Errorf("linkLocalInterfaces = %v, want %d hit(s)", got, tc.want)
+			}
+		})
+	}
 }
 
 // --- GC (#818) ---------------------------------------------------------------
