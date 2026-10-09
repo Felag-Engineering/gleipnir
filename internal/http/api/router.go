@@ -25,6 +25,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/settings"
 	"github.com/felag-engineering/gleipnir/internal/toolregistry"
 	"github.com/felag-engineering/gleipnir/internal/trigger"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/imagearchive"
 )
 
 // PolicyNotifier is implemented by background components (Poller, Scheduler)
@@ -285,10 +286,10 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 		// Plugin install and create-instance endpoints are registered outside the
 		// /api/v1/admin route group so each can carry its own body-size limit.
 		// The /api/v1/admin group applies a 1 MiB cap globally; the install endpoint
-		// needs 100 MiB, and nesting it inside the group would silently cap uploads.
+		// needs the bundle cap (imagearchive.MaxBundleBytes), and nesting it inside the group would silently cap uploads.
 		if cfg.Handlers.PluginAdminHandler != nil {
 			r.With(auth.RequireRole(model.RoleAdmin),
-				httputil.BodySizeLimit(100<<20)).
+				httputil.BodySizeLimit(imagearchive.MaxBundleBytes)).
 				Post("/api/v1/admin/plugins", cfg.Handlers.PluginAdminHandler.Install)
 			r.With(auth.RequireRole(model.RoleAdmin),
 				httputil.BodySizeLimit(httputil.MaxRequestBodySize)).

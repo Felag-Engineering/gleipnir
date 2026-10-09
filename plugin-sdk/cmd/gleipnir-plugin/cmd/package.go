@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/felag-engineering/gleipnir/plugin-sdk/imagearchive"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 	manifestv2 "github.com/felag-engineering/gleipnir/plugin-sdk/manifestv2"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/signing"
@@ -64,7 +65,10 @@ one for the manifest's schema_version is an error.
 
 Package-time digest check (v2 only): the image archive's config digest is
 computed and compared against the manifest's package.identifier pin before
-anything is signed. A mismatch fails loudly, naming both digests, rather than
+anything is signed. package.identifier names the config digest (the classic
+image ID); the host also accepts the manifest-digest ID that Docker's
+containerd image store reports. A warning is printed when the bundle exceeds
+the host's 1 GiB extraction cap. A mismatch fails loudly, naming both digests, rather than
 producing a bundle that would be rejected at install time.
 
 Signed payload is sha256(archive) || sha256(manifest) per spec §5.2, where
@@ -282,7 +286,7 @@ func runPackageV2(cmd *cobra.Command, manifestData []byte, imageArchive, imageRe
 		{"manifest.yaml", 0o644, canonicalManifest},
 	}
 	entries = appendSigningEntries(entries, m.Name, sigData, pubData, sbomData)
-	warnIfBundleExceedsHostExtractionCap(cmd, entries)
+	warnIfBundleExceedsHostExtractionCap(cmd, entries, imagearchive.MaxBundleBytes)
 
 	if err := writeBundleTarball(tarPath, m.Name, m.Version, entries); err != nil {
 		return fmt.Errorf("package: write tarball: %w", err)

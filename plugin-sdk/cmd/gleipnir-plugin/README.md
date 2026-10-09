@@ -232,14 +232,12 @@ exact same computation (#1032) instead of re-deriving it — the package-time
 and install-time checks must never become two implementations that could
 quietly drift apart.
 
-> **containerd-image-store caveat (tracked in #1032, not solved here):** the
-> digest this command checks is the config digest read out of the *archive*.
-> A container engine using the containerd image store may report a different
-> value (e.g. a manifest or index digest) as a loaded image's own ID for some
-> archive shapes. The host-side comparison against `package.identifier` — done
-> after loading the image into whatever runtime is configured, not from the
-> archive — needs to account for that; this package-time check does not
-> attempt to, since it only ever looks at the archive itself.
+> **containerd image store:** `package.identifier` names the *config* digest,
+> and this command checks exactly that. A daemon using the containerd image
+> store reports the *manifest* digest as a loaded image's ID instead; the host
+> accepts that form too, but only the manifest digest it computed from the
+> verified archive. Authors always pin the config digest; this package-time
+> check only ever looks at the archive, so it has nothing to account for.
 
 `gleipnir-plugin package` also warns (without failing the build) when:
 - the archive is tagged with a repository other than the manifest's own
@@ -247,7 +245,7 @@ quietly drift apart.
   `org.opencontainers.image.ref.name` annotation) — a possible sign of
   packaging the wrong image; and
 - the finished bundle's total uncompressed size exceeds the host's tarball
-  extraction cap (100 MiB, `internal/plugin/loader/extract.go`) — the bundle
+  extraction cap (1 GiB, `imagearchive.MaxBundleBytes`, shared with the host) — the bundle
   will build, but the host will refuse to extract it.
 
 **Bundle layout** (must match `ociManifestFilename`/`ociImageArchiveName` in

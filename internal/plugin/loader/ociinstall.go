@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"slices"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/model"
@@ -225,7 +224,8 @@ func (in *OCIInstaller) loadAndVerifyImage(ctx context.Context, bundle *OCIBundl
 	// Inspected before the runtime is consulted at all, and even when there is
 	// none: the archive is part of what the admin is asked to approve, so a
 	// malformed one is refused whatever would later have loaded it.
-	if err := inspectImageArchive(bundle.ArchivePath, bundle.Manifest.Package); err != nil {
+	verified, err := inspectImageArchive(bundle.ArchivePath, bundle.Manifest.Package)
+	if err != nil {
 		return loadedImage{}, err
 	}
 
@@ -255,6 +255,12 @@ func (in *OCIInstaller) loadAndVerifyImage(ctx context.Context, bundle *OCIBundl
 
 	digest := bundle.ImageDigest()
 	info, err := in.images.ImageInspect(ctx, digest)
+	if errors.Is(err, container.ErrImageNotFound) && verified.ManifestDigest != "" {
+		// The containerd image store does not index an image by its config
+		// digest; it answers to the manifest digest. That digest is the one
+		// the verified archive hashed to, not a value the daemon supplied.
+		info, err = in.images.ImageInspect(ctx, verified.ManifestDigest)
+	}
 	if err != nil {
 		if errors.Is(err, container.ErrImageNotFound) {
 			// The load reported success and the pinned digest is not there, so
@@ -268,10 +274,8 @@ func (in *OCIInstaller) loadAndVerifyImage(ctx context.Context, bundle *OCIBundl
 	}
 
 	// The runtime found something under that digest; confirm it is the same
-	// image by its own reckoning. An offline load preserves the image ID, while
-	// RepoDigests are usually empty because no registry was involved — so both
-	// are accepted, and a match on either is proof the pinned bytes are here.
-	if info.ID != digest && !slices.Contains(info.RepoDigests, bundle.ImageReference()) {
+	// image by its own reckoning. See imageMatchesArchive for the accepted forms.
+	if !imageMatchesArchive(info, verified, bundle.ImageReference()) {
 		return loadedImage{}, &imageDigestMismatchError{Expected: digest, Observed: info.ID}
 	}
 

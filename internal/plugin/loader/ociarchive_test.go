@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/felag-engineering/gleipnir/internal/plugin/container"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/imagearchive"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/manifestv2"
 )
 
@@ -234,7 +235,7 @@ func TestInspectImageArchive(t *testing.T) {
 				t.Fatalf("write archive: %v", err)
 			}
 
-			err := inspectImageArchive(path, pkg)
+			_, err := inspectImageArchive(path, pkg)
 			switch {
 			case tt.wantMismatch:
 				var mismatch *imageDigestMismatchError
@@ -336,5 +337,90 @@ func TestOCIInstall_BadArchiveIsRefusedInManualPosture(t *testing.T) {
 	var rejected *InstallRejectedError
 	if !errors.As(err, &rejected) || rejected.Reason != rejectImageArchiveInvalid {
 		t.Fatalf("Install error = %v, want an image_archive_invalid rejection", err)
+	}
+}
+
+func TestImageMatchesArchive(t *testing.T) {
+	const reference = "ghcr.io/acme/plugin@sha256:cfg"
+	verified := imagearchive.Info{ConfigDigest: "sha256:cfg", ManifestDigest: "sha256:manifest"}
+	dockerLayout := imagearchive.Info{ConfigDigest: "sha256:cfg"}
+
+	tests := []struct {
+		name      string
+		inspected container.ImageInfo
+		verified  imagearchive.Info
+		want      bool
+	}{
+		{name: "classic store: ID is the config digest", inspected: container.ImageInfo{ID: "sha256:cfg"}, verified: verified, want: true},
+		{name: "containerd store: ID is the manifest digest", inspected: container.ImageInfo{ID: "sha256:manifest"}, verified: verified, want: true},
+		{name: "repo digest of the pinned reference", inspected: container.ImageInfo{ID: "sha256:other", RepoDigests: []string{reference}}, verified: verified, want: true},
+		{name: "unrelated ID", inspected: container.ImageInfo{ID: "sha256:evil"}, verified: verified, want: false},
+		{name: "unrelated repo digest", inspected: container.ImageInfo{ID: "sha256:evil", RepoDigests: []string{"ghcr.io/acme/plugin@sha256:evil"}}, verified: verified, want: false},
+		{name: "docker-layout archive has no manifest digest to accept", inspected: container.ImageInfo{ID: "sha256:manifest"}, verified: dockerLayout, want: false},
+		{name: "empty ID never matches an empty manifest digest", inspected: container.ImageInfo{}, verified: dockerLayout, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := imageMatchesArchive(tt.inspected, tt.verified, reference); got != tt.want {
+				t.Errorf("imageMatchesArchive = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// Under the containerd image store the daemon indexes the loaded image by its
+// manifest digest and reports that as the ID, so inspecting the config digest
+// finds nothing. The install must still succeed, because the manifest digest
+// is one the verified archive hashes to.
+func TestOCIInstall_ContainerdStoreManifestDigestID(t *testing.T) {
+	ctx := context.Background()
+
+	config := []byte("containerd-config")
+	archive := tarBytes(t, ociLayoutFiles(t, [][]byte{config}, "ghcr.io/acme/containerd-plugin:1.0.0"))
+	archivePath := filepath.Join(t.TempDir(), "image.tar")
+	if err := os.WriteFile(archivePath, archive, 0o644); err != nil {
+		t.Fatalf("write archive: %v", err)
+	}
+	pin := "sha256:" + hexOf(config)
+	verified, err := inspectImageArchive(archivePath, manifestv2.Package{Identifier: "ghcr.io/acme/containerd-plugin@" + pin})
+	if err != nil {
+		t.Fatalf("inspect fixture archive: %v", err)
+	}
+	if verified.ManifestDigest == "" {
+		t.Fatal("fixture archive has no manifest digest; the test would prove nothing")
+	}
+
+	tests := []struct {
+		name     string
+		loadedID string
+		wantOK   bool
+	}{
+		{name: "ID is the verified manifest digest", loadedID: verified.ManifestDigest, wantOK: true},
+		{name: "ID is a digest the archive never contained", loadedID: digestOf("not-in-archive"), wantOK: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, rt, in := newOCIFixture(t, false)
+			tarPath := buildOCIBundle(t, ociBundleOptions{
+				name: "containerd-plugin", version: "1.0.0", digest: pin, archive: archive,
+			})
+			rt.PendingImages = []container.ImageInfo{{ID: tt.loadedID}}
+
+			res, err := in.Install(ctx, tarPath)
+			if tt.wantOK {
+				if err != nil {
+					t.Fatalf("Install: %v", err)
+				}
+				if !res.ImageLoaded {
+					t.Error("ImageLoaded = false for a containerd-store ID matching the manifest digest")
+				}
+				return
+			}
+			if res.ImageLoaded {
+				t.Error("ImageLoaded = true for an image the archive does not prove")
+			}
+		})
 	}
 }

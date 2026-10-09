@@ -71,6 +71,29 @@ whatever that tag points at tomorrow, which is not consent. The signed bundle
 carries the image, so the digest is knowable at authoring time — there is no case
 where a tag is the only thing an author could write.
 
+### Which digest `package.identifier` names
+
+The digest is the image's **config digest**: the sha256 of the image config
+blob, which is the classic Docker image ID (`docker inspect --format '{{.Id}}'`
+on the classic image store). It is not the manifest digest, the index digest,
+or a registry repo digest. `gleipnir-plugin package` computes it from the
+archive it is about to sign and refuses to build on a mismatch.
+
+Docker's containerd image store reports the **manifest digest** as a loaded
+image's ID instead. The host accepts that form too, so one pin works against
+either store. The manifest digest accepted is the one the host computed by
+hashing the OCI-layout `image.tar` it already verified before loading, never a
+value the daemon supplies, so the extra form widens nothing: a daemon holding
+an image whose ID is neither the config digest nor that archive's manifest
+digest (and carrying no matching RepoDigest) is rejected as
+`image_digest_mismatch`.
+
+### Bundle size limit
+
+The host extracts at most 1 GiB (uncompressed) from one bundle, and the admin
+upload endpoint accepts the same size. The packaging CLI warns when a bundle
+exceeds it. `docker save` stores layers uncompressed, so keep images lean.
+
 ## Transport
 
 `package.transport.type: streamable-http` means the container answers the

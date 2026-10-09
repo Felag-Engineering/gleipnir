@@ -27,6 +27,7 @@ import (
 	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
 	"github.com/felag-engineering/gleipnir/internal/plugin/oauth"
 	pluginstate "github.com/felag-engineering/gleipnir/internal/plugin/state"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/imagearchive"
 	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/signing"
 )
@@ -1321,14 +1322,14 @@ type installResponse struct {
 // existing Installer pipeline, and returns the plugin row ID + metadata.
 //
 // The route is registered outside the /api/v1/admin group so it can carry a
-// 100 MiB body-size limit independent of the group's 1 MiB cap. See router.go.
+// body-size limit (imagearchive.MaxBundleBytes) independent of the group's 1 MiB cap. See router.go.
 //
 // Status map:
 //   - 201  — install accepted (may still be pending_review or pending_key_approval)
 //   - 400  — empty body, or tarball is malformed / manifest invalid
 //   - 409  — CAS conflict, OR bundle verified but rejected (pinned-key mismatch,
 //     material manifest change, or downgrade); see audit log
-//   - 413  — body exceeds 100 MiB cap
+//   - 413  — body exceeds the imagearchive.MaxBundleBytes cap
 //   - 422  — bundle signature rejected; see audit log
 //   - 503  — plugin subsystem disabled (installer == nil)
 //   - 500  — DB error or unexpected installer failure
@@ -1338,8 +1339,8 @@ func (h *PluginHandler) Install(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cap body at 100 MiB, matching loader.maxTarballBytes.
-	r.Body = http.MaxBytesReader(w, r.Body, 100<<20)
+	// Cap body at the bundle cap, matching loader.maxTarballBytes.
+	r.Body = http.MaxBytesReader(w, r.Body, imagearchive.MaxBundleBytes)
 
 	tmpFile, err := os.CreateTemp("", "gleipnir-plugin-upload-*.tar.gz")
 	if err != nil {

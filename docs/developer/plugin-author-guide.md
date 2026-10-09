@@ -351,7 +351,7 @@ When `manifest.yaml` is absent, `package` invokes the binary with `--emit-manife
 
    Alternatively, upload through the admin API:
    ```
-   POST /api/v1/admin/plugins  (Content-Type: application/octet-stream, max 100 MiB)
+   POST /api/v1/admin/plugins  (Content-Type: application/octet-stream, max 1 GiB)
    ```
 
 2. **Approve in the admin UI.** Navigate to `/admin/plugins`. The new plugin appears with status "Pending review". Click through the consent screen — it shows declared services, tier-2 capabilities, auth strategy, and pubkey fingerprint. Click **Approve**.

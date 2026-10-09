@@ -12,15 +12,20 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/felag-engineering/gleipnir/plugin-sdk/imagearchive"
 	manifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 )
 
 // maxTarballBytes caps cumulative uncompressed bytes extracted from a plugin
 // tarball. Defends against gzip-bomb payloads (spec §5.1 size guidance).
 // A var (not a const) solely so TestInstall_TarballTooLarge can lower it —
-// materializing a real >100 MiB payload cost ~16s under -race for no extra
-// coverage. Production code must never reassign it.
-var maxTarballBytes int64 = 100 << 20 // 100 MiB
+// materializing a real payload at the cap cost real time under -race for no
+// extra coverage. Production code must never reassign it.
+//
+// Shared with the packaging CLI through imagearchive.MaxBundleBytes: an OCI
+// bundle carries a whole `docker save` archive, which routinely exceeds the
+// 100 MiB this once was.
+var maxTarballBytes = imagearchive.MaxBundleBytes
 
 // maxTarballFiles caps the number of entries (files + directories) extracted
 // from a plugin tarball. Defends against inode-exhaustion DoS where a small
@@ -34,7 +39,7 @@ const maxTarballFiles = 10_000
 //   - Only regular files and directories are accepted; symlinks, hard links,
 //     devices, and FIFOs are rejected to prevent privilege escalation.
 //   - Cumulative uncompressed bytes across all entries must not exceed maxBytes.
-//     This defends against gzip-bomb payloads (see plan §100MB cap note).
+//     This defends against gzip-bomb payloads (see maxTarballBytes).
 //   - Total number of entries (files + directories) must not exceed maxFiles.
 //     This defends against inode-exhaustion DoS where a small tarball can encode
 //     millions of zero-byte entries that pass the byte cap.
