@@ -371,7 +371,7 @@ func TestSelfAttacher_AttachAndDetachManagedNetwork(t *testing.T) {
 
 	selfID, err := fake.Create(ctx, CreateOptions{
 		Name: "gleipnir", Image: "gleipnir/test", Network: "ignored",
-		CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"},
+		CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}, Sysctls: RequiredSysctls(),
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)

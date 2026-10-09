@@ -10,6 +10,7 @@ import type { SchemaShape, SchemaProperty } from '@/components/form/SchemaForm'
 import { useOptionsContext } from '@/hooks/useOptionsContext'
 import { ReauthorizeButton } from '@/components/admin/ReauthorizeButton/ReauthorizeButton'
 import { CredentialsTab } from '@/components/admin/CredentialsTab/CredentialsTab'
+import { CapabilityHealthPanel } from '@/components/admin/CapabilityHealthPanel/CapabilityHealthPanel'
 import { InstanceSetupSteps } from '@/components/admin/InstanceSetupSteps/InstanceSetupSteps'
 import { DeletePluginInstanceModal } from '@/components/admin/DeletePluginInstanceModal'
 import { AcceptManifestModal } from '@/components/admin/AcceptManifestModal'
@@ -688,6 +689,8 @@ export default function AdminPluginInstancePage() {
           onNavigate={setActiveTab}
         />
       )}
+
+      <CapabilityHealthPanel pluginId={pluginId!} instanceId={instanceId!} />
 
       <nav className={styles.tabs} aria-label="Instance settings">
         {hasSubscriptionSchema && (

@@ -122,14 +122,18 @@ func TestWarnIfBundleExceedsHostExtractionCap(t *testing.T) {
 	var errOut bytes.Buffer
 	fakeCmd.SetErr(&errOut)
 
+	// A small cap stands in for the real one: materializing 1 GiB to cross it
+	// would test nothing extra.
+	const testCap = 4096
+
 	small := []bundleTarEntry{{"image.tar", 0o644, make([]byte, 1024)}}
-	warnIfBundleExceedsHostExtractionCap(fakeCmd, small)
+	warnIfBundleExceedsHostExtractionCap(fakeCmd, small, testCap)
 	if errOut.Len() != 0 {
 		t.Errorf("expected no warning for a small bundle, got: %q", errOut.String())
 	}
 
-	large := []bundleTarEntry{{"image.tar", 0o644, make([]byte, hostExtractionCapBytes+1)}}
-	warnIfBundleExceedsHostExtractionCap(fakeCmd, large)
+	large := []bundleTarEntry{{"image.tar", 0o644, make([]byte, testCap+1)}}
+	warnIfBundleExceedsHostExtractionCap(fakeCmd, large, testCap)
 	if !strings.Contains(errOut.String(), "extraction cap") {
 		t.Errorf("expected an extraction-cap warning for an oversized bundle, got: %q", errOut.String())
 	}

@@ -152,6 +152,19 @@ type CreateOptions struct {
 	// no-new-privileges is what closes that door.
 	SecurityOpt []string
 
+	// Sysctls is REQUIRED to contain net.ipv6.conf.all.disable_ipv6=1 and
+	// net.ipv6.conf.default.disable_ipv6=1 (see RequiredSysctls), and nothing
+	// else — self-constraint rejects any other key (#1033, follow-up to
+	// #1021). The network's EnableIPv6=false does not stop the runtime
+	// assigning an fe80 link-local address to the container's interface
+	// (observed on rootless Podman/netavark), and a link-local path reaches
+	// the host around the IPv4 subnet guards. Writing all.disable_ipv6=1
+	// inside the container's own netns removes IPv6 from every interface,
+	// including the existing eth0; default covers interfaces added later.
+	// These sysctls are network-namespaced, so they are safe on rootless
+	// Podman and Docker.
+	Sysctls map[string]string
+
 	Resources Resources
 }
 

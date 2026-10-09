@@ -15,16 +15,23 @@
 package substrate_test
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/moby/moby/api/pkg/stdcopy"
 	dockerclient "github.com/moby/moby/client"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
@@ -486,6 +493,249 @@ func TestSubstrate_EastWestIsolation(t *testing.T) {
 	}
 }
 
+// --- egress caller identity across instance networks (#1022) -------------------
+
+// The egress proxy names the calling instance by the address a connection
+// ARRIVED on (LocalAddr). Under the Linux weak-host model a host answers for
+// any of its addresses on any interface, so the worry is a plugin on instance
+// A's network dialing the address Gleipnir holds on instance B's network and
+// arriving as B, with B's grants. The proxy now also requires the TCP peer to
+// sit inside the /24 of the instance LocalAddr names.
+//
+// This test cannot put the real proxy inside the daemon's networks: the test
+// process is not a member of them, and the probe image carries no Go binary.
+// It splits the evidence instead, and each half runs for real:
+//
+//  1. Against the real daemon: the preconditions of the attack. A container on
+//     A's network (as the substrate creates it) holds no capabilities and has
+//     no route covering B's Gleipnir address, so it cannot even form the
+//     packet — the weak-host path is closed at the network layer before the
+//     proxy's check is consulted. The proxy check is defence in depth behind
+//     this structural fact.
+//  2. Against the real kernel: the proxy's own accept path, driven over real
+//     TCP sockets. Linux treats all of 127.0.0.0/8 as local, so the listener
+//     binds "B's Gleipnir address" and the dialer binds an address inside "A's
+//     /24" — the exact (LocalAddr, RemoteAddr) pair a cross-instance attempt
+//     produces. The address geometry (distinct /24s, Gleipnir at .2) is taken
+//     from what the daemon-backed allocator actually assigned.
+//
+// What this does not show is a packet crossing a real bridge from A to B; half
+// 1 shows that packet cannot be sent.
+func TestSubstrate_EgressRefusesCrossInstanceCaller(t *testing.T) {
+	h := newHarness(t)
+	ref := requireProbeImage(t, h.rt)
+
+	for _, id := range []string{"inst-a", "inst-b"} {
+		h.seedInstance(t, id, ref, "")
+		t.Cleanup(func() { h.adoptForCleanup(t, id) })
+	}
+	h.converge(t, "both instances running", func(ctx context.Context) bool {
+		for _, id := range []string{"inst-a", "inst-b"} {
+			info, ok := h.managedContainer(ctx, id)
+			if !ok || info.State != container.ContainerStateRunning {
+				return false
+			}
+		}
+		return true
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), convergeBudget)
+	defer cancel()
+
+	subnetA := h.subnetOf(t, "inst-a")
+	subnetB := h.subnetOf(t, "inst-b")
+	gleipnirB, err := egress.GleipnirAddrOf(subnetB.String())
+	if err != nil {
+		t.Fatalf("GleipnirAddrOf(%s): %v", subnetB, err)
+	}
+	gleipnirBAddr, ok := netip.AddrFromSlice(gleipnirB.To4())
+	if !ok {
+		t.Fatalf("gleipnir address %s is not IPv4", gleipnirB)
+	}
+
+	// Half 1: the attacker's position, observed from inside A's network.
+	out, err := h.runOnNetwork(ctx, "inst-a-recon", h.networkName("inst-a"), ref,
+		"grep CapEff /proc/self/status; cat /proc/net/route; echo recon-done")
+	if err != nil {
+		t.Fatalf("recon probe on inst-a: %v", err)
+	}
+	if !strings.Contains(out, "recon-done") {
+		t.Fatalf("recon probe output incomplete: %q", out)
+	}
+	if capEff := capEffOf(out); capEff != "0000000000000000" {
+		t.Errorf("a container on inst-a holds capabilities (CapEff=%q); with CAP_NET_ADMIN it could add the route "+
+			"that lets it address inst-b's gleipnir address", capEff)
+	}
+	for _, r := range routesOf(out) {
+		if r.Contains(gleipnirBAddr) {
+			t.Errorf("a container on inst-a has a route (%s) covering inst-b's gleipnir address %s; "+
+				"it can address the proxy listener that identifies callers as inst-b", r, gleipnirBAddr)
+		}
+	}
+	if out, err := h.runProbe(ctx, "inst-a-probe-b", h.networkName("inst-a"), ref, gleipnirB.String()); err == nil {
+		t.Errorf("a container on inst-a connected to %s (inst-b's gleipnir address)\noutput: %s", gleipnirB, out)
+	}
+
+	// Half 2: the proxy's accept path with a cross-instance (LocalAddr, RemoteAddr).
+	gwB := loopbackLike(subnetB, 2)
+	attackerA := loopbackLike(subnetA, 5)
+	legitB := loopbackLike(subnetB, 5)
+
+	allowB, err := egress.NewAllowlist([]string{"granted.example.com"})
+	if err != nil {
+		t.Fatalf("NewAllowlist: %v", err)
+	}
+	registry := egress.NewGatewayRegistry()
+	registry.Set(gwB, "inst-b", allowB)
+	auditor := &denialRecorder{}
+	proxy, err := egress.New(egress.Config{
+		Resolver: registry,
+		Auditor:  auditor,
+		// A public-looking address, so a connection that got past identity
+		// would be dialed upstream rather than stopped by the east-west guard.
+		Lookup: func(context.Context, string) ([]net.IP, error) { return []net.IP{net.ParseIP("93.184.216.34")}, nil },
+	})
+	if err != nil {
+		t.Fatalf("egress.New: %v", err)
+	}
+	ln, err := net.Listen("tcp", net.JoinHostPort(gwB.String(), "0"))
+	if err != nil {
+		t.Fatalf("binding %s for the proxy listener: %v", gwB, err)
+	}
+	srv := &http.Server{Handler: proxy, ReadHeaderTimeout: 5 * time.Second}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	// The attack: arrives at inst-b's address from inst-a's /24, asking for a
+	// host only inst-b is granted. It must be refused as a caller fault, not
+	// as an ungranted host, and the audit record must name inst-b.
+	status, body := connectVia(t, ln.Addr().String(), attackerA, "granted.example.com:443")
+	if status != http.StatusForbidden || !strings.Contains(body, string(egress.DenyCallerNotOnInstanceNetwork)) {
+		t.Errorf("cross-instance caller got %d %q, want 403 refused as %s", status, body, egress.DenyCallerNotOnInstanceNetwork)
+	}
+	if got := auditor.reasons(); len(got) != 1 || got[0] != "inst-b:"+string(egress.DenyCallerNotOnInstanceNetwork) {
+		t.Errorf("audit records = %v, want one inst-b %s denial", got, egress.DenyCallerNotOnInstanceNetwork)
+	}
+
+	// Control: a caller genuinely on inst-b's /24 passes the identity check
+	// (so the refusal above is about WHERE the caller is) and is then judged
+	// on the grant. An ungranted host keeps this from dialing anywhere.
+	status, body = connectVia(t, ln.Addr().String(), legitB, "ungranted.example.org:443")
+	if status != http.StatusForbidden || !strings.Contains(body, string(egress.DenyNotGranted)) {
+		t.Errorf("same-network caller got %d %q, want 403 refused as %s (identity should have passed)",
+			status, body, egress.DenyNotGranted)
+	}
+}
+
+// loopbackLike maps a daemon-allocated /24 and a host number onto
+// 127.77.<third>.<host>, preserving which /24 an address falls in and its
+// position within it.
+func loopbackLike(subnet netip.Prefix, host byte) net.IP {
+	return net.IPv4(127, 77, subnet.Addr().As4()[2], host)
+}
+
+// connectVia sends one CONNECT from the given source address and returns the
+// proxy's status and body. The source bind is what fixes the connection's
+// RemoteAddr as the proxy sees it.
+func connectVia(t *testing.T, proxyAddr string, from net.IP, target string) (int, string) {
+	t.Helper()
+	d := net.Dialer{LocalAddr: &net.TCPAddr{IP: from}, Timeout: 5 * time.Second}
+	conn, err := d.Dial("tcp", proxyAddr)
+	if err != nil {
+		t.Fatalf("dialing %s from %s: %v", proxyAddr, from, err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatalf("SetDeadline: %v", err)
+	}
+	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target); err != nil {
+		t.Fatalf("writing CONNECT: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		t.Fatalf("reading proxy response: %v", err)
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	if err != nil {
+		t.Fatalf("reading proxy response body: %v", err)
+	}
+	return resp.StatusCode, string(b)
+}
+
+type denialRecorder struct {
+	mu      sync.Mutex
+	records []string
+}
+
+func (d *denialRecorder) EgressDenied(_ context.Context, instanceID, _ string, reason egress.DenyReason) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.records = append(d.records, instanceID+":"+string(reason))
+}
+
+func (d *denialRecorder) reasons() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.records...)
+}
+
+// capEffOf extracts the effective capability mask from /proc/self/status output.
+func capEffOf(out string) string {
+	fields := strings.Fields(out)
+	for i, f := range fields {
+		if f == "CapEff:" && i+1 < len(fields) {
+			return fields[i+1]
+		}
+	}
+	return ""
+}
+
+// routesOf parses /proc/net/route output into the prefixes it routes. Lines
+// that are not routes (the header, other output) are skipped. Addresses and
+// masks there are little-endian hex.
+func routesOf(out string) []netip.Prefix {
+	var routes []netip.Prefix
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 8 || len(f[1]) != 8 || len(f[7]) != 8 {
+			continue
+		}
+		dest, errD := strconv.ParseUint(f[1], 16, 32)
+		mask, errM := strconv.ParseUint(f[7], 16, 32)
+		if errD != nil || errM != nil {
+			continue
+		}
+		ones := 0
+		for m := uint32(mask); m&1 == 1; m >>= 1 {
+			ones++
+		}
+		d := uint32(dest)
+		addr := netip.AddrFrom4([4]byte{byte(d), byte(d >> 8), byte(d >> 16), byte(d >> 24)})
+		routes = append(routes, netip.PrefixFrom(addr, ones))
+	}
+	return routes
+}
+
+func TestRoutesOf(t *testing.T) {
+	out := "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n" +
+		"eth0\t0012BE0A\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0\n" +
+		"eth0\t00000000\t0112BE0A\t0003\t0\t0\t0\t00000000\t0\t0\t0\n"
+	routes := routesOf(out)
+	if len(routes) != 2 {
+		t.Fatalf("routes = %v, want 2", routes)
+	}
+	if want := netip.MustParsePrefix("10.190.18.0/24"); routes[0] != want {
+		t.Errorf("routes[0] = %s, want %s", routes[0], want)
+	}
+	if want := netip.MustParsePrefix("0.0.0.0/0"); routes[1] != want {
+		t.Errorf("routes[1] = %s, want %s", routes[1], want)
+	}
+	if got := capEffOf("CapEff:\t0000000000000000\n"); got != "0000000000000000" {
+		t.Errorf("capEffOf = %q", got)
+	}
+}
+
 // assertStaysRunning re-checks an instance shortly after it first reported
 // running, so a flap cannot pass for convergence.
 func assertStaysRunning(t *testing.T, h *harness, instanceID string) {
@@ -557,6 +807,7 @@ func (h *harness) runOnNetwork(ctx context.Context, name, network, image, script
 		// what the isolation tests need it to mean: the dial itself failed.
 		CapDrop:     []string{"ALL"},
 		SecurityOpt: []string{"no-new-privileges"},
+		Sysctls:     container.RequiredSysctls(),
 	})
 	if err != nil {
 		return "", fmt.Errorf("creating probe: %w", err)
@@ -587,11 +838,35 @@ func (h *harness) probeOutput(ctx context.Context, id container.ContainerID) str
 		return ""
 	}
 	defer rc.Close()
-	b, err := io.ReadAll(io.LimitReader(rc, 8<<10))
-	if err != nil {
+	return demuxProbeOutput(io.LimitReader(rc, 8<<10))
+}
+
+// demuxProbeOutput strips the daemon's stream framing from a probe's logs.
+// The probe runs without a TTY, so stdout and stderr arrive multiplexed, each
+// frame prefixed with an 8-byte header. Left in, those bytes are glued to the
+// first token of every frame and a parser looking for an exact token (e.g.
+// "CapEff:") never finds it.
+func demuxProbeOutput(r io.Reader) string {
+	var out bytes.Buffer
+	if _, err := stdcopy.StdCopy(&out, &out, r); err != nil {
 		return ""
 	}
-	return string(b)
+	return out.String()
+}
+
+func TestDemuxProbeOutput(t *testing.T) {
+	// One stdout frame as the daemon sends it: stream byte, three zero
+	// bytes, big-endian payload length, then the payload.
+	payload := []byte("CapEff:\t0000000000000000\n")
+	var framed bytes.Buffer
+	framed.Write([]byte{byte(stdcopy.Stdout), 0, 0, 0, 0, 0, 0, byte(len(payload))})
+	framed.Write(payload)
+	if got := capEffOf(framed.String()); got == "0000000000000000" {
+		t.Fatalf("capEffOf parsed framed output %q; the regression this guards against is gone from the fixture", framed.String())
+	}
+	if got := capEffOf(demuxProbeOutput(&framed)); got != "0000000000000000" {
+		t.Errorf("capEffOf(demuxed) = %q, want 0000000000000000", got)
+	}
 }
 
 // --- IPv6 link-local (#1033 item e) ------------------------------------------
@@ -604,6 +879,12 @@ func (h *harness) probeOutput(ctx context.Context, id container.ContainerID) str
 // EnableIPv6, the endpoint's IPv6 address, and /proc/net/if_inet6 as seen from
 // inside a container attached to the instance network (works on Docker and
 // Podman, and needs only sh+cat from the probe image).
+//
+// EnableIPv6=false alone does NOT pass this on rootless Podman: netavark still
+// gives eth0 an fe80 link-local address. What makes it pass is the
+// net.ipv6.conf.{all,default}.disable_ipv6=1 sysctls that self-constraint
+// requires on every create (container.RequiredSysctls); the probe container
+// goes through the same create path, so it sees exactly what a plugin gets.
 func TestSubstrate_InstanceInterfaceHasNoLinkLocalIPv6(t *testing.T) {
 	h := newHarness(t)
 	ref := requireProbeImage(t, h.rt)
@@ -845,7 +1126,7 @@ func TestSubstrate_SelfAttachPinsAddressAndDetachesOnTeardown(t *testing.T) {
 		Image:   ref,
 		Network: selfNetName,
 		Labels:  map[string]string{labelRun: h.runID},
-		CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"},
+		CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}, Sysctls: container.RequiredSysctls(),
 	})
 	if err != nil {
 		t.Fatalf("creating self stand-in container: %v", err)

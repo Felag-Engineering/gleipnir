@@ -27,6 +27,16 @@ const (
 	// item V2): every managed container must run with no-new-privileges.
 	ViolationMissingSecurityOpt ViolationKind = "missing_security_opt"
 
+	// ViolationIPv6NotDisabled is Create's self-constraint (#1033): every
+	// managed container must disable IPv6 in its own netns, because the
+	// network's EnableIPv6=false does not stop a link-local address being
+	// assigned to the interface.
+	ViolationIPv6NotDisabled ViolationKind = "ipv6_not_disabled"
+
+	// ViolationDisallowedSysctl is Create's self-constraint (#1033): the only
+	// sysctls a managed container may request are the required IPv6 ones.
+	ViolationDisallowedSysctl ViolationKind = "disallowed_sysctl"
+
 	// ViolationIPv6Enabled is CreateNetwork's self-constraint (#1021 review
 	// item V1): every managed instance network must have IPv6 disabled.
 	ViolationIPv6Enabled ViolationKind = "ipv6_enabled"
@@ -71,6 +81,24 @@ const requiredCapDrop = "ALL"
 // capability gone, a setuid-root binary in the image is the remaining way to
 // regain privilege, and no-new-privileges is what closes that specific door.
 const requiredSecurityOpt = "no-new-privileges"
+
+// requiredSysctls are the only sysctls a managed container may set, and it
+// must set all of them, at exactly these values (#1033). See
+// CreateOptions.Sysctls for why IPv6 has to be disabled per container.
+var requiredSysctls = map[string]string{
+	"net.ipv6.conf.all.disable_ipv6":     "1",
+	"net.ipv6.conf.default.disable_ipv6": "1",
+}
+
+// RequiredSysctls returns a fresh copy of the sysctls every managed container
+// create must carry, so callers cannot mutate the package's required set.
+func RequiredSysctls() map[string]string {
+	out := make(map[string]string, len(requiredSysctls))
+	for k, v := range requiredSysctls {
+		out[k] = v
+	}
+	return out
+}
 
 // ConstraintViolationError is returned by Create/CreateNetwork when the
 // requested options would violate Gleipnir's self-constraint on container
@@ -136,6 +164,24 @@ func ValidateCreate(opts CreateOptions) error {
 			Detail: fmt.Sprintf(
 				"a managed container must set %s; got SecurityOpt=%v", requiredSecurityOpt, opts.SecurityOpt,
 			),
+		}
+	}
+	for key := range opts.Sysctls {
+		if _, allowed := requiredSysctls[key]; !allowed {
+			return &ConstraintViolationError{
+				Kind:   ViolationDisallowedSysctl,
+				Detail: fmt.Sprintf("sysctl %q is not permitted for managed plugin containers", key),
+			}
+		}
+	}
+	for key, want := range requiredSysctls {
+		if got := opts.Sysctls[key]; got != want {
+			return &ConstraintViolationError{
+				Kind: ViolationIPv6NotDisabled,
+				Detail: fmt.Sprintf(
+					"a managed container must set sysctl %s=%s; got %q", key, want, got,
+				),
+			}
 		}
 	}
 	return nil

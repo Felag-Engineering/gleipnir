@@ -21,6 +21,17 @@ import (
 // a producer whose entry declares more is either broken or hostile.
 const maxEntryBytes = 4 << 20 // 4 MiB
 
+// MaxBundleBytes is the most uncompressed data the host will extract from one
+// plugin bundle, and so the most an image archive inside it can be. It sits
+// here because the packaging CLI and the host both import this package, so
+// the CLI's too-large warning cannot drift from the limit the host enforces.
+//
+// Sized for real images: a `docker save` archive of an ordinary service image
+// is hundreds of MiB, since layers are stored uncompressed. Every read stays
+// bounded (see maxEntryBytes and maxDecompressedBytes); this raises the ceiling,
+// not the amount ever held in memory.
+const MaxBundleBytes int64 = 1 << 30 // 1 GiB
+
 // maxDecompressedBytes bounds total bytes read while scanning an archive,
 // gzip-decompressed if the archive is compressed. This is independent of any
 // one entry's declared size: it defends against a gzip bomb — a tiny
@@ -28,9 +39,9 @@ const maxEntryBytes = 4 << 20 // 4 MiB
 // than against an oversized entry.
 //
 // A var (not a const) solely so tests can lower it: materializing a real
-// >512 MiB decompressed payload to exercise this path would cost real time
+// >1 GiB decompressed payload to exercise this path would cost real time
 // for no additional coverage. Production code must never reassign it.
-var maxDecompressedBytes int64 = 512 << 20 // 512 MiB
+var maxDecompressedBytes = MaxBundleBytes
 
 // Info is what Inspect learns about an image archive.
 type Info struct {
@@ -38,6 +49,13 @@ type Info struct {
 	// image ID (what `docker inspect --format '{{.Id}}'` reports), and the
 	// value manifestv2's Package.Digest() pins.
 	ConfigDigest string
+
+	// ManifestDigest is "sha256:<hex>" of the image manifest blob, set only
+	// for an OCI-layout archive, where the blob was located and re-hashed.
+	// Docker's containerd image store reports this, not ConfigDigest, as the
+	// loaded image's ID. Empty for a Docker-legacy archive, which has no
+	// manifest blob to hash.
+	ManifestDigest string
 
 	// Tags are every repository tag embedded in the archive itself: a
 	// Docker-legacy manifest.json entry's RepoTags, and/or an OCI-layout
@@ -84,7 +102,7 @@ func Inspect(r io.ReaderAt, size int64) (Info, error) {
 			return Info{}, fmt.Errorf("image archive carries both index.json and manifest.json, but they name different config digests (oci=%s docker=%s)",
 				ociInfo.ConfigDigest, dockerInfo.ConfigDigest)
 		}
-		return Info{ConfigDigest: ociInfo.ConfigDigest, Tags: mergeTags(ociInfo.Tags, dockerInfo.Tags)}, nil
+		return Info{ConfigDigest: ociInfo.ConfigDigest, ManifestDigest: ociInfo.ManifestDigest, Tags: mergeTags(ociInfo.Tags, dockerInfo.Tags)}, nil
 	case hasIndex:
 		return ociLayoutInfo(r, size, indexData)
 	case hasManifest:
@@ -179,7 +197,7 @@ func ociLayoutInfo(r io.ReaderAt, size int64, indexData []byte) (Info, error) {
 	if ref := descriptor.Annotations["org.opencontainers.image.ref.name"]; ref != "" {
 		tags = append(tags, ref)
 	}
-	return Info{ConfigDigest: configAlgo + ":" + configHex, Tags: tags}, nil
+	return Info{ConfigDigest: configAlgo + ":" + configHex, ManifestDigest: manifestAlgo + ":" + manifestHex, Tags: tags}, nil
 }
 
 // dockerLayoutInfo resolves the config digest and tags out of a Docker
