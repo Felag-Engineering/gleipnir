@@ -162,6 +162,14 @@ capabilities left to abuse directly, a setuid-root binary shipped inside the ima
 the remaining way a process could regain privilege, and `no-new-privileges` is what
 refuses that regardless of what the image ships.
 
+Every create also **requires** the sysctls `net.ipv6.conf.all.disable_ipv6=1` and
+`net.ipv6.conf.default.disable_ipv6=1` (`container.RequiredSysctls()`, #1033), and
+rejects any other sysctl key. A real rootless-Podman run showed that the network's
+`EnableIPv6=false` is not enough: netavark still gives the container's `eth0` an
+`fe80::` link-local address, a path to the host around the IPv4 subnet guards.
+Disabling IPv6 inside the container's own (network-namespaced) netns removes it from
+every interface, and is safe on rootless Podman and Docker.
+
 ### Instance networks have IPv6 disabled
 
 `CreateNetwork` sets `EnableIPv6` to an **explicit** `false` on every instance

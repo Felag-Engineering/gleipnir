@@ -285,8 +285,9 @@ func toDockerNetworkCreateArgs(opts NetworkOptions) (dockerclient.NetworkCreateO
 // re-check self-constraint, it only maps the (by-then-validated) fields that
 // self-constraint permits: Mounts/Privileged/CapAdd are never read here
 // because a validated CreateOptions never carries hostile values in them.
-// CapDrop IS read: unlike those three, a validated CreateOptions is required
-// to carry a non-empty value there, not forbidden from carrying one.
+// CapDrop, SecurityOpt and Sysctls ARE read: unlike those three, a validated
+// CreateOptions is required to carry a non-empty value there, not forbidden
+// from carrying one.
 func toDockerCreateArgs(opts CreateOptions) (*dockercontainer.Config, *dockercontainer.HostConfig, *dockernetwork.NetworkingConfig) {
 	cfg := &dockercontainer.Config{
 		Image:  opts.Image,
@@ -299,6 +300,7 @@ func toDockerCreateArgs(opts CreateOptions) (*dockercontainer.Config, *dockercon
 		NetworkMode: dockercontainer.NetworkMode(opts.Network),
 		CapDrop:     opts.CapDrop,
 		SecurityOpt: opts.SecurityOpt,
+		Sysctls:     opts.Sysctls,
 		Resources: dockercontainer.Resources{
 			Memory:   opts.Resources.MemoryBytes,
 			NanoCPUs: opts.Resources.NanoCPUs,

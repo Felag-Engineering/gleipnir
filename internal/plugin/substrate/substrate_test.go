@@ -807,6 +807,7 @@ func (h *harness) runOnNetwork(ctx context.Context, name, network, image, script
 		// what the isolation tests need it to mean: the dial itself failed.
 		CapDrop:     []string{"ALL"},
 		SecurityOpt: []string{"no-new-privileges"},
+		Sysctls:     container.RequiredSysctls(),
 	})
 	if err != nil {
 		return "", fmt.Errorf("creating probe: %w", err)
@@ -878,6 +879,12 @@ func TestDemuxProbeOutput(t *testing.T) {
 // EnableIPv6, the endpoint's IPv6 address, and /proc/net/if_inet6 as seen from
 // inside a container attached to the instance network (works on Docker and
 // Podman, and needs only sh+cat from the probe image).
+//
+// EnableIPv6=false alone does NOT pass this on rootless Podman: netavark still
+// gives eth0 an fe80 link-local address. What makes it pass is the
+// net.ipv6.conf.{all,default}.disable_ipv6=1 sysctls that self-constraint
+// requires on every create (container.RequiredSysctls); the probe container
+// goes through the same create path, so it sees exactly what a plugin gets.
 func TestSubstrate_InstanceInterfaceHasNoLinkLocalIPv6(t *testing.T) {
 	h := newHarness(t)
 	ref := requireProbeImage(t, h.rt)
@@ -1119,7 +1126,7 @@ func TestSubstrate_SelfAttachPinsAddressAndDetachesOnTeardown(t *testing.T) {
 		Image:   ref,
 		Network: selfNetName,
 		Labels:  map[string]string{labelRun: h.runID},
-		CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"},
+		CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}, Sysctls: container.RequiredSysctls(),
 	})
 	if err != nil {
 		t.Fatalf("creating self stand-in container: %v", err)

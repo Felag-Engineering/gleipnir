@@ -1027,6 +1027,11 @@ func (r *Reconciler) createOptions(row db.PluginContainer) container.CreateOptio
 		// image is the remaining way a process inside the container could
 		// regain privilege.
 		SecurityOpt: []string{"no-new-privileges"},
+		// The network's EnableIPv6=false does not stop the runtime giving
+		// the interface an fe80 link-local address (seen on rootless
+		// Podman/netavark), a path to the host around the IPv4 subnet
+		// guards. Disabling IPv6 in the container's own netns closes it.
+		Sysctls: container.RequiredSysctls(),
 	}
 	// The desired row holds the ALREADY-RESOLVED envelope (manifest, then admin
 	// override, per resources.Resolve). A NULL here therefore means "nobody

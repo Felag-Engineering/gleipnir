@@ -24,6 +24,7 @@ func TestToDockerCreateArgs(t *testing.T) {
 		Volume:      VolumeMount{Name: "plugin-abc123-data", MountPath: "/data", ReadOnly: true},
 		CapDrop:     []string{"ALL"},
 		SecurityOpt: []string{"no-new-privileges"},
+		Sysctls:     RequiredSysctls(),
 		Resources: Resources{
 			MemoryBytes: 128 * 1024 * 1024,
 			NanoCPUs:    500_000_000,
@@ -53,6 +54,11 @@ func TestToDockerCreateArgs(t *testing.T) {
 	}
 	if len(hostCfg.CapDrop) != 1 || hostCfg.CapDrop[0] != "ALL" {
 		t.Errorf("HostConfig.CapDrop = %v, want [ALL]", hostCfg.CapDrop)
+	}
+	if len(hostCfg.Sysctls) != 2 ||
+		hostCfg.Sysctls["net.ipv6.conf.all.disable_ipv6"] != "1" ||
+		hostCfg.Sysctls["net.ipv6.conf.default.disable_ipv6"] != "1" {
+		t.Errorf("HostConfig.Sysctls = %v, want both disable_ipv6 sysctls set to 1", hostCfg.Sysctls)
 	}
 	if len(hostCfg.SecurityOpt) != 1 || hostCfg.SecurityOpt[0] != "no-new-privileges" {
 		t.Errorf("HostConfig.SecurityOpt = %v, want [no-new-privileges]", hostCfg.SecurityOpt)
