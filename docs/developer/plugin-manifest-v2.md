@@ -35,7 +35,7 @@ what that looks like.
 
 ```yaml
 schema_version: "2"
-name: io.github.example/weather
+name: com.example/weather
 version: 1.2.0
 description: Weather lookups.
 package:

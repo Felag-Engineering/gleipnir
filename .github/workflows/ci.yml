@@ -213,6 +213,8 @@ jobs:
         run: make lint-plugins
       - name: Self-test (fixture must fail the lint)
         run: make lint-plugins-self-test
+      - name: No vendor names in normative profile/extension text (with self-test)
+        run: make lint-profile-vocab
 
   lint-secret-keys:
     name: No committed private keys

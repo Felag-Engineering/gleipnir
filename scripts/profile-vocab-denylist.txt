@@ -1,0 +1,15 @@
+# Vendor names that must not appear in normative profile/extension text.
+# One term per line, matched case-insensitively as a whole word (or phrase).
+# Lines starting with '#' and blank lines are ignored.
+slack
+discord
+telegram
+teams
+ntfy
+github
+gitlab
+home assistant
+gmail
+outlook
+whatsapp
+matrix
