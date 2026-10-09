@@ -198,7 +198,7 @@ mechanisms enforce it:
 - **`AssertHostPlane`** runs at startup and refuses to boot a process whose
   shared tool-namespace registry (`internal/toolregistry`) holds a
   host-endpoint tool name — either the exact name (`host/log`) or a dot-name
-  whose tool part matches one (`slack.host/log`, which would mean a source
+  whose tool part matches one (`acme.host/log`, which would mean a source
   is offering a host tool for granting). It is a boot-time check rather than
   a logged warning on the same posture #871 established for the policy
   service: a check that nothing asserts is a check that silently stops
@@ -217,7 +217,7 @@ the shared registry otherwise holds — it is the extension-method separator
 (`channel/notify`, `events/listen`), not a character a tool name legitimately
 contains — so a `host/…` name showing up in the registry is unambiguously a
 leak, with no false positives to tune around. A registry entry that merely
-*contains* the substring "host" (`slack.hostname_lookup`) is not a match:
+*contains* the substring "host" (`acme.hostname_lookup`) is not a match:
 the comparison is against the full tool part after the last `.`, not a
 substring search.
 
@@ -244,7 +244,7 @@ gRPC vs. MCP was incidental, direction and addressing are the substance.
 A plugin-initiated **question that expects an answer and names who should
 answer it** — "is this actor allowed to approve this?", "give me this run's
 context", "record this metric" — goes to the host endpoint as a `tools/call`.
-A host-observed **fact that a trigger might react to** — a Slack message
+A host-observed **fact that a trigger might react to** — a chat message
 landed, a webhook fired — goes out through `io.gleipnir/events`, which is
 stream-first and carries no response channel at all. The asymmetry in the
 issue's own phrasing is the point: **an identity proof must never be able to
@@ -266,11 +266,11 @@ never holds a connection open.
 completion (§7's `AuthorizeActor` replaces the piece of it that mattered for
 authorization), and `EmitEvent` is subsumed by `events/listen`. Both names are
 absent from `ToolNames()` on purpose. Their retirement sequencing against the
-still-live v1.1 Slack plugin was #880's open decision, split in two: the
+still-live v1.1 chat plugin was #880's open decision, split in two: the
 `WriteAuditStep` half landed in #894, and #906 landed the structural half of
 the `EmitEvent` side — `hostsvc.EmitEvent` refuses a v2 event-source caller
 today, but the gRPC method itself is not deleted until milestone #22, once
-the Slack plugin is rewritten against `events/listen` (#19) and this host
+the chat plugin is rewritten against `events/listen` (#19) and this host
 endpoint is actually reachable.
 
 ### `host/get_instance_config`
@@ -289,7 +289,7 @@ a read.
 
 This method exists — rather than being fully subsumed by the egress proxy's
 header injection — because **header injection cannot cover streams**: a
-plugin holding a long-lived substrate connection (a Slack Socket Mode
+plugin holding a long-lived substrate connection (a chat-service socket
 websocket, an IMAP session) needs the standing credential itself, not a
 header the host attaches to each individual outbound request.
 
@@ -389,7 +389,7 @@ Args: `{request_id, actor_external_id}`. Result: `{authorized: bool,
 user_id?: string}`.
 
 Replaces the piece of v1.1's `WriteAuditStep` that resolved an
-externally-asserted actor identity (a Slack `user.id` or similar) against
+externally-asserted actor identity (a chat-service user ID or similar) against
 Gleipnir's role model. That RPC bolted the check onto a write-then-refuse
 call: the actor id rode along on the `feedback_response`, and the host
 resolved-then-either-completed-or-rejected *after the fact*. The realigned
@@ -496,7 +496,7 @@ latency, never correctness** (§6, `host/authorize_actor`). A `PollHint` that
 cannot resolve `request_id` to anything fails quietly and the underlying
 request still resolves at the next scheduled poll tick.
 
-This is stated as contract, not merely as current behavior, so #19's Slack
+This is stated as contract, not merely as current behavior, so #19's chat-plugin
 rewrite and the milestone-20 conformance suite have one answer to build
 against rather than each inferring their own from the implementation: a
 conforming `request_id` is opaque to `authorize_actor` itself, and any

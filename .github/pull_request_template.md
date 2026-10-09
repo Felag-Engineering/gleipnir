@@ -19,6 +19,7 @@
 
 - [ ] `go test ./...` passes
 - [ ] `npx vitest run` passes (if frontend changed)
+- [ ] `make lint-profile-vocab` passes (if profile/extension docs or SDK contract code changed)
 - [ ] Manually verified in the UI (if behavior changed)
 
 ## ADRs / architectural notes
