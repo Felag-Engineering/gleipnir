@@ -131,37 +131,74 @@ type TaskChannelAdapters struct {
 }
 
 // ActorUserResolver maps a channel's external actor id to the Gleipnir user an
-// admin linked it to (ADR-058: admin-set or verified mappings only).
+// admin linked it to, with the roles that user holds (ADR-058: admin-set or
+// verified mappings only; deactivated users never resolve).
 // hostendpoint.DBActorDirectory satisfies it.
 type ActorUserResolver interface {
-	ResolveUserID(ctx context.Context, actorExternalID string) (userID string, found bool, err error)
+	ResolveActor(ctx context.Context, actorExternalID string) (userID string, roles []model.Role, found bool, err error)
 }
 
-// WithActorResolver enables stamping decided_by / responded_by on plugin-routed
-// settlements. Without it those columns stay NULL: an external id the host
-// cannot map is never recorded as a user.
+// WithActorResolver enables verifying the actor of a plugin-routed settlement
+// against the identity directory. Without it a plugin-routed approval is
+// refused outright (it cannot be verified), and feedback settlements stay
+// unattributed: an external id the host cannot map is never recorded as a user.
 func (a *TaskChannelAdapters) WithActorResolver(r ActorUserResolver) *TaskChannelAdapters {
 	a.actors = r
 	return a
 }
 
-// resolveDecider returns the Gleipnir user id for a settlement's actor, or nil
-// when there is no mapping. A lookup failure is logged and treated as no
-// mapping: the settlement itself already happened and must not fail on a
-// bookkeeping lookup.
-func (a *TaskChannelAdapters) resolveDecider(ctx context.Context, actorExternalID string) *string {
+// settlementActor is what the host established about the actor a channel
+// named on a settled task.
+type settlementActor struct {
+	externalID string
+	// userID is set only when the directory linked externalID to a Gleipnir
+	// user; empty means the channel's claim is unverified.
+	userID string
+	// mayResolve reports whether the linked user holds the role the request
+	// kind requires (admins always do).
+	mayResolve bool
+}
+
+// resolveActor looks the channel's claimed actor up in the identity directory.
+// An external id with no mapping, or no configured directory, yields an
+// unverified actor rather than an error.
+func (a *TaskChannelAdapters) resolveActor(ctx context.Context, kind model.ElicitationKind, actorExternalID string) (settlementActor, error) {
+	actor := settlementActor{externalID: actorExternalID}
 	if a.actors == nil || actorExternalID == "" {
-		return nil
+		return actor, nil
 	}
-	userID, found, err := a.actors.ResolveUserID(ctx, actorExternalID)
+	userID, roles, found, err := a.actors.ResolveActor(ctx, actorExternalID)
 	if err != nil {
-		logctx.Logger(ctx).WarnContext(ctx, "task channel adapter: resolving decider identity failed", "err", err)
-		return nil
+		return actor, fmt.Errorf("resolve actor: %w", err)
 	}
 	if !found {
+		return actor, nil
+	}
+	actor.userID = userID
+	actor.mayResolve = holdsRoleFor(kind, roles)
+	return actor, nil
+}
+
+// holdsRoleFor reports whether roles satisfy the role the kind requires
+// (permission => approver, information => operator; admins bypass every role
+// guard, as everywhere else).
+func holdsRoleFor(kind model.ElicitationKind, roles []model.Role) bool {
+	required := kind.RequiredRole()
+	for _, r := range roles {
+		if r == required || r == model.RoleAdmin {
+			return true
+		}
+	}
+	return false
+}
+
+// deciderUserID is the value stamped on approval_requests.decided_by /
+// feedback_requests.responded_by: the linked user, or nil when unverified.
+func (s settlementActor) deciderUserID() *string {
+	if s.userID == "" {
 		return nil
 	}
-	return &userID
+	return &s.userID
 }
 
 // NewTaskChannelAdapters constructs a TaskChannelAdapters. router and waiter
@@ -269,17 +306,16 @@ func (a *TaskChannelAdapters) DispatchApproval(ctx context.Context, req agent.Ap
 		return agent.ApprovalSettlement{}, fmt.Errorf("approval request: settled via an entry that may not resolve a permission ask")
 	}
 
-	// Trust decision (#1028, owner-approved for now): the plugin's own
-	// AuthorizeActor click-time pre-check is trusted as the actor
-	// verification for a plugin-routed approval; this host does not
-	// re-verify the identity a completed task's result carries. What IS
-	// enforced here, unconditionally, is the floor beneath that trust: a
-	// permission settlement naming NO actor at all is refused outright,
-	// exactly as an unauthorized attempt would be. #1028 tracks closing the
-	// remaining gap — a plugin that skipped or forged AuthorizeActor could
-	// still stamp a completed task with a non-empty actor id this host has
-	// no way to have independently checked.
-	if result.resolution.ActorExternalID == "" {
+	// A permission settlement is only as good as the actor behind it, and a
+	// plugin that skipped or forged its own AuthorizeActor click-time check
+	// could otherwise satisfy the approval gate by itself (#1028). So the host
+	// re-verifies here, independently: the named actor must be linked in the
+	// identity directory to a Gleipnir user holding the approver role (or
+	// admin). A settlement naming no actor, an unknown or unlinked actor, or a
+	// user without the role is refused the same way: recorded as rejected with
+	// a high-severity audit event, and the call fails.
+	actorExternalID := result.resolution.ActorExternalID
+	if actorExternalID == "" {
 		a.writeUndecodableEvidence(ctx, p, result.routed, decision.OutcomeRejected, eventTypeUnauthorizedApprovalActor,
 			"permission settlement carried no actor_external_id")
 		return agent.ApprovalSettlement{}, fmt.Errorf("approval request: channel resolution carries no actor identity")
@@ -291,10 +327,26 @@ func (a *TaskChannelAdapters) DispatchApproval(ctx context.Context, req agent.Ap
 		return agent.ApprovalSettlement{}, fmt.Errorf("approval request: %w", err)
 	}
 
-	actorExternalID := result.resolution.ActorExternalID
+	actor, err := a.resolveActor(ctx, p.Kind, actorExternalID)
+	if err != nil && approved {
+		a.writeUndecodableEvidence(ctx, p, result.routed, decision.OutcomeRejected, eventTypeUnauthorizedApprovalActor,
+			fmt.Sprintf("approval by actor %q could not be verified: %v", actorExternalID, err))
+		return agent.ApprovalSettlement{}, fmt.Errorf("approval request: verifying approving actor: %w", err)
+	}
+	if approved && !actor.mayResolve {
+		a.writeUndecodableEvidence(ctx, p, result.routed, decision.OutcomeRejected, eventTypeUnauthorizedApprovalActor,
+			unverifiedApproverDetail(actorExternalID, actor, a.actors != nil))
+		return agent.ApprovalSettlement{}, fmt.Errorf("approval request: approving actor is not a verified approver")
+	}
+	if !actor.mayResolve {
+		// A rejection can only deny, so an unverified one is still honored,
+		// but it is recorded as the channel's unverified claim.
+		actor.userID = ""
+	}
+
 	return agent.ApprovalSettlement{
 		Approved:      approved,
-		DeciderUserID: a.resolveDecider(ctx, actorExternalID),
+		DeciderUserID: actor.deciderUserID(),
 		Settle: func(settleCtx context.Context, won bool) {
 			// won=false means ApprovalHandler's own approval_requests CAS
 			// lost the race with the timeout scanner: this decision never
@@ -309,9 +361,22 @@ func (a *TaskChannelAdapters) DispatchApproval(ctx context.Context, req agent.Ap
 			if approved {
 				outcome = decision.OutcomeAnswered
 			}
-			a.recordSettlement(settleCtx, p, result.routed, outcome, actorExternalID)
+			a.recordSettlement(settleCtx, p, result.routed, outcome, actor)
 		},
 	}, nil
+}
+
+// unverifiedApproverDetail says why an approval's actor was refused, for the
+// audit event: no directory configured, no linked user, or the wrong role.
+func unverifiedApproverDetail(actorExternalID string, actor settlementActor, haveDirectory bool) string {
+	switch {
+	case !haveDirectory:
+		return fmt.Sprintf("approval by actor %q refused: no identity directory configured to verify it", actorExternalID)
+	case actor.userID == "":
+		return fmt.Sprintf("approval by actor %q refused: not linked to an active Gleipnir user", actorExternalID)
+	default:
+		return fmt.Sprintf("approval by actor %q refused: linked user %s does not hold the approver or admin role", actorExternalID, actor.userID)
+	}
 }
 
 // decodeApprovalOptionID maps a channel's chosen option strictly onto
@@ -373,17 +438,22 @@ func (a *TaskChannelAdapters) DispatchFeedback(ctx context.Context, req agent.Fe
 	}
 
 	response := string(result.resolution.Content)
-	actorExternalID := result.resolution.ActorExternalID
+	actor, err := a.resolveActor(ctx, p.Kind, result.resolution.ActorExternalID)
+	if err != nil {
+		// The answer itself is valid; a failed lookup only costs attribution.
+		logctx.Logger(ctx).WarnContext(ctx, "task channel adapter: resolving responder identity failed", "err", err)
+		actor.userID = ""
+	}
 	return agent.FeedbackSettlement{
 		Response:        response,
-		ResponderUserID: a.resolveDecider(ctx, actorExternalID),
+		ResponderUserID: actor.deciderUserID(),
 		Settle: func(settleCtx context.Context, won bool) {
 			if !won {
 				logctx.Logger(settleCtx).WarnContext(settleCtx, "task channel adapter: feedback CAS lost the race with the timeout scanner; decision not recorded as answered",
 					"run_id", p.RunID, "request_id", result.routed.RowID)
 				return
 			}
-			a.recordSettlement(settleCtx, p, result.routed, decision.OutcomeAnswered, actorExternalID)
+			a.recordSettlement(settleCtx, p, result.routed, decision.OutcomeAnswered, actor)
 		},
 	}, nil
 }
@@ -466,7 +536,7 @@ func (a *TaskChannelAdapters) settleWithoutAnswer(ctx context.Context, p dispatc
 		// channel's side: tell it to stop waiting (replaces the v1
 		// dispatcher's RequestTerminated notification).
 		a.cancelBestEffort(ctx, routed.RowID)
-		a.recordSettlement(ctx, p, routed, decision.OutcomeTimeout, "")
+		a.recordSettlement(ctx, p, routed, decision.OutcomeTimeout, settlementActor{})
 		return fmt.Errorf("%s request timed out waiting for an operator response", p.Kind)
 
 	case errors.Is(waitErr, mcp.ErrTaskExpired):
@@ -474,18 +544,18 @@ func (a *TaskChannelAdapters) settleWithoutAnswer(ctx context.Context, p dispatc
 		// did (spec §6.3: "server-side TTLs are weather"). Replaying the
 		// answer against a freshly-opened task belongs to a later milestone
 		// (#799); today the ask simply ends unanswered, same as a timeout.
-		a.recordSettlement(ctx, p, routed, decision.OutcomeTimeout, "")
+		a.recordSettlement(ctx, p, routed, decision.OutcomeTimeout, settlementActor{})
 		return fmt.Errorf("%s request's channel task expired before an operator responded", p.Kind)
 
 	case errors.Is(waitErr, mcp.ErrTaskCanceled):
 		// The channel side cancelled the task on its own (e.g. an operator
 		// dismissed the prompt in the plugin's own UI) — not something this
 		// host asked for, so there is nothing to cancel back.
-		a.recordSettlement(ctx, p, routed, decision.OutcomeCancelled, "")
+		a.recordSettlement(ctx, p, routed, decision.OutcomeCancelled, settlementActor{})
 		return fmt.Errorf("%s request's channel task was cancelled", p.Kind)
 
 	case errors.As(waitErr, &failed):
-		a.recordSettlement(ctx, p, routed, decision.OutcomeCancelled, "")
+		a.recordSettlement(ctx, p, routed, decision.OutcomeCancelled, settlementActor{})
 		return fmt.Errorf("%s request's channel task failed: %s", p.Kind, failed.Message)
 
 	default:
@@ -496,7 +566,7 @@ func (a *TaskChannelAdapters) settleWithoutAnswer(ctx context.Context, p dispatc
 		cancelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		a.cancelBestEffort(cancelCtx, routed.RowID)
-		a.recordSettlement(cancelCtx, p, routed, decision.OutcomeCancelled, "")
+		a.recordSettlement(cancelCtx, p, routed, decision.OutcomeCancelled, settlementActor{})
 		return fmt.Errorf("%s request: %w", p.Kind, waitErr)
 	}
 }
@@ -516,7 +586,7 @@ func (a *TaskChannelAdapters) cancelBestEffort(ctx context.Context, rowID string
 // answer, or one of the no-answer outcomes settleWithoutAnswer classifies.
 // ctx is the caller's own context for a live answer, or a fresh bounded one
 // when the run's own context is already past its deadline.
-func (a *TaskChannelAdapters) recordSettlement(ctx context.Context, p dispatchParams, routed hitl.Routed, outcome decision.Outcome, actorExternalID string) {
+func (a *TaskChannelAdapters) recordSettlement(ctx context.Context, p dispatchParams, routed hitl.Routed, outcome decision.Outcome, actor settlementActor) {
 	rec := decision.Record{
 		RunID:             p.RunID,
 		RequestID:         routed.RowID,
@@ -531,9 +601,13 @@ func (a *TaskChannelAdapters) recordSettlement(ctx context.Context, p dispatchPa
 		Considered:        toCandidates(routed.Skipped),
 		LinkMethod:        decision.LinkNone,
 	}
-	if outcome.HadActor() && actorExternalID != "" {
-		rec.ActorExternalID = actorExternalID
+	if outcome.HadActor() && actor.externalID != "" {
+		rec.ActorExternalID = actor.externalID
 		rec.LinkMethod = decision.LinkUnverified
+		if actor.userID != "" {
+			rec.ActorUserID = actor.userID
+			rec.LinkMethod = decision.LinkDirectory
+		}
 	}
 	if err := a.decisions.Record(ctx, rec); err != nil {
 		logctx.Logger(ctx).WarnContext(ctx, "task channel adapter: writing decision record failed",
@@ -551,7 +625,7 @@ func (a *TaskChannelAdapters) recordSettlement(ctx context.Context, p dispatchPa
 // is what an operator scanning for trouble sees without already knowing to
 // look at decisions for this run.
 func (a *TaskChannelAdapters) writeUndecodableEvidence(ctx context.Context, p dispatchParams, routed hitl.Routed, outcome decision.Outcome, eventType, detail string) {
-	a.recordSettlement(ctx, p, routed, outcome, "")
+	a.recordSettlement(ctx, p, routed, outcome, settlementActor{})
 
 	payload, err := json.Marshal(map[string]string{
 		"run_id":           p.RunID,

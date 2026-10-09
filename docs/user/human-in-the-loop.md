@@ -212,6 +212,15 @@ A **permission** granted by an actor Gleipnir could not link to a user is flagge
 at `warning` severity rather than `info`. That is the shape a forged approval
 takes, and it should not require opening every record to find.
 
+A channel's own word is never enough to approve. When a channel completes a
+permission request with "approve", Gleipnir looks the named person up in the
+admin-managed identity mapping itself and honors the approval only if they map to
+an active user holding the **approver** or **admin** role. An unknown, unmapped,
+deactivated or under-privileged actor (an operator or auditor, say) is refused:
+the request is recorded as rejected, a high-severity `unauthorized_approval_attempt`
+audit event is written, and the run does not proceed on that approval. A verified
+approval records the mapped user and the `directory_mapping` link method.
+
 Read them at `GET /api/v1/runs/{run_id}/decisions`, readable by every role that
 can see the run, auditors included.
 

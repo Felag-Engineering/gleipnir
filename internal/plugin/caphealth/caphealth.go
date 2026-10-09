@@ -21,6 +21,13 @@
 // of liveness and the capability states — so the existing surface keeps working
 // while per-capability detail becomes available underneath it.
 //
+// Every entry records its writer (Source). The prober owns and may clear what
+// it wrote; a plugin's self-reported fault is a functional claim that
+// manifest-vs-discovery agreement says nothing about, so the prober only
+// worsens it. A self-reported fault clears when the host observes the instance
+// restart (see Prober.observeRestart), because the process that made the claim
+// is gone.
+//
 // Health is deliberately NOT persisted per capability. It is a live
 // observation, re-derived by the prober every pass; a durable copy would be a
 // second source of truth that is wrong every time the prober is between passes.
@@ -79,6 +86,23 @@ func (c Capability) String() string {
 	return string(c.Profile) + "/" + c.Name
 }
 
+// Source records which writer produced an entry. It decides who may overwrite
+// or clear it: the prober owns what it established itself, and must not erase
+// a plugin's self-reported functional fault just because a manifest-vs-
+// discovery comparison agrees (#911) -- kind-set agreement says nothing about
+// whether the capability actually works.
+type Source int
+
+const (
+	// SourceProbe is the zero value: entries written by the host's own prober
+	// (liveness, seeding, drift). The prober may overwrite or clear these.
+	SourceProbe Source = iota
+
+	// SourceSelfReport marks an entry the plugin reported about itself over the
+	// host endpoint. The prober may only worsen it, never improve or clear it.
+	SourceSelfReport
+)
+
 // Entry is one capability's health.
 type Entry struct {
 	Capability Capability
@@ -92,6 +116,10 @@ type Entry struct {
 	// Detail is the operator-facing explanation. Untrusted when it originates
 	// from a plugin's self-report.
 	Detail string
+
+	// Source is who wrote this entry. Registry write methods stamp it; a value
+	// supplied by a caller is ignored.
+	Source Source
 }
 
 // Liveness is the instance-wide reachability signal: container healthcheck plus
@@ -310,11 +338,25 @@ func (r *Registry) SetLiveness(instanceID string, l Liveness) {
 	r.liveness[instanceID] = l
 }
 
-// SetCapability records one capability's health, replacing any prior entry for
-// the same capability.
+// SetCapability records one capability's health as established by the host
+// (the prober), replacing any prior entry for the same capability that the
+// host wrote itself.
+//
+// A prior SELF-REPORTED entry is merged worsen-only instead, mirroring
+// SelfReportCapability: the host's verdict replaces it only when strictly more
+// severe. An equal or milder host verdict (typically "healthy" on kind-set
+// agreement) says nothing about the functional fault the plugin reported, so
+// the self-reported entry survives. The check-and-set runs under the registry
+// lock.
 func (r *Registry) SetCapability(instanceID string, e Entry) {
+	e.Source = SourceProbe
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if prior, exists := r.byInstance[instanceID][e.Capability]; exists &&
+		prior.Source == SourceSelfReport &&
+		state.Severity(e.State) <= state.Severity(prior.State) {
+		return
+	}
 	if r.byInstance[instanceID] == nil {
 		r.byInstance[instanceID] = make(map[Capability]Entry)
 	}
@@ -327,22 +369,22 @@ func (r *Registry) SetCapability(instanceID string, e Entry) {
 // v1.1 per-instance reports, resolved with the same severity ranking.
 //
 // A report that would improve or merely restate an existing entry is a no-op
-// (applied=false): recovery is the HOST's observation to make (the prober, or
-// ClearCapability), because a plugin that could self-clear a fault could mask
-// one — including a drift fault the prober recorded about it. A report for a
+// (applied=false): recovery is the HOST's observation to make, because a
+// plugin that could self-clear a fault could mask one — including a drift
+// fault the prober recorded about it. The host observation that clears a
+// self-reported fault is documented on ClearSelfReported. A report for a
 // capability with no entry records, whatever its state: seeding healthy is
 // what the prober does too, and seeding a fault is the method's purpose.
 //
 // The check-and-set runs under the registry lock so two racing self-reports
 // cannot interleave into an improvement.
 func (r *Registry) SelfReportCapability(instanceID string, e Entry) (applied bool) {
+	e.Source = SourceSelfReport
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if entries, ok := r.byInstance[instanceID]; ok {
-		if prior, exists := entries[e.Capability]; exists &&
-			state.Severity(e.State) <= state.Severity(prior.State) {
-			return false
-		}
+	if prior, exists := r.byInstance[instanceID][e.Capability]; exists &&
+		state.Severity(e.State) <= state.Severity(prior.State) {
+		return false
 	}
 	if r.byInstance[instanceID] == nil {
 		r.byInstance[instanceID] = make(map[Capability]Entry)
@@ -351,13 +393,44 @@ func (r *Registry) SelfReportCapability(instanceID string, e Entry) (applied boo
 	return true
 }
 
-// ClearCapability removes an entry — used when a capability recovers and the
-// host would rather say nothing than assert healthiness it has not re-observed.
+// ClearCapability removes an entry regardless of who wrote it — used when a
+// capability recovers and the host would rather say nothing than assert
+// healthiness it has not re-observed.
 func (r *Registry) ClearCapability(instanceID string, c Capability) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if entries, ok := r.byInstance[instanceID]; ok {
 		delete(entries, c)
+	}
+}
+
+// ClearProbeEventKindFaults removes the per-kind event-source entries the
+// prober itself wrote, leaving self-reported ones alone. The check and the
+// delete share one lock acquisition so a self-report landing between them
+// cannot be deleted.
+func (r *Registry) ClearProbeEventKindFaults(instanceID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for c, e := range r.byInstance[instanceID] {
+		if c.Profile == ProfileEventSource && c.Name != "" && e.Source == SourceProbe {
+			delete(r.byInstance[instanceID], c)
+		}
+	}
+}
+
+// ClearSelfReported drops every self-reported entry for an instance, leaving
+// host-written ones. This is the recovery path for self-reported faults: the
+// host observes a restart (the instance went unreachable and came back, or its
+// container was replaced by a new generation), and a fresh process has not yet
+// reported anything, so a fault it reported before the restart no longer
+// describes it. If the new process is still broken it reports again.
+func (r *Registry) ClearSelfReported(instanceID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for c, e := range r.byInstance[instanceID] {
+		if e.Source == SourceSelfReport {
+			delete(r.byInstance[instanceID], c)
+		}
 	}
 }
 

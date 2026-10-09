@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import type { CapabilitySnapshotContent, CapabilitySnapshotV2, GrantedToolEntry } from './types'
 import { isFeedbackEntry } from './types'
+import { ArgEnforcementBadge } from '@/components/MCPPage/ArgEnforcementBadge'
 import { formatProviderName } from '@/utils/format'
 import styles from './CapabilitySnapshotCard.module.css'
 
@@ -116,6 +117,7 @@ export function CapabilitySnapshotCard({ content, systemPrompt }: Props) {
                       {tool.approval === 'required' && (
                         <span className={styles.approvalTag}>approval</span>
                       )}
+                      <ArgEnforcementBadge state={tool.arg_enforcement} />
                     </li>
                   ))}
                 </ul>

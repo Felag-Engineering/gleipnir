@@ -282,3 +282,34 @@ func TestBuildResolvedToolMap_NarrowsCanonicalSchema(t *testing.T) {
 		})
 	}
 }
+
+// The snapshot's arg_enforcement must follow the grant's params, since
+// narrowing can change whether the schema compiles (#1068).
+func TestBuildCapabilitySnapshotTools_ArgEnforcementUsesGrantParams(t *testing.T) {
+	schema := json.RawMessage(`{"properties":{"a":{"type":"string"},"b":{"pattern":"(","type":"string"}},"type":"object"}`)
+	grant := func(params map[string]any) mcp.ResolvedTool {
+		return mcp.ResolvedTool{
+			GrantedTool:     model.GrantedTool{ServerName: "srv", ToolName: "t", Params: params},
+			InputSchema:     schema,
+			CanonicalSchema: schema,
+		}
+	}
+
+	tests := []struct {
+		name   string
+		params map[string]any
+		want   string
+	}{
+		{"unscoped sees the bad pattern", nil, "schema_uncompilable"},
+		{"scoped past the bad pattern", map[string]any{"a": nil}, "exact"},
+		{"scoped onto the bad pattern", map[string]any{"b": nil}, "schema_uncompilable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildCapabilitySnapshotTools([]mcp.ResolvedTool{grant(tt.params)}, nil, false)
+			if got[0].ArgEnforcement != tt.want {
+				t.Errorf("ArgEnforcement = %q, want %q", got[0].ArgEnforcement, tt.want)
+			}
+		})
+	}
+}

@@ -35,16 +35,30 @@ func (e ArgEnforcement) Reduced() bool {
 
 // ClassifyArgEnforcement derives a tool's enforcement state from its stored
 // raw and canonical schemas, using the same compile step the run-start gate
-// uses (NewArgValidator). Policy params are not applied: the state is a
-// property of the tool, and narrowing can only remove properties.
+// uses (NewArgValidator), with no policy params applied.
+//
+// This describes the tool's UNSCOPED schema and is NOT a prediction of what a
+// given policy's run will get. Narrowing can change whether a schema compiles
+// in both directions: it can drop the one property carrying an invalid
+// pattern (uncompilable -> exact), and it can drop the target of a "$ref" such
+// as "#/properties/x" (exact -> uncompilable). Use
+// ClassifyArgEnforcementWithParams for a specific grant; the tests in
+// argenforcement_test.go pin both counterexamples.
 func ClassifyArgEnforcement(raw, canonical json.RawMessage) ArgEnforcement {
+	return ClassifyArgEnforcementWithParams(raw, canonical, nil)
+}
+
+// ClassifyArgEnforcementWithParams is ClassifyArgEnforcement for one policy
+// grant: it compiles NarrowSchema(canonical, params), exactly what the
+// run-start gate compiles for that grant (ADR-017).
+func ClassifyArgEnforcementWithParams(raw, canonical json.RawMessage, params map[string]any) ArgEnforcement {
 	if len(bytes.TrimSpace(canonical)) == 0 {
 		if len(bytes.TrimSpace(raw)) == 0 {
 			return ArgEnforcementNoSchema
 		}
 		return ArgEnforcementNoCanonicalSchema
 	}
-	if _, err := NewArgValidator(canonical, nil); err != nil {
+	if _, err := NewArgValidator(canonical, params); err != nil {
 		return ArgEnforcementUncompilable
 	}
 	return ArgEnforcementExact

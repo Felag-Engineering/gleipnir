@@ -229,6 +229,13 @@ answer.
 is worth is precisely what `assurance` measures. Audit records store both (§6.6)
 so an approval reads as evidence rather than as an assertion.
 
+The host does not rest a permission settlement on that claim alone: on an
+"approve" completion it resolves `actorExternalId` through the identity directory
+(`hostendpoint.ActorDirectory`) and requires an active linked user with the
+approver or admin role, else the approval is refused with a high-severity
+`unauthorized_approval_attempt` event. Verified approvals are recorded with
+`directory_mapping` and the user id (#1028).
+
 Identifier fields are length-bounded on decode: they reach audit records and
 logs, and a plugin is external code.
 

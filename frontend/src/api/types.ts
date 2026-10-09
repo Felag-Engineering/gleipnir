@@ -392,7 +392,9 @@ export interface ApiOutboundHeader {
   header: string
 }
 
-// Matches mcp.ArgEnforcement. Anything other than 'exact' means only
+// Matches mcp.ArgEnforcement. On a tool (Tools page) it describes the unscoped
+// schema; on a run's capability snapshot it describes the grant as narrowed by
+// the policy's params (#1068). Anything other than 'exact' means only
 // parameter-name scoping applies, not value validation.
 export type ApiArgEnforcement =
   | 'exact'

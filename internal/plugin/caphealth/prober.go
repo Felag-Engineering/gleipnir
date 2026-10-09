@@ -143,6 +143,10 @@ type Prober struct {
 	wg         sync.WaitGroup
 	mu         sync.Mutex
 	rootCancel context.CancelFunc
+
+	// containerIDs is the container each instance was last probed against,
+	// guarded by mu; a change means a new generation replaced it.
+	containerIDs map[string]string
 }
 
 // timeNow is the package's injectable clock (CLAUDE.md "Testing time-dependent
@@ -258,6 +262,7 @@ func (p *Prober) probeTarget(ctx context.Context, target Target) error {
 		live.DiscoverOK = true
 	}
 
+	p.observeRestart(target, live)
 	p.registry.SetLiveness(target.InstanceID, live)
 
 	if !live.OK() {
@@ -274,6 +279,34 @@ func (p *Prober) probeTarget(ctx context.Context, target Target) error {
 	p.seedDeclaredProfiles(target)
 	p.applyEventDrift(target, discovered)
 	return nil
+}
+
+// observeRestart answers "what host observation clears a self-reported
+// functional fault?": a restart of the instance. A restart is seen as either
+// a previously-observed instance that was unreachable and is reachable again,
+// or a changed container ID (a new generation replaced the container between
+// passes, possibly faster than a pass could see it down). Either way the
+// process that reported the fault is gone, so the fault is dropped; a process
+// that is still broken reports again.
+//
+// It must run before SetLiveness records the new verdict, since it compares
+// against the previous one.
+func (p *Prober) observeRestart(target Target, live Liveness) {
+	prior := p.registry.Get(target.InstanceID).Liveness
+
+	p.mu.Lock()
+	if p.containerIDs == nil {
+		p.containerIDs = make(map[string]string)
+	}
+	lastContainerID, seen := p.containerIDs[target.InstanceID]
+	p.containerIDs[target.InstanceID] = target.ContainerID
+	p.mu.Unlock()
+
+	cameBack := !prior.ObservedAt.IsZero() && !prior.OK() && live.OK()
+	replaced := seen && lastContainerID != target.ContainerID
+	if cameBack || replaced {
+		p.registry.ClearSelfReported(target.InstanceID)
+	}
 }
 
 // seedDeclaredProfiles gives every profile the manifest declares an entry, so
@@ -330,26 +363,17 @@ func eventVersionRefusedDetail(declared string) string {
 	return fmt.Sprintf("io.gleipnir/events version %q is not one this host can read", declared)
 }
 
-// clearEventKindFaults removes any per-kind event-source fault entries a
-// prior pass recorded for instanceID, so a pass that finds fresh agreement
-// does not leave a stale per-kind fault behind.
+// clearEventKindFaults removes the per-kind event-source entries a prior pass
+// WROTE for instanceID, so a pass that finds fresh agreement does not leave a
+// stale drift verdict behind (a fixed manifest clears its fault next pass).
 //
-// This clear-and-rewrite makes the drift pass AUTHORITATIVE for event-source
-// entries each pass — the same posture the profile-wide entry already had
-// (applyEventDrift has always overwritten it to healthy on kind-set
-// agreement). It is NOT true that only applyEventDrift writes named
-// event-source entries: the host endpoint's set_health_state
-// (caphealth.SelfReportCapability, #877) can record a per-kind fault too,
-// and this pass will clear it even though a kind-set match says nothing
-// about that kind's FUNCTIONAL health. That tension is inherited from the
-// profile-wide precedent, not introduced here; reconciling self-reported
-// faults with prober authority is tracked as a follow-up.
+// Only probe-written entries are cleared. A per-kind fault the plugin
+// self-reported (host/set_health_state, #877) is a functional claim that
+// kind-set agreement says nothing about, so it survives; the SetCapability
+// calls that follow merge worsen-only against it. Self-reported faults clear
+// on a host-observed restart instead (see observeRestart).
 func (p *Prober) clearEventKindFaults(instanceID string) {
-	for _, e := range p.registry.Get(instanceID).Entries {
-		if e.Capability.Profile == ProfileEventSource && e.Capability.Name != "" {
-			p.registry.ClearCapability(instanceID, e.Capability)
-		}
-	}
+	p.registry.ClearProbeEventKindFaults(instanceID)
 }
 
 // applyEventDrift turns manifest-vs-discovery disagreement into

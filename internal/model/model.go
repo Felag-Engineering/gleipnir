@@ -425,6 +425,13 @@ type GrantedTool struct {
 	// before the field existed.
 	OutboundHeaders         []OutboundHeader `json:"outbound_headers,omitempty"`
 	OutboundHeadersRejected bool             `json:"outbound_headers_rejected,omitempty"`
+
+	// ArgEnforcement is how exactly this grant's call arguments were checked
+	// for the run, computed against the policy-narrowed schema (#1068). Set
+	// only on MCP-source entries in the capability snapshot; the values are
+	// mcp.ArgEnforcement strings, kept as a plain string here because model
+	// must not import mcp.
+	ArgEnforcement string `json:"arg_enforcement,omitempty"`
 }
 
 // OutboundHeader names one tool parameter whose value is sent as an HTTP header.

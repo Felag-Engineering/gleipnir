@@ -124,15 +124,17 @@ func (d DBActorDirectory) Resolve(ctx context.Context, actorExternalID string) (
 	return res, true, nil
 }
 
-// ResolveUserID returns just the Gleipnir user id an external actor id maps to,
-// for callers that stamp identity on a decision record (approval_requests
-// decided_by) rather than authorize one. found=false means no mapping.
-func (d DBActorDirectory) ResolveUserID(ctx context.Context, actorExternalID string) (string, bool, error) {
+// ResolveActor returns the Gleipnir user an external actor id maps to and the
+// roles that user holds, for callers that verify and stamp identity on a
+// decision record (approval_requests decided_by) rather than authorize a
+// click. found=false means no mapping (unknown id, deactivated user, or a
+// user with no roles).
+func (d DBActorDirectory) ResolveActor(ctx context.Context, actorExternalID string) (string, []model.Role, bool, error) {
 	res, found, err := d.Resolve(ctx, actorExternalID)
 	if err != nil || !found {
-		return "", false, err
+		return "", nil, false, err
 	}
-	return res.UserID, true, nil
+	return res.UserID, res.Roles, true, nil
 }
 
 // hasAuthorizedRole reports whether roles contains one of

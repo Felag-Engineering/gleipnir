@@ -33,3 +33,34 @@ func TestClassifyArgEnforcement(t *testing.T) {
 		})
 	}
 }
+
+// TestClassifyArgEnforcementWithParams pins that narrowing can change compile
+// success in both directions, which is why the unscoped classification on the
+// Tools page cannot stand in for a policy's actual enforcement.
+func TestClassifyArgEnforcementWithParams(t *testing.T) {
+	badPatternInOtherProp := `{"properties":{"a":{"type":"string"},"b":{"pattern":"(","type":"string"}},"type":"object"}`
+	refToScopedOutProp := `{"properties":{"a":{"$ref":"#/properties/b"},"b":{"type":"string"}},"type":"object"}`
+
+	tests := []struct {
+		name      string
+		canonical string
+		params    map[string]any
+		want      ArgEnforcement
+	}{
+		{"bad pattern, unscoped", badPatternInOtherProp, nil, ArgEnforcementUncompilable},
+		{"bad pattern scoped out", badPatternInOtherProp, map[string]any{"a": nil}, ArgEnforcementExact},
+		{"bad pattern scoped in", badPatternInOtherProp, map[string]any{"b": nil}, ArgEnforcementUncompilable},
+		{"ref target, unscoped", refToScopedOutProp, nil, ArgEnforcementExact},
+		{"ref target scoped out", refToScopedOutProp, map[string]any{"a": nil}, ArgEnforcementUncompilable},
+		{"ref target kept", refToScopedOutProp, map[string]any{"a": nil, "b": nil}, ArgEnforcementExact},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := json.RawMessage(tt.canonical)
+			got := ClassifyArgEnforcementWithParams(raw, raw, tt.params)
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

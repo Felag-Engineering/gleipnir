@@ -1,4 +1,4 @@
-import type { ApiRunStep } from '@/api/types'
+import type { ApiArgEnforcement, ApiRunStep } from '@/api/types'
 
 export type StepType =
   | 'thought'
@@ -51,6 +51,9 @@ export interface GrantedToolEntry {
   // Absent in snapshots written before #1067.
   outbound_headers?: OutboundHeaderEntry[]
   outbound_headers_rejected?: boolean
+  // How exactly this grant's arguments were checked for the run, against the
+  // policy-narrowed schema (#1068). Absent on older snapshots and non-MCP tools.
+  arg_enforcement?: ApiArgEnforcement
 }
 
 export interface OutboundHeaderEntry {
