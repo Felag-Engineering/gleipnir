@@ -48,6 +48,14 @@ export interface GrantedToolEntry {
   approval: 'none' | 'required'
   timeout: number
   on_timeout: string
+  // Absent in snapshots written before #1067.
+  outbound_headers?: OutboundHeaderEntry[]
+  outbound_headers_rejected?: boolean
+}
+
+export interface OutboundHeaderEntry {
+  parameter: string
+  header: string
 }
 
 // The feedback channel is registered at runtime as gleipnir.ask_operator when

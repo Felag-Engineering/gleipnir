@@ -121,6 +121,18 @@
   color: var(--color-amber);
 }
 
+.outboundNote {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.outboundTool,
+.outboundCode {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+
 .promptToggle {
   display: flex;
   align-items: center;

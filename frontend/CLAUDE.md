@@ -15,7 +15,7 @@ npm run build-storybook  # static Storybook build
 
 ## Route structure
 
-Routes are defined in `src/App.tsx`; all authenticated routes render inside a shared `Layout` (sidebar + content area) and each route has its own `errorElement` boundary. Legacy redirects: `/mcp` → `/tools`, `/users` → `/admin/users`. Gotcha: the plugin instance editor's Config tab renders the instance-level `config_schema` from `usePluginInstanceDetail`, NOT the listing endpoint's per-channel schema (#602).
+Routes are defined in `src/App.tsx`; all authenticated routes render inside a shared `Layout` (sidebar + content area) and each route has its own `errorElement` boundary. Every page is a `React.lazy` chunk (Suspense fallback: `PageFallback`) so the entry bundle stays under Vite's 500 KB warning; add new pages the same way. `Layout` holds the session gate: nothing authenticated (SSE, attention, MCP servers, the `Outlet`) runs until `/auth/me` names a user, and a logged-out probe (`apiFetchAuthProbe` resolves `null` on 401) redirects to `/login`. Legacy redirects: `/mcp` → `/tools`, `/users` → `/admin/users`. Gotcha: the plugin instance editor's Config tab renders the instance-level `config_schema` from `usePluginInstanceDetail`, NOT the listing endpoint's per-channel schema (#602).
 
 ## Design system
 

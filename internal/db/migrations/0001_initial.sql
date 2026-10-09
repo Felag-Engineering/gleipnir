@@ -528,7 +528,8 @@ CREATE TABLE plugin_oauth_nonces (
     nonce       TEXT PRIMARY KEY,           -- base64url-encoded 32B random
     instance_id TEXT NOT NULL,              -- not FK-enforced: instance may have been uninstalled mid-flow
     expires_at  TEXT NOT NULL,              -- RFC3339Nano UTC; pruned by janitor
-    created_at  TEXT NOT NULL
+    created_at  TEXT NOT NULL,
+    actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL  -- admin who began the flow; NULL = legacy/system
 ) STRICT;
 CREATE INDEX plugin_oauth_nonces_expires_at_idx ON plugin_oauth_nonces (expires_at);
 

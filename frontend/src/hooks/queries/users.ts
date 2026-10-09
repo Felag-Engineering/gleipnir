@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { apiFetch } from '@/api/fetch'
+import { apiFetch, apiFetchAuthProbe } from '@/api/fetch'
 import type { ApiUser } from '@/api/types'
 import { queryKeys } from '../queryKeys'
 
@@ -16,12 +16,15 @@ interface CurrentUser {
   roles: string[]
 }
 
+// data is undefined while the probe is in flight, null when nobody is logged
+// in, and the user otherwise.
 export function useCurrentUser() {
   return useQuery({
     queryKey: queryKeys.currentUser.all,
-    queryFn: () => apiFetch<CurrentUser>('/auth/me'),
-    // Stale for 5 minutes — the current user changes rarely.
-    staleTime: 5 * 60 * 1000,
+    queryFn: () => apiFetchAuthProbe<CurrentUser>('/auth/me'),
+    // Stale for 5 minutes — the current user changes rarely. A logged-out
+    // answer is never reused, so signing in and landing on the app re-asks.
+    staleTime: (query) => (query.state.data === null ? 0 : 5 * 60 * 1000),
   })
 }
 

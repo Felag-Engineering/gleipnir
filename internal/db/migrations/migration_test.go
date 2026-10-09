@@ -2021,3 +2021,87 @@ func TestAddDeciderIdentitySkipsOnFreshSchema(t *testing.T) {
 		t.Fatal("ShouldSkip returned false on a fresh initial schema — did 0001_initial.sql forget decided_by / responded_by?")
 	}
 }
+
+// TestAddOAuthNonceActor verifies migration 0059 adds actor_user_id, leaves
+// existing nonces NULL, nulls the reference when the user is removed, and is
+// idempotent.
+func TestAddOAuthNonceActor(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	for _, stmt := range []string{
+		`CREATE TABLE schema_migrations (
+			version     INTEGER PRIMARY KEY,
+			applied_at  TEXT    NOT NULL
+		)`,
+		`INSERT INTO schema_migrations(version, applied_at) VALUES (1, '2024-01-01T00:00:00Z')`,
+		`CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT NOT NULL)`,
+		`CREATE TABLE plugin_oauth_nonces (
+			nonce       TEXT PRIMARY KEY,
+			instance_id TEXT NOT NULL,
+			expires_at  TEXT NOT NULL,
+			created_at  TEXT NOT NULL
+		) STRICT`,
+		`INSERT INTO plugin_oauth_nonces VALUES ('n1', 'inst-1', '2099-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seed: %v\nstatement: %s", err, stmt)
+		}
+	}
+
+	m := &migrations.AddOAuthNonceActor{}
+	skip, err := m.ShouldSkip(ctx, db)
+	if err != nil {
+		t.Fatalf("ShouldSkip: %v", err)
+	}
+	if skip {
+		t.Fatal("ShouldSkip returned true against the pre-target baseline")
+	}
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	var actor sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT actor_user_id FROM plugin_oauth_nonces WHERE nonce = 'n1'`).Scan(&actor); err != nil {
+		t.Fatalf("read actor_user_id: %v", err)
+	}
+	if actor.Valid {
+		t.Errorf("existing nonce actor = %q, want NULL", actor.String)
+	}
+
+	for _, stmt := range []string{
+		`PRAGMA foreign_keys = ON`,
+		`INSERT INTO users(id, username) VALUES ('u1', 'alice')`,
+		`UPDATE plugin_oauth_nonces SET actor_user_id = 'u1' WHERE nonce = 'n1'`,
+		`DELETE FROM users WHERE id = 'u1'`,
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if err := db.QueryRowContext(ctx, `SELECT actor_user_id FROM plugin_oauth_nonces WHERE nonce = 'n1'`).Scan(&actor); err != nil {
+		t.Fatalf("read after user removal: %v", err)
+	}
+	if actor.Valid {
+		t.Errorf("actor_user_id = %q after user removal, want NULL", actor.String)
+	}
+
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("second Apply (idempotency): %v", err)
+	}
+}
+
+// TestAddOAuthNonceActorSkipsOnFreshSchema is the regression gate for
+// forgetting to hand-sync 0001_initial.sql (which sqlc reads).
+func TestAddOAuthNonceActorSkipsOnFreshSchema(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	applyInitialSchema(t, db)
+
+	skip, err := (&migrations.AddOAuthNonceActor{}).ShouldSkip(ctx, db)
+	if err != nil {
+		t.Fatalf("ShouldSkip: %v", err)
+	}
+	if !skip {
+		t.Fatal("ShouldSkip returned false on a fresh initial schema — did 0001_initial.sql forget actor_user_id?")
+	}
+}

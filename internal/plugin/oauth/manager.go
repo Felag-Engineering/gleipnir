@@ -123,7 +123,7 @@ func (m *Manager) BeginAuthcode(ctx context.Context, instanceID, returnURL strin
 		return "", fmt.Errorf("oauth begin: encode state: %w", err)
 	}
 
-	if err := m.nonces.Record(ctx, nonce, instanceID); err != nil {
+	if err := m.nonces.Record(ctx, nonce, instanceID, actorFromContext(ctx)); err != nil {
 		return "", fmt.Errorf("oauth begin: record nonce: %w", err)
 	}
 
@@ -154,7 +154,7 @@ func (m *Manager) HandleCallback(ctx context.Context, rawState, code string) (st
 		return "", fmt.Errorf("oauth callback: %w", err)
 	}
 
-	ok, err := m.nonces.Consume(ctx, env.Nonce)
+	ok, actorUserID, err := m.nonces.Consume(ctx, env.Nonce)
 	if err != nil {
 		return "", fmt.Errorf("oauth callback: consume nonce: %w", err)
 	}
@@ -216,7 +216,13 @@ func (m *Manager) HandleCallback(ctx context.Context, rawState, code string) (st
 		}
 	}
 
-	m.store.EmitIssued(ctx, env.InstanceID)
+	// The actor comes from the nonce row BeginAuthcode wrote, never from the
+	// (unauthenticated) callback request.
+	issuedCtx := ctx
+	if actorUserID != nil {
+		issuedCtx = WithActor(ctx, *actorUserID)
+	}
+	m.store.EmitIssued(issuedCtx, env.InstanceID)
 
 	// Transition the instance to healthy if it was waiting for authorization.
 	// ErrIllegalTransition is silently ignored — the instance may already be healthy.

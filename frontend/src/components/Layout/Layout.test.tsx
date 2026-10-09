@@ -2,7 +2,7 @@ import React from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, Route, Routes } from 'react-router'
 
 vi.mock('../../hooks/useSSE', () => ({
   useSSE: vi.fn(() => ({ connectionState: 'connected' })),
@@ -253,5 +253,39 @@ describe('Layout — sidebar per role', () => {
     const nav = screen.getByRole('navigation', { name: 'Main navigation' })
     expect(within(nav).getAllByRole('link').map(l => l.textContent)).toEqual(['Control Center'])
     expect(vi.mocked(useMcpServers)).toHaveBeenLastCalledWith({ enabled: false })
+  })
+
+  it('requests nothing authenticated and redirects to login when logged out', () => {
+    vi.mocked(useCurrentUser).mockReturnValue({ data: null, isFetching: false } as unknown as ReturnType<typeof useCurrentUser>)
+    const qc = makeClient()
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/dashboard']}>
+          <Routes>
+            <Route path="/login" element={<div>login page</div>} />
+            <Route path="/*" element={<Layout />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    expect(screen.getByText('login page')).toBeInTheDocument()
+    expect(vi.mocked(useSSE)).toHaveBeenLastCalledWith({ enabled: false })
+    expect(vi.mocked(useAttentionItems)).toHaveBeenLastCalledWith({ enabled: false })
+    expect(vi.mocked(useMcpServers)).toHaveBeenLastCalledWith({ enabled: false })
+  })
+
+  it('does not redirect while a cached logged-out answer is being re-checked', () => {
+    vi.mocked(useCurrentUser).mockReturnValue({ data: null, isFetching: true } as unknown as ReturnType<typeof useCurrentUser>)
+    renderLayout()
+    expect(screen.getByRole('navigation', { name: 'Main navigation' })).toBeInTheDocument()
+    expect(vi.mocked(useSSE)).toHaveBeenLastCalledWith({ enabled: false })
+  })
+
+  it('starts the stream and authenticated queries once a user is known', () => {
+    vi.mocked(useCurrentUser).mockReturnValue({ data: { id: '1', username: 'u', roles: ['admin'] } } as ReturnType<typeof useCurrentUser>)
+    renderLayout()
+    expect(vi.mocked(useSSE)).toHaveBeenLastCalledWith({ enabled: true })
+    expect(vi.mocked(useAttentionItems)).toHaveBeenLastCalledWith({ enabled: true })
+    expect(vi.mocked(useMcpServers)).toHaveBeenLastCalledWith({ enabled: true })
   })
 })

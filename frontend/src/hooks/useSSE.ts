@@ -71,7 +71,8 @@ const DISCONNECTED_THRESHOLD = 5
 // so 30s gives two missed beats before we forcibly reconnect.
 const IDLE_TIMEOUT_MS = 30_000
 
-export function useSSE(): { connectionState: ConnectionState } {
+// `enabled: false` keeps the stream closed — it would only 401 before login.
+export function useSSE({ enabled = true }: { enabled?: boolean } = {}): { connectionState: ConnectionState } {
   const queryClient = useQueryClient()
   // Initial state is 'reconnecting' so the ConnectionBanner shows immediately
   // before the first connect attempt. This matches the pre-existing behaviour —
@@ -90,6 +91,7 @@ export function useSSE(): { connectionState: ConnectionState } {
   const cancelledRef = useRef<boolean>(false)
 
   useEffect(() => {
+    if (!enabled) return
     cancelledRef.current = false
 
     function clearIdleWatchdog() {
@@ -321,7 +323,7 @@ export function useSSE(): { connectionState: ConnectionState } {
       }
       controllerRef.current?.abort()
     }
-  }, [queryClient])
+  }, [queryClient, enabled])
 
   return { connectionState }
 }

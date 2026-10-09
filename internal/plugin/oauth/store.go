@@ -30,6 +30,25 @@ const (
 	auditCredentialCleared = "plugin_credentials_cleared"
 )
 
+type actorKey struct{}
+
+// WithActor returns a context that attributes credential-write audit events
+// (set/deleted/cleared) to userID. Admin handlers call it with the
+// authenticated caller's id; system-initiated writes never do, so their events
+// keep a NULL actor. It is an explicit opt-in rather than a lookup of the
+// request's user, so a background path can never be attributed by accident.
+func WithActor(ctx context.Context, userID string) context.Context {
+	return context.WithValue(ctx, actorKey{}, userID)
+}
+
+func actorFromContext(ctx context.Context) *string {
+	userID, ok := ctx.Value(actorKey{}).(string)
+	if !ok || userID == "" {
+		return nil
+	}
+	return &userID
+}
+
 // RefreshFailureDetailPrefix is the stable prefix used in the health-state
 // detail field when MarkRefreshFailed drives an instance to unhealthy.
 // The admin UI matches on this prefix to decide whether to show the
@@ -529,12 +548,13 @@ func (s *DBStore) emitAudit(ctx context.Context, eventType, severity, instanceID
 		payload[k] = v
 	}
 	body, _ := json.Marshal(payload)
+	actorUserID := actorFromContext(ctx)
 	now := s.clock().UTC().Format(time.RFC3339Nano)
 	_, err := s.q.InsertPluginAuditEvent(ctx, db.InsertPluginAuditEventParams{
 		PluginInstanceID: &instanceID,
 		EventType:        eventType,
 		Severity:         severity,
-		ActorUserID:      nil,
+		ActorUserID:      actorUserID,
 		PayloadJson:      string(body),
 		CreatedAt:        now,
 	})

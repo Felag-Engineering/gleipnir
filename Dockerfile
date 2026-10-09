@@ -16,7 +16,7 @@ RUN npm run build
 # path enabled by CGO_ENABLED=0 + pure-Go SQLite (modernc.org/sqlite): no cgo
 # C-toolchain and no QEMU are needed to produce an arm64 binary on an amd64
 # runner. TARGETOS/TARGETARCH are injected automatically by buildx.
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 ARG TARGETOS
 ARG TARGETARCH
 # GO_TAGS selects the plugin substrate compiled into the gleipnir binary: empty

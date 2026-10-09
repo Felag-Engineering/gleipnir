@@ -55,7 +55,8 @@ function fetchAttention(): Promise<ApiAttentionResponse> {
 // run.status_changed) which invalidate the attention query key. staleTime of
 // 30s guards against excessive refetches when multiple SSE events arrive in
 // rapid succession.
-export function useAttentionItems() {
+// `enabled: false` skips the request — used before the session is known.
+export function useAttentionItems({ enabled = true }: { enabled?: boolean } = {}) {
   // Toggle state is only used to force a re-render after dismissing a failure.
   const [, setDismissToggle] = useState(0)
 
@@ -63,6 +64,7 @@ export function useAttentionItems() {
     queryKey: queryKeys.attention.all,
     queryFn: fetchAttention,
     staleTime: ATTENTION_STALE_TIME,
+    enabled,
   })
 
   const dismissed = loadDismissedSet()

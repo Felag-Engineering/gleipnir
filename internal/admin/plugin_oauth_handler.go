@@ -77,7 +77,7 @@ type beginClientcredResponse struct {
 // For clientcred: performs the token exchange synchronously; returns {"status":"ok"}.
 // Returns 400 for non-OAuth strategies or missing required fields.
 func (h *PluginOAuthHandler) Begin(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx := credentialWriteContext(r)
 	pluginID := chi.URLParam(r, "id")
 	instanceID := chi.URLParam(r, "iid")
 

@@ -216,10 +216,11 @@ type PluginInstance struct {
 }
 
 type PluginOauthNonce struct {
-	Nonce      string `json:"nonce"`
-	InstanceID string `json:"instance_id"`
-	ExpiresAt  string `json:"expires_at"`
-	CreatedAt  string `json:"created_at"`
+	Nonce       string  `json:"nonce"`
+	InstanceID  string  `json:"instance_id"`
+	ExpiresAt   string  `json:"expires_at"`
+	CreatedAt   string  `json:"created_at"`
+	ActorUserID *string `json:"actor_user_id"`
 }
 
 type PluginPendingManifest struct {

@@ -1,25 +1,29 @@
+import { lazy, Suspense } from 'react'
 import { createBrowserRouter, Navigate, useParams } from 'react-router'
 import Layout from '@/components/Layout'
-import DashboardPage from './pages/DashboardPage'
-import LoginPage from './pages/LoginPage'
-import SetupPage from './pages/SetupPage'
-import AgentsPage from './pages/AgentsPage'
-import AgentEditorPage from './pages/AgentEditorPage'
-import RunDetailPage from './pages/RunDetailPage'
-import RunsPage from './pages/RunsPage'
-import MCPPage from './pages/MCPPage'
-import UsersPage from './pages/UsersPage'
-import SettingsPage from './pages/SettingsPage'
-import AdminModelsPage from './pages/AdminModelsPage'
-import AdminSystemPage from './pages/AdminSystemPage'
-import AdminAudiencesPage from './pages/AdminAudiencesPage'
-import AdminAudienceDetailPage from './pages/AdminAudienceDetailPage'
-import AdminAudienceNewPage from './pages/AdminAudienceNewPage'
-import AdminPluginInstancePage from './pages/AdminPluginInstancePage'
-import AdminPluginsPage from './pages/AdminPluginsPage'
-import PluginReviewPage from './pages/PluginReviewPage'
-import NotFoundPage from './pages/NotFoundPage'
 import { RouteErrorFallback } from './components/ErrorBoundary'
+import { PageFallback } from '@/components/PageFallback'
+
+// Every page is its own chunk so the entry bundle carries only the shell.
+const DashboardPage = lazy(() => import('./pages/DashboardPage'))
+const LoginPage = lazy(() => import('./pages/LoginPage'))
+const SetupPage = lazy(() => import('./pages/SetupPage'))
+const AgentsPage = lazy(() => import('./pages/AgentsPage'))
+const AgentEditorPage = lazy(() => import('./pages/AgentEditorPage'))
+const RunDetailPage = lazy(() => import('./pages/RunDetailPage'))
+const RunsPage = lazy(() => import('./pages/RunsPage'))
+const MCPPage = lazy(() => import('./pages/MCPPage'))
+const UsersPage = lazy(() => import('./pages/UsersPage'))
+const SettingsPage = lazy(() => import('./pages/SettingsPage'))
+const AdminModelsPage = lazy(() => import('./pages/AdminModelsPage'))
+const AdminSystemPage = lazy(() => import('./pages/AdminSystemPage'))
+const AdminAudiencesPage = lazy(() => import('./pages/AdminAudiencesPage'))
+const AdminAudienceDetailPage = lazy(() => import('./pages/AdminAudienceDetailPage'))
+const AdminAudienceNewPage = lazy(() => import('./pages/AdminAudienceNewPage'))
+const AdminPluginInstancePage = lazy(() => import('./pages/AdminPluginInstancePage'))
+const AdminPluginsPage = lazy(() => import('./pages/AdminPluginsPage'))
+const PluginReviewPage = lazy(() => import('./pages/PluginReviewPage'))
+const NotFoundPage = lazy(() => import('./pages/NotFoundPage'))
 
 function PolicyRunsRedirect() {
   const { id } = useParams<{ id: string }>()
@@ -27,8 +31,22 @@ function PolicyRunsRedirect() {
 }
 
 const router = createBrowserRouter([
-  { path: '/login', element: <LoginPage /> },
-  { path: '/setup', element: <SetupPage /> },
+  {
+    path: '/login',
+    element: (
+      <Suspense fallback={<PageFallback />}>
+        <LoginPage />
+      </Suspense>
+    ),
+  },
+  {
+    path: '/setup',
+    element: (
+      <Suspense fallback={<PageFallback />}>
+        <SetupPage />
+      </Suspense>
+    ),
+  },
   {
     path: '/',
     element: <Layout />,

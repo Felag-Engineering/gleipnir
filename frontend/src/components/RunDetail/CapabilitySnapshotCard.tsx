@@ -35,6 +35,33 @@ function groupByServer(tools: GrantedToolEntry[]): ServerGroup[] {
   return groups
 }
 
+// OutboundHeaderNote shows which of a tool's parameters are sent as outbound
+// headers. Renders nothing for a tool with none, and for snapshots written
+// before the field existed.
+function OutboundHeaderNote({ tool }: { tool: GrantedToolEntry }) {
+  const headers = tool.outbound_headers ?? []
+  if (headers.length === 0 && !tool.outbound_headers_rejected) return null
+  return (
+    <p className={styles.outboundNote}>
+      <span className={styles.outboundTool}>{tool.tool_name}</span>
+      {headers.length > 0 && (
+        <>
+          {' '}sends outbound headers:{' '}
+          {headers.map((h, i) => (
+            <span key={h.parameter}>
+              {i > 0 && ', '}
+              <code className={styles.outboundCode}>{h.header}</code> (from {h.parameter})
+            </span>
+          ))}
+        </>
+      )}
+      {tool.outbound_headers_rejected && (
+        <> declares an outbound header that was rejected, so none are sent.</>
+      )}
+    </p>
+  )
+}
+
 // CapabilitySnapshotCard is the first entry of the run timeline: the exact
 // tools registered with the agent at run start (ADR-018). The tool names are
 // always visible, grouped by server, because the point of the card is what is
@@ -92,6 +119,9 @@ export function CapabilitySnapshotCard({ content, systemPrompt }: Props) {
                     </li>
                   ))}
                 </ul>
+                {group.tools.map(tool => (
+                  <OutboundHeaderNote key={tool.tool_name} tool={tool} />
+                ))}
               </dd>
             </div>
           ))}

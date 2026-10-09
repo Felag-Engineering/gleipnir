@@ -58,6 +58,14 @@ const (
 	// auditInstanceActivated is emitted when an admin re-activates an instance (#243).
 	auditInstanceActivated = "plugin_instance_activated"
 
+	// auditInstanceConfigUpdated is emitted when an admin changes an instance's
+	// config_json (bulk PUT or per-property PUT). Records key names only.
+	auditInstanceConfigUpdated = "plugin_instance_config_updated"
+
+	// auditSubscriptionScopeUpdated is emitted when an admin changes an
+	// instance's subscription scope.
+	auditSubscriptionScopeUpdated = "plugin_subscription_scope_updated"
+
 	// casConflictMsg is the standard 409 response body for CAS version conflicts.
 	// Consistent with the majority phrasing used elsewhere in the file.
 	casConflictMsg = "concurrent modification detected; retry"

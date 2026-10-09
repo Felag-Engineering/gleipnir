@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
+	"sort"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/http/auth"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
@@ -229,6 +232,13 @@ func (m *InstanceConfig) PutSubscriptionScope(ctx context.Context, pluginID, ins
 	if rows == 0 {
 		return InstanceConfigResult{}, ErrCASConflict
 	}
+	// The scope is a watch filter validated against subscription_schema, which
+	// has no x-gleipnir-secret support, so it is recorded verbatim.
+	m.writeAuditEvent(ctx, auditSubscriptionScopeUpdated, instanceID, nowStr, map[string]any{
+		"plugin_id": pluginID,
+		"old_scope": rawJSONOrString(inst.SubscriptionScopeJson),
+		"new_scope": json.RawMessage(scopeBytes),
+	})
 
 	// Ensure the trigger stream is running with the latest scope.
 	if m.trigger != nil {
@@ -419,6 +429,7 @@ func (m *InstanceConfig) PutConfig(ctx context.Context, pluginID, instanceID str
 	if rows == 0 {
 		return InstanceConfigResult{}, ErrCASConflict
 	}
+	m.writeConfigUpdatedAudit(ctx, pluginID, inst, cfg, secretNames, nowStr)
 
 	// Compute the redacted form of the written config once. Both the re-fetch
 	// success branch and the fallback synthesized branch use this value so
@@ -605,6 +616,7 @@ func (m *InstanceConfig) PutConfigProperty(ctx context.Context, pluginID, instan
 	if rows == 0 {
 		return InstanceConfigResult{}, ErrCASConflict
 	}
+	m.writeConfigUpdatedAudit(ctx, pluginID, inst, cfg, secretNames, nowStr)
 
 	// Pre-compute the redacted form of the written config. Both the re-fetch
 	// success branch and the fallback synthesized branch use this value so
@@ -761,4 +773,88 @@ func propertyExistsInSchema(schemaNode *yaml.Node, property string) bool {
 	}
 	_, exists := propertiesMap[property]
 	return exists
+}
+
+// writeConfigUpdatedAudit records which config keys a write changed. Only key
+// names are recorded, never values: config values can be arbitrary operator
+// data, and secret (x-gleipnir-secret) keys are listed separately so a reader
+// can see a secret rotated without any secret material reaching the log
+// (ADR-046, ADR-049).
+func (m *InstanceConfig) writeConfigUpdatedAudit(ctx context.Context, pluginID string, before db.PluginInstance, after map[string]any, secretNames map[string]bool, nowStr string) {
+	var previous map[string]any
+	if err := json.Unmarshal([]byte(before.ConfigJson), &previous); err != nil {
+		// Unparseable (or empty) prior config: treat every key as changed.
+		previous = nil
+	}
+
+	changed := []string{}
+	changedSecrets := []string{}
+	for _, key := range changedKeys(previous, after) {
+		if secretNames[key] {
+			changedSecrets = append(changedSecrets, key)
+		} else {
+			changed = append(changed, key)
+		}
+	}
+	m.writeAuditEvent(ctx, auditInstanceConfigUpdated, before.ID, nowStr, map[string]any{
+		"plugin_id":            pluginID,
+		"changed_keys":         changed,
+		"changed_secret_keys":  changedSecrets,
+		"secret_values_logged": false,
+	})
+}
+
+// changedKeys returns the sorted union of keys that were added, removed, or
+// whose value differs between before and after.
+func changedKeys(before, after map[string]any) []string {
+	keys := []string{}
+	for k, newVal := range after {
+		oldVal, existed := before[k]
+		if !existed || !reflect.DeepEqual(oldVal, newVal) {
+			keys = append(keys, k)
+		}
+	}
+	for k := range before {
+		if _, stillThere := after[k]; !stillThere {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// rawJSONOrString embeds s as JSON when it parses, else as a plain string, so a
+// malformed stored value cannot make the audit payload itself unmarshalable.
+func rawJSONOrString(s string) any {
+	if json.Valid([]byte(s)) {
+		return json.RawMessage(s)
+	}
+	return s
+}
+
+// writeAuditEvent inserts an instance-scoped audit row attributed to the
+// authenticated caller. Failures are logged, not surfaced — the config write
+// has already committed.
+func (m *InstanceConfig) writeAuditEvent(ctx context.Context, eventType, instanceID, nowStr string, payload map[string]any) {
+	var actorUserID *string
+	if caller, ok := auth.UserFromContext(ctx); ok && caller != nil {
+		actorUserID = &caller.ID
+	}
+	payload["instance_id"] = instanceID
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		slog.ErrorContext(ctx, "audit payload marshal failed", "event_type", eventType, "err", err)
+		return
+	}
+	_, err = m.q.InsertPluginAuditEvent(ctx, db.InsertPluginAuditEventParams{
+		PluginInstanceID: &instanceID,
+		EventType:        eventType,
+		Severity:         "info",
+		ActorUserID:      actorUserID,
+		PayloadJson:      string(payloadJSON),
+		CreatedAt:        nowStr,
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "audit event failed", "event_type", eventType, "err", err)
+	}
 }
