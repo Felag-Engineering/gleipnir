@@ -40,7 +40,7 @@ export function PluginMemoryBar() {
               <tr>
                 <th className={styles.th}>Instance</th>
                 <th className={styles.th}>Plugin</th>
-                <th className={styles.thRight}>RSS</th>
+                <th className={styles.thRight}>Memory</th>
               </tr>
             </thead>
             <tbody>

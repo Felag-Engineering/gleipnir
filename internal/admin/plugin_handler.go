@@ -22,6 +22,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/plugin/caphealth"
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
 	"github.com/felag-engineering/gleipnir/internal/plugin/lifecycle/desiredstate"
 	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
@@ -282,6 +283,9 @@ type PluginHandlerDeps struct {
 	// Provisioner is nil in v1: CreateInstance never provisions a container,
 	// and DeleteInstance never removes one.
 	Provisioner InstanceProvisioner
+	// CapabilityHealth backs ListInstanceCapabilities. nil in the live v1
+	// assembly, where the endpoint answers with an empty list.
+	CapabilityHealth *caphealth.Registry
 }
 
 // PluginHandler handles plugin-related admin endpoints.
@@ -298,6 +302,7 @@ type PluginHandler struct {
 	credSeeder     CredentialSeeder     // nil means skip credential seeding on create
 	store          *db.Store            // nil (or a nil provisioner) skips the create-instance provisioning tx
 	provisioner    InstanceProvisioner  // nil in v1: CreateInstance/DeleteInstance skip container provisioning
+	capHealth      *caphealth.Registry  // nil in v1: ListInstanceCapabilities returns an empty list
 }
 
 // NewPluginHandler constructs a PluginHandler from the given deps struct.
@@ -329,6 +334,7 @@ func NewPluginHandler(deps PluginHandlerDeps) *PluginHandler {
 		credSeeder:     deps.CredentialSeeder,
 		store:          deps.Store,
 		provisioner:    deps.Provisioner,
+		capHealth:      deps.CapabilityHealth,
 	}
 }
 
@@ -440,6 +446,50 @@ func (h *PluginHandler) GetInstance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.writeInstanceResponseWithRedactionForPlugin(w, plugin, row)
+}
+
+// capabilityResponse is one per-capability health entry. Name is empty for a
+// profile-wide entry. Detail may originate from the plugin's own self-report
+// and is untrusted text.
+type capabilityResponse struct {
+	Profile string `json:"profile"`
+	Name    string `json:"name"`
+	State   string `json:"state"`
+	Detail  string `json:"detail"`
+	Source  string `json:"source"`
+}
+
+func capabilitySourceString(s caphealth.Source) string {
+	if s == caphealth.SourceSelfReport {
+		return "self_report"
+	}
+	return "probe"
+}
+
+// ListInstanceCapabilities handles GET /api/v1/admin/plugins/{id}/instances/{iid}/capabilities.
+// Returns the instance's per-capability health entries. With no registry wired
+// (the live v1 assembly) it returns an empty list, never null.
+func (h *PluginHandler) ListInstanceCapabilities(w http.ResponseWriter, r *http.Request) {
+	pluginID := chi.URLParam(r, "id")
+	instanceID := chi.URLParam(r, "iid")
+
+	if _, ok := h.resolveInstance(r.Context(), w, pluginID, instanceID); !ok {
+		return
+	}
+
+	out := []capabilityResponse{}
+	if h.capHealth != nil {
+		for _, e := range h.capHealth.Get(instanceID).Entries {
+			out = append(out, capabilityResponse{
+				Profile: string(e.Capability.Profile),
+				Name:    e.Capability.Name,
+				State:   string(e.State),
+				Detail:  e.Detail,
+				Source:  capabilitySourceString(e.Source),
+			})
+		}
+	}
+	httputil.WriteJSON(w, http.StatusOK, out)
 }
 
 // acceptNewKeyRequest is the JSON body for POST /api/v1/admin/plugins/{id}/accept-new-key.

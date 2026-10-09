@@ -388,6 +388,13 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 				Get("/api/v1/admin/plugin-instances", cfg.Handlers.AudienceHandler.ListPluginInstances)
 		}
 
+		// Per-capability health: read-only, so it sits outside the admin-only
+		// /api/v1/admin group and is gated by admin|operator|auditor.
+		if cfg.Handlers.PluginAdminHandler != nil {
+			r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator, model.RoleAuditor)).
+				Get("/api/v1/admin/plugins/{id}/instances/{iid}/capabilities", cfg.Handlers.PluginAdminHandler.ListInstanceCapabilities)
+		}
+
 		// Binding test endpoint: read-only, gated by admin|operator|auditor.
 		// Registered alongside the plugin-instances list so partial bundles in
 		// tests that omit BindingTestHandler still compile without a nil dereference.

@@ -442,6 +442,7 @@ func run(cfg config.Config, pluginSubnetPool netip.Prefix) error {
 		Lifecycle:        pluginLifecycle,
 		Config:           pluginConfig,
 		CredentialSeeder: pluginAdminDeps.CredentialSeeder,
+		CapabilityHealth: pluginAdminDeps.CapabilityHealth,
 	})
 
 	handlers := api.HandlerBundle{

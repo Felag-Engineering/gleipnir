@@ -24,6 +24,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/http/auth"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/plugin/caphealth"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/signing"
 )
 
@@ -356,6 +357,7 @@ type testPluginHandlerConfig struct {
 	rssAgg      RSSAggregator
 	credSeeder  CredentialSeeder
 	provisioner InstanceProvisioner
+	capHealth   *caphealth.Registry
 }
 
 // newTestPluginHandler builds InstanceLifecycle + InstanceConfig + PluginHandler
@@ -390,6 +392,7 @@ func newTestPluginHandler(q PluginQuerier, clock func() time.Time, cfg testPlugi
 		CredentialSeeder: cfg.credSeeder,
 		Store:            cfg.store,
 		Provisioner:      cfg.provisioner,
+		CapabilityHealth: cfg.capHealth,
 	})
 }
 
