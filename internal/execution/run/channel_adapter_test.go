@@ -139,6 +139,7 @@ type channelAdapterFixture struct {
 func newChannelAdapterFixture(t *testing.T, stub *mcp.FakeChannelServer) *channelAdapterFixture {
 	t.Helper()
 	store := testutil.NewTestStore(t)
+	insertLinkedUsers(t, store)
 
 	srv := httptest.NewServer(stub)
 	t.Cleanup(srv.Close)
@@ -302,7 +303,7 @@ func newApprovalAdapters(t *testing.T, f *channelAdapterFixture, entries []hitl.
 	if err != nil {
 		t.Fatalf("NewTaskChannelAdapters: %v", err)
 	}
-	return adapters
+	return adapters.WithActorResolver(defaultTestActors())
 }
 
 func auditEventsFor(t *testing.T, f *channelAdapterFixture, runID string) []db.PluginAuditEvent {
@@ -368,8 +369,8 @@ func TestTaskChannelAdapters_DispatchApproval_AuthenticatedApproves(t *testing.T
 	if rec.ActorExternalID != "U123" {
 		t.Errorf("ActorExternalID = %q, want U123", rec.ActorExternalID)
 	}
-	if rec.LinkMethod != decision.LinkUnverified {
-		t.Errorf("LinkMethod = %q, want unverified (the channel's claim, not a resolved Gleipnir user)", rec.LinkMethod)
+	if rec.LinkMethod != decision.LinkDirectory || rec.ActorUserID != "u-approver" {
+		t.Errorf("LinkMethod = %q, ActorUserID = %q, want directory_mapping and u-approver", rec.LinkMethod, rec.ActorUserID)
 	}
 }
 
@@ -515,6 +516,7 @@ func TestTaskChannelAdapters_DispatchApproval_SkipIsRecordedInConsidered(t *test
 	if err != nil {
 		t.Fatalf("NewTaskChannelAdapters: %v", err)
 	}
+	adapters.WithActorResolver(defaultTestActors())
 
 	expiresAt := time.Now().Add(time.Minute)
 	resultCh := runAsync(func() (agent.ApprovalSettlement, error) {
@@ -922,5 +924,19 @@ func TestTaskChannelAdapters_DispatchApproval_TaskFailedProducesRecord(t *testin
 	}
 	if len(records) != 1 || records[0].Outcome != decision.OutcomeCancelled {
 		t.Fatalf("records = %+v, want one cancelled record", records)
+	}
+}
+
+// insertLinkedUsers creates the users the fake actor directories link to;
+// decision records reference users(id), so a linked id must be a real row.
+func insertLinkedUsers(t *testing.T, store *db.Store) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, id := range []string{"u-approver", "u-alice", "u-root", "u-bob", "u-op", "u-aud"} {
+		if _, err := store.Queries().CreateUser(context.Background(), db.CreateUserParams{
+			ID: id, Username: id, PasswordHash: "x", CreatedAt: now,
+		}); err != nil {
+			t.Fatalf("CreateUser %s: %v", id, err)
+		}
 	}
 }

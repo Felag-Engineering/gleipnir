@@ -464,7 +464,7 @@ func TestDBActorDirectory_Resolve(t *testing.T) {
 	})
 }
 
-func TestDBActorDirectory_ResolveUserID(t *testing.T) {
+func TestDBActorDirectory_ResolveActor(t *testing.T) {
 	q := &fakeSlackUserQuerier{
 		bySlackID: map[string][]db.GetUserBySlackUserIDRow{
 			"U-KNOWN": {{ID: "user-1", Username: "ann", Role: "operator"}},
@@ -472,15 +472,15 @@ func TestDBActorDirectory_ResolveUserID(t *testing.T) {
 	}
 	dir := DBActorDirectory{Querier: q}
 
-	id, found, err := dir.ResolveUserID(context.Background(), "U-KNOWN")
-	if err != nil || !found || id != "user-1" {
-		t.Errorf("ResolveUserID(known) = %q, %v, %v; want user-1, true, nil", id, found, err)
+	id, roles, found, err := dir.ResolveActor(context.Background(), "U-KNOWN")
+	if err != nil || !found || id != "user-1" || len(roles) != 1 || roles[0] != model.RoleOperator {
+		t.Errorf("ResolveActor(known) = %q, %v, %v, %v; want user-1, [operator], true, nil", id, roles, found, err)
 	}
-	if _, found, err := dir.ResolveUserID(context.Background(), "U-UNKNOWN"); err != nil || found {
-		t.Errorf("ResolveUserID(unknown) found=%v err=%v; want false, nil", found, err)
+	if _, _, found, err := dir.ResolveActor(context.Background(), "U-UNKNOWN"); err != nil || found {
+		t.Errorf("ResolveActor(unknown) found=%v err=%v; want false, nil", found, err)
 	}
 	q.err = errors.New("db down")
-	if _, _, err := dir.ResolveUserID(context.Background(), "U-KNOWN"); err == nil {
+	if _, _, _, err := dir.ResolveActor(context.Background(), "U-KNOWN"); err == nil {
 		t.Error("want a propagated error")
 	}
 }
