@@ -832,6 +832,18 @@ export interface ApiPluginInstanceDetail {
   config_schema: Record<string, unknown> | null
 }
 
+// ApiPluginCapabilityHealth matches internal/admin/plugin_handler.go → capabilityResponse
+// (GET /api/v1/admin/plugins/{id}/instances/{iid}/capabilities). name is empty for a
+// profile-wide entry; source says whether the host probed it or the plugin reported it.
+// detail may be plugin-supplied and is untrusted text.
+export interface ApiPluginCapabilityHealth {
+  profile: string
+  name: string
+  state: PluginHealthState
+  detail: string
+  source: 'probe' | 'self_report'
+}
+
 // ApiInstalledPlugin matches the installResponse struct returned by
 // POST /api/v1/admin/plugins (internal/admin/plugin_handler.go:installResponse).
 export interface ApiInstalledPlugin {

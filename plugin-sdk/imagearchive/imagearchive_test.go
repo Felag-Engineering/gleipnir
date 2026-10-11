@@ -175,6 +175,9 @@ func TestInspect_OCILayout(t *testing.T) {
 	if len(info.Tags) != 1 || info.Tags[0] != "ghcr.io/acme/plugin:1.0.0" {
 		t.Errorf("Tags = %v, want [ghcr.io/acme/plugin:1.0.0]", info.Tags)
 	}
+	if !strings.HasPrefix(info.ManifestDigest, "sha256:") || info.ManifestDigest == info.ConfigDigest {
+		t.Errorf("ManifestDigest = %q, want a sha256 digest distinct from the config digest", info.ManifestDigest)
+	}
 }
 
 // TestInspect_OCILayout_ContainerdImageNameAnnotation proves the

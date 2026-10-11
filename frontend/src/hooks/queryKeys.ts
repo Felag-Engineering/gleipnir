@@ -71,6 +71,8 @@ export const queryKeys = {
       ['admin', 'plugins', pluginId, 'instances'] as const,
     instance: (pluginId: string, instanceId: string) =>
       ['admin', 'plugins', pluginId, 'instances', instanceId] as const,
+    capabilities: (pluginId: string, instanceId: string) =>
+      ['admin', 'plugins', pluginId, 'instances', instanceId, 'capabilities'] as const,
     credentials: (pluginId: string, instanceId: string) =>
       ['admin', 'plugins', pluginId, 'instances', instanceId, 'credentials'] as const,
     // options() is keyed by (pluginId, instanceId, source, query, cursor) so

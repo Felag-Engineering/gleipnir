@@ -16,7 +16,7 @@ func TestReconcile_SelfInspectFailedPassesCounter(t *testing.T) {
 	fake := container.NewFake()
 	selfID, err := fake.Create(ctx, container.CreateOptions{
 		Name: "gleipnir", Image: "gleipnir/gleipnir:test", Network: "gleipnir-self-net",
-		CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"},
+		CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}, Sysctls: container.RequiredSysctls(),
 	})
 	if err != nil {
 		t.Fatalf("creating self container: %v", err)

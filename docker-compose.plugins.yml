@@ -61,3 +61,13 @@ services:
       net.ipv6.conf.default.forwarding: 0
       net.ipv6.conf.all.disable_ipv6: 1
       net.ipv6.conf.default.disable_ipv6: 1
+      # Defence in depth for the weak-host model (#1022): with the Linux
+      # defaults this container answers ARP for an address it holds on one
+      # instance network when asked on another, which is what lets a plugin
+      # reach another instance's proxy address at all. The egress proxy still
+      # refuses such a caller (caller_not_on_instance_network); these make the
+      # kernel not answer in the first place.
+      net.ipv4.conf.all.arp_ignore: 1
+      net.ipv4.conf.default.arp_ignore: 1
+      net.ipv4.conf.all.arp_announce: 2
+      net.ipv4.conf.default.arp_announce: 2

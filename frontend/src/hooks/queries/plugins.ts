@@ -4,6 +4,7 @@ import type {
   ApiPluginListItem,
   ApiPluginDetail,
   ApiPluginRSS,
+  ApiPluginCapabilityHealth,
   ApiRedactedCredentials,
 } from '@/api/types'
 import { queryKeys } from '../queryKeys'
@@ -40,6 +41,22 @@ export function usePluginRSS() {
     queryKey: queryKeys.plugins.rss(),
     queryFn: () => apiFetch<ApiPluginRSS>('/admin/plugins/rss'),
     refetchInterval: 30_000,
+  })
+}
+
+// usePluginInstanceCapabilities fetches per-capability health for one instance.
+// The list is empty when no capability health is reported for it.
+export function usePluginInstanceCapabilities(
+  pluginId: string | undefined,
+  instanceId: string | undefined,
+) {
+  return useQuery({
+    queryKey: queryKeys.plugins.capabilities(pluginId ?? '', instanceId ?? ''),
+    queryFn: () =>
+      apiFetch<ApiPluginCapabilityHealth[]>(
+        `/admin/plugins/${encodeURIComponent(pluginId!)}/instances/${encodeURIComponent(instanceId!)}/capabilities`,
+      ),
+    enabled: !!pluginId && !!instanceId,
   })
 }
 

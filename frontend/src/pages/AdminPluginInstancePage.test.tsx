@@ -13,6 +13,9 @@ import { RefreshFailureDetailPrefix } from '@/utils/pluginHealth'
 vi.mock('@/hooks/queries/admin')
 vi.mock('@/hooks/mutations/plugins')
 vi.mock('@/hooks/queries/users')
+vi.mock('@/components/admin/CapabilityHealthPanel/CapabilityHealthPanel', () => ({
+  CapabilityHealthPanel: () => null,
+}))
 vi.mock('@/components/admin/ReauthorizeButton/ReauthorizeButton', () => ({
   ReauthorizeButton: ({ strategy }: { strategy: string }) => (
     <button data-testid="reauth-btn" data-strategy={strategy}>Re-authorize</button>

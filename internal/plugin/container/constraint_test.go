@@ -13,6 +13,7 @@ func validCreateOptions() CreateOptions {
 		Volume:      VolumeMount{Name: "plugin-abc123-data", MountPath: "/data"},
 		CapDrop:     []string{"ALL"},
 		SecurityOpt: []string{"no-new-privileges"},
+		Sysctls:     RequiredSysctls(),
 	}
 }
 
@@ -120,6 +121,51 @@ func TestValidateCreate(t *testing.T) {
 			},
 			wantErr:  true,
 			wantKind: ViolationMissingSecurityOpt,
+		},
+		{
+			name: "missing sysctls rejected",
+			mutate: func(opts CreateOptions) CreateOptions {
+				opts.Sysctls = nil
+				return opts
+			},
+			wantErr:  true,
+			wantKind: ViolationIPv6NotDisabled,
+		},
+		{
+			name: "missing all.disable_ipv6 rejected",
+			mutate: func(opts CreateOptions) CreateOptions {
+				delete(opts.Sysctls, "net.ipv6.conf.all.disable_ipv6")
+				return opts
+			},
+			wantErr:  true,
+			wantKind: ViolationIPv6NotDisabled,
+		},
+		{
+			name: "missing default.disable_ipv6 rejected",
+			mutate: func(opts CreateOptions) CreateOptions {
+				delete(opts.Sysctls, "net.ipv6.conf.default.disable_ipv6")
+				return opts
+			},
+			wantErr:  true,
+			wantKind: ViolationIPv6NotDisabled,
+		},
+		{
+			name: "disable_ipv6 set to 0 rejected",
+			mutate: func(opts CreateOptions) CreateOptions {
+				opts.Sysctls["net.ipv6.conf.all.disable_ipv6"] = "0"
+				return opts
+			},
+			wantErr:  true,
+			wantKind: ViolationIPv6NotDisabled,
+		},
+		{
+			name: "extra sysctl rejected",
+			mutate: func(opts CreateOptions) CreateOptions {
+				opts.Sysctls["net.ipv4.ip_forward"] = "1"
+				return opts
+			},
+			wantErr:  true,
+			wantKind: ViolationDisallowedSysctl,
 		},
 		{
 			name: "dropping ALL with no-new-privileges satisfies the constraint",

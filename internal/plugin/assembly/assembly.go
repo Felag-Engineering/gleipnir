@@ -27,6 +27,7 @@ import (
 	runpkg "github.com/felag-engineering/gleipnir/internal/execution/run"
 	"github.com/felag-engineering/gleipnir/internal/infra/config"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
+	"github.com/felag-engineering/gleipnir/internal/plugin/caphealth"
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
 	"github.com/felag-engineering/gleipnir/internal/settings"
 	"github.com/felag-engineering/gleipnir/internal/toolregistry"
@@ -79,9 +80,9 @@ type AdminDeps struct {
 	ManifestSnap       *configvalidate.Snapshotter
 	OnPublicURLChanged func(ctx context.Context, oldURL, newURL string)
 
-	// CapabilityHealth is reserved for #1001's per-capability health read
-	// endpoint. nil today.
-	CapabilityHealth any
+	// CapabilityHealth backs the per-capability health read endpoint (#1001).
+	// nil today.
+	CapabilityHealth *caphealth.Registry
 }
 
 // Assembly is the v2 plugin substrate. Every method is nil-safe and a no-op

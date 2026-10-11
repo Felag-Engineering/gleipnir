@@ -11,14 +11,6 @@ import (
 	"github.com/felag-engineering/gleipnir/plugin-sdk/imagearchive"
 )
 
-// hostExtractionCapBytes mirrors maxTarballBytes in
-// internal/plugin/loader/extract.go:23 — the cumulative uncompressed bytes
-// the host will extract from one plugin bundle. The SDK cannot import
-// internal/*, so this is a hand-kept copy rather than a shared constant: if
-// the host's cap ever moves, this comment is the tripwire to update it here
-// too.
-const hostExtractionCapBytes = 100 << 20 // 100 MiB
-
 // resolveImageArchivePath returns a path to an OCI/Docker image archive on
 // disk, either the caller-supplied one or one just produced by shelling out
 // to docker/podman save. The returned cleanup removes any temp file this
@@ -146,18 +138,19 @@ func repositoryOf(ref string) string {
 }
 
 // warnIfBundleExceedsHostExtractionCap warns when the bundle's total
-// uncompressed entry size would exceed hostExtractionCapBytes — the same
+// uncompressed entry size would exceed capBytes (the host passes
+// imagearchive.MaxBundleBytes) — the same
 // cumulative-bytes check internal/plugin/loader/extract.go applies while
 // unpacking a dropped-in bundle. Packaging still proceeds: the CLI has no
 // authority to change the host's cap, only to tell an author their bundle is
 // bound to be rejected at install time before they sign and ship it.
-func warnIfBundleExceedsHostExtractionCap(cmd *cobra.Command, entries []bundleTarEntry) {
+func warnIfBundleExceedsHostExtractionCap(cmd *cobra.Command, entries []bundleTarEntry, capBytes int64) {
 	var total int64
 	for _, e := range entries {
 		total += int64(len(e.data))
 	}
-	if total > hostExtractionCapBytes {
+	if total > capBytes {
 		fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: bundle contents total %d bytes, over the host's %d byte extraction cap; this bundle will be rejected at install time\n",
-			total, hostExtractionCapBytes)
+			total, capBytes)
 	}
 }

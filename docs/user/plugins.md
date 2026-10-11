@@ -26,7 +26,7 @@ curl -X POST https://<host>/api/v1/admin/plugins \
   --data-binary @my-plugin-1.2.0.tar.gz
 ```
 
-Maximum body size: 100 MiB. On success the response is `{ "data": { "id": "...", "name": "...", "version": "...", "status": "..." } }`. The `status` field reflects the post-install state, which may be `pending_review` for signed plugins awaiting admin approval (see below).
+Maximum body size: 1 GiB. On success the response is `{ "data": { "id": "...", "name": "...", "version": "...", "status": "..." } }`. The `status` field reflects the post-install state, which may be `pending_review` for signed plugins awaiting admin approval (see below).
 
 Both paths run the same extract → signature-verify → snapshot install pipeline.
 

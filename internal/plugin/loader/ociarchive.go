@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
+	"github.com/felag-engineering/gleipnir/internal/plugin/container"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/imagearchive"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/manifestv2"
 )
@@ -33,31 +35,53 @@ var ErrImageArchiveInvalid = errors.New("image archive failed inspection")
 // On top of that this enforces the two host-side rules the parser leaves to
 // its caller: the computed config digest must be the manifest's pin, and every
 // tag baked into the archive must name the manifest's own repository.
-func inspectImageArchive(archivePath string, pkg manifestv2.Package) error {
+//
+// The returned Info carries the digests the verified archive hashes to. The
+// post-load check uses them to recognize the loaded image under either image
+// store (see imageMatchesArchive); they come from the archive itself, so
+// accepting them never accepts a digest the archive does not prove.
+func inspectImageArchive(archivePath string, pkg manifestv2.Package) (imagearchive.Info, error) {
 	f, err := os.Open(archivePath)
 	if err != nil {
-		return fmt.Errorf("open image archive: %w", err)
+		return imagearchive.Info{}, fmt.Errorf("open image archive: %w", err)
 	}
 	defer f.Close()
 
 	st, err := f.Stat()
 	if err != nil {
-		return fmt.Errorf("stat image archive: %w", err)
+		return imagearchive.Info{}, fmt.Errorf("stat image archive: %w", err)
 	}
 
 	info, err := imagearchive.Inspect(f, st.Size())
 	if err != nil {
-		return fmt.Errorf("%w: %w", ErrImageArchiveInvalid, err)
+		return imagearchive.Info{}, fmt.Errorf("%w: %w", ErrImageArchiveInvalid, err)
 	}
 
 	if pin := pkg.Digest(); info.ConfigDigest != pin {
-		return &imageDigestMismatchError{Expected: pin, Observed: info.ConfigDigest}
+		return imagearchive.Info{}, &imageDigestMismatchError{Expected: pin, Observed: info.ConfigDigest}
 	}
 
 	if err := checkArchiveTags(info.Tags, pkg.Repository()); err != nil {
-		return fmt.Errorf("%w: %w", ErrImageArchiveInvalid, err)
+		return imagearchive.Info{}, fmt.Errorf("%w: %w", ErrImageArchiveInvalid, err)
 	}
-	return nil
+	return info, nil
+}
+
+// imageMatchesArchive reports whether the runtime's inspected image is the one
+// the verified archive describes. The pin is the config digest, which is the
+// image ID under the classic Docker image store. With the containerd image
+// store the daemon reports the manifest digest as the ID instead, so that is
+// accepted too, as is a RepoDigest equal to the pinned reference. Every
+// accepted value comes from the archive or the pin; an arbitrary digest the
+// daemon happens to report is never accepted.
+func imageMatchesArchive(inspected container.ImageInfo, verified imagearchive.Info, pinnedReference string) bool {
+	if inspected.ID == verified.ConfigDigest {
+		return true
+	}
+	if verified.ManifestDigest != "" && inspected.ID == verified.ManifestDigest {
+		return true
+	}
+	return slices.Contains(inspected.RepoDigests, pinnedReference)
 }
 
 // checkArchiveTags requires every embedded tag to name repository. Tags on the
