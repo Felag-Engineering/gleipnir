@@ -247,6 +247,16 @@ type ContainerInfo struct {
 	// SelfAttached matches on either.
 	NetworkNames []string
 
+	// IPAddress is the container's IPv4 address on its instance network, set
+	// by Inspect (ListByLabel summaries do not carry it). A plugin container
+	// is created attached to exactly one network, so the address is that
+	// network's; it is deliberately left empty when the container reports
+	// zero or several addressed networks, because picking one of several would
+	// be a guess about where the plugin's MCP endpoint listens. Gleipnir's own
+	// self-attach joins the instance network from Gleipnir's container, never
+	// the plugin's, so it does not make a plugin container multi-homed.
+	IPAddress string
+
 	CreatedAt time.Time
 }
 

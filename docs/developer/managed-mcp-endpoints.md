@@ -160,9 +160,39 @@ The API reports `trust_tier`, `plugin_instance_id`, and `editable`; the UI
 labels managed rows and offers neither button, because an affordance that always
 fails reads as a bug rather than as a boundary.
 
+## Who calls Register: the attach pass
+
+`reconciler.AttachPass` (`internal/plugin/reconciler/attach.go`, #956) is the
+caller. It is level-triggered, so the generation switch calls nothing: each pass
+recomputes from the generation table, the containers and the existing managed
+rows (`planAttach`, pure like `planFor`), and a crash between the switch and the
+`Register` is finished by the next pass.
+
+- **URL.** `http://<container IP>:<package.transport.port>/`. The port comes
+  from the consented `manifest_snapshot` (via `manifest.Read`), never from the
+  container. The IP is `ContainerInfo.IPAddress` from `Inspect`: a plugin
+  container is on exactly one network, so it is that network's address. A
+  container reporting several addressed networks gets no address and the
+  instance is held — picking one would be a guess.
+- **Which generation.** Only an `active` generation (it passed its health gate
+  and was switched to) is routed to. A rotation's switch repoints the existing
+  row's `url`; an instance with no live generation is deregistered. An instance
+  that is live but cannot be resolved this pass (gate still running, inspect
+  failed, no address) keeps its current row rather than churning its tool names.
+- **Where it runs.** After the rotation half of the run loop's pass, under the
+  same lock, and even if an earlier half failed. It requires `Config.Rotations`
+  outside manual posture.
+- **Manual posture.** There are no generations; the input is `Discover`.
+  Only `matched` attaches. `wrong_generation` (and `ambiguous`,
+  `declared_but_not_found`) do not, and withdraw a row an earlier pass created.
+  Nothing is injected into the operator's containers, and the pass makes no
+  socket writes. The inert manual loop never calls it; whatever drives discovery
+  does.
+
 ## Not in scope here
 
 - The host endpoint (M17).
 - External-server extension opt-in — explicitly deferred, §5.
-- Calling `Register` / `Deregister` from the generation switch. The reconciler
-  is not wired into `main.go` yet; this lands the seam the switch will call.
+- Listener actions (the events supervisor's per-instance listeners): `planAttach`
+  accepts a `listeners` argument but ignores it until #957 adds them.
+- Starting the reconciler, and so the attach pass, from `main.go` (#962).

@@ -1,6 +1,7 @@
 package container
 
 import (
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -260,6 +261,51 @@ func TestFromInspectResponse_NoNetworkSettings(t *testing.T) {
 	info := fromInspectResponse(dockercontainer.InspectResponse{ID: "abc123"})
 	if info.Networks != nil {
 		t.Errorf("Networks = %v, want nil", info.Networks)
+	}
+}
+
+// The plugin's address is the one on its instance network. A container on
+// several addressed networks has no single answer, so IPAddress stays empty
+// rather than guessing.
+func TestFromInspectResponse_IPAddress(t *testing.T) {
+	tests := []struct {
+		name     string
+		networks map[string]*dockernetwork.EndpointSettings
+		want     string
+	}{
+		{
+			name: "single network",
+			networks: map[string]*dockernetwork.EndpointSettings{
+				"gleipnir-plugin-abc": {NetworkID: "n1", IPAddress: netip.MustParseAddr("10.83.4.2")},
+			},
+			want: "10.83.4.2",
+		},
+		{
+			name: "network without an address yet",
+			networks: map[string]*dockernetwork.EndpointSettings{
+				"gleipnir-plugin-abc": {NetworkID: "n1"},
+			},
+			want: "",
+		},
+		{
+			name: "several addressed networks are ambiguous",
+			networks: map[string]*dockernetwork.EndpointSettings{
+				"gleipnir-plugin-abc": {NetworkID: "n1", IPAddress: netip.MustParseAddr("10.83.4.2")},
+				"other":               {NetworkID: "n2", IPAddress: netip.MustParseAddr("10.83.5.2")},
+			},
+			want: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info := fromInspectResponse(dockercontainer.InspectResponse{
+				ID:              "abc123",
+				NetworkSettings: &dockercontainer.NetworkSettings{Networks: tt.networks},
+			})
+			if info.IPAddress != tt.want {
+				t.Errorf("IPAddress = %q, want %q", info.IPAddress, tt.want)
+			}
+		})
 	}
 }
 

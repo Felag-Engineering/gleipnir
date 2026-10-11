@@ -125,6 +125,12 @@ type Config struct {
 	// ReconcileRotations.
 	Rotations RotationStore
 
+	// Attach configures the attach pass (#956), which keeps one managed
+	// `mcp_servers` row per live generation. Optional: nil disables it. Outside
+	// manual posture it requires Rotations, since the generation table is what
+	// it reads.
+	Attach *AttachDeps
+
 	// HealthGateTimeout and DrainTimeout bound the two rotation waits. Zero
 	// uses the package defaults.
 	HealthGateTimeout time.Duration
@@ -240,6 +246,7 @@ type Reconciler struct {
 	hostEndpointEnv func(ctx context.Context, instanceID string) []string
 
 	rotations         RotationStore
+	attach            *AttachDeps
 	healthGateTimeout time.Duration
 	drainTimeout      time.Duration
 
@@ -298,6 +305,15 @@ func New(cfg Config) (*Reconciler, error) {
 	}
 	if cfg.Store == nil {
 		return nil, fmt.Errorf("reconciler: Store is required")
+	}
+
+	if cfg.Attach != nil {
+		if cfg.Attach.Store == nil || cfg.Attach.Endpoints == nil {
+			return nil, fmt.Errorf("reconciler: Attach requires both Store and Endpoints")
+		}
+		if cfg.Posture != container.PostureManual && cfg.Rotations == nil {
+			return nil, fmt.Errorf("reconciler: Attach requires Rotations outside manual posture")
+		}
 	}
 
 	interval := cfg.Interval
@@ -386,6 +402,7 @@ func New(cfg Config) (*Reconciler, error) {
 		kick:            make(chan struct{}, 1),
 
 		rotations:         cfg.Rotations,
+		attach:            cfg.Attach,
 		healthGateTimeout: cfg.HealthGateTimeout,
 		drainTimeout:      cfg.DrainTimeout,
 		tokens:            make(map[string]string),
@@ -466,15 +483,20 @@ func (r *Reconciler) runPass(ctx context.Context) error {
 
 	_, onceErr := r.ReconcileOnce(ctx)
 
-	if r.rotations == nil {
-		return onceErr
+	var rotErr error
+	if r.rotations != nil {
+		var result RotationPassResult
+		result, rotErr = r.reconcileRotationsLocked(ctx)
+		if rotErr == nil {
+			r.publishRotationPass(result)
+		}
 	}
 
-	result, rotErr := r.reconcileRotationsLocked(ctx)
-	if rotErr == nil {
-		r.publishRotationPass(result)
-	}
-	return errors.Join(onceErr, rotErr)
+	// Attach runs last so it sees the generation switch this same pass made,
+	// and runs even when an earlier half failed: it recomputes from current
+	// state, so it needs nothing the others produced.
+	_, attachErr := r.attachPassLocked(ctx)
+	return errors.Join(onceErr, rotErr, attachErr)
 }
 
 // Kick nudges the loop to run a pass now. Safe to call from any goroutine and

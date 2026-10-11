@@ -55,6 +55,7 @@ func TestReadOnlyRuntime_DelegatesReads(t *testing.T) {
 		t.Fatalf("inner.Create: %v", err)
 	}
 
+	inner.SetIPAddress(id, "10.83.4.2")
 	ro := NewReadOnlyRuntime(inner)
 
 	info, err := ro.Inspect(ctx, id)
@@ -63,6 +64,9 @@ func TestReadOnlyRuntime_DelegatesReads(t *testing.T) {
 	}
 	if info.ID != id {
 		t.Errorf("Inspect().ID = %q, want %q", info.ID, id)
+	}
+	if info.IPAddress != "10.83.4.2" {
+		t.Errorf("Inspect().IPAddress = %q, want 10.83.4.2 (passed through)", info.IPAddress)
 	}
 
 	if _, err := ro.Stats(ctx, id); err != nil {

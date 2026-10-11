@@ -353,6 +353,7 @@ func fromInspectResponse(resp dockercontainer.InspectResponse) ContainerInfo {
 		info.Hostname = resp.Config.Hostname
 	}
 	if resp.NetworkSettings != nil {
+		var addresses []string
 		for name, ep := range resp.NetworkSettings.Networks {
 			if name != "" {
 				info.NetworkNames = append(info.NetworkNames, name)
@@ -360,6 +361,12 @@ func fromInspectResponse(resp dockercontainer.InspectResponse) ContainerInfo {
 			if ep != nil && ep.NetworkID != "" {
 				info.Networks = append(info.Networks, NetworkID(ep.NetworkID))
 			}
+			if ep != nil && ep.IPAddress.IsValid() {
+				addresses = append(addresses, ep.IPAddress.String())
+			}
+		}
+		if len(addresses) == 1 {
+			info.IPAddress = addresses[0]
 		}
 	}
 	return info
