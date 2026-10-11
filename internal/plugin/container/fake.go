@@ -339,6 +339,16 @@ func (f *Fake) SetLogs(id ContainerID, logs string) {
 	}
 }
 
+// SetIPAddress seeds the address Inspect reports for id, standing in for the
+// one the daemon assigns on the instance network. Test-only helper.
+func (f *Fake) SetIPAddress(id ContainerID, ip string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if c, ok := f.containers[id]; ok {
+		c.info.IPAddress = ip
+	}
+}
+
 var _ Runtime = (*Fake)(nil)
 var _ Runtime = (*ReadOnlyRuntime)(nil)
 
