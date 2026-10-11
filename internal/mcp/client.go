@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/infra/version"
@@ -308,6 +309,12 @@ type Client struct {
 	// queue waiting for a slot. nil means unbounded, which is what a Client
 	// constructed directly (tests, probes) gets.
 	callGate *serverGate
+
+	// inFlight counts tools/call requests that are executing or waiting for a
+	// slot, shared by every Client the Registry builds for one server so the
+	// admin in-flight gate sees all of a server's work. nil on a directly
+	// constructed Client.
+	inFlight *atomic.Int64
 
 	// pinnedCA reports whether WithRootCAs configured this client with an
 	// operator-pinned CA certificate pool. Read by post's TLS-error wrapping
@@ -817,6 +824,13 @@ func (c *Client) CallTool(ctx context.Context, name string, input map[string]any
 				Inc()
 		}
 	}()
+
+	// Counted from before the gate so a caller waiting for a slot still blocks an
+	// admin deactivate/delete (Registry.InFlight).
+	if c.inFlight != nil {
+		c.inFlight.Add(1)
+		defer c.inFlight.Add(-1)
+	}
 
 	// The per-server gate is claimed before anything else this call does — no
 	// header resolution, no request build, and above all no socket. A ceiling
