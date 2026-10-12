@@ -16,6 +16,7 @@ package egress
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -118,6 +119,31 @@ func (a Allowlist) Allows(host string) bool {
 // control flow — an empty list already refuses everything through Allows.
 func (a Allowlist) Empty() bool {
 	return len(a.exact) == 0 && len(a.suffixes) == 0
+}
+
+// Equal reports whether two allowlists grant exactly the same destinations.
+// The attach pass compares the registered list against the consented snapshot
+// with it so a changed consent is re-asserted, while an unchanged one is left
+// alone.
+func (a Allowlist) Equal(b Allowlist) bool {
+	if len(a.exact) != len(b.exact) || len(a.suffixes) != len(b.suffixes) {
+		return false
+	}
+	for host := range a.exact {
+		if _, ok := b.exact[host]; !ok {
+			return false
+		}
+	}
+	mine := append([]string(nil), a.suffixes...)
+	theirs := append([]string(nil), b.suffixes...)
+	sort.Strings(mine)
+	sort.Strings(theirs)
+	for i := range mine {
+		if mine[i] != theirs[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Size reports how many grants the list holds.

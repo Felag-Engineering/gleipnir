@@ -131,6 +131,26 @@ type Config struct {
 	// it reads.
 	Attach *AttachDeps
 
+	// HostListeners and EgressListeners run the host endpoint and the egress
+	// proxy, one listener per instance network, driven by the attach pass
+	// (#957). Gateways is the egress proxy's identity table, kept in step with
+	// them. Each is optional and nil-safe: an unset one is simply not driven.
+	// Leave them unset rather than passing a typed nil pointer.
+	//
+	// All three bind and key on Gleipnir's reserved address on the instance
+	// network (egress.GleipnirAddrOf), never the gateway, and only once
+	// self-attach has pinned it. They require Attach and Subnets, and are inert
+	// in manual posture (see attach_listeners.go).
+	HostListeners   InstanceListeners
+	EgressListeners InstanceListeners
+	Gateways        GatewayTable
+
+	// Generations is the host-endpoint generation controller. Optional. When
+	// set, the attach pass registers each instance with it as its host listener
+	// comes up, and a rotation's drain step calls BeginDrain so in-flight host
+	// calls of the superseded generation finish before its container stops.
+	Generations GenerationSlots
+
 	// HealthGateTimeout and DrainTimeout bound the two rotation waits. Zero
 	// uses the package defaults.
 	HealthGateTimeout time.Duration
@@ -245,6 +265,11 @@ type Reconciler struct {
 	// where the host endpoint listens.
 	hostEndpointEnv func(ctx context.Context, instanceID string) []string
 
+	hostListeners   InstanceListeners
+	egressListeners InstanceListeners
+	gateways        GatewayTable
+	generations     GenerationSlots
+
 	rotations         RotationStore
 	attach            *AttachDeps
 	healthGateTimeout time.Duration
@@ -313,6 +338,15 @@ func New(cfg Config) (*Reconciler, error) {
 		}
 		if cfg.Posture != container.PostureManual && cfg.Rotations == nil {
 			return nil, fmt.Errorf("reconciler: Attach requires Rotations outside manual posture")
+		}
+	}
+
+	if cfg.HostListeners != nil || cfg.EgressListeners != nil || cfg.Gateways != nil {
+		if cfg.Attach == nil {
+			return nil, fmt.Errorf("reconciler: listeners and Gateways are driven by the attach pass and require Attach")
+		}
+		if cfg.Posture != container.PostureManual && cfg.Subnets == nil {
+			return nil, fmt.Errorf("reconciler: listeners and Gateways require Subnets: their bind address is derived from the instance's allocated subnet")
 		}
 	}
 
@@ -398,6 +432,10 @@ func New(cfg Config) (*Reconciler, error) {
 		networkFn:       networkFn,
 		egressEnv:       cfg.EgressEnv,
 		hostEndpointEnv: cfg.HostEndpointEnv,
+		hostListeners:   cfg.HostListeners,
+		egressListeners: cfg.EgressListeners,
+		gateways:        cfg.Gateways,
+		generations:     cfg.Generations,
 		selfAttacher:    selfAttacher,
 		kick:            make(chan struct{}, 1),
 

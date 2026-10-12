@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sort"
 	"sync"
 )
 
@@ -104,6 +105,21 @@ func (l *ListenerSet) Addr(instanceID string) string {
 		return il.addr
 	}
 	return ""
+}
+
+// Instances lists every instance that currently has a listener, sorted. The
+// reconciler needs it to find a listener whose instance has vanished from every
+// other source of truth: a level-triggered teardown cannot be driven from
+// state that no longer exists.
+func (l *ListenerSet) Instances() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	ids := make([]string, 0, len(l.servers))
+	for id := range l.servers {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // Remove gracefully shuts down an instance's listener. Removing an instance
