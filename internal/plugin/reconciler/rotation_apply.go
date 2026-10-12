@@ -474,6 +474,9 @@ func (r *Reconciler) drainGeneration(ctx context.Context, act RotationAction, ge
 	if !DrainDeadlinePassed(gen, rotationTimeNow(), r.drainTimeout) {
 		return nil
 	}
+	if err := r.drainHostCalls(ctx, act.InstanceID); err != nil {
+		return err
+	}
 	if err := r.runtime.Stop(ctx, act.ContainerID, stopTimeout); err != nil {
 		return fmt.Errorf("stop drained generation %d: %w", act.Generation, err)
 	}

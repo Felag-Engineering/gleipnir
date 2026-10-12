@@ -13,6 +13,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/infra/logctx"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/plugin/container"
+	"github.com/felag-engineering/gleipnir/internal/plugin/egress"
 	"github.com/felag-engineering/gleipnir/internal/plugin/manifest"
 )
 
@@ -45,6 +46,14 @@ const (
 	// route to. The delete cascades to mcp_tools, which releases the
 	// instance's tool names.
 	AttachDeregister AttachActionKind = "deregister"
+
+	// The listener steps (#957). Each is idempotent and re-derived every pass.
+	AttachHostListen     AttachActionKind = "host_listen"
+	AttachHostUnlisten   AttachActionKind = "host_unlisten"
+	AttachEgressListen   AttachActionKind = "egress_listen"
+	AttachEgressUnlisten AttachActionKind = "egress_unlisten"
+	AttachGatewaySet     AttachActionKind = "gateway_set"
+	AttachGatewayRemove  AttachActionKind = "gateway_remove"
 )
 
 // AttachAction is a planned step plus the instance it applies to.
@@ -53,6 +62,12 @@ type AttachAction struct {
 	InstanceID string
 	// Endpoint is set for AttachRegister.
 	Endpoint mcp.ManagedEndpoint
+	// ListenAddr is the address to bind, for the *Listen kinds.
+	ListenAddr string
+	// GatewayIP is the registry key, for the gateway kinds.
+	GatewayIP net.IP
+	// Allowlist is the consented allowlist, for AttachGatewaySet.
+	Allowlist egress.Allowlist
 	// Reason is a short operator-facing explanation, carried into the log line.
 	Reason string
 }
@@ -76,23 +91,15 @@ type attachInstance struct {
 	HoldReason string
 }
 
-// attachListener is the seam #957 fills with per-instance events-listener
-// state. planAttach accepts it now so that issue adds listener actions to this
-// planner rather than growing a second one; nothing reads it yet.
-type attachListener struct {
-	InstanceID string
-}
-
 // planAttach decides the one managed-row step per instance. It is a pure
 // function of (live instances, existing managed rows, listeners), in the style
 // of planFor, so the whole table is testable without a runtime or a store.
 //
-// Listener actions are NOT planned here yet (#957); listeners is accepted and
-// ignored. The result is sorted by instance ID so two passes over an unchanged
-// world read identically.
+// Listener steps (#957) are planned from listeners and follow the instance's
+// managed-row step. The result is sorted by instance ID (stably, so one
+// instance's steps keep their order) and two passes over an unchanged world read
+// identically.
 func planAttach(instances []attachInstance, managedRows []db.McpServer, listeners []attachListener) []AttachAction {
-	_ = listeners
-
 	rowByInstance := make(map[string]db.McpServer, len(managedRows))
 	for _, row := range managedRows {
 		if row.PluginInstanceID != nil {
@@ -118,7 +125,11 @@ func planAttach(instances []attachInstance, managedRows []db.McpServer, listener
 		})
 	}
 
-	sort.Slice(actions, func(i, j int) bool { return actions[i].InstanceID < actions[j].InstanceID })
+	for _, l := range listeners {
+		actions = append(actions, planListeners(l)...)
+	}
+
+	sort.SliceStable(actions, func(i, j int) bool { return actions[i].InstanceID < actions[j].InstanceID })
 	return actions
 }
 
@@ -229,10 +240,10 @@ func (r *Reconciler) attachPassLocked(ctx context.Context) ([]AttachAction, erro
 		candidates = append(candidates, r.resolveAttachInstance(ctx, sc, instanceByID, pluginByID))
 	}
 
-	actions := planAttach(candidates, managedRows, nil)
+	listeners, errs := r.resolveListeners(ctx, instanceByID, pluginByID)
+	actions := planAttach(candidates, managedRows, listeners)
 
 	var applied []AttachAction
-	var errs []error
 	for _, action := range actions {
 		if action.Kind == AttachNone {
 			if action.Reason != "" {
@@ -261,7 +272,9 @@ func (r *Reconciler) applyAttach(ctx context.Context, action AttachAction) error
 			return fmt.Errorf("reconciler: attach: deregistering instance %s: %w", action.InstanceID, err)
 		}
 	default:
-		return fmt.Errorf("reconciler: attach: unknown action %q for instance %s", action.Kind, action.InstanceID)
+		if err := r.applyListenerAction(ctx, action); err != nil {
+			return err
+		}
 	}
 	logctx.Logger(ctx).InfoContext(ctx, "reconciler: attach: "+string(action.Kind),
 		"instance_id", action.InstanceID, "reason", action.Reason)
