@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 )
 
 // Per-server concurrency and queue-depth gating for tool calls (ADR-053, spec
@@ -200,4 +201,10 @@ func (c *Client) TrustTier() TrustTier {
 		return TrustTierExternal
 	}
 	return c.trustTier
+}
+
+// withInFlightCounter points this client's call accounting at a counter shared
+// with every other client built for the same server (see Registry.InFlight).
+func withInFlightCounter(n *atomic.Int64) ClientOption {
+	return func(cl *Client) { cl.inFlight = n }
 }

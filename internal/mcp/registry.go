@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
@@ -182,6 +184,29 @@ type Registry struct {
 	// types.
 	defaultLimits ServerLimits
 	perServer     map[string]ServerLimits
+
+	// inFlight holds one shared *atomic.Int64 per server ID: the number of
+	// tools/call requests executing or queued across every Client built for it.
+	// A per-Client gate cannot answer this, because ResolveForPolicy builds a
+	// fresh Client per resolve.
+	inFlight sync.Map
+}
+
+// InFlight reports how many tools/call requests are currently executing or
+// waiting for a call slot on serverID, across all clients. Zero for an unknown
+// server. The admin deactivate/delete gates use it so an operator cannot stop
+// an instance out from under active work.
+func (r *Registry) InFlight(serverID string) int {
+	counter, ok := r.inFlight.Load(serverID)
+	if !ok {
+		return 0
+	}
+	return int(counter.(*atomic.Int64).Load())
+}
+
+func (r *Registry) inFlightCounter(serverID string) *atomic.Int64 {
+	counter, _ := r.inFlight.LoadOrStore(serverID, new(atomic.Int64))
+	return counter.(*atomic.Int64)
 }
 
 // RegistryOption configures a Registry.
@@ -336,6 +361,7 @@ func (r *Registry) newClientForServer(srv db.McpServer) *Client {
 		// direction.
 		WithTrustTier(TrustTierOf(srv)),
 		WithServerLimits(r.limitsFor(srv)),
+		withInFlightCounter(r.inFlightCounter(srv.ID)),
 	)
 
 	authHeaders := r.authHeadersFor(srv)
