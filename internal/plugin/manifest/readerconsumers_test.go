@@ -30,6 +30,11 @@ import (
 // tests instead (see TestInstanceConfig_PutConfig_V2Manifest and the oauth
 // package's v2-manifest strategy-resolution tests).
 //
+// internal/plugin/trigger is NOT in this list either: its dispatcher.go reads
+// through Read (#951), but supervisor.go (the v1 gRPC TriggerService
+// supervisor) still gates on the v1-only `services.trigger` field, which the
+// version-neutral Snapshot does not carry. That gate has no v2 meaning.
+//
 // internal/plugin/configvalidate is also NOT in this list. ForChannelAudience,
 // ValidateChannelCapabilities (audience/channel validation) and
 // ForTriggerBinding (event-kind binding validation) all stay on
@@ -57,6 +62,7 @@ func TestConsumersDoNotImportV1Manifest(t *testing.T) {
 	migratedDirs := []string{
 		"internal/plugin/oauth",
 		"internal/plugin/hostendpoint",
+		"internal/plugin/events",
 	}
 
 	for _, rel := range migratedDirs {

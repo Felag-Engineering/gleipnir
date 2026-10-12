@@ -24,8 +24,8 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/plugin/binding"
 	"github.com/felag-engineering/gleipnir/internal/plugin/dedup"
+	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
 	"github.com/felag-engineering/gleipnir/internal/policy"
-	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 )
 
 // RunLauncher is the narrow interface that Dispatcher uses from
@@ -40,6 +40,7 @@ type Querier interface {
 	GetSubscribedActivePolicies(ctx context.Context) ([]db.Policy, error)
 	GetPluginByID(ctx context.Context, id string) (db.Plugin, error)
 	GetPluginInstanceByID(ctx context.Context, id string) (db.PluginInstance, error)
+	InsertPluginAuditEvent(ctx context.Context, arg db.InsertPluginAuditEventParams) (db.PluginAuditEvent, error)
 	ListPluginsByStatus(ctx context.Context, status string) ([]db.Plugin, error)
 	ListPluginInstancesByPlugin(ctx context.Context, pluginID string) ([]db.PluginInstance, error)
 }
@@ -317,6 +318,16 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, pol db.Policy, evt Event, 
 
 	// 4. Compile and evaluate binding.
 	schema, compErr := d.bindingSchema(ctx, instance.PluginID, evt.EventKind)
+	if errors.Is(compErr, errKindUnattested) {
+		d.log.WarnContext(ctx, "trigger dispatcher: event kind not attested by plugin manifest; no match",
+			"policy_id", pol.ID,
+			"plugin_id", instance.PluginID,
+			"event_kind", evt.EventKind,
+		)
+		d.auditKindUnattested(ctx, instance, evt)
+		d.publishNoMatch(evt, pol.ID)
+		return dispatchOutcome{evaluated: true}
+	}
 	if compErr != nil {
 		d.log.ErrorContext(ctx, "trigger dispatcher: failed to load binding schema; skipping",
 			"policy_id", pol.ID,
@@ -445,29 +456,79 @@ func (d *Dispatcher) parsedPolicy(pol db.Policy, provider, modelName string) (*m
 	return parsed, nil
 }
 
+// EventTypeKindUnattested is the plugin_audit_events.event_type written when a
+// v2 plugin emits an event kind its approved manifest does not attest.
+const EventTypeKindUnattested = "event_kind_unattested"
+
+// errKindUnattested reports that a v2 manifest does not declare the event kind.
+// Unlike v1 (where an undeclared kind has no schema and matches everything),
+// the v2 manifest is the record of what the admin consented to, so an
+// unattested kind matches nothing.
+var errKindUnattested = errors.New("event kind not attested by manifest")
+
 // bindingSchema fetches the plugin manifest for pluginID and returns the
 // BindingSchema yaml.Node for the given event kind. Returns nil when the event
 // kind has no binding schema (which is valid — nil schema compiles to a binding
 // that matches everything).
+//
+// A v1 manifest that does not declare the kind also yields a nil schema. A v2
+// manifest that does not declare it returns errKindUnattested, and an
+// unparseable snapshot of either version returns the parse error; the caller
+// treats every error as no-match.
+//
+// Binding validation is not run on the policy save path (#870), so a binding
+// that does not fit this schema surfaces here, at compile time, as no-match.
 func (d *Dispatcher) bindingSchema(ctx context.Context, pluginID, eventKind string) (*yaml.Node, error) {
 	plugin, err := d.q.GetPluginByID(ctx, pluginID)
 	if err != nil {
 		return nil, err
 	}
 
-	// manifest_snapshot is stored as YAML (not JSON) — use manifest.Unmarshal.
-	var m sdkmanifest.Manifest
-	if err := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &m); err != nil {
+	// manifest_snapshot is stored as YAML (not JSON); Read dispatches on the
+	// snapshot's schema_version.
+	snap, err := pluginmanifest.Read([]byte(plugin.ManifestSnapshot))
+	if err != nil {
 		return nil, err
 	}
 
-	for i := range m.EventKinds {
-		if m.EventKinds[i].Kind == eventKind {
-			return m.EventKinds[i].BindingSchema, nil
+	for i := range snap.EventKinds {
+		if snap.EventKinds[i].Kind == eventKind {
+			return snap.EventKinds[i].BindingSchema, nil
 		}
 	}
-	// Event kind not declared in manifest; treat as no schema (matches everything).
+	if snap.Version >= 2 {
+		return nil, errKindUnattested
+	}
+	// v1: event kind not declared in manifest; treat as no schema (matches everything).
 	return nil, nil
+}
+
+// auditKindUnattested records that instance emitted an event kind its manifest
+// does not attest. Best-effort: an insert failure is logged and never affects
+// dispatch. One row is written per matching policy per event, with no dedupe.
+func (d *Dispatcher) auditKindUnattested(ctx context.Context, instance db.PluginInstance, evt Event) {
+	payload, err := json.Marshal(map[string]string{
+		"event_kind": evt.EventKind,
+		"event_id":   evt.EventID,
+	})
+	if err != nil {
+		payload = []byte("{}")
+	}
+	instanceID := instance.ID
+	_, err = d.q.InsertPluginAuditEvent(ctx, db.InsertPluginAuditEventParams{
+		PluginInstanceID: &instanceID,
+		EventType:        EventTypeKindUnattested,
+		Severity:         "warning",
+		PayloadJson:      string(payload),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		d.log.WarnContext(ctx, "trigger dispatcher: event_kind_unattested audit insert failed",
+			"instance_id", instance.ID,
+			"event_kind", evt.EventKind,
+			"err", err,
+		)
+	}
 }
 
 // systemDefault fetches the system default model. On error it logs and returns
