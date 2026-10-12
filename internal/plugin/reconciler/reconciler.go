@@ -131,6 +131,12 @@ type Config struct {
 	// it reads.
 	Attach *AttachDeps
 
+	// Observe configures the observe pass (#959), which points the events
+	// supervisor, capability prober, log capture and resources collector at the
+	// live generations. Optional: nil disables it. It reads through Attach's
+	// store and runs right after the attach pass, so it requires Attach.
+	Observe *ObserveDeps
+
 	// HostListeners and EgressListeners run the host endpoint and the egress
 	// proxy, one listener per instance network, driven by the attach pass
 	// (#957). Gateways is the egress proxy's identity table, kept in step with
@@ -272,6 +278,8 @@ type Reconciler struct {
 
 	rotations         RotationStore
 	attach            *AttachDeps
+	observe           *ObserveDeps
+	observed          *observeState
 	healthGateTimeout time.Duration
 	drainTimeout      time.Duration
 
@@ -338,6 +346,16 @@ func New(cfg Config) (*Reconciler, error) {
 		}
 		if cfg.Posture != container.PostureManual && cfg.Rotations == nil {
 			return nil, fmt.Errorf("reconciler: Attach requires Rotations outside manual posture")
+		}
+	}
+
+	if cfg.Observe != nil {
+		if cfg.Attach == nil {
+			return nil, fmt.Errorf("reconciler: Observe is driven after the attach pass and requires Attach")
+		}
+		o := cfg.Observe
+		if o.Events == nil && o.Probe == nil && o.Health == nil && o.Logs == nil && o.Stats == nil {
+			return nil, fmt.Errorf("reconciler: Observe configures no observer; leave it nil to disable the pass")
 		}
 	}
 
@@ -441,6 +459,8 @@ func New(cfg Config) (*Reconciler, error) {
 
 		rotations:         cfg.Rotations,
 		attach:            cfg.Attach,
+		observe:           cfg.Observe,
+		observed:          newObserveState(),
 		healthGateTimeout: cfg.HealthGateTimeout,
 		drainTimeout:      cfg.DrainTimeout,
 		tokens:            make(map[string]string),
@@ -485,6 +505,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
+		defer r.stopFollows()
 		r.loop(rootCtx)
 	}()
 	return nil
@@ -530,11 +551,16 @@ func (r *Reconciler) runPass(ctx context.Context) error {
 		}
 	}
 
-	// Attach runs last so it sees the generation switch this same pass made,
-	// and runs even when an earlier half failed: it recomputes from current
-	// state, so it needs nothing the others produced.
+	// Attach runs after them so it sees the generation switch this same pass
+	// made, and runs even when an earlier half failed: it recomputes from
+	// current state, so it needs nothing the others produced.
 	_, attachErr := r.attachPassLocked(ctx)
-	return errors.Join(onceErr, rotErr, attachErr)
+
+	// Observe runs last, so the endpoint attach just routed is the one the
+	// events stream and prober resolve (boot order: reconcile -> attach ->
+	// observe, #962).
+	_, observeErr := r.observePassLocked(ctx)
+	return errors.Join(onceErr, rotErr, attachErr, observeErr)
 }
 
 // Kick nudges the loop to run a pass now. Safe to call from any goroutine and
@@ -563,6 +589,7 @@ func (r *Reconciler) Stop() {
 		cancel()
 	}
 	r.wg.Wait()
+	r.stopFollows()
 }
 
 // loop runs passes on the interval or on a kick, until ctx is cancelled.

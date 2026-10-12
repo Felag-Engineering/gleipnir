@@ -89,6 +89,11 @@ type attachInstance struct {
 	// alone — dropping a working route over a transient inspect failure would
 	// churn the instance's tool names for nothing.
 	HoldReason string
+
+	// Manifest is the consented snapshot, set once it has been read. The
+	// observe pass derives its profiles and attested event kinds from it, so
+	// both passes act on the same reading.
+	Manifest manifest.Snapshot
 }
 
 // planAttach decides the one managed-row step per instance. It is a pure
@@ -208,37 +213,17 @@ func (r *Reconciler) attachPassLocked(ctx context.Context) ([]AttachAction, erro
 		return nil, nil
 	}
 
-	instances, err := r.attach.Store.ListPluginInstances(ctx)
+	world, err := r.loadLiveWorld(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("reconciler: attach: listing instances: %w", err)
-	}
-	plugins, err := r.attach.Store.ListPlugins(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("reconciler: attach: listing plugins: %w", err)
+		return nil, err
 	}
 	managedRows, err := r.attach.Store.ListManagedMCPServers(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("reconciler: attach: listing managed endpoints: %w", err)
 	}
 
-	servingContainers, err := r.servingContainers(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	instanceByID := make(map[string]db.PluginInstance, len(instances))
-	for _, inst := range instances {
-		instanceByID[inst.ID] = inst
-	}
-	pluginByID := make(map[string]db.Plugin, len(plugins))
-	for _, p := range plugins {
-		pluginByID[p.ID] = p
-	}
-
-	candidates := make([]attachInstance, 0, len(servingContainers))
-	for _, sc := range servingContainers {
-		candidates = append(candidates, r.resolveAttachInstance(ctx, sc, instanceByID, pluginByID))
-	}
+	instanceByID, pluginByID := world.instanceByID, world.pluginByID
+	candidates := world.candidates
 
 	listeners, errs := r.resolveListeners(ctx, instanceByID, pluginByID)
 	actions := planAttach(candidates, managedRows, listeners)
@@ -259,6 +244,51 @@ func (r *Reconciler) attachPassLocked(ctx context.Context) ([]AttachAction, erro
 		applied = append(applied, action)
 	}
 	return applied, errors.Join(errs...)
+}
+
+// liveWorld is one consistent read of what is live and how it resolves. The
+// attach and observe passes both start from it, so "routable" means the same
+// thing to each: the observe pass must not start a stream against an endpoint
+// the attach pass is holding.
+type liveWorld struct {
+	instanceByID map[string]db.PluginInstance
+	pluginByID   map[string]db.Plugin
+	serving      []servingContainer
+	// candidates is aligned with serving.
+	candidates []attachInstance
+}
+
+func (r *Reconciler) loadLiveWorld(ctx context.Context) (liveWorld, error) {
+	instances, err := r.attach.Store.ListPluginInstances(ctx)
+	if err != nil {
+		return liveWorld{}, fmt.Errorf("reconciler: attach: listing instances: %w", err)
+	}
+	plugins, err := r.attach.Store.ListPlugins(ctx)
+	if err != nil {
+		return liveWorld{}, fmt.Errorf("reconciler: attach: listing plugins: %w", err)
+	}
+
+	serving, err := r.servingContainers(ctx)
+	if err != nil {
+		return liveWorld{}, err
+	}
+
+	world := liveWorld{
+		instanceByID: make(map[string]db.PluginInstance, len(instances)),
+		pluginByID:   make(map[string]db.Plugin, len(plugins)),
+		serving:      serving,
+		candidates:   make([]attachInstance, 0, len(serving)),
+	}
+	for _, inst := range instances {
+		world.instanceByID[inst.ID] = inst
+	}
+	for _, p := range plugins {
+		world.pluginByID[p.ID] = p
+	}
+	for _, sc := range serving {
+		world.candidates = append(world.candidates, r.resolveAttachInstance(ctx, sc, world.instanceByID, world.pluginByID))
+	}
+	return world, nil
 }
 
 func (r *Reconciler) applyAttach(ctx context.Context, action AttachAction) error {
@@ -290,6 +320,18 @@ type servingContainer struct {
 	ContainerID container.ContainerID
 	// HoldReason explains an empty ContainerID.
 	HoldReason string
+
+	// Containers is every live container of the instance, serving or not. A
+	// draining generation's container is still talking until it stops, and a
+	// starting one is exactly the container whose output explains a failed
+	// start, so log capture follows all of them.
+	Containers []liveContainer
+}
+
+// liveContainer is one container of a live instance.
+type liveContainer struct {
+	ID         container.ContainerID
+	Generation int64
 }
 
 // servingContainers answers "which instances are live, and which container
@@ -306,7 +348,11 @@ func (r *Reconciler) servingContainers(ctx context.Context) ([]servingContainer,
 			// state is deliberately left out so a previously attached row is
 			// withdrawn.
 			if d.State == DiscoveryMatched {
-				out = append(out, servingContainer{InstanceID: d.InstanceID, ContainerID: d.ContainerID})
+				out = append(out, servingContainer{
+					InstanceID:  d.InstanceID,
+					ContainerID: d.ContainerID,
+					Containers:  []liveContainer{{ID: d.ContainerID}},
+				})
 			}
 		}
 		return out, nil
@@ -334,6 +380,12 @@ func servingFromGenerations(generations []db.PluginContainerGeneration) []servin
 				InstanceID: gen.PluginInstanceID,
 				HoldReason: "no generation has passed its health gate and been switched to",
 			}
+		}
+		if gen.ContainerID != nil && *gen.ContainerID != "" {
+			sc.Containers = append(sc.Containers, liveContainer{
+				ID:         container.ContainerID(*gen.ContainerID),
+				Generation: gen.Generation,
+			})
 		}
 		if gen.Status == GenActive {
 			switch {
@@ -387,6 +439,7 @@ func (r *Reconciler) resolveAttachInstance(ctx context.Context, sc servingContai
 		out.HoldReason = fmt.Sprintf("reading manifest snapshot: %v", err)
 		return out
 	}
+	out.Manifest = snapshot
 	port := snapshot.Transport.Port
 	if snapshot.Version != 2 || port <= 0 {
 		out.HoldReason = "manifest declares no package.transport.port"
