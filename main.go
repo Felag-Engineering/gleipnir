@@ -540,13 +540,19 @@ func run(cfg config.Config, pluginSubnetPool netip.Prefix) error {
 	}
 	ln = guardedLn
 
-	// The future v2 assembly (#962) must call netguard.Installed on its own
-	// operator listener before it enables plugin self-attach (#958) at all —
-	// self-attach only makes sense once every path that can receive
-	// plugin-network traffic already refuses it. Both builds construct their
-	// guard from the same GLEIPNIR_PLUGIN_SUBNET_POOL value; there is no
-	// second build to wire this into yet (#962 is unimplemented as of this
-	// change).
+	// The plugin substrate may only join plugin networks (self-attach, #958)
+	// once every path that can receive plugin-network traffic already refuses
+	// it, so it is handed the guarded listener here and verifies the guard is
+	// in the chain (netguard.Installed). The default build's substrate has
+	// nothing to verify; the substratev2 one refuses when the guard is
+	// missing. Returning (rather than exiting) lets the deferred store close
+	// and PID-file removal run; the substrate may already have started
+	// loops, so it is shut down explicitly.
+	if err := pluginSys.operatorListenerReady(ln); err != nil {
+		_ = ln.Close()
+		pluginSys.shutdown()
+		return fmt.Errorf("plugin substrate refused the operator API listener: %w", err)
+	}
 
 	// public_url (ADR-035), when set, is the canonical URL to advertise; on any
 	// read error we simply fall back to the localhost form in the banner.

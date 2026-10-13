@@ -11,11 +11,19 @@
 // default build, which is exactly what the substratev2 build tag exists to
 // prevent (main_linkage_test.go asserts this holds).
 //
-// New returns an Assembly with no plugins today: nil-safe deps, and
-// Quiesce/Shutdown are no-ops. That is enough for the tagged binary to boot
-// and serve /api/v1/health without starting any plugin machinery. #962 fills
-// in the real wiring (attach/observe passes, task-backed channels, the
-// reconciler, …) behind these same methods.
+// New composes the substrate in construction order (posture, runtime, subnet
+// allocator, egress proxy, host endpoint, managed registrar, capability
+// health, log capture, resource collector) but does not start the reconciler.
+// Self-attach joins Gleipnir's own container to every plugin network, which is
+// only safe once the operator API listener is wrapped by netguard, and main.go
+// wraps that listener after the assembly is constructed.
+// OperatorListenerReady is the gate: it takes the proof and starts the boot
+// sequence.
+//
+// With no container-runtime socket and GLEIPNIR_CONTAINER_RUNTIME_MODE=auto
+// the assembly comes up with plugins disabled: every dependency is nil-safe
+// and every lifecycle method is a no-op, which is enough for the tagged
+// binary to boot and serve /api/v1/health.
 package assembly
 
 import (
@@ -81,55 +89,6 @@ type AdminDeps struct {
 	OnPublicURLChanged func(ctx context.Context, oldURL, newURL string)
 
 	// CapabilityHealth backs the per-capability health read endpoint (#1001).
-	// nil today.
+	// nil while plugins are disabled.
 	CapabilityHealth *caphealth.Registry
 }
-
-// Assembly is the v2 plugin substrate. Every method is nil-safe and a no-op
-// until #962 fills in the real composition.
-type Assembly struct {
-	// manifestSnap is real (non-nil whenever deps.Store is set), even though
-	// no plugin ever populates it with rows today. *configvalidate.Snapshotter
-	// panics on a nil receiver (it dereferences its DB querier field), and
-	// ManifestSnap is handed to request-time handlers (the audience handler,
-	// the binding-test handler, the subscribed-binding validator) that call
-	// it — an admin exercising any of those endpoints against the tagged
-	// build must get a normal "not found" style error, not a 500 crash.
-	manifestSnap *configvalidate.Snapshotter
-}
-
-// New brings up the v2 plugin substrate. It returns an Assembly with no
-// plugins today — #962 is the issue that starts wiring the attach/observe
-// passes, task-backed channels, and the reconciler behind it.
-func New(ctx context.Context, deps Deps) (*Assembly, error) {
-	var snap *configvalidate.Snapshotter
-	if deps.Store != nil {
-		snap = configvalidate.NewSnapshotter(deps.Store.Queries())
-	}
-	return &Assembly{manifestSnap: snap}, nil
-}
-
-// LauncherDeps returns the plugin-only inputs run() needs to finish building
-// the RunLauncher. Every field is nil today — no plugins are started.
-func (a *Assembly) LauncherDeps() LauncherDeps {
-	return LauncherDeps{}
-}
-
-// BindLauncher completes the two-phase wiring once the RunLauncher exists.
-// A no-op today.
-func (a *Assembly) BindLauncher(ctx context.Context, launcher *runpkg.RunLauncher) {}
-
-// AdminDeps returns everything the admin plugin-instance surface needs.
-// ManifestSnap is real (see the Assembly.manifestSnap doc); every other
-// field is nil today — no plugins are started.
-func (a *Assembly) AdminDeps() AdminDeps {
-	return AdminDeps{ManifestSnap: a.manifestSnap}
-}
-
-// Quiesce stops every avenue by which a plugin trigger event can reach
-// RunLauncher.Launch. A no-op today.
-func (a *Assembly) Quiesce() {}
-
-// Shutdown stops the assembly's background goroutines and subprocesses.
-// A no-op today.
-func (a *Assembly) Shutdown() {}
