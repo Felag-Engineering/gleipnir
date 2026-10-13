@@ -544,11 +544,14 @@ func run(cfg config.Config, pluginSubnetPool netip.Prefix) error {
 	// once every path that can receive plugin-network traffic already refuses
 	// it, so it is handed the guarded listener here and verifies the guard is
 	// in the chain (netguard.Installed). The default build's substrate has
-	// nothing to verify; the substratev2 one refuses, and we exit, when the
-	// guard is missing.
+	// nothing to verify; the substratev2 one refuses when the guard is
+	// missing. Returning (rather than exiting) lets the deferred store close
+	// and PID-file removal run; the substrate may already have started
+	// loops, so it is shut down explicitly.
 	if err := pluginSys.operatorListenerReady(ln); err != nil {
-		slog.Error("plugin substrate refused the operator API listener", "err", err)
-		os.Exit(1)
+		_ = ln.Close()
+		pluginSys.shutdown()
+		return fmt.Errorf("plugin substrate refused the operator API listener: %w", err)
 	}
 
 	// public_url (ADR-035), when set, is the canonical URL to advertise; on any

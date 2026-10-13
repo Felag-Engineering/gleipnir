@@ -12,10 +12,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/infra/config"
 	"github.com/felag-engineering/gleipnir/internal/infra/netguard"
+	"github.com/felag-engineering/gleipnir/internal/mcp"
+	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/plugin/caphealth"
 	"github.com/felag-engineering/gleipnir/internal/plugin/container"
+	"github.com/felag-engineering/gleipnir/internal/plugin/hostendpoint"
 	"github.com/felag-engineering/gleipnir/internal/plugin/reconciler"
+	"github.com/felag-engineering/gleipnir/internal/plugin/resources"
 	"github.com/felag-engineering/gleipnir/internal/testutil"
 	"github.com/felag-engineering/gleipnir/internal/toolregistry"
 )
@@ -140,6 +146,9 @@ func TestNew_Posture(t *testing.T) {
 			if gotHealth := a.AdminDeps().CapabilityHealth != nil; gotHealth != tt.wantEnabled {
 				t.Errorf("CapabilityHealth present = %v, want %v", gotHealth, tt.wantEnabled)
 			}
+			if tt.wantEnabled {
+				assertWired(t, a)
+			}
 			if a.AdminDeps().ManifestSnap == nil {
 				t.Error("ManifestSnap must be non-nil whether or not plugins are enabled")
 			}
@@ -229,12 +238,96 @@ func TestOperatorListenerReady(t *testing.T) {
 				}
 				return
 			}
-			// Core, then rotation, then observe: attach runs between rotation
-			// and observe, and observe is last (reconcile -> attach -> observe).
+			// Only the published passes are order-checked here (core, rotation,
+			// observe); attach publishes nothing and is covered by
+			// TestOperatorListenerReady_RunsAttachPass.
 			if len(seen) < len(passEvents) || !reflect.DeepEqual(seen[:len(passEvents)], passEvents) {
 				t.Errorf("boot pass events = %v, want %v first", seen, passEvents)
 			}
 		})
+	}
+}
+
+// assertWired catches a mis-assignment in compose: each field must hold the
+// component it is named for, not merely something that satisfies its interface.
+func assertWired(t *testing.T, a *Assembly) {
+	t.Helper()
+	if _, ok := a.prober.(*caphealth.Prober); !ok {
+		t.Errorf("prober = %T, want *caphealth.Prober", a.prober)
+	}
+	if _, ok := a.collector.(*resources.Collector); !ok {
+		t.Errorf("collector = %T, want *resources.Collector", a.collector)
+	}
+	host, hostOK := a.hostListeners.(*hostendpoint.ListenerSet)
+	proxy, proxyOK := a.egressProxy.(*hostendpoint.ListenerSet)
+	if !hostOK || !proxyOK {
+		t.Fatalf("listener sets = %T, %T, want *hostendpoint.ListenerSet", a.hostListeners, a.egressProxy)
+	}
+	if host == proxy {
+		t.Error("host endpoint and egress proxy share one ListenerSet")
+	}
+	if _, ok := a.runtime.(container.Runtime); !ok {
+		t.Errorf("runtime = %T, want a container.Runtime", a.runtime)
+	}
+	if a.newReconciler == nil {
+		t.Fatal("newReconciler is nil")
+	}
+	guard := guardedListener(t).(*netguard.Listener).Guard()
+	rec, err := a.newReconciler(guard)
+	if err != nil {
+		t.Fatalf("newReconciler: %v", err)
+	}
+	if _, ok := rec.(*reconciler.Reconciler); !ok {
+		t.Errorf("reconciler factory built %T, want *reconciler.Reconciler", rec)
+	}
+}
+
+// A managed endpoint whose instance has no live generation is withdrawn by the
+// attach pass, so its disappearance proves the pass ran in the boot sequence.
+func TestOperatorListenerReady_RunsAttachPass(t *testing.T) {
+	deps := newDeps(t, &testutil.RecordingPublisher{})
+	a, err := New(context.Background(), deps,
+		withDetectConfig(container.DetectConfig{Mode: "docker", DockerSocketExists: true, DockerSocketPath: "/var/run/docker.sock"}),
+		withRuntime(container.NewFake()), withNoForwarding(), withSlowReconciler())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(a.Shutdown)
+
+	ctx := context.Background()
+	q := deps.Store.Queries()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := q.CreatePlugin(ctx, db.CreatePluginParams{
+		ID: "plug", Name: "plug", PluginVersion: "1.0.0", ManifestSnapshot: "{}",
+		TrustedPubkey: "k", Status: "active", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreatePlugin: %v", err)
+	}
+	if _, err := q.CreatePluginInstance(ctx, db.CreatePluginInstanceParams{
+		ID: "inst", PluginID: "plug", InstanceName: "inst", ConfigJson: "{}",
+		SubscriptionScopeJson: "{}", HandshakeVersions: "{}", HealthState: "healthy",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreatePluginInstance: %v", err)
+	}
+	registrar, err := mcp.NewManagedRegistrar(q, model.NewULID, nil)
+	if err != nil {
+		t.Fatalf("NewManagedRegistrar: %v", err)
+	}
+	if _, err := registrar.Register(ctx, mcp.ManagedEndpoint{InstanceID: "inst", InstanceName: "inst", URL: "http://10.83.0.2:9000"}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	if err := a.OperatorListenerReady(guardedListener(t)); err != nil {
+		t.Fatalf("OperatorListenerReady: %v", err)
+	}
+
+	rows, err := q.ListManagedMCPServers(ctx)
+	if err != nil {
+		t.Fatalf("ListManagedMCPServers: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("managed rows after boot = %d, want 0: the attach pass did not run", len(rows))
 	}
 }
 
@@ -309,12 +402,9 @@ func TestShutdown_Order(t *testing.T) {
 
 	a.Shutdown()
 
-	// The listener sets are closed a second time after the reconciler is
-	// joined: a pass racing the first Close could have re-added a listener.
 	want := []string{
 		"prober.stop", "prober.wait",
 		"collector.stop", "collector.wait",
-		"host_listeners.close", "egress_listeners.close",
 		"reconciler.stop", "reconciler.wait",
 		"host_listeners.close", "egress_listeners.close",
 		"runtime.close",
@@ -349,7 +439,6 @@ func TestShutdown_PartiallyBuiltAssembly(t *testing.T) {
 		want := []string{
 			"prober.stop", "prober.wait",
 			"collector.stop", "collector.wait",
-			"host_listeners.close", "egress_listeners.close",
 			"host_listeners.close", "egress_listeners.close",
 		}
 		if got := log.snapshot(); !reflect.DeepEqual(got, want) {

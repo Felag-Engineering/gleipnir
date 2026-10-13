@@ -116,7 +116,8 @@ func (a *Assembly) AdminDeps() AdminDeps {
 // (core, rotation, attach, observe, in that order), then the tickers. It
 // starts nothing when plugins are disabled.
 func (a *Assembly) OperatorListenerReady(ln net.Listener) error {
-	if !netguard.Installed(ln) {
+	guarded, ok := ln.(*netguard.Listener)
+	if !ok || !netguard.Installed(ln) {
 		return errors.New("operator API listener is not wrapped by netguard; refusing to enable plugin self-attach")
 	}
 	if !a.enabled {
@@ -129,8 +130,7 @@ func (a *Assembly) OperatorListenerReady(ln net.Listener) error {
 		return errors.New("operator listener already reported ready")
 	}
 
-	// Installed has just established the concrete type.
-	rec, err := a.newReconciler(ln.(*netguard.Listener).Guard())
+	rec, err := a.newReconciler(guarded.Guard())
 	if err != nil {
 		return fmt.Errorf("building reconciler: %w", err)
 	}
@@ -161,24 +161,20 @@ func (a *Assembly) Quiesce() {
 // Shutdown stops the assembly's background goroutines. Containers are left
 // running: desired state is durable and the next boot converges on it.
 //
-// Order: capability prober, resource collector, host-endpoint listeners,
-// egress-proxy listeners, reconciler (Stop+Wait), background goroutines, then
-// the runtime connection. Log capture has no loop of its own: its followers
-// belong to the reconciler's observe state and end with the reconciler's Stop.
+// Order: capability prober, resource collector, reconciler (Stop+Wait),
+// listener sets, background goroutines, then the runtime connection. The
+// reconciler goes before the listener sets so a late pass cannot re-add a
+// listener after it was closed. Log capture has no loop of its own: its
+// followers belong to the reconciler's observe state and end with its Stop.
 //
-// The reconciler outlives the listener sets by one step, so a pass racing the
-// first Close could re-add a listener. Both sets are closed again once the
-// reconciler is joined to catch exactly that.
+// It reads component fields without a.mu: it runs after OperatorListenerReady
+// has returned (or never will), and main never calls the two concurrently.
 func (a *Assembly) Shutdown() {
 	a.shutdownOnce.Do(func() {
 		stopLoop(a.prober)
 		stopLoop(a.collector)
+		stopLoop(a.reconciler)
 
-		a.closeListeners()
-		if a.reconciler != nil {
-			a.reconciler.Stop()
-			a.reconciler.Wait()
-		}
 		a.closeListeners()
 
 		a.bg.Wait()
