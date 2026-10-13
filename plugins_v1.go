@@ -16,6 +16,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -84,6 +85,10 @@ func (s *v1PluginSubsystem) launcherDeps() launcherPluginDeps {
 		Canceller:          s.rt.Pool,
 	}
 }
+
+// operatorListenerReady is a no-op: the v1 substrate runs plugins as host
+// subprocesses and never joins a container network.
+func (s *v1PluginSubsystem) operatorListenerReady(net.Listener) error { return nil }
 
 func (s *v1PluginSubsystem) bindLauncher(ctx context.Context, launcher *runpkg.RunLauncher) {
 	s.rt.wireTriggerSupervisor(ctx, launcher, s.store, s.broadcaster, s.systemSettings)

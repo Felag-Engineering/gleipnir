@@ -38,6 +38,7 @@ package main
 
 import (
 	"context"
+	"net"
 
 	"github.com/felag-engineering/gleipnir/internal/admin"
 	"github.com/felag-engineering/gleipnir/internal/execution/agent"
@@ -63,6 +64,12 @@ type pluginSubsystem interface {
 	// audience/binding-test handlers, and the OAuth/credentials/options
 	// handlers need.
 	adminDeps() adminPluginDeps
+	// operatorListenerReady is called once, right after run() wraps the
+	// operator API listener in netguard and before it serves. It is the point
+	// at which a substrate that joins plugin networks may do so: such a
+	// substrate must refuse here if ln is not the guarded listener. A non-nil
+	// error is fatal.
+	operatorListenerReady(ln net.Listener) error
 	// quiesce stops every avenue by which a plugin trigger event can reach
 	// RunLauncher.Launch. Must be called before the run-drain wait in run()
 	// (see quiesceTriggers's doc comment in pluginruntime.go for why the

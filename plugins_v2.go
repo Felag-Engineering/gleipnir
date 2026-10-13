@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"net"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	runpkg "github.com/felag-engineering/gleipnir/internal/execution/run"
@@ -88,6 +89,10 @@ func (s *v2PluginSubsystem) adminDeps() adminPluginDeps {
 		OnPublicURLChanged: d.OnPublicURLChanged,
 		CapabilityHealth:   d.CapabilityHealth,
 	}
+}
+
+func (s *v2PluginSubsystem) operatorListenerReady(ln net.Listener) error {
+	return s.assembly.OperatorListenerReady(ln)
 }
 
 func (s *v2PluginSubsystem) quiesce()  { s.assembly.Quiesce() }
