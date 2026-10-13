@@ -23,7 +23,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/plugin/caphealth"
-	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
+	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
 )
 
 // Event carries a single events/listen-delivered event through the host
@@ -820,12 +820,12 @@ func (s *Supervisor) sleep(ctx context.Context, d time.Duration) bool {
 // parseManifestKinds decodes a plugin's manifest_snapshot (YAML) and returns
 // its attested event kind names, in manifest order.
 func parseManifestKinds(manifestSnapshot string) ([]string, error) {
-	var m sdkmanifest.Manifest
-	if err := sdkmanifest.Unmarshal([]byte(manifestSnapshot), &m); err != nil {
+	snap, err := pluginmanifest.Read([]byte(manifestSnapshot))
+	if err != nil {
 		return nil, fmt.Errorf("parse manifest: %w", err)
 	}
-	kinds := make([]string, len(m.EventKinds))
-	for i, k := range m.EventKinds {
+	kinds := make([]string, len(snap.EventKinds))
+	for i, k := range snap.EventKinds {
 		kinds[i] = k.Kind
 	}
 	return kinds, nil
