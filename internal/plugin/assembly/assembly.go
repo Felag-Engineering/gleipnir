@@ -12,8 +12,12 @@
 // prevent (main_linkage_test.go asserts this holds).
 //
 // New composes the substrate in construction order (posture, runtime, subnet
-// allocator, egress proxy, host endpoint, managed registrar, capability
-// health, log capture, resource collector) but does not start the reconciler.
+// allocator, task poller, egress proxy, host endpoint, managed registrar,
+// capability health, log capture, resource collector, task-backed channels,
+// tool classifier) but does not start the reconciler, or anything else: every
+// loop, including the background scanners, starts in OperatorListenerReady.
+// The events supervisor is the one piece built later, in BindLauncher, because
+// its sink launches runs and the launcher does not exist yet.
 // Self-attach joins Gleipnir's own container to every plugin network, which is
 // only safe once the operator API listener is wrapped by netguard, and main.go
 // wraps that listener after the assembly is constructed.
@@ -35,6 +39,7 @@ import (
 	runpkg "github.com/felag-engineering/gleipnir/internal/execution/run"
 	"github.com/felag-engineering/gleipnir/internal/infra/config"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
+	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/plugin/caphealth"
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
 	"github.com/felag-engineering/gleipnir/internal/settings"
@@ -51,6 +56,14 @@ type Deps struct {
 	EncryptionKey  []byte
 	Arbiter        *toolregistry.Registry
 	SystemSettings *settings.Service
+
+	// MCPRegistry is the one registry the whole process shares. The discover
+	// probe, the events supervisor, the task poller and the channel clients all
+	// resolve through it, so every consumer reasons about the same cached
+	// *mcp.Client for an instance — a second registry would hold a second
+	// client, and after a generation rotation the two would disagree about
+	// which URL is current. Required whenever plugins are enabled.
+	MCPRegistry *mcp.Registry
 }
 
 // LauncherDeps mirrors package main's unexported launcherPluginDeps: the

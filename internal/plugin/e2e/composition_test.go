@@ -1,3 +1,5 @@
+//go:build !substratev2
+
 package e2e_test
 
 import (

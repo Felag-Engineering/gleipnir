@@ -189,11 +189,32 @@ func run(cfg config.Config, pluginSubnetPool netip.Prefix) error {
 	// loop and the launcher below.
 	systemSettings := settings.NewService(store.Queries())
 
+	// The MCP registry is built before the plugin subsystem because the v2
+	// substrate shares this one instance (its discover probe, task poller and
+	// channel clients must resolve the same cached *mcp.Client as the tool
+	// path), and only the key and arbiter above are needed to construct it.
+	// Registry construction follows encryption key parsing so
+	// WithEncryptionKey can be passed at construction time.
+	registry := mcp.NewRegistry(store.Queries(),
+		mcp.WithMCPTimeout(cfg.MCPTimeout),
+		mcp.WithEncryptionKey(encryptionKey),
+		mcp.WithToolNamespaceArbiter(arbiter),
+		mcp.WithElicitationControls(
+			mcp.ElicitationLimits{
+				MaxRequestStateBytes: cfg.ElicitationMaxRequestStateBytes,
+				MaxRequests:          cfg.ElicitationMaxRequests,
+				MaxRequestsBytes:     cfg.ElicitationMaxRequestsBytes,
+			},
+			cfg.ElicitationRatePerSec,
+			cfg.ElicitationBurst,
+		),
+	)
+
 	// Bring up the plugin subsystem. Exactly one implementation of
 	// pluginSubsystem is compiled into any given binary — plugins_v1.go (the
 	// default build) or plugins_v2.go (-tags substratev2) — so run() never
 	// reaches into either substrate's concrete fields directly.
-	pluginSys, err := startPluginSubsystem(ctx, cfg, store, broadcaster, encryptionKey, arbiter, systemSettings)
+	pluginSys, err := startPluginSubsystem(ctx, cfg, store, broadcaster, encryptionKey, arbiter, systemSettings, registry)
 	if err != nil {
 		return fmt.Errorf("start plugin subsystem: %w", err)
 	}
@@ -212,23 +233,6 @@ func run(cfg config.Config, pluginSubnetPool netip.Prefix) error {
 	if err := hostendpoint.AssertHostPlane(arbiter); err != nil {
 		return err
 	}
-
-	// Registry construction is placed after encryption key parsing so
-	// WithEncryptionKey can be passed at construction time.
-	registry := mcp.NewRegistry(store.Queries(),
-		mcp.WithMCPTimeout(cfg.MCPTimeout),
-		mcp.WithEncryptionKey(encryptionKey),
-		mcp.WithToolNamespaceArbiter(arbiter),
-		mcp.WithElicitationControls(
-			mcp.ElicitationLimits{
-				MaxRequestStateBytes: cfg.ElicitationMaxRequestStateBytes,
-				MaxRequests:          cfg.ElicitationMaxRequests,
-				MaxRequestsBytes:     cfg.ElicitationMaxRequestsBytes,
-			},
-			cfg.ElicitationRatePerSec,
-			cfg.ElicitationBurst,
-		),
-	)
 
 	// configureProvider creates an LLM client and registers it in the provider
 	// registry. Called both at bootstrap (from DB) and when an admin saves a key.

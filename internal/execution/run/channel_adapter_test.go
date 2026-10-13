@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -713,6 +714,9 @@ func TestTaskChannelAdapters_DispatchFeedback_WeakChannelAllowed(t *testing.T) {
 	if settlement.Response != `{"text":"us-east-1"}` {
 		t.Fatalf("response = %q, want the raw form content", settlement.Response)
 	}
+	if !settlement.WriteResponseStep {
+		t.Error("WriteResponseStep = false; nothing else writes the feedback_response step on the task-backed route")
+	}
 	settle(t, feedbackSettlement(settlement), true)
 
 	records, err := f.decisions.ForRun(context.Background(), "r-feedback-weak")
@@ -721,6 +725,61 @@ func TestTaskChannelAdapters_DispatchFeedback_WeakChannelAllowed(t *testing.T) {
 	}
 	if len(records) != 1 || records[0].ChannelAssurance != string(mcp.ChannelAssuranceWeak) {
 		t.Fatalf("records = %+v, want one answered record from the weak channel", records)
+	}
+}
+
+// The v1 path's feedback_response step was written by hostsvc when the plugin
+// replied. The task-backed route has no such writer, so driving the real
+// FeedbackHandler through DispatchFeedback must leave exactly one
+// feedback_response step in the run trace, or the model-visible answer would
+// be missing from it.
+func TestTaskChannelAdapters_DispatchFeedback_RunTraceCarriesResponseStep(t *testing.T) {
+	stub := mcp.NewFakeChannelServer()
+	f := newChannelAdapterFixture(t, stub)
+	serverID := f.newRun(t, "r-feedback-trace")
+	if _, err := f.store.DB().Exec(`UPDATE runs SET status = 'running' WHERE id = ?`, "r-feedback-trace"); err != nil {
+		t.Fatalf("marking run running: %v", err)
+	}
+	insertInstance(t, f.store, "inst-1")
+	adapters := newApprovalAdapters(t, f, []hitl.Entry{pluginEntry("inst-1", serverID)})
+
+	sm := agent.NewRunStateMachine("r-feedback-trace", model.RunStatusRunning, f.store.DB(), f.store.Queries())
+	writer := agent.NewAuditWriter(f.store.Queries())
+	t.Cleanup(func() { _ = writer.Close() })
+	handler := agent.NewFeedbackHandler(writer, sm, time.Minute,
+		agent.WithFeedbackChannelDispatch(adapters, "aud-1", "p-r-feedback-trace"))
+
+	resultCh := runAsync(func() (string, error) {
+		return handler.Wait(context.Background(), "r-feedback-trace", agent.AskOperatorToolName, "{}", "What region?", time.Minute)
+	})
+	waitForPersistedTask(t, f, "r-feedback-trace")
+	completeTask(t, f, stub, "task-1", "", "U7", []byte(`{"text":"us-east-1"}`))
+	answer, err := awaitResult(t, resultCh)
+	if err != nil {
+		t.Fatalf("FeedbackHandler.Wait: %v", err)
+	}
+	if answer != "us-east-1" {
+		t.Fatalf("answer = %q, want %q", answer, "us-east-1")
+	}
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("closing audit writer: %v", err)
+	}
+	steps, err := f.store.Queries().ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r-feedback-trace", After: -1, Limit: 1000})
+	if err != nil {
+		t.Fatalf("ListRunSteps: %v", err)
+	}
+	var responses []db.RunStep
+	for _, step := range steps {
+		if step.Type == string(model.StepTypeFeedbackResponse) {
+			responses = append(responses, step)
+		}
+	}
+	if len(responses) != 1 {
+		t.Fatalf("feedback_response steps = %d, want exactly 1 (steps: %+v)", len(responses), steps)
+	}
+	if !strings.Contains(responses[0].Content, `"response":"us-east-1"`) {
+		t.Errorf("feedback_response content = %s, want the operator's answer", responses[0].Content)
 	}
 }
 

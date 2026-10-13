@@ -2,6 +2,7 @@ package assembly
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -9,20 +10,25 @@ import (
 	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
+	runpkg "github.com/felag-engineering/gleipnir/internal/execution/run"
 	"github.com/felag-engineering/gleipnir/internal/infra/netguard"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/plugin/caphealth"
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
 	"github.com/felag-engineering/gleipnir/internal/plugin/container"
+	"github.com/felag-engineering/gleipnir/internal/plugin/dedup"
 	"github.com/felag-engineering/gleipnir/internal/plugin/egress"
 	"github.com/felag-engineering/gleipnir/internal/plugin/events"
 	"github.com/felag-engineering/gleipnir/internal/plugin/generation"
+	"github.com/felag-engineering/gleipnir/internal/plugin/hitl"
 	"github.com/felag-engineering/gleipnir/internal/plugin/hostendpoint"
+	"github.com/felag-engineering/gleipnir/internal/plugin/inapptask"
 	"github.com/felag-engineering/gleipnir/internal/plugin/logcapture"
 	"github.com/felag-engineering/gleipnir/internal/plugin/pluginmetrics"
 	"github.com/felag-engineering/gleipnir/internal/plugin/reconciler"
 	"github.com/felag-engineering/gleipnir/internal/plugin/resources"
+	plugintrigger "github.com/felag-engineering/gleipnir/internal/plugin/trigger"
 )
 
 // Option adjusts how New composes the substrate. The only constructors are
@@ -50,7 +56,11 @@ func New(ctx context.Context, deps Deps, opts ...Option) (*Assembly, error) {
 		opt(&o)
 	}
 
-	a := &Assembly{ctx: ctx}
+	// The assembly owns a cancellable child of the process context so Shutdown
+	// can stop its own loops rather than relying on the caller to have
+	// cancelled first.
+	ctx, cancel := context.WithCancel(ctx)
+	a := &Assembly{ctx: ctx, cancel: cancel}
 	if deps.Store == nil {
 		return a, nil
 	}
@@ -64,6 +74,7 @@ func New(ctx context.Context, deps Deps, opts ...Option) (*Assembly, error) {
 	posture, err := container.DetectPosture(detect)
 	if err != nil {
 		if !isAutoMode(detect.Mode) {
+			cancel()
 			return nil, fmt.Errorf("plugin substrate: %w", err)
 		}
 		slog.Warn("plugins are disabled: no container-runtime socket was found", "err", err)
@@ -73,15 +84,18 @@ func New(ctx context.Context, deps Deps, opts ...Option) (*Assembly, error) {
 
 	pool, err := netip.ParsePrefix(deps.Config.PluginSubnetPool)
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("plugin substrate: parsing GLEIPNIR_PLUGIN_SUBNET_POOL %q: %w", deps.Config.PluginSubnetPool, err)
 	}
 
 	rt, err := openRuntime(posture, o.runtime)
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("plugin substrate: %w", err)
 	}
 	if err := a.compose(ctx, deps, q, o, posture.Posture, pool, rt); err != nil {
 		_ = rt.Close()
+		cancel()
 		return nil, fmt.Errorf("plugin substrate: %w", err)
 	}
 	a.runtime = rt
@@ -114,8 +128,61 @@ func openRuntime(posture container.PostureResult, override container.Runtime) (c
 	return base, nil
 }
 
+// channelParts is the task-backed human-in-the-loop route: the poller that
+// observes plugin-routed tasks, the adapters that put approval and feedback
+// asks on it, and the notifier that fans a fixed message out alongside.
+type channelParts struct {
+	poller   *mcp.PollScheduler
+	adapters *runpkg.TaskChannelAdapters
+	notifier *hitl.Notifier
+}
+
+// composeChannels builds the route from one shared registry, so the assurance
+// gate, the poll and the discover probe resolve a plugin's client the same way
+// (see managedClients).
+func composeChannels(ctx context.Context, deps Deps, q *db.Queries, health *caphealth.Registry) (channelParts, error) {
+	// The scheduler needs the waiter's OnResolved hook at construction and the
+	// waiter needs the scheduler as its canceler; the closure resolves the
+	// forward reference.
+	var waiter *runpkg.TaskWaiter
+	poller := mcp.NewPollScheduler(q, deps.MCPRegistry,
+		mcp.WithTaskPublisher(deps.Publisher),
+		mcp.WithOnResolved(func(ctx context.Context, task db.McpTask, err error) {
+			waiter.OnResolved(ctx, task, err)
+		}))
+	waiter = runpkg.NewTaskWaiter(poller, q)
+
+	clients := managedClients{ctx: ctx, servers: q, clients: deps.MCPRegistry}
+	inApp := inapptask.NewManager(q)
+	router, err := hitl.New(hitl.Config{
+		Clients:   requestClients{clients},
+		InApp:     inApp,
+		Completer: inApp,
+		Tasks:     q,
+	})
+	if err != nil {
+		return channelParts{}, fmt.Errorf("hitl router: %w", err)
+	}
+
+	adapters, err := runpkg.NewTaskChannelAdapters(router, waiter, runpkg.NewDBAudienceEntriesResolver(q), q)
+	if err != nil {
+		return channelParts{}, fmt.Errorf("task channel adapters: %w", err)
+	}
+	// Without a directory every plugin-routed approval is refused outright, so
+	// this is what makes an approval from a channel possible at all.
+	adapters.WithActorResolver(hostendpoint.DBActorDirectory{Querier: q})
+
+	notifier := hitl.NewNotifier(hitl.NotifyConfig{
+		Clients: notifyClients{clients},
+		Health:  health,
+		Audit:   q,
+	})
+	return channelParts{poller: poller, adapters: adapters, notifier: notifier}, nil
+}
+
 // compose builds every component in dependency order and stores them on a.
-// The reconciler itself is deferred to a.newReconciler.
+// The reconciler itself is deferred to a.newReconciler, and the events
+// supervisor to a.bindEvents.
 func (a *Assembly) compose(
 	ctx context.Context,
 	deps Deps,
@@ -125,6 +192,10 @@ func (a *Assembly) compose(
 	pool netip.Prefix,
 	rt container.Runtime,
 ) error {
+	if deps.MCPRegistry == nil {
+		return errors.New("an MCP registry is required (Deps.MCPRegistry)")
+	}
+
 	subnets, err := reconciler.NewSubnetAllocator(q, pool, nil)
 	if err != nil {
 		return fmt.Errorf("subnet allocator: %w", err)
@@ -148,6 +219,14 @@ func (a *Assembly) compose(
 		return fmt.Errorf("managed registrar: %w", err)
 	}
 
+	// Task-backed channels come before the host endpoint because AuthorizeActor
+	// hints the poller to resolve a clicked request now rather than at the next
+	// poll tick.
+	channels, err := composeChannels(ctx, deps, q, health)
+	if err != nil {
+		return err
+	}
+
 	// Host endpoint: one server, one listener per instance network.
 	generations := generation.New()
 	hostServer := hostendpoint.NewServer()
@@ -161,6 +240,7 @@ func (a *Assembly) compose(
 	hostServer.Register(hostendpoint.AuthorizeActorTools(hostendpoint.AuthorizeActorDeps{
 		Querier:   q,
 		Directory: hostendpoint.DBActorDirectory{Querier: q},
+		PollHint:  channels.poller,
 	})...)
 	hostServer.Register(hostendpoint.UserLinkTools(hostendpoint.UserLinkDeps{Querier: q})...)
 	hostListeners := hostendpoint.NewListenerSet(
@@ -168,19 +248,14 @@ func (a *Assembly) compose(
 
 	// Egress proxy: the only way out of a plugin's internal network.
 	gateways := egress.NewGatewayRegistry()
-	proxy, err := egress.New(egress.Config{Resolver: gateways})
+	proxy, err := egress.New(egress.Config{Resolver: gateways, Auditor: egressAuditor{store: q}})
 	if err != nil {
 		return fmt.Errorf("egress proxy: %w", err)
 	}
 	egressListeners := hostendpoint.NewListenerSet(proxy)
 
 	// Observers.
-	mcpRegistry := mcp.NewRegistry(q,
-		mcp.WithMCPTimeout(deps.Config.MCPTimeout),
-		mcp.WithEncryptionKey(deps.EncryptionKey),
-		mcp.WithToolNamespaceArbiter(deps.Arbiter),
-	)
-	discover, err := events.NewDiscoverProbe(q, mcpRegistry)
+	discover, err := events.NewDiscoverProbe(q, deps.MCPRegistry)
 	if err != nil {
 		return fmt.Errorf("discover probe: %w", err)
 	}
@@ -210,8 +285,45 @@ func (a *Assembly) compose(
 	a.collector = collector
 	a.hostListeners = hostListeners
 	a.egressProxy = egressListeners
-	a.newReconciler = func(guard netguard.Guard) (loop, error) {
-		rec, err := reconciler.New(reconciler.Config{
+	a.poller = channels.poller
+	a.notifier = channels.notifier
+	a.backgrounds = newBackgroundLoops(deps, q)
+	a.launcher = LauncherDeps{
+		ApprovalDispatcher: channels.adapters,
+		FeedbackDispatcher: channels.adapters,
+		ToolClassifier:     &managedToolClassifier{q: q},
+	}
+	a.bindEvents = func(launcher plugintrigger.RunLauncher) eventStreams {
+		// A nil *settings.Service must not become a non-nil interface: the
+		// dispatcher treats a nil resolver as "policies carry their own model".
+		var models plugintrigger.ModelResolver
+		if deps.SystemSettings != nil {
+			models = deps.SystemSettings
+		}
+		dispatcher := plugintrigger.NewDispatcher(plugintrigger.DispatcherConfig{
+			Launcher:      launcher,
+			Querier:       q,
+			Dedup:         dedup.NewDBStore(q),
+			Publisher:     deps.Publisher,
+			ModelResolver: models,
+			Logger:        slog.Default(),
+		})
+		// HealthSetter is left unset on purpose: instance health has one
+		// writer, the capability prober, and a second one here would fight it.
+		return events.NewSupervisor(events.Config{
+			Querier:    q,
+			Servers:    q,
+			Clients:    deps.MCPRegistry,
+			Capability: health,
+			Cursor:     events.NewDBStore(q),
+			Sink:       plugintrigger.NewListenSinkAdapter(dispatcher),
+			Publisher:  deps.Publisher,
+			RootCtx:    a.ctx,
+			Logger:     slog.Default(),
+		})
+	}
+	a.newReconciler = func(guard netguard.Guard) (*reconciler.Reconciler, error) {
+		return reconciler.New(reconciler.Config{
 			Runtime:                 rt,
 			Store:                   q,
 			Posture:                 posture,
@@ -237,10 +349,6 @@ func (a *Assembly) compose(
 			EgressEnv:       reconciler.EgressEnv(subnets, reconciler.DefaultEgressProxyPort),
 			HostEndpointEnv: reconciler.HostEndpointEnv(subnets, reconciler.DefaultHostEndpointPort),
 		})
-		if err != nil {
-			return nil, err
-		}
-		return rec, nil
 	}
 	return nil
 }
