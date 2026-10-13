@@ -25,7 +25,8 @@
 // stream supervisor. This package's Supervisor is the MCP-realignment
 // replacement for the SAME role, built the same way milestone #17 built
 // hostendpoint/ beside hostsvc/: a parallel implementation that compiles,
-// tests, and is fully wired for injection, but is NOT started by main.go.
+// tests, and is fully wired for injection, but is NOT started by the
+// default build.
 // Do not edit trigger/supervisor.go, trigger/dispatcher.go, or dedup/ to
 // accommodate this package — the one intentional touch point on the v1.1
 // side is trigger/listen_sink.go, a new adapter (mirroring trigger/sink.go's
@@ -44,13 +45,14 @@
 // concepts this package does not need to know about — the boundary keeps
 // the direction of dependency correct as the realignment continues.
 //
-// # Wired but not started
+// # Started only in the substratev2 build
 //
-// Nothing in main.go constructs or starts Supervisor yet, matching the
-// posture of the reconciler (internal/plugin/reconciler) and the host
-// endpoint (internal/plugin/hostendpoint): built, tested, and ready for
-// injection, but the live system is still the v1.1 substrate until the
-// ADR-053 cutover. Starting it is future work, not this issue's.
+// The default build never constructs Supervisor; the live system is still the
+// v1.1 substrate until the cutover. In the substratev2 build,
+// internal/plugin/assembly constructs it once a RunLauncher exists and hands
+// it to the reconciler's observe pass, which starts and stops one stream per
+// live instance; StopAll at quiesce latches it so a later observe pass cannot
+// reopen a stream while runs drain.
 //
 // # Rate-limit columns are the other path's problem, not this one's
 //
