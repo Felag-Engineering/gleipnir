@@ -356,9 +356,14 @@ func eventsManifest(t *testing.T) string {
 
 func subscribedPolicyYAML(t *testing.T, source string) string {
 	t.Helper()
+	return subscribedPolicyYAMLFor(t, source, "message")
+}
+
+func subscribedPolicyYAMLFor(t *testing.T, source, eventKind string) string {
+	t.Helper()
 	b, err := yaml.Marshal(map[string]any{
 		"name":    "on-message",
-		"trigger": map[string]any{"type": "subscribed", "source": source, "event_kind": "message"},
+		"trigger": map[string]any{"type": "subscribed", "source": source, "event_kind": eventKind},
 		"agent": map[string]any{
 			"task":  "do stuff",
 			"model": map[string]any{"provider": "anthropic", "name": "claude-3-5-haiku-latest"},

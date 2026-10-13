@@ -22,6 +22,11 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/toolregistry"
 )
 
+// assemblyOptions are passed to assembly.New. Empty in production; a test that
+// boots the whole binary sets them so the outcome does not depend on the
+// container socket of the machine it runs on.
+var assemblyOptions []assembly.Option
+
 // startPluginSubsystem brings up the v2 plugin substrate and wraps it to
 // satisfy pluginSubsystem.
 func startPluginSubsystem(
@@ -42,7 +47,7 @@ func startPluginSubsystem(
 		Arbiter:        arbiter,
 		SystemSettings: systemSettings,
 		MCPRegistry:    registry,
-	})
+	}, assemblyOptions...)
 	if err != nil {
 		return nil, err
 	}
@@ -90,6 +95,7 @@ func (s *v2PluginSubsystem) adminDeps() adminPluginDeps {
 		CredentialSeeder:   d.CredentialSeeder,
 		ManifestSnap:       d.ManifestSnap,
 		OnPublicURLChanged: d.OnPublicURLChanged,
+		Provisioner:        d.Provisioner,
 		CapabilityHealth:   d.CapabilityHealth,
 	}
 }

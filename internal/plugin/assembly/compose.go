@@ -24,6 +24,8 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/plugin/hitl"
 	"github.com/felag-engineering/gleipnir/internal/plugin/hostendpoint"
 	"github.com/felag-engineering/gleipnir/internal/plugin/inapptask"
+	"github.com/felag-engineering/gleipnir/internal/plugin/lifecycle"
+	"github.com/felag-engineering/gleipnir/internal/plugin/lifecycle/adminv2"
 	"github.com/felag-engineering/gleipnir/internal/plugin/logcapture"
 	"github.com/felag-engineering/gleipnir/internal/plugin/pluginmetrics"
 	"github.com/felag-engineering/gleipnir/internal/plugin/reconciler"
@@ -31,10 +33,24 @@ import (
 	plugintrigger "github.com/felag-engineering/gleipnir/internal/plugin/trigger"
 )
 
-// Option adjusts how New composes the substrate. The only constructors are
-// unexported: they exist so in-package tests can run the real composition
-// against container.Fake rather than a socket.
+// Option adjusts how New composes the substrate. The options exist so tests
+// can run the real composition against container.Fake, or against a pinned
+// posture, rather than whatever socket the host happens to have.
 type Option func(*options)
+
+// WithDetectConfig replaces the posture inputs New would read from the
+// environment and the filesystem (GLEIPNIR_CONTAINER_RUNTIME_MODE, the
+// standard socket locations). A test that boots the whole binary uses it so
+// the outcome does not depend on the container socket of the machine it runs on.
+func WithDetectConfig(cfg container.DetectConfig) Option {
+	return func(o *options) { o.detect = &cfg }
+}
+
+// WithRuntime supplies the container runtime instead of dialing the socket the
+// posture resolved to. Manual posture still wraps it read-only.
+func WithRuntime(rt container.Runtime) Option {
+	return func(o *options) { o.runtime = rt }
+}
 
 type options struct {
 	detect            *container.DetectConfig
@@ -218,6 +234,12 @@ func (a *Assembly) compose(
 	if err != nil {
 		return fmt.Errorf("managed registrar: %w", err)
 	}
+	endpoints := &managedEndpoints{
+		registrar: registrar,
+		servers:   q,
+		tools:     deps.MCPRegistry,
+		arbiter:   deps.Arbiter,
+	}
 
 	// Task-backed channels come before the host endpoint because AuthorizeActor
 	// hints the poller to resolve a clicked request now rather than at the next
@@ -280,6 +302,18 @@ func (a *Assembly) compose(
 		return fmt.Errorf("resource collector: %w", err)
 	}
 
+	desired := lifecycle.NewDesiredState(nil)
+	a.kicker = &lateKicker{}
+	a.admin = AdminDeps{
+		ProcMgr:       adminv2.NewProcessManager(q, desired, a.kicker, endpoints),
+		Trigger:       adminv2.NewTriggerRestarter(lateEvents{a}),
+		Inflight:      adminv2.NewInflightCounter(q, q, deps.MCPRegistry),
+		Evictor:       adminv2.ToolConnEvictor{},
+		RSSAggregator: adminv2.NewRSSAggregator(collector),
+		Unregistrar:   namespaceReleaser{arbiter: deps.Arbiter},
+		Provisioner:   desired,
+	}
+
 	a.health = health
 	a.prober = prober
 	a.collector = collector
@@ -335,7 +369,7 @@ func (a *Assembly) compose(
 			OperatorAPIGuard:        guard,
 			Rotations:               q,
 			GC:                      q,
-			Attach:                  &reconciler.AttachDeps{Store: q, Endpoints: registrar},
+			Attach:                  &reconciler.AttachDeps{Store: q, Endpoints: endpoints},
 			Observe: &reconciler.ObserveDeps{
 				Events: streams,
 				Probe:  kickingProbeTargets{targets: probeTargets, prober: prober},

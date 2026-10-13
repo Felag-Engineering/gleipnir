@@ -26,12 +26,12 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/toolregistry"
 )
 
-func withDetectConfig(cfg container.DetectConfig) Option {
-	return func(o *options) { o.detect = &cfg }
-}
+func withDetectConfig(cfg container.DetectConfig) Option { return WithDetectConfig(cfg) }
 
-func withRuntime(rt container.Runtime) Option {
-	return func(o *options) { o.runtime = rt }
+func withRuntime(rt container.Runtime) Option { return WithRuntime(rt) }
+
+func withSelfContainerID(id container.ContainerID) Option {
+	return func(o *options) { o.selfContainerID = &id }
 }
 
 // The real check reads this host's /proc/sys, which a test must not depend on.
@@ -394,9 +394,10 @@ func (f fakeRuntimeCloser) Close() error { f.log.record("runtime.close"); return
 
 type fakeEvents struct{ log *stepLog }
 
-func (f fakeEvents) Start(_ context.Context, id string) { f.log.record("events.start:" + id) }
-func (f fakeEvents) Stop(id string)                     { f.log.record("events.stop:" + id) }
-func (f fakeEvents) StopAll()                           { f.log.record("events.stop_all") }
+func (f fakeEvents) Start(_ context.Context, id string)   { f.log.record("events.start:" + id) }
+func (f fakeEvents) Restart(_ context.Context, id string) { f.log.record("events.restart:" + id) }
+func (f fakeEvents) Stop(id string)                       { f.log.record("events.stop:" + id) }
+func (f fakeEvents) StopAll()                             { f.log.record("events.stop_all") }
 
 func TestShutdown_Order(t *testing.T) {
 	log := &stepLog{}

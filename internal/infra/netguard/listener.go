@@ -61,12 +61,11 @@
 // accepting an overlapping pool — would silently defeat the whole guard by
 // making a legitimate host address look like a plugin-network address. Once
 // the container substrate self-attaches Gleipnir to every per-instance
-// network (#958, wired by the future #962 assembly), Gleipnir's own
-// interfaces will legitimately sit inside the pool by design, and
-// CheckPoolOverlap will need a scoped exception for those specific
-// interfaces — see the TODO on CheckPoolOverlap. That exception does not
-// exist yet, so #962 must add it deliberately rather than disabling the
-// check wholesale.
+// network (#958, done by the v2 assembly in the substratev2 build),
+// Gleipnir's own interfaces legitimately sit inside the pool by design, and
+// CheckPoolOverlap needs a scoped exception for those specific interfaces —
+// see the TODO on CheckPoolOverlap. That exception does not exist yet; it
+// must be added deliberately rather than by disabling the check wholesale.
 //
 // # Composition requirements
 //

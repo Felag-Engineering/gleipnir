@@ -32,14 +32,15 @@ import (
 // version of this check has interface names to filter on — see the TODO
 // below.
 //
-// TODO(#962): once the container substrate self-attaches Gleipnir to every
-// per-instance network (the #958 design), Gleipnir's own interfaces will
-// legitimately sit inside this pool by construction — that is the whole
-// point of self-attach. This check will need to exclude interfaces on
-// Gleipnir-labelled instance networks specifically at that point, rather
-// than refusing any overlap outright as it does today. See the package doc's
-// "No escape hatch" section: that exception has to be scoped and deliberate,
-// not a blanket bypass.
+// TODO: the v2 assembly (substratev2 build) self-attaches Gleipnir to every
+// per-instance network (the #958 design), so Gleipnir's own interfaces
+// legitimately sit inside this pool by construction — that is the whole point
+// of self-attach. A process that starts while its container still holds those
+// attachments (a runtime may keep them across a container restart) is
+// refused here. This check needs to exclude interfaces on Gleipnir-labelled
+// instance networks specifically, rather than refusing any overlap outright
+// as it does today. See the package doc's "No escape hatch" section: that
+// exception has to be scoped and deliberate, not a blanket bypass.
 func CheckPoolOverlap(pool netip.Prefix) error {
 	ifaces, err := net.Interfaces()
 	if err != nil {

@@ -176,8 +176,8 @@ type Config struct {
 	// HostEndpointEnv returns the environment entries pointing a generation's
 	// container at the host endpoint (#875) — the URL a plugin's SDK client
 	// needs for server→host callbacks. Optional: absent means no host
-	// endpoint is configured, which is only correct before the reconciler is
-	// wired into main.go. The production implementation (#957, in the v2
+	// endpoint is configured, which is only correct for tests and manual posture,
+	// where Gleipnir serves none. The production implementation (#957, in the v2
 	// assembly that composes this package with internal/plugin/hostendpoint)
 	// builds the URL from Gleipnir's reserved address on the instance network
 	// (egress.GleipnirAddrOf), never the gateway: under rootful Docker the

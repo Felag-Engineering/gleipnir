@@ -34,11 +34,13 @@ type listenerSet interface {
 }
 
 // eventStreams is the events supervisor's surface. Start and Stop are driven by
-// the reconciler's observe pass as instances come, go and rotate; StopAll is
-// what Quiesce joins before the run drain, after which Start is a no-op.
+// the reconciler's observe pass as instances come, go and rotate; Restart is the
+// admin surface reopening a stream under a changed scope; StopAll is what
+// Quiesce joins before the run drain, after which Start is a no-op.
 // *events.Supervisor satisfies it.
 type eventStreams interface {
 	Start(ctx context.Context, instanceID string)
+	Restart(ctx context.Context, instanceID string)
 	Stop(instanceID string)
 	StopAll()
 }
@@ -89,6 +91,15 @@ type Assembly struct {
 	// plugin's tools are MCP tools, so they go through the MCP registry and
 	// the per-server gate, not a plugin dispatch pool.
 	launcher LauncherDeps
+
+	// admin is the container-substrate half of what AdminDeps hands to the
+	// admin surface; AdminDeps adds the two fields that exist whether or not
+	// plugins do.
+	admin AdminDeps
+
+	// kicker lets the admin surface wake the reconciler, which does not exist
+	// until OperatorListenerReady.
+	kicker *lateKicker
 
 	// notifier fans the fixed "input requested" message out to notify-enabled
 	// audience entries. It has no live call site yet: the HITL routing that
@@ -155,11 +166,18 @@ func (a *Assembly) bind(launcher plugintrigger.RunLauncher) {
 }
 
 // AdminDeps returns everything the admin plugin-instance surface needs.
-// ManifestSnap is real (see the Assembly.manifestSnap doc) and CapabilityHealth
-// is the live registry when plugins are enabled; every other field is nil in
-// this slice.
+// ManifestSnap is real (see the Assembly.manifestSnap doc) and the rest is the
+// container-substrate implementation of each admin interface when plugins are
+// enabled. While plugins are disabled every other field is nil.
+//
+// Installer and the OAuth, credentials and options handlers are not provided
+// yet: nothing in the v2 build installs a bundle (no watcher, no upload
+// route), so there is nothing for them to act on.
 func (a *Assembly) AdminDeps() AdminDeps {
-	return AdminDeps{ManifestSnap: a.manifestSnap, CapabilityHealth: a.health}
+	d := a.admin
+	d.ManifestSnap = a.manifestSnap
+	d.CapabilityHealth = a.health
+	return d
 }
 
 // OperatorListenerReady is the security gate for self-attach. ln must be the
@@ -202,6 +220,7 @@ func (a *Assembly) OperatorListenerReady(ln net.Listener) error {
 		return fmt.Errorf("building reconciler: %w", err)
 	}
 	a.reconciler = rec
+	a.kicker.set(rec)
 	a.ready = true
 
 	if err := rec.Start(a.ctx); err != nil {

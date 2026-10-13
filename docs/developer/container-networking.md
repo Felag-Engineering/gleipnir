@@ -1,8 +1,10 @@
 # Container networking for managed plugins
 
 **Status:** part of the MCP realignment (ADR-056, `mcp-realignment-spec.md` §7). The
-reconciler that creates these networks is not yet wired into `main.go` — see the
-`internal/plugin/reconciler` entry in `internal/plugin/CLAUDE.md`.
+reconciler that creates these networks is started by the v2 assembly, which is
+linked only in a `-tags substratev2` build; the default build never runs it. See
+the `internal/plugin/assembly` and `internal/plugin/reconciler` entries in
+`internal/plugin/CLAUDE.md`.
 
 ## One internal network per instance
 
