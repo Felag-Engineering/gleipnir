@@ -16,6 +16,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	runpkg "github.com/felag-engineering/gleipnir/internal/execution/run"
+	"github.com/felag-engineering/gleipnir/internal/infra/netguard"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/plugin/caphealth"
@@ -168,15 +169,10 @@ func TestNewBackgroundLoops(t *testing.T) {
 	}
 }
 
-type startErrEvents struct {
-	fakeEvents
-	err error
-}
-
-func (s startErrEvents) StartAll(context.Context) error { return s.err }
-
 // The consumers of the converged world start only after the boot pass: the
-// task poller, every composed background loop, and the events streams.
+// task poller and every composed background loop. Event streams are not
+// started by boot at all; the observe pass the reconciler runs starts and stops
+// them, so the reconciler must be handed the bound supervisor.
 func TestOperatorListenerReady_StartsConsumers(t *testing.T) {
 	newReady := func(t *testing.T) *Assembly {
 		a, err := New(context.Background(), newDeps(t, &testutil.RecordingPublisher{}),
@@ -187,12 +183,20 @@ func TestOperatorListenerReady_StartsConsumers(t *testing.T) {
 		t.Cleanup(a.Shutdown)
 		return a
 	}
+	// recordStreams wraps the reconciler factory to capture what observe drives.
+	recordStreams := func(a *Assembly) *reconciler.EventStreams {
+		var got reconciler.EventStreams
+		build := a.newReconciler
+		a.newReconciler = func(g netguard.Guard, streams reconciler.EventStreams) (*reconciler.Reconciler, error) {
+			got = streams
+			return build(g, streams)
+		}
+		return &got
+	}
 
-	t.Run("background loops and events streams start", func(t *testing.T) {
+	t.Run("background loops start", func(t *testing.T) {
 		a := newReady(t)
-		log := &stepLog{}
 		looped := make(chan struct{})
-		a.events = fakeEvents{log}
 		a.backgrounds = []backgroundLoop{{name: "probe", run: func(ctx context.Context) {
 			close(looped)
 			<-ctx.Done()
@@ -203,25 +207,37 @@ func TestOperatorListenerReady_StartsConsumers(t *testing.T) {
 		}
 
 		signalWithin(t, looped, "the composed background loop to start")
-		if got := log.snapshot(); !reflect.DeepEqual(got, []string{"events.start_all"}) {
-			t.Errorf("events steps = %v, want one StartAll", got)
-		}
 	})
 
-	t.Run("a failing events start is fatal to boot", func(t *testing.T) {
+	t.Run("the reconciler's observe pass drives the bound supervisor", func(t *testing.T) {
 		a := newReady(t)
-		a.events = startErrEvents{fakeEvents: fakeEvents{&stepLog{}}, err: errors.New("cannot list plugins")}
-
-		if err := a.OperatorListenerReady(guardedListener(t)); err == nil {
-			t.Fatal("OperatorListenerReady succeeded although the events streams could not start")
-		}
-	})
-
-	t.Run("no bound launcher means no streams and no error", func(t *testing.T) {
-		a := newReady(t)
+		log := &stepLog{}
+		a.events = fakeEvents{log}
+		got := recordStreams(a)
 
 		if err := a.OperatorListenerReady(guardedListener(t)); err != nil {
 			t.Fatalf("OperatorListenerReady: %v", err)
+		}
+
+		if *got != reconciler.EventStreams(a.events) {
+			t.Errorf("observe was handed %v, want the bound events supervisor", *got)
+		}
+		// Boot itself starts no streams; only the observe pass does.
+		if steps := log.snapshot(); len(steps) != 0 {
+			t.Errorf("boot drove the supervisor directly: %v", steps)
+		}
+	})
+
+	t.Run("without a bound launcher observe gets a nil interface", func(t *testing.T) {
+		a := newReady(t)
+		got := recordStreams(a)
+
+		if err := a.OperatorListenerReady(guardedListener(t)); err != nil {
+			t.Fatalf("OperatorListenerReady: %v", err)
+		}
+
+		if *got != nil {
+			t.Errorf("observe was handed %v, want nil so event streams are skipped", *got)
 		}
 	})
 }
@@ -428,9 +444,7 @@ func TestQuiesce_JoinsEventStreamsBeforeRunDrain(t *testing.T) {
 				a.Shutdown()
 			})
 
-			if err := a.events.StartAll(a.ctx); err != nil {
-				t.Fatalf("StartAll: %v", err)
-			}
+			a.events.Start(a.ctx, "inst-1")
 			signalWithin(t, launcher.entered, "the event to reach the launcher")
 
 			quiesceDone := make(chan struct{})

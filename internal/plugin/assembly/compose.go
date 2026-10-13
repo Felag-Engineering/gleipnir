@@ -322,7 +322,7 @@ func (a *Assembly) compose(
 			Logger:     slog.Default(),
 		})
 	}
-	a.newReconciler = func(guard netguard.Guard) (*reconciler.Reconciler, error) {
+	a.newReconciler = func(guard netguard.Guard, streams reconciler.EventStreams) (*reconciler.Reconciler, error) {
 		return reconciler.New(reconciler.Config{
 			Runtime:                 rt,
 			Store:                   q,
@@ -337,6 +337,7 @@ func (a *Assembly) compose(
 			GC:                      q,
 			Attach:                  &reconciler.AttachDeps{Store: q, Endpoints: registrar},
 			Observe: &reconciler.ObserveDeps{
+				Events: streams,
 				Probe:  kickingProbeTargets{targets: probeTargets, prober: prober},
 				Health: health,
 				Logs:   capture,

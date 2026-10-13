@@ -280,7 +280,7 @@ func assertWired(t *testing.T, a *Assembly) {
 		t.Fatal("newReconciler is nil")
 	}
 	guard := guardedListener(t).(*netguard.Listener).Guard()
-	rec, err := a.newReconciler(guard)
+	rec, err := a.newReconciler(guard, nil)
 	if err != nil {
 		t.Fatalf("newReconciler: %v", err)
 	}
@@ -394,8 +394,9 @@ func (f fakeRuntimeCloser) Close() error { f.log.record("runtime.close"); return
 
 type fakeEvents struct{ log *stepLog }
 
-func (f fakeEvents) StartAll(context.Context) error { f.log.record("events.start_all"); return nil }
-func (f fakeEvents) StopAll()                       { f.log.record("events.stop_all") }
+func (f fakeEvents) Start(_ context.Context, id string) { f.log.record("events.start:" + id) }
+func (f fakeEvents) Stop(id string)                     { f.log.record("events.stop:" + id) }
+func (f fakeEvents) StopAll()                           { f.log.record("events.stop_all") }
 
 func TestShutdown_Order(t *testing.T) {
 	log := &stepLog{}

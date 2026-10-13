@@ -33,11 +33,13 @@ type listenerSet interface {
 	Close(ctx context.Context) error
 }
 
-// eventStreams is the events supervisor's surface: StartAll opens a stream per
-// instance after the boot pass, and StopAll is what Quiesce joins before the
-// run drain. *events.Supervisor satisfies it.
+// eventStreams is the events supervisor's surface. Start and Stop are driven by
+// the reconciler's observe pass as instances come, go and rotate; StopAll is
+// what Quiesce joins before the run drain, after which Start is a no-op.
+// *events.Supervisor satisfies it.
 type eventStreams interface {
-	StartAll(ctx context.Context) error
+	Start(ctx context.Context, instanceID string)
+	Stop(instanceID string)
 	StopAll()
 }
 
@@ -96,7 +98,7 @@ type Assembly struct {
 	// newReconciler constructs the reconciler. It takes the netguard proof as
 	// an argument so the guard cannot be supplied any other way than through
 	// OperatorListenerReady.
-	newReconciler func(guard netguard.Guard) (*reconciler.Reconciler, error)
+	newReconciler func(guard netguard.Guard, streams reconciler.EventStreams) (*reconciler.Reconciler, error)
 
 	// bindEvents builds the events supervisor over the launcher's trigger
 	// pipeline. It runs in BindLauncher because the pipeline's sink launches
@@ -168,9 +170,11 @@ func (a *Assembly) AdminDeps() AdminDeps {
 //
 // With the proof it runs the boot sequence: one synchronous reconcile pass
 // (core, rotation, attach, observe, in that order), then the tickers, then the
-// consumers of what the pass converged — the task poller, the background
-// scanners and the events streams — so nothing reads an endpoint the boot pass
-// has not yet registered or withdrawn. It starts nothing when plugins are
+// consumers of what the pass converged — the task poller and the background
+// scanners — so nothing reads an endpoint the boot pass has not yet registered
+// or withdrawn. Events streams are not started here: the observe pass inside
+// the boot pass (and every later one) starts a stream for each live instance
+// and stops it when the instance goes. It starts nothing when plugins are
 // disabled.
 func (a *Assembly) OperatorListenerReady(ln net.Listener) error {
 	guarded, ok := ln.(*netguard.Listener)
@@ -187,7 +191,13 @@ func (a *Assembly) OperatorListenerReady(ln net.Listener) error {
 		return errors.New("operator listener already reported ready")
 	}
 
-	rec, err := a.newReconciler(guarded.Guard())
+	// A nil a.events must reach the reconciler as a nil interface, not a typed
+	// nil, so the observe pass skips event streams entirely.
+	var streams reconciler.EventStreams
+	if a.events != nil {
+		streams = a.events
+	}
+	rec, err := a.newReconciler(guarded.Guard(), streams)
 	if err != nil {
 		return fmt.Errorf("building reconciler: %w", err)
 	}
@@ -207,14 +217,6 @@ func (a *Assembly) OperatorListenerReady(ln net.Listener) error {
 	a.poller.Start(a.ctx, taskPollTick)
 	a.scheduleGC(rec, containerGCInterval)
 	a.startBackground()
-
-	// events is nil if BindLauncher was never called (a test, or a caller that
-	// runs no triggers); there is then nothing to stream into.
-	if a.events != nil {
-		if err := a.events.StartAll(a.ctx); err != nil {
-			return fmt.Errorf("starting events streams: %w", err)
-		}
-	}
 	return nil
 }
 
