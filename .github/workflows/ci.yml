@@ -509,7 +509,7 @@ jobs:
           GOWORK: off
 
       - name: Test
-        run: go test -tags substratev2 .
+        run: go test -race -tags substratev2 . ./internal/plugin/assembly/...
         env:
           GOWORK: off
 
