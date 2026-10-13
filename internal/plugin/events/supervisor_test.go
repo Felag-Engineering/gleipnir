@@ -647,3 +647,39 @@ func TestSupervisor_StopAll_JoinsGoroutines(t *testing.T) {
 		t.Fatal("StopAll did not complete in time")
 	}
 }
+
+// TestSupervisor_StartAfterStopAll_OpensNothing pins the quiesce latch: the
+// reconciler's observe pass can still call Start after the host has stopped
+// and joined every stream, and that must not reopen one.
+func TestSupervisor_StartAfterStopAll_OpensNothing(t *testing.T) {
+	t.Parallel()
+
+	q := newFakeSupervisorQuerier()
+	for _, id := range []string{"inst-a", "inst-b"} {
+		q.setInstance(db.PluginInstance{ID: id, PluginID: "plug-1", SubscriptionScopeJson: `{}`})
+	}
+	q.setPlugin(db.Plugin{ID: "plug-1", ManifestSnapshot: buildEventManifestYAML(t, "message")})
+
+	opener := newFakeOpener(func(int) *fakeStream { return &fakeStream{} })
+	sup := newTestSupervisor(t, q, &fakeResolver{opener: opener}, nil, newFakeCursorStore(), newFakeSink(), nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sup.Start(ctx, "inst-a")
+	waitOnChan(t, opener.opened, testTimeout, "first stream to open")
+	sup.StopAll()
+	opened := opener.callCount()
+
+	sup.Start(ctx, "inst-b")
+	sup.Restart(ctx, "inst-a")
+
+	// Bounded negative assertion, as in the capability-gate test above.
+	select {
+	case <-opener.opened:
+		t.Fatal("a stream opened after StopAll")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if got := opener.callCount(); got != opened {
+		t.Errorf("connect attempts after StopAll = %d, want %d", got, opened)
+	}
+}

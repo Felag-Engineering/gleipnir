@@ -1,3 +1,5 @@
+//go:build !substratev2
+
 package trigger_test
 
 import (

@@ -16,6 +16,7 @@ import (
 	runpkg "github.com/felag-engineering/gleipnir/internal/execution/run"
 	"github.com/felag-engineering/gleipnir/internal/infra/config"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
+	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/plugin/assembly"
 	"github.com/felag-engineering/gleipnir/internal/settings"
 	"github.com/felag-engineering/gleipnir/internal/toolregistry"
@@ -31,6 +32,7 @@ func startPluginSubsystem(
 	encryptionKey []byte,
 	arbiter *toolregistry.Registry,
 	systemSettings *settings.Service,
+	registry *mcp.Registry,
 ) (pluginSubsystem, error) {
 	a, err := assembly.New(ctx, assembly.Deps{
 		Config:         cfg,
@@ -39,6 +41,7 @@ func startPluginSubsystem(
 		EncryptionKey:  encryptionKey,
 		Arbiter:        arbiter,
 		SystemSettings: systemSettings,
+		MCPRegistry:    registry,
 	})
 	if err != nil {
 		return nil, err

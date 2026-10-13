@@ -14,6 +14,9 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/infra/netguard"
 	"github.com/felag-engineering/gleipnir/internal/plugin/caphealth"
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
+	"github.com/felag-engineering/gleipnir/internal/plugin/hitl"
+	"github.com/felag-engineering/gleipnir/internal/plugin/reconciler"
+	plugintrigger "github.com/felag-engineering/gleipnir/internal/plugin/trigger"
 )
 
 // loop is a long-lived component with a synchronous first pass: Start returns
@@ -30,11 +33,25 @@ type listenerSet interface {
 	Close(ctx context.Context) error
 }
 
-// eventStreams is the events supervisor's quiesce surface. Nothing sets it in
-// this slice; the slice that builds events.Supervisor assigns it so Quiesce
-// joins the streams before the run drain.
+// eventStreams is the events supervisor's surface. Start and Stop are driven by
+// the reconciler's observe pass as instances come, go and rotate; StopAll is
+// what Quiesce joins before the run drain, after which Start is a no-op.
+// *events.Supervisor satisfies it.
 type eventStreams interface {
+	Start(ctx context.Context, instanceID string)
+	Stop(instanceID string)
 	StopAll()
+}
+
+// taskPoller is the Tasks poll scheduler's lifecycle: *mcp.PollScheduler.
+type taskPoller interface {
+	Start(ctx context.Context, tickInterval time.Duration)
+	Wait()
+}
+
+// gcPasser is the reconciler's cleanup pass.
+type gcPasser interface {
+	ReconcileGC(ctx context.Context) (reconciler.GCResult, error)
 }
 
 // listenerCloseTimeout bounds one graceful ListenerSet shutdown at exit, so an
@@ -54,9 +71,11 @@ type Assembly struct {
 	// build must get a normal "not found" style error, not a 500 crash.
 	manifestSnap *configvalidate.Snapshotter
 
-	// ctx is the process-lifetime context New was given; the loops started by
-	// OperatorListenerReady derive from it.
-	ctx context.Context
+	// ctx is the assembly's own lifetime context, a child of the one New was
+	// given; the loops started by OperatorListenerReady derive from it, and
+	// Shutdown cancels it so those loops stop even when the parent never was.
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	// enabled is false when plugins are disabled; the component fields below
 	// are then all nil.
@@ -64,10 +83,27 @@ type Assembly struct {
 
 	health *caphealth.Registry
 
+	// launcher is what LauncherDeps hands to run(): the task-backed approval
+	// and feedback dispatchers and the managed tool classifier. Dispatcher,
+	// Registrar, ToolResolver and Canceller stay nil on purpose — a managed
+	// plugin's tools are MCP tools, so they go through the MCP registry and
+	// the per-server gate, not a plugin dispatch pool.
+	launcher LauncherDeps
+
+	// notifier fans the fixed "input requested" message out to notify-enabled
+	// audience entries. It has no live call site yet: the HITL routing that
+	// fires it after a request is routed is a later slice.
+	notifier *hitl.Notifier
+
 	// newReconciler constructs the reconciler. It takes the netguard proof as
 	// an argument so the guard cannot be supplied any other way than through
 	// OperatorListenerReady.
-	newReconciler func(guard netguard.Guard) (loop, error)
+	newReconciler func(guard netguard.Guard, streams reconciler.EventStreams) (*reconciler.Reconciler, error)
+
+	// bindEvents builds the events supervisor over the launcher's trigger
+	// pipeline. It runs in BindLauncher because the pipeline's sink launches
+	// runs and the launcher is built after the assembly.
+	bindEvents func(launcher plugintrigger.RunLauncher) eventStreams
 
 	mu    sync.Mutex
 	ready bool
@@ -78,25 +114,45 @@ type Assembly struct {
 	hostListeners listenerSet
 	egressProxy   listenerSet
 	events        eventStreams
+	poller        taskPoller
 	runtime       io.Closer
 
-	// bg joins background goroutines owned by the assembly (the OAuth, nonce
-	// and dedup scanners will live here). None exist yet.
+	// backgrounds are the composed scanners OperatorListenerReady starts on bg.
+	backgrounds []backgroundLoop
+
+	// bg joins background goroutines owned by the assembly: the OAuth, nonce
+	// and dedup scanners, and the container GC schedule.
 	bg sync.WaitGroup
 
 	shutdownOnce sync.Once
 }
 
 // LauncherDeps returns the plugin-only inputs run() needs to finish building
-// the RunLauncher. Every field is nil in this slice: the dispatchers, tool
-// classifier and canceller arrive with the slices that build them.
+// the RunLauncher. Zero while plugins are disabled.
 func (a *Assembly) LauncherDeps() LauncherDeps {
-	return LauncherDeps{}
+	return a.launcher
 }
 
-// BindLauncher completes the two-phase wiring once the RunLauncher exists.
-// A no-op in this slice.
-func (a *Assembly) BindLauncher(ctx context.Context, launcher *runpkg.RunLauncher) {}
+// BindLauncher completes the two-phase wiring once the RunLauncher exists: it
+// builds the events supervisor whose events flow, through the trigger
+// dispatcher, into launcher. Nothing is streamed until OperatorListenerReady.
+// A no-op while plugins are disabled.
+func (a *Assembly) BindLauncher(_ context.Context, launcher *runpkg.RunLauncher) {
+	if !a.enabled {
+		return
+	}
+	if launcher == nil {
+		slog.Error("plugin events are not bound: no run launcher was provided")
+		return
+	}
+	a.bind(launcher)
+}
+
+func (a *Assembly) bind(launcher plugintrigger.RunLauncher) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.events = a.bindEvents(launcher)
+}
 
 // AdminDeps returns everything the admin plugin-instance surface needs.
 // ManifestSnap is real (see the Assembly.manifestSnap doc) and CapabilityHealth
@@ -113,8 +169,13 @@ func (a *Assembly) AdminDeps() AdminDeps {
 // nothing is attached, and the caller must treat the error as fatal.
 //
 // With the proof it runs the boot sequence: one synchronous reconcile pass
-// (core, rotation, attach, observe, in that order), then the tickers. It
-// starts nothing when plugins are disabled.
+// (core, rotation, attach, observe, in that order), then the tickers, then the
+// consumers of what the pass converged — the task poller and the background
+// scanners — so nothing reads an endpoint the boot pass has not yet registered
+// or withdrawn. Events streams are not started here: the observe pass inside
+// the boot pass (and every later one) starts a stream for each live instance
+// and stops it when the instance goes. It starts nothing when plugins are
+// disabled.
 func (a *Assembly) OperatorListenerReady(ln net.Listener) error {
 	guarded, ok := ln.(*netguard.Listener)
 	if !ok || !netguard.Installed(ln) {
@@ -130,7 +191,13 @@ func (a *Assembly) OperatorListenerReady(ln net.Listener) error {
 		return errors.New("operator listener already reported ready")
 	}
 
-	rec, err := a.newReconciler(guarded.Guard())
+	// A nil a.events must reach the reconciler as a nil interface, not a typed
+	// nil, so the observe pass skips event streams entirely.
+	var streams reconciler.EventStreams
+	if a.events != nil {
+		streams = a.events
+	}
+	rec, err := a.newReconciler(guarded.Guard(), streams)
 	if err != nil {
 		return fmt.Errorf("building reconciler: %w", err)
 	}
@@ -146,12 +213,39 @@ func (a *Assembly) OperatorListenerReady(ln net.Listener) error {
 	if err := a.collector.Start(a.ctx); err != nil {
 		return fmt.Errorf("starting resource collector: %w", err)
 	}
+
+	a.poller.Start(a.ctx, taskPollTick)
+	a.scheduleGC(rec, containerGCInterval)
+	a.startBackground()
 	return nil
+}
+
+// scheduleGC runs the cleanup pass every interval. It is a separate, slower
+// cadence than convergence, and a failed pass costs one interval: the next one
+// finds the same unreferenced resources.
+func (a *Assembly) scheduleGC(gc gcPasser, interval time.Duration) {
+	a.goBackground(every(interval, func(ctx context.Context) {
+		result, err := gc.ReconcileGC(ctx)
+		if err != nil {
+			slog.WarnContext(ctx, "container cleanup pass failed", "err", err)
+			return
+		}
+		if result.ImagesReclaimed+result.SubnetsReleased+result.TokensPurged+result.Errors > 0 {
+			slog.InfoContext(ctx, "container cleanup pass",
+				"images_reclaimed", result.ImagesReclaimed,
+				"subnets_released", result.SubnetsReleased,
+				"tokens_purged", result.TokensPurged,
+				"errors", result.Errors)
+		}
+	}))
 }
 
 // Quiesce stops every avenue by which a plugin trigger event can reach
 // RunLauncher.Launch. It must run before the run drain: a stream still
 // delivering events while runs drain would race RunManager.Wait.
+//
+// StopAll cancels each stream and joins its goroutine, so once Quiesce returns
+// no event is in flight and none can start.
 func (a *Assembly) Quiesce() {
 	if a.events != nil {
 		a.events.StopAll()
@@ -161,8 +255,10 @@ func (a *Assembly) Quiesce() {
 // Shutdown stops the assembly's background goroutines. Containers are left
 // running: desired state is durable and the next boot converges on it.
 //
-// Order: capability prober, resource collector, reconciler (Stop+Wait),
-// listener sets, background goroutines, then the runtime connection. The
+// Order: events streams (a backstop for a path that skipped Quiesce),
+// capability prober, resource collector, reconciler (Stop+Wait), listener
+// sets, then the task poller and background goroutines (the assembly's context
+// is cancelled here so they return), then the runtime connection. The
 // reconciler goes before the listener sets so a late pass cannot re-add a
 // listener after it was closed. Log capture has no loop of its own: its
 // followers belong to the reconciler's observe state and end with its Stop.
@@ -171,12 +267,20 @@ func (a *Assembly) Quiesce() {
 // has returned (or never will), and main never calls the two concurrently.
 func (a *Assembly) Shutdown() {
 	a.shutdownOnce.Do(func() {
+		a.Quiesce()
+
 		stopLoop(a.prober)
 		stopLoop(a.collector)
 		stopLoop(a.reconciler)
 
 		a.closeListeners()
 
+		if a.cancel != nil {
+			a.cancel()
+		}
+		if a.poller != nil {
+			a.poller.Wait()
+		}
 		a.bg.Wait()
 
 		if a.runtime != nil {

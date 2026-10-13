@@ -1,3 +1,11 @@
+//go:build !substratev2
+
+// This file is the v1.1 gRPC half of the package: it imports the go-plugin
+// subprocess manager (and, for sink.go, hostsvc), which the substratev2 build
+// must not link. The v2 assembly still needs Dispatcher and ListenSinkAdapter
+// from this package, so the v1-only files are excluded from that build rather
+// than the shared ones being moved.
+
 package trigger
 
 import (

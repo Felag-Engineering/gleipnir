@@ -46,11 +46,18 @@ func withSlowReconciler() Option {
 
 func newDeps(t *testing.T, pub *testutil.RecordingPublisher) Deps {
 	t.Helper()
+	store := testutil.NewTestStore(t)
 	return Deps{
-		Config:    config.Config{PluginSubnetPool: "10.83.0.0/16"},
-		Store:     testutil.NewTestStore(t),
-		Publisher: pub,
-		Arbiter:   toolregistry.New(),
+		Config: config.Config{
+			PluginSubnetPool:         "10.83.0.0/16",
+			OAuthRefreshInterval:     time.Hour,
+			OAuthRefreshLead:         time.Hour,
+			PluginDedupSweepInterval: time.Hour,
+		},
+		Store:       store,
+		Publisher:   pub,
+		Arbiter:     toolregistry.New(),
+		MCPRegistry: mcp.NewRegistry(store.Queries()),
 	}
 }
 
@@ -273,12 +280,12 @@ func assertWired(t *testing.T, a *Assembly) {
 		t.Fatal("newReconciler is nil")
 	}
 	guard := guardedListener(t).(*netguard.Listener).Guard()
-	rec, err := a.newReconciler(guard)
+	rec, err := a.newReconciler(guard, nil)
 	if err != nil {
 		t.Fatalf("newReconciler: %v", err)
 	}
-	if _, ok := rec.(*reconciler.Reconciler); !ok {
-		t.Errorf("reconciler factory built %T, want *reconciler.Reconciler", rec)
+	if rec == nil {
+		t.Error("reconciler factory built a nil *reconciler.Reconciler")
 	}
 }
 
@@ -387,7 +394,9 @@ func (f fakeRuntimeCloser) Close() error { f.log.record("runtime.close"); return
 
 type fakeEvents struct{ log *stepLog }
 
-func (f fakeEvents) StopAll() { f.log.record("events.stop_all") }
+func (f fakeEvents) Start(_ context.Context, id string) { f.log.record("events.start:" + id) }
+func (f fakeEvents) Stop(id string)                     { f.log.record("events.stop:" + id) }
+func (f fakeEvents) StopAll()                           { f.log.record("events.stop_all") }
 
 func TestShutdown_Order(t *testing.T) {
 	log := &stepLog{}

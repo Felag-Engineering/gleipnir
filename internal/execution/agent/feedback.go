@@ -191,7 +191,9 @@ func parseFeedbackResponse(responseJSON string) string {
 //     until the Slack plugin calls WriteAuditStep(feedback_response) which triggers
 //     dispatch.Dispatcher.Resolve → Wait unblocks.  The feedback_response audit
 //     step is written by hostsvc, NOT here (hostsvc already writes it, see
-//     BLOCKING #4 in the implementation plan).
+//     BLOCKING #4 in the implementation plan), unless the dispatcher sets
+//     FeedbackSettlement.WriteResponseStep (the task-backed route, which has
+//     no hostsvc).
 //
 //   - In-app path (fallback): blocks on the inApp waiter channel, writes the
 //     feedback_response audit step here (preserving existing behavior).
@@ -269,9 +271,10 @@ func (h *FeedbackHandler) Wait(ctx context.Context, runID, toolName, inputJSON, 
 			return "", fmt.Errorf("plugin feedback dispatch: %w", dispatchErr)
 		} else {
 			// Plugin resolved the request.
-			// NOTE: Do NOT write a feedback_response audit step here.
-			// hostsvc.WriteAuditStep (called by the Slack plugin) has already written
-			// it — writing another would create a duplicate (BLOCKING #4).
+			// NOTE: Do NOT write a feedback_response audit step here unless the
+			// settlement asks for it (WriteResponseStep). On the v1 path
+			// hostsvc.WriteAuditStep (called by the Slack plugin) has already
+			// written it — writing another would create a duplicate (BLOCKING #4).
 			parsedText := parseFeedbackResponse(settlement.Response)
 			won := h.resolveFeedbackRecord(ctx, runID, feedbackID, parsedText, settlement.ResponderUserID)
 			if settlement.Settle != nil {
@@ -279,6 +282,15 @@ func (h *FeedbackHandler) Wait(ctx context.Context, runID, toolName, inputJSON, 
 			}
 			if !won {
 				return "", fmt.Errorf("feedback request for tool %s: the response window already closed before this answer arrived", toolName)
+			}
+			if settlement.WriteResponseStep {
+				if err := h.audit.Write(ctx, Step{
+					RunID:   runID,
+					Type:    model.StepTypeFeedbackResponse,
+					Content: map[string]any{"feedback_id": feedbackID, "response": parsedText},
+				}); err != nil {
+					return "", fmt.Errorf("writing feedback_response step: %w", err)
+				}
 			}
 			if err := h.sm.Transition(ctx, model.RunStatusRunning, ""); err != nil {
 				return "", fmt.Errorf("transitioning run back to running after plugin feedback: %w", err)

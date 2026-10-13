@@ -113,6 +113,13 @@ type FeedbackSettlement struct {
 
 	// Settle mirrors ApprovalSettlement.Settle for the feedback path.
 	Settle func(ctx context.Context, won bool)
+
+	// WriteResponseStep asks FeedbackHandler.Wait to write the model-visible
+	// feedback_response run step once this answer wins the CAS. The v1 gRPC
+	// path leaves it false because hostsvc already wrote that step when the
+	// plugin replied; the task-backed route has no such writer, so without
+	// this the run trace would carry no record of the answer the agent acted on.
+	WriteResponseStep bool
 }
 
 // ErrFeedbackRouteToInApp is returned by the adapter when the audience resolves

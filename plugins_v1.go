@@ -27,6 +27,7 @@ import (
 	runpkg "github.com/felag-engineering/gleipnir/internal/execution/run"
 	"github.com/felag-engineering/gleipnir/internal/infra/config"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
+	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
 	"github.com/felag-engineering/gleipnir/internal/plugin/dispatch"
@@ -41,6 +42,8 @@ import (
 // satisfy pluginSubsystem. store, broadcaster, and systemSettings are kept on
 // the returned wrapper (rather than only passed to startPluginRuntime)
 // because bindLauncher needs them later, when wireTriggerSupervisor runs.
+// The shared MCP registry is unused: v1 plugins are gRPC subprocesses that
+// never go through it.
 func startPluginSubsystem(
 	ctx context.Context,
 	cfg config.Config,
@@ -49,6 +52,7 @@ func startPluginSubsystem(
 	encryptionKey []byte,
 	arbiter *toolregistry.Registry,
 	systemSettings *settings.Service,
+	_ *mcp.Registry,
 ) (pluginSubsystem, error) {
 	rt, err := startPluginRuntime(ctx, cfg, store, broadcaster, encryptionKey, arbiter, systemSettings)
 	if err != nil {

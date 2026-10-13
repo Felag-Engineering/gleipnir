@@ -240,6 +240,12 @@ type Supervisor struct {
 	mu        sync.Mutex
 	instances map[string]context.CancelFunc
 	done      map[string]chan struct{}
+
+	// stopped latches once StopAll has run: Start is then a no-op. StopAll is
+	// the shutdown quiesce, and a caller still driving Start afterwards (the
+	// reconciler's observe pass keeps running until it is stopped) must not
+	// reopen a stream the host has already joined.
+	stopped bool
 }
 
 // NewSupervisor constructs a Supervisor with the given config, applying
@@ -328,6 +334,10 @@ func (s *Supervisor) StartAll(ctx context.Context) error {
 // applies verbatim here.
 func (s *Supervisor) Start(_ context.Context, instanceID string) {
 	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return
+	}
 	if _, alreadyRunning := s.instances[instanceID]; alreadyRunning {
 		s.mu.Unlock()
 		return
@@ -385,9 +395,11 @@ func (s *Supervisor) Restart(ctx context.Context, instanceID string) {
 }
 
 // StopAll cancels every running stream goroutine and waits for all of them
-// to exit. Intended to be called from the host shutdown path.
+// to exit. Intended to be called from the host shutdown path. It is final:
+// afterwards Start (and so Restart) does nothing.
 func (s *Supervisor) StopAll() {
 	s.mu.Lock()
+	s.stopped = true
 	cancels := make([]context.CancelFunc, 0, len(s.instances))
 	dones := make([]chan struct{}, 0, len(s.done))
 	for _, cancel := range s.instances {

@@ -445,8 +445,9 @@ func (a *TaskChannelAdapters) DispatchFeedback(ctx context.Context, req agent.Fe
 		actor.userID = ""
 	}
 	return agent.FeedbackSettlement{
-		Response:        response,
-		ResponderUserID: actor.deciderUserID(),
+		Response:          response,
+		ResponderUserID:   actor.deciderUserID(),
+		WriteResponseStep: true,
 		Settle: func(settleCtx context.Context, won bool) {
 			if !won {
 				logctx.Logger(settleCtx).WarnContext(settleCtx, "task channel adapter: feedback CAS lost the race with the timeout scanner; decision not recorded as answered",
