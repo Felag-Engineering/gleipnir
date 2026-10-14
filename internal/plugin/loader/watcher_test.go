@@ -396,3 +396,37 @@ func TestWatcher_Sweep_GarbageSkipped(t *testing.T) {
 		t.Errorf("sweep scheduled %q; want the valid tarball", paths[0])
 	}
 }
+
+// Run must not return while an Install is in flight: the caller closes the DB
+// and container runtime once Run is done, and an Install still running then
+// would use them after close.
+func TestWatcher_Run_WaitsForInFlightInstall(t *testing.T) {
+	dir := t.TempDir()
+	makeManifestTarball(t, dir, "p-1.0.0.tar.gz", "p", "1.0.0")
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var finished atomic.Bool
+	install := BundleInstallerFunc(func(ctx context.Context, tarPath string) (string, error) {
+		close(started)
+		<-release // deliberately ignores ctx: models an install that cannot be interrupted
+		finished.Store(true)
+		return "", nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w := NewWatcher(dir, install, WithDebounce(testDebounce))
+	done := runWatcher(t, ctx, w)
+
+	<-started
+	cancel()
+	close(release)
+
+	if err := <-done; err != context.Canceled {
+		t.Errorf("Run returned %v, want context.Canceled", err)
+	}
+	if !finished.Load() {
+		t.Error("Run returned before the in-flight Install finished")
+	}
+}

@@ -315,7 +315,7 @@ func newE2EFixture(t *testing.T) *e2eFixture {
 		t.Fatalf("installed plugin status = %q, want %q", pluginRow.Status, model.PluginStatusPendingReview)
 	}
 	if _, err := q.UpdatePluginStatus(ctx, db.UpdatePluginStatusParams{
-		Status: string(model.PluginStatusActive), UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Status: string(model.PluginStatusActive), UpdatedAt: timeNow().UTC().Format(time.RFC3339Nano),
 		ID: pluginID, ExpectedVersion: pluginRow.Version,
 	}); err != nil {
 		t.Fatalf("approving the plugin: %v", err)

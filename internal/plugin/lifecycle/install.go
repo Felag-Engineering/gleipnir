@@ -52,6 +52,7 @@ func (a *ociInstallerAdapter) Install(ctx context.Context, tarPath string) (stri
 }
 
 // OnInstalled forwards the post-install hook registration to the OCI installer.
+// It exists because the admin surface's installer interface requires it.
 func (a *ociInstallerAdapter) OnInstalled(fn func(ctx context.Context, pluginID string)) {
 	a.inner.OnInstalled(fn)
 }

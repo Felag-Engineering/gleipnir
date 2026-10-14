@@ -149,7 +149,18 @@ func (w *Watcher) Run(ctx context.Context, fw *fsnotify.Watcher) error {
 	//
 	// The dispatch goroutine is started AFTER fsnotify is set up so that if
 	// fsnotify setup fails we don't leak a goroutine waiting for a ctx cancel.
+	//
+	// Run does not return until this goroutine has: an Install still in flight
+	// after Run returns would keep using the DB and container runtime while the
+	// caller shuts them down. stop covers the returns that are not a ctx cancel.
+	stop := make(chan struct{})
+	dispatchDone := make(chan struct{})
+	defer func() {
+		close(stop)
+		<-dispatchDone
+	}()
 	go func() {
+		defer close(dispatchDone)
 		for {
 			select {
 			case path := <-fire:
@@ -157,6 +168,8 @@ func (w *Watcher) Run(ctx context.Context, fw *fsnotify.Watcher) error {
 					w.logger.Warn("plugin install failed", "path", path, "err", err)
 				}
 			case <-ctx.Done():
+				return
+			case <-stop:
 				return
 			}
 		}
