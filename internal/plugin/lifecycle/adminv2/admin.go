@@ -57,6 +57,11 @@ func NewProcessManager(q *db.Queries, desired desiredStateWriter, kicker Kicker,
 	return &ProcessManager{q: q, desired: desired, kicker: kicker, registrar: registrar}
 }
 
+// Kick asks the reconciler for a pass now instead of at the next tick, for a
+// change that was written to desired state outside this type (an accepted
+// manifest that moved the desired image).
+func (p *ProcessManager) Kick() { p.kicker.Kick() }
+
 // Stop marks the instance's container desired_state=stopped and kicks the
 // reconciler. An instance with no container row is a no-op success.
 func (p *ProcessManager) Stop(ctx context.Context, instanceID string) error {

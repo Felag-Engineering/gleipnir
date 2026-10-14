@@ -35,6 +35,31 @@ func DiffV2(old, new *manifestv2.Manifest) []Change {
 	return changes
 }
 
+// ConfigSchemaNewlyRequiredFieldsV2 is ConfigSchemaNewlyRequiredFields for v2
+// manifests: the config properties required by new but not by old, which
+// drives the pending_config_migration transition when an admin accepts a
+// material change. A malformed "required" key is an error; callers must fail
+// closed.
+func ConfigSchemaNewlyRequiredFieldsV2(old, new *manifestv2.Manifest) ([]string, error) {
+	oldRequired, err := requiredFieldSet(old.Gleipnir.ConfigSchema)
+	if err != nil {
+		return nil, fmt.Errorf("old config schema: %w", err)
+	}
+	newRequired, err := requiredFieldSet(new.Gleipnir.ConfigSchema)
+	if err != nil {
+		return nil, fmt.Errorf("new config schema: %w", err)
+	}
+
+	var added []string
+	for field := range newRequired {
+		if !oldRequired[field] {
+			added = append(added, field)
+		}
+	}
+	sort.Strings(added)
+	return added, nil
+}
+
 // diffAuthV2 emits material changes for the auth strategy and its
 // strategy-specific fields, mirroring diffAuth's v1 counterpart field for
 // field: the strategy decides what an install grants trust to obtain a

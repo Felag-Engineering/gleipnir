@@ -65,6 +65,24 @@ type ociBundleOptions struct {
 	omitArchive bool
 	// manifestOverride replaces the rendered manifest wholesale.
 	manifestOverride []byte
+	// signer signs with a fixed keypair instead of a fresh one, which is how a
+	// test models a second release from the same publisher.
+	signer *ociSigner
+}
+
+// ociSigner is a keypair a test reuses across bundles.
+type ociSigner struct {
+	pk signing.PublicKey
+	sk signing.SecretKey
+}
+
+func newOCISigner(t *testing.T) *ociSigner {
+	t.Helper()
+	pk, sk, err := signing.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	return &ociSigner{pk: pk, sk: sk}
 }
 
 // buildOCIBundle writes a v2 bundle tarball and returns its path. Each signed
@@ -92,10 +110,11 @@ func buildOCIBundle(t *testing.T, opts ociBundleOptions) string {
 	}
 
 	if !opts.unsigned {
-		pk, sk, err := signing.GenerateKeypair(rand.Reader)
-		if err != nil {
-			t.Fatalf("generate keypair: %v", err)
+		signer := opts.signer
+		if signer == nil {
+			signer = newOCISigner(t)
 		}
+		pk, sk := signer.pk, signer.sk
 
 		signed := archiveBytes
 		if opts.tamper {

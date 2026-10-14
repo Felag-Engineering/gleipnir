@@ -23,6 +23,11 @@ const (
 	Stopped = "stopped"
 )
 
+// ErrCASConflict is returned when a desired-state row's version moved since it
+// was read (ADR-038): another writer won and the caller must not assume its own
+// write applied. internal/admin maps it to 409.
+var ErrCASConflict = errors.New("lifecycle: CAS conflict")
+
 // ErrPluginNotActive is returned when an operation would make (or keep) a
 // plugin_containers row converge toward "running" for a plugin that has not
 // passed admin review (still pending_review) or has been removed.

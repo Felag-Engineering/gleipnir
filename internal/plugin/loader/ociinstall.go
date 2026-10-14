@@ -1,8 +1,10 @@
 package loader
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +13,8 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/plugin/container"
+	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/manifestv2"
 )
 
 // Audit event types specific to the v2 install path (ADR-046: operational, not
@@ -80,9 +84,9 @@ func NewOCIInstaller(base *Installer, images container.ImageRuntime) *OCIInstall
 }
 
 // OnInstalled registers the post-install hook on the underlying Installer, so
-// both pipelines share one callback slot. The v2 pipeline does not invoke it
-// today: a fresh v2 install always lands pending_review, and the hook fires
-// only for an install that commits an already-active plugin.
+// both pipelines share one callback slot. As in v1 the hook fires only for an
+// install that commits an update to an already-active plugin: a fresh v2
+// install always lands pending_review and never triggers it.
 func (in *OCIInstaller) OnInstalled(fn func(ctx context.Context, pluginID string)) {
 	in.base.OnInstalled(fn)
 }
@@ -124,65 +128,22 @@ func (in *OCIInstaller) Install(ctx context.Context, tarPath string) (OCIInstall
 
 	nowStr := in.base.nowStr()
 
-	// TOFU (ADR-045): a bundle signed with a different key than the one pinned
-	// at first install does not install, it waits for an admin. Reusing the v1
-	// check verbatim is the point — a second implementation of key pinning is a
-	// second place for it to be subtly wrong.
 	existing, lookupErr := in.base.q.GetPluginByName(ctx, bundle.Manifest.Name)
 	switch {
 	case lookupErr == nil:
-		refreshed, mismatch, pinErr := in.base.checkPubkeyPin(ctx, existing, result, nowStr)
-		if pinErr != nil {
-			return OCIInstallResult{}, pinErr
-		}
-		if mismatch {
-			if _, mmErr := in.base.handlePubkeyMismatch(ctx, refreshed, result, bundle.Manifest.Version, nowStr); mmErr != nil {
-				return OCIInstallResult{}, mmErr
-			}
-			return OCIInstallResult{}, &InstallRejectedError{
-				Reason:  rejectPubkeyMismatch,
-				Message: "bundle is signed with a different key than the one pinned at first install; an admin must approve the rotation",
-			}
-		}
+		return in.installOverExisting(ctx, bundle, result, existing, nowStr)
 	case errors.Is(lookupErr, sql.ErrNoRows):
-		// First install of this plugin; nothing pinned yet.
+		return in.installFresh(ctx, bundle, result, nowStr)
 	default:
 		return OCIInstallResult{}, fmt.Errorf("look up plugin %q: %w", bundle.Manifest.Name, lookupErr)
 	}
+}
 
-	// Everything above this line touched the DB only to READ or to record a
-	// refusal. Everything below can still fail, and must leave nothing behind
-	// when it does.
-	loaded, err := in.loadAndVerifyImage(ctx, bundle)
+// installFresh is the first install of a plugin name: nothing is pinned yet,
+// so the image is loaded and verified and then everything is written at once.
+func (in *OCIInstaller) installFresh(ctx context.Context, bundle *OCIBundle, result VerifyResult, nowStr string) (OCIInstallResult, error) {
+	loaded, err := in.loadOrReject(ctx, bundle, nowStr)
 	if err != nil {
-		var mismatch *imageDigestMismatchError
-		if errors.As(err, &mismatch) {
-			if auditErr := insertAuditRow(ctx, in.base.q, auditImageDigestMismatch, severityHigh, nowStr, map[string]any{
-				"name":     bundle.Manifest.Name,
-				"version":  bundle.Manifest.Version,
-				"expected": mismatch.Expected,
-				"observed": mismatch.Observed,
-			}); auditErr != nil {
-				slog.ErrorContext(ctx, "record plugin_image_digest_mismatch audit", "err", auditErr)
-			}
-			return OCIInstallResult{}, &InstallRejectedError{
-				Reason:  rejectImageDigestMismatch,
-				Message: "the image loaded from this bundle is not the image its manifest pins; the bundle was not installed",
-			}
-		}
-		if errors.Is(err, ErrImageArchiveInvalid) {
-			if auditErr := insertAuditRow(ctx, in.base.q, auditImageArchiveRefused, severityHigh, nowStr, map[string]any{
-				"name":    bundle.Manifest.Name,
-				"version": bundle.Manifest.Version,
-				"reason":  err.Error(),
-			}); auditErr != nil {
-				slog.ErrorContext(ctx, "record plugin_image_archive_rejected audit", "err", auditErr)
-			}
-			return OCIInstallResult{}, &InstallRejectedError{
-				Reason:  rejectImageArchiveInvalid,
-				Message: "the image archive in this bundle failed inspection; the bundle was not installed",
-			}
-		}
 		return OCIInstallResult{}, err
 	}
 
@@ -196,6 +157,311 @@ func (in *OCIInstaller) Install(ctx context.Context, tarPath string) (OCIInstall
 		ImageDigest: bundle.ImageDigest(),
 		ImageLoaded: loaded.present,
 	}, nil
+}
+
+// installOverExisting handles a bundle for a plugin name that already has a
+// row, with the same TOFU and material-change rules the v1 Installer applies:
+// an identical re-drop is a no-op, a cosmetic change hot-applies, a material
+// change is blocked for admin review, and a different signing key waits for
+// admin approval.
+//
+// Ordering is the same load-bearing rule as a fresh install. Everything that
+// can refuse the bundle runs first, the image is loaded and its digest
+// verified next, and only then is a row written, so a rejected or blocked
+// bundle leaves the consented snapshot, the pinned key and the desired image
+// exactly as they were. The only writes before the image load are the audit
+// records of a refusal.
+//
+// One deliberate difference from v1: v1 ignores any same-version re-drop,
+// because a binary it cannot inspect might have changed under the same
+// version string. The v2 manifest pins the image digest, so a same-version
+// bundle with different content is diffed like any other and only a
+// byte-identical manifest is a no-op.
+func (in *OCIInstaller) installOverExisting(ctx context.Context, bundle *OCIBundle, result VerifyResult, existing db.Plugin, nowStr string) (OCIInstallResult, error) {
+	name := bundle.Manifest.Name
+	out := OCIInstallResult{PluginID: existing.ID, ImageDigest: bundle.ImageDigest()}
+
+	// A v1 row and a v2 bundle are different substrates under one name.
+	// Letting one replace the other would swap a subprocess for a container
+	// (or back) under an old consent, so it is refused outright.
+	if !manifestv2.IsV2([]byte(existing.ManifestSnapshot)) {
+		return OCIInstallResult{}, in.base.refuseSchemaCrossover(ctx, existing, schemaLabelV2, bundle.Manifest.Version, nowStr)
+	}
+
+	if bytes.Equal([]byte(existing.ManifestSnapshot), bundle.ManifestBytes) {
+		// Byte-identical manifest means the same digest, so there is nothing
+		// to load or change. Recorded so a re-submitted bundle leaves a trail.
+		if err := in.base.recordAuditEvent(ctx, auditReinstallIgnored, severityInfo, nowStr, map[string]any{
+			"name":    name,
+			"version": bundle.Manifest.Version,
+		}); err != nil {
+			return OCIInstallResult{}, fmt.Errorf("record reinstall_ignored audit for %q: %w", name, err)
+		}
+		return out, nil
+	}
+
+	if isValidSemver(bundle.Manifest.Version) && isValidSemver(existing.PluginVersion) &&
+		compareVersions(bundle.Manifest.Version, existing.PluginVersion) < 0 {
+		slog.WarnContext(ctx, "plugin downgrade refused",
+			"name", name, "installed_version", existing.PluginVersion, "rejected_version", bundle.Manifest.Version)
+		if err := in.base.recordAuditEvent(ctx, auditDowngradeRefused, severityHigh, nowStr, map[string]any{
+			"name":              name,
+			"installed_version": existing.PluginVersion,
+			"rejected_version":  bundle.Manifest.Version,
+		}); err != nil {
+			return OCIInstallResult{}, fmt.Errorf("record downgrade_refused audit for %q: %w", name, err)
+		}
+		return OCIInstallResult{}, &InstallRejectedError{
+			Reason:  rejectDowngrade,
+			Message: fmt.Sprintf("version %s is older than the installed version %s; downgrades are refused", bundle.Manifest.Version, existing.PluginVersion),
+		}
+	}
+
+	// TOFU (ADR-045): a bundle signed with a different key than the one pinned
+	// at first install does not install, it waits for an admin. Decided from
+	// the row alone so a mismatching bundle never reaches the runtime.
+	if pubkeyDiffers(existing, result) {
+		return OCIInstallResult{}, in.rejectPubkeyMismatch(ctx, existing, result, bundle.Manifest.Version, nowStr)
+	}
+
+	oldManifest, err := manifestv2.Parse([]byte(existing.ManifestSnapshot))
+	if err != nil {
+		return OCIInstallResult{}, fmt.Errorf("parse stored manifest snapshot for %q: %w", name, err)
+	}
+	changes := diffCandidate(oldManifest, bundle.Manifest)
+
+	loaded, err := in.loadOrReject(ctx, bundle, nowStr)
+	if err != nil {
+		return OCIInstallResult{}, err
+	}
+	out.ImageLoaded = loaded.present
+
+	// Delayed TOFU: a signed bundle arriving for a plugin first installed
+	// unsigned pins its key now. Run after the image checks so a bundle that
+	// fails them pins nothing; it can still report a mismatch if the row moved
+	// since the read above.
+	existing, mismatch, err := in.base.checkPubkeyPin(ctx, existing, result, nowStr)
+	if err != nil {
+		return OCIInstallResult{}, err
+	}
+	if mismatch {
+		return OCIInstallResult{}, in.rejectPubkeyMismatch(ctx, existing, result, bundle.Manifest.Version, nowStr)
+	}
+
+	if pluginmanifest.HasMaterial(changes) {
+		if err := in.blockMaterialChange(ctx, existing, oldManifest, bundle, loaded, changes, nowStr); err != nil {
+			return OCIInstallResult{}, err
+		}
+		return out, &InstallRejectedError{
+			Reason:  rejectMaterialChange,
+			Message: "manifest has material changes that require admin review; approve them via the \"Accept manifest\" admin flow",
+		}
+	}
+
+	if err := in.applyCosmeticChange(ctx, existing, bundle, result, loaded, changes, nowStr); err != nil {
+		return OCIInstallResult{}, err
+	}
+
+	// Same gate as v1: only an update to an already-active plugin notifies.
+	if existing.Status == statusActive && in.base.onInstalled != nil {
+		in.base.onInstalled(ctx, existing.ID)
+	}
+	return out, nil
+}
+
+// pubkeyDiffers reports whether a signed bundle's key differs from the one
+// pinned on the row. It is the read-only half of checkPubkeyPin: an unpinned
+// row (delayed TOFU) is not a mismatch.
+func pubkeyDiffers(existing db.Plugin, result VerifyResult) bool {
+	return result.Outcome == OutcomeVerified &&
+		existing.TrustedPubkey != "" &&
+		!bytes.Equal(result.Pubkey, []byte(existing.TrustedPubkey))
+}
+
+func (in *OCIInstaller) rejectPubkeyMismatch(ctx context.Context, existing db.Plugin, result VerifyResult, newVersion, nowStr string) error {
+	if _, err := in.base.handlePubkeyMismatch(ctx, existing, result, newVersion, nowStr); err != nil {
+		return err
+	}
+	return &InstallRejectedError{
+		Reason:  rejectPubkeyMismatch,
+		Message: "bundle is signed with a different key than the one pinned at first install; an admin must approve the rotation",
+	}
+}
+
+// diffCandidate is manifest.DiffV2 plus the image digest. DiffV2 classifies
+// the image identifier as cosmetic because the signature and the digest check
+// protect its integrity, but a different digest is a different set of bytes
+// than the ones the admin consented to run, so it is material here.
+func diffCandidate(old, candidate *manifestv2.Manifest) []pluginmanifest.Change {
+	changes := pluginmanifest.DiffV2(old, candidate)
+	if oldDigest, newDigest := old.Package.Digest(), candidate.Package.Digest(); oldDigest != newDigest {
+		changes = append(changes, pluginmanifest.Change{Field: "package.digest", Material: true, From: oldDigest, To: newDigest})
+	}
+	return changes
+}
+
+// loadOrReject loads and verifies the bundle's image, turning a digest
+// mismatch or a malformed archive into the audited InstallRejectedError.
+func (in *OCIInstaller) loadOrReject(ctx context.Context, bundle *OCIBundle, nowStr string) (loadedImage, error) {
+	loaded, err := in.loadAndVerifyImage(ctx, bundle)
+	if err == nil {
+		return loaded, nil
+	}
+
+	var mismatch *imageDigestMismatchError
+	if errors.As(err, &mismatch) {
+		if auditErr := insertAuditRow(ctx, in.base.q, auditImageDigestMismatch, severityHigh, nowStr, map[string]any{
+			"name":     bundle.Manifest.Name,
+			"version":  bundle.Manifest.Version,
+			"expected": mismatch.Expected,
+			"observed": mismatch.Observed,
+		}); auditErr != nil {
+			slog.ErrorContext(ctx, "record plugin_image_digest_mismatch audit", "err", auditErr)
+		}
+		return loadedImage{}, &InstallRejectedError{
+			Reason:  rejectImageDigestMismatch,
+			Message: "the image loaded from this bundle is not the image its manifest pins; the bundle was not installed",
+		}
+	}
+	if errors.Is(err, ErrImageArchiveInvalid) {
+		if auditErr := insertAuditRow(ctx, in.base.q, auditImageArchiveRefused, severityHigh, nowStr, map[string]any{
+			"name":    bundle.Manifest.Name,
+			"version": bundle.Manifest.Version,
+			"reason":  err.Error(),
+		}); auditErr != nil {
+			slog.ErrorContext(ctx, "record plugin_image_archive_rejected audit", "err", auditErr)
+		}
+		return loadedImage{}, &InstallRejectedError{
+			Reason:  rejectImageArchiveInvalid,
+			Message: "the image archive in this bundle failed inspection; the bundle was not installed",
+		}
+	}
+	return loadedImage{}, err
+}
+
+// blockMaterialChange records a material change for admin review and leaves
+// the consented snapshot untouched. The candidate manifest is persisted so
+// accept-manifest can commit it without the bundle, which is also why its
+// image was loaded above: accepting must not depend on a second upload.
+//
+// The loaded image is recorded against the plugin so the accounting matches
+// the runtime, but no live generation pins it, so image GC reclaims it if the
+// change is never accepted.
+func (in *OCIInstaller) blockMaterialChange(ctx context.Context, existing db.Plugin, oldManifest *manifestv2.Manifest, bundle *OCIBundle, loaded loadedImage, changes []pluginmanifest.Change, nowStr string) error {
+	newlyRequired, err := pluginmanifest.ConfigSchemaNewlyRequiredFieldsV2(oldManifest, bundle.Manifest)
+	if err != nil {
+		slog.WarnContext(ctx, "manifest material change: cannot determine newly-required config fields; schema malformed",
+			"plugin", existing.Name, "err", err)
+		newlyRequired = nil
+	}
+
+	err = in.base.inTx(ctx, func(q *db.Queries) error {
+		if err := insertAuditRow(ctx, q, auditManifestMaterialChange, severityHigh, nowStr, map[string]any{
+			"plugin_id":                    existing.ID,
+			"name":                         existing.Name,
+			"old_version":                  existing.PluginVersion,
+			"new_version":                  bundle.Manifest.Version,
+			"old_image_digest":             oldManifest.Package.Digest(),
+			"new_image_digest":             bundle.ImageDigest(),
+			"image_loaded":                 loaded.present,
+			"material_fields":              pluginmanifest.MaterialFields(changes),
+			"cosmetic_fields":              pluginmanifest.CosmeticFields(changes),
+			"candidate_manifest_b64":       base64.StdEncoding.EncodeToString(bundle.ManifestBytes),
+			"newly_required_config_fields": newlyRequired,
+		}); err != nil {
+			return fmt.Errorf("record manifest_material_change audit for %q: %w", existing.Name, err)
+		}
+		if err := q.UpsertPluginPendingManifest(ctx, db.UpsertPluginPendingManifestParams{
+			PluginID:          existing.ID,
+			CandidateManifest: string(bundle.ManifestBytes),
+			OldVersion:        existing.PluginVersion,
+			NewVersion:        bundle.Manifest.Version,
+			CreatedAt:         nowStr,
+			UpdatedAt:         nowStr,
+		}); err != nil {
+			return fmt.Errorf("upsert pending manifest for %q: %w", existing.Name, err)
+		}
+		return recordLoadedImage(ctx, q, bundle, loaded, existing.ID, nowStr)
+	})
+	if err != nil {
+		return err
+	}
+
+	// After the commit, so instances are never held for a change that was not
+	// recorded. Best effort, like v1.
+	in.base.transitionAllInstances(
+		ctx, existing,
+		model.PluginHealthStatePendingManifestApproval,
+		"manifest changed materially; admin re-approval required",
+		"manifest material change",
+	)
+	return nil
+}
+
+// applyCosmeticChange commits a non-material difference: the snapshot is
+// updated under the row's version CAS with the plugin's status preserved, so
+// a description tweak cannot regress an active plugin.
+func (in *OCIInstaller) applyCosmeticChange(ctx context.Context, existing db.Plugin, bundle *OCIBundle, result VerifyResult, loaded loadedImage, changes []pluginmanifest.Change, nowStr string) error {
+	return in.base.inTx(ctx, func(q *db.Queries) error {
+		rows, err := q.UpdatePluginManifest(ctx, db.UpdatePluginManifestParams{
+			ManifestSnapshot: string(bundle.ManifestBytes),
+			PluginVersion:    bundle.Manifest.Version,
+			Status:           existing.Status,
+			UpdatedAt:        nowStr,
+			ID:               existing.ID,
+			ExpectedVersion:  existing.Version,
+		})
+		if err != nil {
+			return fmt.Errorf("update plugin %q manifest (cosmetic): %w", existing.Name, err)
+		}
+		if rows == 0 {
+			return fmt.Errorf("update plugin %q manifest (cosmetic): CAS conflict (version mismatch)", existing.Name)
+		}
+
+		if err := recordLoadedImage(ctx, q, bundle, loaded, existing.ID, nowStr); err != nil {
+			return err
+		}
+
+		severity := severityInfo
+		if result.Outcome == OutcomeUnsignedPermissive {
+			severity = severityHigh
+		}
+		if err := insertAuditRow(ctx, q, auditManifestCosmeticChange, severity, nowStr, map[string]any{
+			"plugin_id":       existing.ID,
+			"name":            existing.Name,
+			"old_version":     existing.PluginVersion,
+			"new_version":     bundle.Manifest.Version,
+			"cosmetic_fields": pluginmanifest.CosmeticFields(changes),
+		}); err != nil {
+			return fmt.Errorf("record manifest_cosmetic_change audit for %q: %w", existing.Name, err)
+		}
+		return nil
+	})
+}
+
+// recordLoadedImage writes the image accounting row, but only when the image
+// is actually present. Recording an image the host never loaded would make
+// plugin_container_images a record of intentions rather than of what the
+// runtime holds.
+func recordLoadedImage(ctx context.Context, q *db.Queries, bundle *OCIBundle, loaded loadedImage, pluginID, nowStr string) error {
+	if !loaded.present {
+		return nil
+	}
+	var sizePtr *int64
+	if size := loaded.info.SizeBytes; size > 0 {
+		sizePtr = &size
+	}
+	if _, err := q.UpsertContainerImage(ctx, db.UpsertContainerImageParams{
+		Digest:     bundle.ImageDigest(),
+		Reference:  bundle.ImageReference(),
+		PluginID:   &pluginID,
+		SizeBytes:  sizePtr,
+		LoadedAt:   nowStr,
+		LastUsedAt: &nowStr,
+	}); err != nil {
+		return fmt.Errorf("record loaded image %s: %w", bundle.ImageDigest(), err)
+	}
+	return nil
 }
 
 // loadedImage is what the runtime holds after a load attempt.
@@ -320,26 +586,8 @@ func (in *OCIInstaller) snapshot(ctx context.Context, bundle *OCIBundle, result 
 			return fmt.Errorf("create plugin %q: %w", bundle.Manifest.Name, err)
 		}
 
-		// The image row is written only when the image is actually present.
-		// Recording an image the host never loaded would make the GC accounting
-		// in plugin_container_images a record of intentions rather than of what
-		// the runtime holds.
-		if loaded.present {
-			size := loaded.info.SizeBytes
-			var sizePtr *int64
-			if size > 0 {
-				sizePtr = &size
-			}
-			if _, err := q.UpsertContainerImage(ctx, db.UpsertContainerImageParams{
-				Digest:     bundle.ImageDigest(),
-				Reference:  bundle.ImageReference(),
-				PluginID:   &pluginID,
-				SizeBytes:  sizePtr,
-				LoadedAt:   nowStr,
-				LastUsedAt: &nowStr,
-			}); err != nil {
-				return fmt.Errorf("record loaded image %s: %w", bundle.ImageDigest(), err)
-			}
+		if err := recordLoadedImage(ctx, q, bundle, loaded, pluginID, nowStr); err != nil {
+			return err
 		}
 
 		// ADR-045 §6: an unsigned-permissive install is high severity even

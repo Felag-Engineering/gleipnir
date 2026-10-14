@@ -413,3 +413,74 @@ func TestDesiredState_Remove(t *testing.T) {
 		t.Errorf("Remove on an already-removed instance: %v, want nil", err)
 	}
 }
+
+// ResyncForPlugin moves the desired image and limits to the plugin's current
+// snapshot and nothing else: a stopped instance stays stopped, and an instance
+// with no desired-state row is skipped rather than created.
+func TestDesiredState_ResyncForPlugin(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	ctx := context.Background()
+	ds := lifecycle.NewDesiredState(fixedClock)
+
+	const oldDigest = "sha256:0a666c9d2a6e22855c3a96c6d3de6e9f5223f5c70375999d1bc32fade6d4ebbb"
+	const newDigest = "sha256:1b777d0e3b7f33966d4b07d7e4ef7f0a6334a6d81486000e2cd43abef7e5fccc"
+	seedV2Plugin(t, store, "plugin-1", oldDigest, 64, 100, "active")
+	seedInstance(t, store, "inst-1", "plugin-1")
+	if _, err := ds.CreateForInstance(ctx, store.Queries(), "inst-1"); err != nil {
+		t.Fatalf("CreateForInstance: %v", err)
+	}
+	if err := ds.SetDesired(ctx, store.Queries(), "inst-1", lifecycle.DesiredStateStopped); err != nil {
+		t.Fatalf("SetDesired: %v", err)
+	}
+	// A second instance that was never provisioned.
+	now := fixedClock().UTC().Format(time.RFC3339Nano)
+	if _, err := store.Queries().CreatePluginInstance(ctx, db.CreatePluginInstanceParams{
+		ID: "inst-2", PluginID: "plugin-1", InstanceName: "inst2", ConfigJson: "{}",
+		SubscriptionScopeJson: "{}", HandshakeVersions: "{}", HealthState: "unhealthy", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed second instance: %v", err)
+	}
+	before, _ := store.Queries().GetPluginContainerByInstance(ctx, "inst-1")
+
+	snapshot := fmt.Sprintf(`schema_version: "2"
+name: test-plugin
+version: "1.1.0"
+package:
+  registry_type: oci
+  identifier: ghcr.io/acme/test-plugin@%s
+  transport:
+    type: streamable-http
+    port: 8080
+gleipnir:
+  profiles:
+    tool_provider: {}
+  resources:
+    memory_mb: 128
+    cpu_millicores: 100
+`, newDigest)
+	if _, err := store.DB().ExecContext(ctx, `UPDATE plugins SET manifest_snapshot = ? WHERE id = 'plugin-1'`, snapshot); err != nil {
+		t.Fatalf("update snapshot: %v", err)
+	}
+
+	n, err := ds.ResyncForPlugin(ctx, store.Queries(), "plugin-1")
+	if err != nil {
+		t.Fatalf("ResyncForPlugin: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("rows updated = %d, want 1 (the unprovisioned instance is skipped)", n)
+	}
+
+	row, _ := store.Queries().GetPluginContainerByInstance(ctx, "inst-1")
+	if row.ImageDigest != newDigest || row.ImageRef != "ghcr.io/acme/test-plugin@"+newDigest {
+		t.Errorf("image = %q / %q, want the new pin", row.ImageRef, row.ImageDigest)
+	}
+	if row.MemoryLimitBytes == nil || *row.MemoryLimitBytes != int64(128)<<20 {
+		t.Errorf("memory = %v, want 128 MiB", row.MemoryLimitBytes)
+	}
+	if row.DesiredState != lifecycle.DesiredStateStopped || row.ConfigHash != before.ConfigHash || row.NetworkName != before.NetworkName {
+		t.Error("resync changed more than the image and limits")
+	}
+	if _, err := store.Queries().GetPluginContainerByInstance(ctx, "inst-2"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("resync created a row for an unprovisioned instance: %v", err)
+	}
+}

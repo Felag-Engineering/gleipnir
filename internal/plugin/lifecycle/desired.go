@@ -30,7 +30,7 @@ const (
 // ErrCASConflict is returned by SetDesired when the row's version has moved
 // since it was read (ADR-038): another writer won, and the caller must not
 // assume its own write applied.
-var ErrCASConflict = errors.New("lifecycle: CAS conflict")
+var ErrCASConflict = desiredstate.ErrCASConflict
 
 // ErrPluginNotActive is desiredstate.ErrPluginNotActive, aliased for the same
 // reason as the DesiredState* constants above: the same variable, not a
@@ -210,6 +210,74 @@ func (d *DesiredState) SetDesired(ctx context.Context, q *db.Queries, instanceID
 		return fmt.Errorf("lifecycle: set desired_state for instance %q: %w", instanceID, ErrCASConflict)
 	}
 	return nil
+}
+
+// ResyncForPlugin re-derives the image and resource limits of every instance's
+// plugin_containers row from the plugin's current manifest_snapshot. It is how
+// an accepted manifest change reaches the reconciler: the rows were written
+// from the snapshot at instance creation, so without this an accepted new
+// image digest would change the consent but not what is converged to.
+//
+// The reconciler then sees the generation it is running disagree with the
+// desired digest and plans a rotation; nothing here touches a container.
+// desired_state, config_hash and the network are carried over unchanged, so a
+// stopped instance stays stopped. An instance with no row (deactivated before
+// provisioning, or never provisioned) is skipped. Returns the rows updated.
+//
+// Like the other methods it runs on the caller's *db.Queries so the snapshot
+// write and the desired-state rewrite commit together.
+func (d *DesiredState) ResyncForPlugin(ctx context.Context, q *db.Queries, pluginID string) (int, error) {
+	plugin, err := q.GetPluginByID(ctx, pluginID)
+	if err != nil {
+		return 0, fmt.Errorf("lifecycle: get plugin %q: %w", pluginID, err)
+	}
+	m, err := manifestv2.Parse([]byte(plugin.ManifestSnapshot))
+	if err != nil {
+		return 0, fmt.Errorf("lifecycle: parse v2 manifest for plugin %q: %w", plugin.Name, err)
+	}
+	declaredLimits, err := manifestLimits(m)
+	if err != nil {
+		return 0, fmt.Errorf("lifecycle: plugin %q: %w", plugin.Name, err)
+	}
+	limits := resources.Resolve(declaredLimits, resources.Limits{})
+
+	instances, err := q.ListPluginInstancesByPlugin(ctx, pluginID)
+	if err != nil {
+		return 0, fmt.Errorf("lifecycle: list instances of plugin %q: %w", plugin.Name, err)
+	}
+
+	updated := 0
+	now := d.clock().UTC().Format(time.RFC3339Nano)
+	for _, instance := range instances {
+		row, err := q.GetPluginContainerByInstance(ctx, instance.ID)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return updated, fmt.Errorf("lifecycle: get plugin_containers row for instance %q: %w", instance.ID, err)
+		}
+
+		n, err := q.UpdatePluginContainerDesiredState(ctx, db.UpdatePluginContainerDesiredStateParams{
+			ImageRef:           m.Package.Identifier,
+			ImageDigest:        m.Package.Digest(),
+			ConfigHash:         row.ConfigHash,
+			NetworkName:        row.NetworkName,
+			MemoryLimitBytes:   int64Ptr(limits.MemoryBytes),
+			CpuLimitMillicores: int64Ptr(limits.CPUMillicores),
+			DesiredState:       row.DesiredState,
+			UpdatedAt:          now,
+			ID:                 row.ID,
+			ExpectedVersion:    row.Version,
+		})
+		if err != nil {
+			return updated, fmt.Errorf("lifecycle: resync instance %q: %w", instance.ID, err)
+		}
+		if n == 0 {
+			return updated, fmt.Errorf("lifecycle: resync instance %q: %w", instance.ID, ErrCASConflict)
+		}
+		updated++
+	}
+	return updated, nil
 }
 
 // Remove deletes the plugin_containers desired-state row for instanceID. A

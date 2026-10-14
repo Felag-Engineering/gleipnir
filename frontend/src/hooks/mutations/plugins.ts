@@ -89,19 +89,31 @@ export function useAcceptPluginNewKey() {
 }
 
 // useAcceptPluginManifest commits the candidate manifest currently blocked on
-// pending_manifest_approval (sourced server-side from the latest
-// plugin_manifest_material_change audit event) and unblocks instances. The
-// endpoint takes no body — the candidate is found by plugin ID.
+// pending_manifest_approval and unblocks instances. A v2 plugin must send
+// expectedCandidateSha256 (the detail response's pending_manifest_sha256), which
+// binds the accept to the candidate the admin was shown; v1 sends no body.
 //
 // On success, all instance queries for this plugin are invalidated so health
 // chips reflect the transition to healthy or pending_config_migration.
 export function useAcceptPluginManifest() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ pluginId }: { pluginId: string }) =>
+    mutationFn: ({
+      pluginId,
+      expectedCandidateSha256,
+    }: {
+      pluginId: string
+      expectedCandidateSha256?: string
+    }) =>
       apiFetch<ApiAcceptManifestResponse>(
         `/admin/plugins/${encodeURIComponent(pluginId)}/accept-manifest`,
-        { method: 'POST' },
+        {
+          method: 'POST',
+          ...(expectedCandidateSha256 !== undefined && {
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ expected_candidate_sha256: expectedCandidateSha256 }),
+          }),
+        },
       ),
     onSuccess: (_data, { pluginId }) => {
       void queryClient.invalidateQueries({

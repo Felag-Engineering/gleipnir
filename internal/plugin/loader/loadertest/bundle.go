@@ -35,6 +35,27 @@ type Options struct {
 
 	// Unsigned omits signing.pub and the .minisig.
 	Unsigned bool
+
+	// Key signs with a fixed keypair instead of a fresh one, so a second
+	// bundle of the same plugin models a release from the same publisher
+	// rather than a key rotation. Nil generates a fresh key per bundle.
+	Key *Key
+}
+
+// Key is a signing keypair a test reuses across bundles.
+type Key struct {
+	pk signing.PublicKey
+	sk signing.SecretKey
+}
+
+// NewKey generates a keypair for Options.Key.
+func NewKey(t testing.TB) *Key {
+	t.Helper()
+	pk, sk, err := signing.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	return &Key{pk: pk, sk: sk}
 }
 
 // Bundle is a built tarball.
@@ -86,10 +107,11 @@ func Build(t testing.TB, o Options) Bundle {
 		{name: "image.tar", content: archive},
 	}
 	if !o.Unsigned {
-		pk, sk, err := signing.GenerateKeypair(rand.Reader)
-		if err != nil {
-			t.Fatalf("generate keypair: %v", err)
+		key := o.Key
+		if key == nil {
+			key = NewKey(t)
 		}
+		pk, sk := key.pk, key.sk
 		sig, err := signing.Sign(sk.SecretKey, sk.KeyID, signing.PluginPayload(archive, manifest), "trusted comment")
 		if err != nil {
 			t.Fatalf("sign: %v", err)
