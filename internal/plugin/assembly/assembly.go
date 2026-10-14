@@ -15,7 +15,8 @@
 // allocator, task poller, egress proxy, host endpoint, managed registrar,
 // capability health, log capture, resource collector, task-backed channels,
 // tool classifier) but does not start the reconciler, or anything else: every
-// loop, including the background scanners, starts in OperatorListenerReady.
+// loop, including the background scanners and the plugins-directory bundle
+// watcher, starts in OperatorListenerReady.
 // The events supervisor is the one piece built later, in BindLauncher, because
 // its sink launches runs and the launcher does not exist yet.
 // Self-attach joins Gleipnir's own container to every plugin network, which is

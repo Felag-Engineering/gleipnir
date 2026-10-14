@@ -7,7 +7,7 @@
 CI lane, #820), the §8 host endpoint, and the §5 events listen supervisor are assembled and
 started by `internal/plugin/assembly` (#962), but only in a `-tags substratev2` build. The
 default build never links the assembly or starts the reconciler, so the v1.1 gRPC substrate is
-still what runs, and the v2 build cannot yet install a bundle (no watcher, no upload route).
+still what runs, and the v2 build installs a bundle (upload route, plugins-dir watcher) but cannot yet approve one.
 Not started: §9 user scoping (#18), §12 Slack rewrite and cutover (#19, #22), §4.2
 conformance suite (#20).
 **Amendment 1:** Accepted 2026-08-04 — see §0. Channel delivery, config-option lookup, and

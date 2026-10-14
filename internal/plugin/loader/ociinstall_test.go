@@ -575,3 +575,20 @@ func assertAuditEvent(t *testing.T, store *db.Store, eventType, severity string)
 		t.Errorf("%s severity = %q, want %q", eventType, rows[0].Severity, severity)
 	}
 }
+
+// The hook registered on the OCI installer is the one the shared base Installer
+// holds, so v1 and v2 share a single callback slot.
+func TestOCIInstaller_OnInstalledReachesBaseInstaller(t *testing.T) {
+	_, _, in := newOCIFixture(t, false)
+
+	var got string
+	in.OnInstalled(func(_ context.Context, pluginID string) { got = pluginID })
+
+	if in.base.onInstalled == nil {
+		t.Fatal("the hook was not registered on the base installer")
+	}
+	in.base.onInstalled(context.Background(), "plugin-1")
+	if got != "plugin-1" {
+		t.Errorf("hook saw plugin %q, want plugin-1", got)
+	}
+}

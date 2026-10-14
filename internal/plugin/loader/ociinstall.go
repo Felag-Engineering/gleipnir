@@ -79,6 +79,14 @@ func NewOCIInstaller(base *Installer, images container.ImageRuntime) *OCIInstall
 	return &OCIInstaller{base: base, images: images}
 }
 
+// OnInstalled registers the post-install hook on the underlying Installer, so
+// both pipelines share one callback slot. The v2 pipeline does not invoke it
+// today: a fresh v2 install always lands pending_review, and the hook fires
+// only for an install that commits an already-active plugin.
+func (in *OCIInstaller) OnInstalled(fn func(ctx context.Context, pluginID string)) {
+	in.base.OnInstalled(fn)
+}
+
 // Install runs the full v2 pipeline for the tarball at tarPath.
 //
 // Ordering is the load-bearing part. The image load and its digest check

@@ -54,7 +54,7 @@ signed, containerized MCP servers. The packages below exist and are tested.
 `internal/plugin/assembly` composes them and `plugins_v2.go` starts the result,
 but only when the binary is built with `-tags substratev2`; the default build
 never links the assembly, never starts the reconciler, and runs the substrate
-above. The v2 build cannot install a bundle yet.
+above. The v2 build installs a bundle but cannot yet approve one.
 
 | Package | Owns |
 |---|---|

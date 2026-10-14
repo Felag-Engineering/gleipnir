@@ -15,6 +15,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/plugin/caphealth"
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
 	"github.com/felag-engineering/gleipnir/internal/plugin/hitl"
+	"github.com/felag-engineering/gleipnir/internal/plugin/loader"
 	"github.com/felag-engineering/gleipnir/internal/plugin/reconciler"
 	plugintrigger "github.com/felag-engineering/gleipnir/internal/plugin/trigger"
 )
@@ -97,6 +98,11 @@ type Assembly struct {
 	// plugins do.
 	admin AdminDeps
 
+	// watcher installs bundles dropped into the plugins directory. It is set up
+	// and run by OperatorListenerReady, never earlier: an install writes rows
+	// and, for a plugin that is already active, wakes the reconciler.
+	watcher *loader.Watcher
+
 	// kicker lets the admin surface wake the reconciler, which does not exist
 	// until OperatorListenerReady.
 	kicker *lateKicker
@@ -170,9 +176,13 @@ func (a *Assembly) bind(launcher plugintrigger.RunLauncher) {
 // container-substrate implementation of each admin interface when plugins are
 // enabled. While plugins are disabled every other field is nil.
 //
-// Installer and the OAuth, credentials and options handlers are not provided
-// yet: nothing in the v2 build installs a bundle (no watcher, no upload
-// route), so there is nothing for them to act on.
+// Installer is the OCI installer, which the upload route calls and the
+// directory watcher drives. The OAuth and credentials handlers, the credential
+// seeder and the public-URL hook are the v1 ones (they read manifests through
+// manifest.Read, so they handle a v2 manifest) and are nil without an
+// encryption key. OptionsHandler stays nil: it proxies a plugin's gRPC
+// ConfigOptionsService, which a containerized MCP server does not serve, and
+// the router then does not register the route, rather than serving a faked empty list.
 func (a *Assembly) AdminDeps() AdminDeps {
 	d := a.admin
 	d.ManifestSnap = a.manifestSnap
@@ -236,7 +246,10 @@ func (a *Assembly) OperatorListenerReady(ln net.Listener) error {
 	a.poller.Start(a.ctx, taskPollTick)
 	a.scheduleGC(rec, containerGCInterval)
 	a.startBackground()
-	return nil
+
+	// Last, so a bundle already sitting in the directory is installed against a
+	// substrate that has finished its boot pass.
+	return a.startWatcher()
 }
 
 // scheduleGC runs the cleanup pass every interval. It is a separate, slower
@@ -273,6 +286,9 @@ func (a *Assembly) Quiesce() {
 
 // Shutdown stops the assembly's background goroutines. Containers are left
 // running: desired state is durable and the next boot converges on it.
+//
+// The bundle watcher is joined with the other background goroutines, after the
+// assembly's context is cancelled.
 //
 // Order: events streams (a backstop for a path that skipped Quiesce),
 // capability prober, resource collector, reconciler (Stop+Wait), listener

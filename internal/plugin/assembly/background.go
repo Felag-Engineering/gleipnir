@@ -5,9 +5,7 @@ import (
 	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
-	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
 	"github.com/felag-engineering/gleipnir/internal/plugin/dedup"
-	pluginoauth "github.com/felag-engineering/gleipnir/internal/plugin/oauth"
 )
 
 // timeNow is the package's injectable clock (CLAUDE.md "Testing time-dependent
@@ -42,36 +40,18 @@ type backgroundLoop struct {
 // makes credential storage possible) the OAuth nonce janitor and token refresh
 // scanner. They are constructed here and started by startBackground, so New
 // still starts nothing.
-func newBackgroundLoops(deps Deps, q *db.Queries) []backgroundLoop {
-	cfg := deps.Config
-	sweeper := dedup.NewSweeper(q, cfg.PluginDedupSweepInterval, dedup.TTL)
+func newBackgroundLoops(deps Deps, q *db.Queries, creds *credentialParts) []backgroundLoop {
+	sweeper := dedup.NewSweeper(q, deps.Config.PluginDedupSweepInterval, dedup.TTL)
 	loops := []backgroundLoop{{name: "dedup sweeper", run: sweeper.Start}}
 
-	if len(deps.EncryptionKey) == 0 {
+	if creds == nil {
 		return loops
 	}
-
-	key := deps.EncryptionKey
-	encrypt := func(p string) (string, error) { return crypto.Encrypt(key, p) }
-	decrypt := func(c string) (string, error) { return crypto.Decrypt(key, c) }
-	clock := func() time.Time { return timeNow() }
-
-	credentials := pluginoauth.NewDBStore(q, encrypt, decrypt, q, clock)
-	nonces := pluginoauth.NewDBNonceStore(q, clock)
-	getPublicURL := func() string {
-		if deps.SystemSettings == nil {
-			return ""
-		}
-		u, _ := deps.SystemSettings.GetPublicURL(context.Background())
-		return u
-	}
-	scanner := pluginoauth.NewRefreshScanner(credentials, q, getPublicURL, cfg.OAuthRefreshInterval, cfg.OAuthRefreshLead)
-
 	return append(loops,
 		backgroundLoop{name: "oauth nonce janitor", run: func(ctx context.Context) {
-			nonces.StartJanitor(ctx, nonceJanitorInterval)
+			creds.nonces.StartJanitor(ctx, nonceJanitorInterval)
 		}},
-		backgroundLoop{name: "oauth refresh scanner", run: scanner.Run},
+		backgroundLoop{name: "oauth refresh scanner", run: creds.scanner.Run},
 	)
 }
 
