@@ -119,6 +119,21 @@ type CapabilityChecker interface {
 	Serves(instanceID string, c caphealth.Capability) bool
 }
 
+// CapabilityWatcher is the optional extension of CapabilityChecker that lets
+// the Supervisor tell "health not observed yet" from "known unhealthy" and
+// wake the moment either changes, instead of sleeping out a backoff.
+// *caphealth.Registry satisfies it. A CapabilityChecker that does not
+// implement it keeps the plain fixed-interval wait.
+type CapabilityWatcher interface {
+	// Observed reports whether any liveness verdict exists for the instance.
+	Observed(instanceID string) bool
+
+	// Changed returns a one-shot channel closed by the next write that can
+	// alter what the instance serves. Callers must obtain it before reading
+	// Serves/Observed so no transition falls between the read and the wait.
+	Changed(instanceID string) <-chan struct{}
+}
+
 // PluginQuerier is the narrow DB interface the Supervisor needs to enumerate
 // active plugins/instances and read the state each connect attempt depends
 // on. Named distinctly from cursor.go's Querier (the durable-cursor DB
@@ -190,6 +205,11 @@ type Config struct {
 	// tests that do not exercise caphealth wiring rely on.
 	Capability CapabilityChecker
 
+	// After starts a timer for d and returns its channel and a stop func. It is
+	// the Supervisor's only source of wait time, so tests can drive backoffs
+	// deterministically. Defaults to a time.Timer; production leaves it nil.
+	After func(d time.Duration) (fired <-chan time.Time, stop func())
+
 	// Cursor is the durable resume-point store (cursor.go). Defaults to
 	// Noop{} when nil, matching internal/plugin/dedup's zero-value posture.
 	Cursor Store
@@ -234,6 +254,7 @@ type Supervisor struct {
 	rootCtx        context.Context
 	streamResolver StreamResolver
 	capability     CapabilityChecker
+	watcher        CapabilityWatcher // nil unless capability also implements it
 	cursor         Store
 	sink           Sink
 
@@ -266,6 +287,9 @@ func NewSupervisor(cfg Config) *Supervisor {
 	if cfg.Cursor == nil {
 		cfg.Cursor = Noop{}
 	}
+	if cfg.After == nil {
+		cfg.After = realTimer
+	}
 
 	rootCtx := cfg.RootCtx
 	if rootCtx == nil {
@@ -280,11 +304,14 @@ func NewSupervisor(cfg Config) *Supervisor {
 		resolver = &managedStreamResolver{servers: cfg.Servers, clients: cfg.Clients}
 	}
 
+	watcher, _ := cfg.Capability.(CapabilityWatcher)
+
 	return &Supervisor{
 		cfg:            cfg,
 		rootCtx:        rootCtx,
 		streamResolver: resolver,
 		capability:     cfg.Capability,
+		watcher:        watcher,
 		cursor:         cfg.Cursor,
 		sink:           cfg.Sink,
 		instances:      make(map[string]context.CancelFunc),
@@ -456,6 +483,7 @@ func (s *Supervisor) streamLoop(ctx context.Context, instanceID string, doneCh c
 	consecutive := 0
 	markedUnhealthy := false
 	loggedGate := false
+	unobservedWaits := 0
 	initialHealthSet := false
 	attempted := false
 
@@ -470,15 +498,35 @@ func (s *Supervisor) streamLoop(ctx context.Context, instanceID string, doneCh c
 			return
 		}
 
-		if s.capability != nil && !s.capability.Serves(instanceID, caphealth.Capability{Profile: caphealth.ProfileEventSource}) {
-			if !loggedGate {
-				log.InfoContext(ctx, "events supervisor: capability not currently serving event_source; waiting")
-				loggedGate = true
+		if s.capability != nil {
+			// Taken before the check so a verdict landing between the check
+			// and the wait still wakes us.
+			var changed <-chan struct{}
+			if s.watcher != nil {
+				changed = s.watcher.Changed(instanceID)
 			}
-			if !s.sleep(ctx, s.cfg.BackoffMax) {
-				return
+			if !s.capability.Serves(instanceID, caphealth.Capability{Profile: caphealth.ProfileEventSource}) {
+				wait := s.cfg.BackoffMax
+				if s.watcher != nil && !s.watcher.Observed(instanceID) {
+					// Nothing has looked at this instance yet: the prober's
+					// first verdict is imminent, not a fault, so retry on the
+					// short ramp (a safety net behind the wake) rather than
+					// the failure ceiling.
+					wait = s.backoff(unobservedWaits)
+					unobservedWaits++
+				} else {
+					unobservedWaits = 0
+				}
+				if !loggedGate {
+					log.InfoContext(ctx, "events supervisor: capability not currently serving event_source; waiting")
+					loggedGate = true
+				}
+				if !s.waitOrWake(ctx, wait, changed) {
+					return
+				}
+				continue
 			}
-			continue
+			unobservedWaits = 0
 		}
 		loggedGate = false
 
@@ -816,17 +864,30 @@ func (s *Supervisor) backoff(consecutive int) time.Duration {
 
 // sleep waits for d or ctx cancellation. Returns false when ctx is done.
 func (s *Supervisor) sleep(ctx context.Context, d time.Duration) bool {
+	return s.waitOrWake(ctx, d, nil)
+}
+
+// waitOrWake waits for d, a close of wake (nil never fires), or ctx
+// cancellation. Returns false only when ctx is done.
+func (s *Supervisor) waitOrWake(ctx context.Context, d time.Duration, wake <-chan struct{}) bool {
 	if d <= 0 {
 		return ctx.Err() == nil
 	}
-	timer := time.NewTimer(d)
-	defer timer.Stop()
+	fired, stop := s.cfg.After(d)
+	defer stop()
 	select {
-	case <-timer.C:
+	case <-fired:
+		return true
+	case <-wake:
 		return true
 	case <-ctx.Done():
 		return false
 	}
+}
+
+func realTimer(d time.Duration) (<-chan time.Time, func()) {
+	t := time.NewTimer(d)
+	return t.C, func() { t.Stop() }
 }
 
 // parseManifestKinds decodes a plugin's manifest_snapshot (YAML) and returns

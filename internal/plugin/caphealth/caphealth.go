@@ -305,6 +305,10 @@ type Registry struct {
 	byInstance map[string]map[Capability]Entry
 	liveness   map[string]Liveness
 
+	// changed holds, per instance, a channel that is closed (and dropped) by
+	// the next write that can alter what the instance serves. See Changed.
+	changed map[string]chan struct{}
+
 	// staleAfter ages a liveness verdict out. Zero disables the check.
 	staleAfter time.Duration
 }
@@ -316,6 +320,7 @@ func NewRegistry() *Registry {
 	return &Registry{
 		byInstance: make(map[string]map[Capability]Entry),
 		liveness:   make(map[string]Liveness),
+		changed:    make(map[string]chan struct{}),
 	}
 }
 
@@ -336,6 +341,9 @@ func (r *Registry) SetLiveness(instanceID string, l Liveness) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.liveness[instanceID] = l
+	// Unconditional: a fresh verdict with unchanged content still flips a
+	// stale instance back to serving, and a waiter's recheck is cheap.
+	r.notifyLocked(instanceID)
 }
 
 // SetCapability records one capability's health as established by the host
@@ -360,7 +368,11 @@ func (r *Registry) SetCapability(instanceID string, e Entry) {
 	if r.byInstance[instanceID] == nil {
 		r.byInstance[instanceID] = make(map[Capability]Entry)
 	}
+	prior, existed := r.byInstance[instanceID][e.Capability]
 	r.byInstance[instanceID][e.Capability] = e
+	if !existed || prior != e {
+		r.notifyLocked(instanceID)
+	}
 }
 
 // SelfReportCapability records a capability's health as reported by the
@@ -390,6 +402,7 @@ func (r *Registry) SelfReportCapability(instanceID string, e Entry) (applied boo
 		r.byInstance[instanceID] = make(map[Capability]Entry)
 	}
 	r.byInstance[instanceID][e.Capability] = e
+	r.notifyLocked(instanceID)
 	return true
 }
 
@@ -400,7 +413,10 @@ func (r *Registry) ClearCapability(instanceID string, c Capability) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if entries, ok := r.byInstance[instanceID]; ok {
-		delete(entries, c)
+		if _, existed := entries[c]; existed {
+			delete(entries, c)
+			r.notifyLocked(instanceID)
+		}
 	}
 }
 
@@ -414,6 +430,7 @@ func (r *Registry) ClearProbeEventKindFaults(instanceID string) {
 	for c, e := range r.byInstance[instanceID] {
 		if c.Profile == ProfileEventSource && c.Name != "" && e.Source == SourceProbe {
 			delete(r.byInstance[instanceID], c)
+			r.notifyLocked(instanceID)
 		}
 	}
 }
@@ -430,6 +447,7 @@ func (r *Registry) ClearSelfReported(instanceID string) {
 	for c, e := range r.byInstance[instanceID] {
 		if e.Source == SourceSelfReport {
 			delete(r.byInstance[instanceID], c)
+			r.notifyLocked(instanceID)
 		}
 	}
 }
@@ -440,6 +458,46 @@ func (r *Registry) Forget(instanceID string) {
 	defer r.mu.Unlock()
 	delete(r.byInstance, instanceID)
 	delete(r.liveness, instanceID)
+	r.notifyLocked(instanceID)
+}
+
+// Observed reports whether the host has recorded any liveness verdict for the
+// instance. It separates "health unknown yet" from "known unhealthy": Serves
+// is false for both, but an unobserved instance is merely waiting for the
+// prober's first look, so a caller should retry soon rather than treat it as a
+// fault. A verdict that has since aged out still counts as observed; the
+// prober stopping is a fault, not a first look.
+func (r *Registry) Observed(instanceID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return !r.liveness[instanceID].ObservedAt.IsZero()
+}
+
+// Changed returns a channel that is closed by the next write that can alter
+// what the instance serves (a liveness verdict, a capability entry change, a
+// clear, or Forget). It is one-shot: after it fires, call Changed again.
+//
+// Obtain the channel BEFORE reading Serves/Observed. A write landing between
+// the read and the wait then closes a channel the caller already holds, so no
+// transition is lost — this is what lets a waiter wake on liveness instead of
+// polling for it.
+func (r *Registry) Changed(instanceID string) <-chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ch, ok := r.changed[instanceID]
+	if !ok {
+		ch = make(chan struct{})
+		r.changed[instanceID] = ch
+	}
+	return ch
+}
+
+// notifyLocked wakes everyone waiting on Changed(instanceID). r.mu must be held.
+func (r *Registry) notifyLocked(instanceID string) {
+	if ch, ok := r.changed[instanceID]; ok {
+		close(ch)
+		delete(r.changed, instanceID)
+	}
 }
 
 // Get returns an instance's full health picture. Entries are sorted so the
