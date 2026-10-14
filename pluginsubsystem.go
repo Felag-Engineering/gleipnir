@@ -102,10 +102,11 @@ type pluginInstallNotifier interface {
 // building the RunLauncher: RunLauncherConfig's plugin fields (Registrar,
 // Dispatcher, ApprovalDispatcher, FeedbackDispatcher), the classifier/resolver
 // pair runpkg.NewDefaultToolResolver combines with the MCP registry into
-// RunLauncherConfig.Resolver, and the RunManager canceller. A subsystem that
-// starts no plugins (assembly.New today) leaves every field at its nil zero
-// value, which is exactly what "plugins disabled" already means to both
-// RunLauncherConfig and RunManager.
+// RunLauncherConfig.Resolver, and the RunManager canceller. A subsystem with
+// plugins disabled (the v2 assembly with no container socket) leaves every
+// field at its nil zero value, which is exactly what "plugins disabled"
+// already means to both RunLauncherConfig and RunManager. An enabled v2
+// assembly sets only the approval/feedback dispatchers and the classifier.
 type launcherPluginDeps struct {
 	Registrar          agent.PluginGenerationLookup
 	Dispatcher         agent.PluginToolDispatcher
@@ -137,6 +138,10 @@ type adminPluginDeps struct {
 	CredentialSeeder   admin.CredentialSeeder
 	ManifestSnap       *configvalidate.Snapshotter
 	OnPublicURLChanged func(ctx context.Context, oldURL, newURL string)
+
+	// Provisioner writes and removes a container desired-state row alongside
+	// each instance row. nil in v1, where no container exists to provision.
+	Provisioner admin.InstanceProvisioner
 
 	// CapabilityHealth backs the per-capability health read endpoint (#1001).
 	// nil in v1, which makes the endpoint answer with an empty list.

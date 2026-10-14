@@ -3,12 +3,14 @@
 package main
 
 // boot_v2_test.go proves the substratev2 build boots the real HTTP server and
-// serves /api/v1/health without starting any plugin machinery. assembly.New
-// (#948) returns an Assembly with no plugins today, so a missing plugins
-// directory — fatal to the v1 build's fsnotify watcher — is the cheapest
-// available proof that nothing here needs it. #962 replaces the no-op
-// assembly; this test's assertions (server up, health green, clean shutdown)
-// must keep passing unchanged once it does.
+// serves /api/v1/health with plugins disabled: no container-runtime socket in
+// auto mode is a WARN, not a failure. A missing plugins directory — fatal to
+// the v1 build's fsnotify watcher — is the cheapest available proof that
+// nothing here needs one.
+//
+// The posture is pinned rather than detected. Left to LoadDetectConfig this
+// test would use the real docker or podman socket of whatever machine runs it
+// and start a reconciler against a real daemon.
 
 import (
 	"io"
@@ -23,6 +25,8 @@ import (
 	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/infra/config"
+	"github.com/felag-engineering/gleipnir/internal/plugin/assembly"
+	"github.com/felag-engineering/gleipnir/internal/plugin/container"
 )
 
 // freeLoopbackAddr claims an ephemeral loopback port and immediately releases
@@ -68,12 +72,22 @@ func TestBootV2ServesHealthWithNoPluginMachinery(t *testing.T) {
 	dir := t.TempDir()
 	addr := freeLoopbackAddr(t)
 
+	// Auto mode with no socket anywhere: plugins disabled, whatever the host has.
+	previous := assemblyOptions
+	assemblyOptions = []assembly.Option{
+		assembly.WithDetectConfig(container.DetectConfig{
+			Mode:             "auto",
+			DockerSocketPath: filepath.Join(dir, "no-docker.sock"),
+			PodmanSocketPath: filepath.Join(dir, "no-podman.sock"),
+		}),
+	}
+	t.Cleanup(func() { assemblyOptions = previous })
+
 	t.Setenv("GLEIPNIR_ENCRYPTION_KEY", strings.Repeat("ab", 32))
 	t.Setenv("GLEIPNIR_DB_PATH", filepath.Join(dir, "gleipnir.db"))
 	t.Setenv("GLEIPNIR_PID_FILE", filepath.Join(dir, "gleipnir.pid"))
 	// Never created. The default build's fsnotify watcher fails startup when
-	// this directory does not exist; the v2 build's no-op assembly must not
-	// need it at all.
+	// this directory does not exist; the v2 build must not need it at all.
 	t.Setenv("GLEIPNIR_PLUGINS_DIR", filepath.Join(dir, "plugins-does-not-exist"))
 	t.Setenv("GLEIPNIR_LISTEN_ADDR", addr)
 

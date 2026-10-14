@@ -7,10 +7,10 @@ This page is the operator's view: which socket Gleipnir talks to and what that
 costs you in trust, what address space it needs, and what it will and will not
 do to containers it did not create.
 
-> **Status:** the packages below are implemented and tested, but the reconciler
-> is not started by `main.go` yet — nothing writes `plugin_containers` rows
-> until the manifest-v2 loader work lands. Nothing here is live in a running
-> Gleipnir today.
+> **Status:** the packages below are implemented and tested, and
+> `internal/plugin/assembly` starts the reconciler — but only in a
+> `-tags substratev2` build. The default build never starts it, so nothing here
+> runs in a default Gleipnir. The v2 build cannot install a bundle yet.
 
 ## Socket postures, and what each one costs
 

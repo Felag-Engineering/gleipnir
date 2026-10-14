@@ -101,6 +101,11 @@ type AdminDeps struct {
 	ManifestSnap       *configvalidate.Snapshotter
 	OnPublicURLChanged func(ctx context.Context, oldURL, newURL string)
 
+	// Provisioner writes and removes an instance's plugin_containers desired
+	// state in the same transaction as the instance row. nil while plugins are
+	// disabled, which makes create and delete touch only plugin_instances.
+	Provisioner admin.InstanceProvisioner
+
 	// CapabilityHealth backs the per-capability health read endpoint (#1001).
 	// nil while plugins are disabled.
 	CapabilityHealth *caphealth.Registry

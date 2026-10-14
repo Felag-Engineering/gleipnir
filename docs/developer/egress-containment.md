@@ -203,12 +203,17 @@ would bury the denials, which are the events worth reading.
 ## Manual mode
 
 In manual mode Gleipnir writes nothing to the socket, so it cannot create the
-networks or set the proxy variables. **Egress containment is the operator's
-responsibility there**, and the compose file has to implement the same posture by
-hand:
+networks or set the proxy variables, and it **does not run the egress proxy for
+manual instances**: the proxy listener and its allowlist entry are bound to
+Gleipnir's reserved `.2` on an instance network, which Gleipnir only pins in the
+managed postures (the attach pass never drives listeners in manual posture).
+**Egress containment is the operator's responsibility there**, and it is
+absolute by default: on an `internal: true` network with no proxy the plugin
+reaches nothing. See [Manual mode](manual-mode.md#egress-and-the-host-endpoint)
+for what that means for the host endpoint too.
 
 ```yaml
-# Manual-mode equivalent of what the reconciler does automatically.
+# Manual-mode equivalent of the default deny the reconciler establishes.
 networks:
   plugin-acme:
     internal: true        # <- the default deny. Without this line there is none.
@@ -217,27 +222,20 @@ services:
   plugin-acme:
     image: ghcr.io/example/acme@sha256:...
     networks: [plugin-acme]
-    environment:
-      # Gleipnir's proxy, reachable at the address Gleipnir occupies on this
-      # network (its reserved .2, never the network's own .1 gateway).
-      HTTPS_PROXY: "http://172.30.0.2:8118"
-      HTTP_PROXY:  "http://172.30.0.2:8118"
-      NO_PROXY:    ""     # <- empty on purpose: nothing bypasses the proxy.
     labels:
-      gleipnir.managed: "false"
+      gleipnir.managed: "true"
       gleipnir.instance: "<instance-id>"
 ```
 
-Two things go wrong most often, both silent:
+A plugin that must reach the internet needs a forward proxy you run and attach to
+that network; Gleipnir neither enforces nor audits that proxy's allowlist. Two
+things go wrong most often, both silent:
 
-- **Omitting `internal: true`.** The container gets normal egress and the proxy
-  becomes decorative — every request still succeeds, just not through it.
-- **Setting `NO_PROXY`** to anything. Each entry is a hole; `NO_PROXY=*` disables
-  containment entirely while leaving every other line looking correct.
-
-The proxy still applies the consented allowlist for whichever instance
-Gleipnir's address maps to, so a manual-mode container that *does* route
-through it is contained identically. What manual mode cannot do is force it to.
+- **Omitting `internal: true`.** The container gets normal egress, so nothing is
+  contained — every request succeeds, none of them through an allowlist.
+- **Setting `NO_PROXY`** to anything while using a proxy of your own. Each entry
+  is a hole; `NO_PROXY=*` disables containment entirely while leaving every other
+  line looking correct.
 
 ## What this does not cover
 

@@ -430,6 +430,8 @@ func run(cfg config.Config, pluginSubnetPool netip.Prefix) error {
 		Evictor:    pluginAdminDeps.Evictor,
 		PluginsDir: pluginAdminDeps.PluginsDir,
 		Unreg:      pluginAdminDeps.Unregistrar,
+		// nil in v1, so Delete touches no container state.
+		Provisioner: pluginAdminDeps.Provisioner,
 	})
 	pluginConfig := admin.NewInstanceConfig(admin.InstanceConfigDeps{
 		Q:         store.Queries(),
@@ -446,6 +448,11 @@ func run(cfg config.Config, pluginSubnetPool netip.Prefix) error {
 		Lifecycle:        pluginLifecycle,
 		Config:           pluginConfig,
 		CredentialSeeder: pluginAdminDeps.CredentialSeeder,
+		// Store only matters together with a Provisioner (nil in v1): it is
+		// the transaction CreateInstance writes the instance row and its
+		// container desired state in.
+		Store:            store,
+		Provisioner:      pluginAdminDeps.Provisioner,
 		CapabilityHealth: pluginAdminDeps.CapabilityHealth,
 	})
 

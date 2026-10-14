@@ -193,6 +193,6 @@ rows (`planAttach`, pure like `planFor`), and a crash between the switch and the
 
 - The host endpoint (M17).
 - External-server extension opt-in — explicitly deferred, §5.
-- Listener actions (the events supervisor's per-instance listeners): `planAttach`
-  accepts a `listeners` argument but ignores it until #957 adds them.
-- Starting the reconciler, and so the attach pass, from `main.go` (#962).
+- Anything beyond the endpoint row itself. The per-instance listeners (#957) and
+  starting the reconciler (#962, `substratev2` build only) are described in
+  `internal/plugin/CLAUDE.md`.

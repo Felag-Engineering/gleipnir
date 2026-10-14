@@ -47,12 +47,14 @@ Gleipnir runs a second extension system parallel to MCP: HashiCorp `go-plugin`-b
 
 The full design specification lives in `docs/developer/plugin-system-spec.md`. ADRs 041-049 record the individual architectural decisions.
 
-## Container substrate (ADR-056, not yet wired into `main.go`)
+## Container substrate (ADR-056, wired only in the `substratev2` build)
 
 The MCP realignment replaces the go-plugin subprocess substrate above with
-signed, containerized MCP servers. The packages below exist and are tested; the
-reconciler is **not** started by `main.go` yet, because nothing writes
-`plugin_containers` rows until the manifest-v2 loader work lands.
+signed, containerized MCP servers. The packages below exist and are tested.
+`internal/plugin/assembly` composes them and `plugins_v2.go` starts the result,
+but only when the binary is built with `-tags substratev2`; the default build
+never links the assembly, never starts the reconciler, and runs the substrate
+above. The v2 build cannot install a bundle yet.
 
 | Package | Owns |
 |---|---|

@@ -5,8 +5,9 @@
 //
 // This is the v2-assembly-only replacement for ApprovalChannelAdapter /
 // FeedbackChannelAdapter (approval_adapter.go, feedback_adapter.go), which
-// stay untouched and stay what the default build wires — #962 is the only
-// caller that will ever construct a TaskChannelAdapters.
+// stay untouched and stay what the default build wires — the v2 assembly
+// (internal/plugin/assembly) is the only caller that constructs a
+// TaskChannelAdapters.
 //
 // # Why the in-app entry never reaches hitl.Router here
 //

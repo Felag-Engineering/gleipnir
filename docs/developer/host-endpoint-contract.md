@@ -524,18 +524,17 @@ already speaks the realignment contract. A legacy handshake attempt is
 
 ## 9. Status: built, not live
 
-Everything described above is real, tested code — it is not what shipped in
-main.go's boot path. Today, the *only* piece of this contract that actually
-runs is `AssertHostPlane`, called once at startup to guard the host-plane
-invariant (§4) against whatever the v1.1 plugin runtime has registered. No
-`ListenerSet` is constructed by `main.go`, no instance network carries this
-traffic, and no plugin calls any of these methods over MCP yet — the v1.1
-gRPC plane in `internal/plugin/hostsvc` is what plugins actually call today.
+Everything described above is real, tested code. In the default build it is
+not what runs: only `AssertHostPlane` is called at startup, to guard the
+host-plane invariant (§4) against whatever the v1.1 plugin runtime has
+registered, and the v1.1 gRPC plane in `internal/plugin/hostsvc` is what plugins
+actually call.
 
-The `ListenerSet` is reconciler-driven: once the container substrate goes
-live (the reconciler is merged but not started by `main.go` — see the root
-`CLAUDE.md`'s settled-decisions entry for ADR-053…ADR-060), the reconciler
-calls `Add`/`Remove` as per-instance networks come up and go down, exactly as
-it already does for containers and subnets. Until then, this document
-describes a fully-specified, fully-tested destination that the substrate has
-not yet been switched onto.
+In a `-tags substratev2` build, `internal/plugin/assembly` constructs the
+`Server` behind the `Chain` and a `ListenerSet`, and the reconciler calls
+`Add`/`Remove` as per-instance networks come up and go down, binding Gleipnir's
+reserved `.2` address on each (never the gateway, never a wildcard). That build
+is exercised end to end by `internal/plugin/assembly/boot_e2e_test.go` — a fake
+plugin calls `host/get_instance_config` with its first-boot token — but it is
+not the shipped binary: the cutover (#22) has not happened. Manual posture
+serves no host endpoint at all; see [manual-mode.md](manual-mode.md).
