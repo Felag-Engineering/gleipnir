@@ -146,4 +146,8 @@ type adminPluginDeps struct {
 	// CapabilityHealth backs the per-capability health read endpoint (#1001).
 	// nil in v1, which makes the endpoint answer with an empty list.
 	CapabilityHealth *caphealth.Registry
+
+	// ApproveV2Manifests lets the Approve handler approve a v2 plugin. false
+	// in v1, which has no substrate to run one.
+	ApproveV2Manifests bool
 }

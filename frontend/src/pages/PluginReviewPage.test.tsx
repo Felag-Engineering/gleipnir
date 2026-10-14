@@ -238,3 +238,102 @@ describe('PluginReviewPage', () => {
     })
   })
 })
+
+describe('PluginReviewPage v2 consent', () => {
+  const V2_PLUGIN: ApiPluginDetail = {
+    id: PLUGIN_ID,
+    name: 'Acme Notify',
+    version: '1.0.0',
+    status: 'pending_review',
+    services: [],
+    tier2_capabilities: ['user_directory_read'],
+    auth_strategy: 'static_api_key',
+    has_oauth_defaults: false,
+    pubkey_fingerprint: 'feedfacecafe0001',
+    has_sbom: false,
+    manifest_version: 2,
+    created_at: '2026-01-01T00:00:00Z',
+    v2: {
+      image: {
+        identifier: 'ghcr.io/acme/notify@sha256:abc123',
+        repository: 'ghcr.io/acme/notify',
+        digest: 'sha256:abc123',
+        registry_type: 'oci',
+        transport_type: 'streamable-http',
+        transport_port: 8080,
+      },
+      egress: [{ domain: 'api.acme.example', reason: 'calls the Acme API' }],
+      resources: { memory_mb: 256, cpu_millicores: 500 },
+      profiles: {
+        declared: ['tool_provider', 'human_channel'],
+        human_channel_assurance: 'weak',
+      },
+      tools: [{ name: 'delete_all', elicitation_kind: 'permission' }],
+      event_kinds: [],
+      auth: { strategy: 'static_api_key', header_name: 'X-Api-Key' },
+      config_schema: { type: 'object', properties: { workspace: { type: 'string' } } },
+    },
+  }
+
+  beforeEach(() => {
+    mockApprove()
+    mockReject()
+  })
+
+  it('renders image, digest, egress, resources, profiles, tools, auth and config schema', () => {
+    mockPluginDetail(V2_PLUGIN)
+    renderPage()
+
+    expect(screen.getByText('ghcr.io/acme/notify')).toBeInTheDocument()
+    expect(screen.getByText('sha256:abc123')).toBeInTheDocument()
+    expect(screen.getByText('api.acme.example')).toBeInTheDocument()
+    expect(screen.getByText('calls the Acme API')).toBeInTheDocument()
+    expect(screen.getByText('256 MiB memory, 500 millicores CPU')).toBeInTheDocument()
+    expect(screen.getByText('Tool provider')).toBeInTheDocument()
+    expect(screen.getByText('Human channel')).toBeInTheDocument()
+    expect(screen.getByText('Channel assurance: weak')).toBeInTheDocument()
+    expect(screen.getByText('delete_all')).toBeInTheDocument()
+    expect(screen.getByText('asks for permission')).toBeInTheDocument()
+    expect(screen.getByText('Header: X-Api-Key')).toBeInTheDocument()
+    expect(screen.getByText(/"workspace"/)).toBeInTheDocument()
+    // Tier-2 capabilities and the signing key are shown once, not duplicated.
+    expect(screen.getAllByText('user_directory_read')).toHaveLength(1)
+    expect(screen.getAllByText('feedfacecafe0001')).toHaveLength(1)
+  })
+
+  it('says so when the plugin requests no egress and declares no resources', () => {
+    mockPluginDetail({
+      ...V2_PLUGIN,
+      v2: { ...V2_PLUGIN.v2!, egress: [], resources: null },
+    })
+    renderPage()
+
+    expect(screen.getByText(/cannot reach any external host/)).toBeInTheDocument()
+    expect(screen.getByText(/host default applies/)).toBeInTheDocument()
+  })
+
+  it('flags an unsigned v2 bundle', () => {
+    mockPluginDetail({ ...V2_PLUGIN, pubkey_fingerprint: undefined })
+    renderPage()
+
+    expect(screen.getByText(/Unsigned bundle/)).toBeInTheDocument()
+  })
+
+  it('does not render the v2 section for a v1 plugin', () => {
+    mockPluginDetail(FULL_PLUGIN)
+    renderPage()
+
+    expect(screen.queryByText('Network egress')).not.toBeInTheDocument()
+  })
+
+  it('approves a v2 plugin through the same Approve button', async () => {
+    const mutate = vi.fn()
+    mockApprove(mutate)
+    mockPluginDetail(V2_PLUGIN)
+    renderPage()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Approve' }))
+
+    expect(mutate).toHaveBeenCalledWith({ pluginId: PLUGIN_ID }, expect.anything())
+  })
+})

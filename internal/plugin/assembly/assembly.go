@@ -110,4 +110,9 @@ type AdminDeps struct {
 	// CapabilityHealth backs the per-capability health read endpoint (#1001).
 	// nil while plugins are disabled.
 	CapabilityHealth *caphealth.Registry
+
+	// ApproveV2Manifests lets the admin Approve handler approve a v2 plugin.
+	// True only while plugins are enabled: the default build and a
+	// plugins-disabled assembly cannot run a v2 plugin, so they keep refusing.
+	ApproveV2Manifests bool
 }

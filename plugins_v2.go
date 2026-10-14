@@ -97,6 +97,7 @@ func (s *v2PluginSubsystem) adminDeps() adminPluginDeps {
 		OnPublicURLChanged: d.OnPublicURLChanged,
 		Provisioner:        d.Provisioner,
 		CapabilityHealth:   d.CapabilityHealth,
+		ApproveV2Manifests: d.ApproveV2Manifests,
 	}
 }
 

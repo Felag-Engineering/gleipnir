@@ -304,9 +304,6 @@ func newE2EFixture(t *testing.T) *e2eFixture {
 	if fake.Loads != 1 {
 		t.Fatalf("image loads = %d, want 1: the install must load the image into the runtime", fake.Loads)
 	}
-	// Approval is the consent step. The admin Approve handler refuses a v2
-	// manifest (approval belongs to the v2 substrate, which has no route yet),
-	// so the test records the outcome of that step directly.
 	pluginRow, err := q.GetPluginByID(ctx, pluginID)
 	if err != nil {
 		t.Fatalf("GetPluginByID: %v", err)
@@ -314,15 +311,22 @@ func newE2EFixture(t *testing.T) *e2eFixture {
 	if pluginRow.Status != string(model.PluginStatusPendingReview) {
 		t.Fatalf("installed plugin status = %q, want %q", pluginRow.Status, model.PluginStatusPendingReview)
 	}
-	if _, err := q.UpdatePluginStatus(ctx, db.UpdatePluginStatusParams{
-		Status: string(model.PluginStatusActive), UpdatedAt: timeNow().UTC().Format(time.RFC3339Nano),
-		ID: pluginID, ExpectedVersion: pluginRow.Version,
-	}); err != nil {
-		t.Fatalf("approving the plugin: %v", err)
-	}
 
 	f := &e2eFixture{t: t, a: a, deps: deps, q: q, pub: pub, rt: rt, plugin: plugin, arbiter: arbiter, pluginID: pluginID, pluginAddr: pluginAddr}
 	f.handler = f.adminRouter()
+
+	// Approval is the consent step, taken through the real Approve handler: the
+	// assembly's AdminDeps are what let it accept a v2 manifest.
+	if rec := f.do(http.MethodPost, "/plugins/"+pluginID+"/approve", ""); rec.Code != http.StatusOK {
+		t.Fatalf("approve = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	approved, err := q.GetPluginByID(ctx, pluginID)
+	if err != nil {
+		t.Fatalf("GetPluginByID after approve: %v", err)
+	}
+	if approved.Status != string(model.PluginStatusActive) {
+		t.Fatalf("approved plugin status = %q, want %q", approved.Status, model.PluginStatusActive)
+	}
 	return f
 }
 
@@ -338,8 +342,10 @@ func (f *e2eFixture) adminRouter() http.Handler {
 	handler := admin.NewPluginHandler(admin.PluginHandlerDeps{
 		Q: f.q, Publisher: f.deps.Publisher, ProcessManager: d.ProcMgr, Lifecycle: lifecycle,
 		Store: f.deps.Store, Provisioner: d.Provisioner, CapabilityHealth: d.CapabilityHealth,
+		ApproveV2Manifests: d.ApproveV2Manifests,
 	})
 	r := chi.NewRouter()
+	r.Post("/plugins/{id}/approve", handler.ApprovePlugin)
 	r.Post("/plugins/{id}/instances", handler.CreateInstance)
 	r.Delete("/plugins/{id}/instances/{iid}", handler.DeleteInstance)
 	return r

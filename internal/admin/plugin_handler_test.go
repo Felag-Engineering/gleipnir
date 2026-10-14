@@ -358,6 +358,7 @@ type testPluginHandlerConfig struct {
 	credSeeder  CredentialSeeder
 	provisioner InstanceProvisioner
 	capHealth   *caphealth.Registry
+	approveV2   bool
 }
 
 // newTestPluginHandler builds InstanceLifecycle + InstanceConfig + PluginHandler
@@ -381,18 +382,19 @@ func newTestPluginHandler(q PluginQuerier, clock func() time.Time, cfg testPlugi
 		Clock:   clock,
 	})
 	return NewPluginHandler(PluginHandlerDeps{
-		Q:                q,
-		Clock:            clock,
-		Installer:        cfg.installer,
-		RSSAggregator:    cfg.rssAgg,
-		ProcessManager:   cfg.procMgr,
-		PluginsDir:       cfg.pluginsDir,
-		Lifecycle:        lifecycle,
-		Config:           instanceConfig,
-		CredentialSeeder: cfg.credSeeder,
-		Store:            cfg.store,
-		Provisioner:      cfg.provisioner,
-		CapabilityHealth: cfg.capHealth,
+		Q:                  q,
+		Clock:              clock,
+		Installer:          cfg.installer,
+		RSSAggregator:      cfg.rssAgg,
+		ProcessManager:     cfg.procMgr,
+		PluginsDir:         cfg.pluginsDir,
+		Lifecycle:          lifecycle,
+		Config:             instanceConfig,
+		CredentialSeeder:   cfg.credSeeder,
+		Store:              cfg.store,
+		Provisioner:        cfg.provisioner,
+		CapabilityHealth:   cfg.capHealth,
+		ApproveV2Manifests: cfg.approveV2,
 	})
 }
 

@@ -286,6 +286,10 @@ type PluginHandlerDeps struct {
 	// CapabilityHealth backs ListInstanceCapabilities. nil in the live v1
 	// assembly, where the endpoint answers with an empty list.
 	CapabilityHealth *caphealth.Registry
+	// ApproveV2Manifests lets ApprovePlugin approve a schema_version 2 plugin.
+	// Only the v2 assembly sets it: the v1 build has no container substrate to
+	// run an approved v2 plugin, so it keeps refusing them.
+	ApproveV2Manifests bool
 }
 
 // PluginHandler handles plugin-related admin endpoints.
@@ -303,6 +307,7 @@ type PluginHandler struct {
 	store          *db.Store            // nil (or a nil provisioner) skips the create-instance provisioning tx
 	provisioner    InstanceProvisioner  // nil in v1: CreateInstance/DeleteInstance skip container provisioning
 	capHealth      *caphealth.Registry  // nil in v1: ListInstanceCapabilities returns an empty list
+	approveV2      bool                 // false in v1: ApprovePlugin refuses a v2 manifest
 }
 
 // NewPluginHandler constructs a PluginHandler from the given deps struct.
@@ -335,6 +340,7 @@ func NewPluginHandler(deps PluginHandlerDeps) *PluginHandler {
 		store:          deps.Store,
 		provisioner:    deps.Provisioner,
 		capHealth:      deps.CapabilityHealth,
+		approveV2:      deps.ApproveV2Manifests,
 	}
 }
 
@@ -1867,6 +1873,9 @@ type pluginDetailResponse struct {
 	// accepted) — never silently reported as 1. Used by #1000.
 	ManifestVersion int    `json:"manifest_version"`
 	CreatedAt       string `json:"created_at"`
+	// V2 is the v2 consent surface; absent for v1 rows so their response is
+	// unchanged.
+	V2 *pluginV2Consent `json:"v2,omitempty"`
 }
 
 // pluginListItemResponse is the JSON shape for a single entry in the ListPlugins response.
@@ -1989,6 +1998,17 @@ func (h *PluginHandler) GetPluginDetail(w http.ResponseWriter, r *http.Request) 
 		fingerprint = fmt.Sprintf("%x", deriveFingerprint([]byte(plugin.TrustedPubkey)))
 	}
 
+	var v2Consent *pluginV2Consent
+	if snapErr == nil && snap.Version == 2 {
+		v2Consent, err = buildPluginV2Consent(snap)
+		if err != nil {
+			// Fail closed: a consent screen that cannot show a field must not
+			// be shown at all.
+			httputil.WriteError(w, http.StatusInternalServerError, "corrupt manifest snapshot", err.Error())
+			return
+		}
+	}
+
 	httputil.WriteJSON(w, http.StatusOK, pluginDetailResponse{
 		ID:                plugin.ID,
 		Name:              plugin.Name,
@@ -2005,6 +2025,7 @@ func (h *PluginHandler) GetPluginDetail(w http.ResponseWriter, r *http.Request) 
 		HasSBOM:           m.SBOM != "",
 		ManifestVersion:   manifestVersion,
 		CreatedAt:         plugin.CreatedAt,
+		V2:                v2Consent,
 	})
 }
 
@@ -2107,16 +2128,17 @@ func (h *PluginHandler) ApprovePlugin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// #950 security review: approval is a v1-only admin action (there is no
-	// v2 install/approve path yet — internal/plugin/loader.readManifest
-	// already refuses to ever write a v2-shaped manifest.snapshot, valid or
-	// not). Guard here anyway, by the same Version != 1 check as
-	// AcceptManifest/loadPendingManifest, rather than trusting that upstream
-	// refusal alone: an admin clicking "approve" is exactly the moment a
-	// mis-provenanced v2 row would be waved through as an ordinary v1 plugin.
-	// Read does not error on a VALID v2 manifest — it decodes cleanly with
-	// Version 2 — so the check must be on snap.Version, not just on err.
-	if snap, snapErr := pluginmanifest.Read([]byte(plugin.ManifestSnapshot)); snapErr != nil || snap.Version != 1 {
+	// #950 security review: a v2 manifest must never be approved through a
+	// consent surface that does not show its v2 fields, and Read does not error
+	// on a VALID v2 manifest (it decodes cleanly with Version 2), so the check
+	// is on snap.Version, not just on err. The v1 build keeps refusing every
+	// non-v1 snapshot; only the v2 assembly sets approveV2, and it is also the
+	// only build with a substrate that can run what is approved. GetPluginDetail
+	// returns the v2 consent fields for every v2 row, so the screen the admin
+	// approves from shows exactly what this branch lets through.
+	snap, snapErr := pluginmanifest.Read([]byte(plugin.ManifestSnapshot))
+	approvable := snapErr == nil && (snap.Version == 1 || (snap.Version == 2 && h.approveV2))
+	if !approvable {
 		if snapErr == nil {
 			snapErr = fmt.Errorf("manifest schema_version %d", snap.Version)
 		}
@@ -2148,12 +2170,19 @@ func (h *PluginHandler) ApprovePlugin(w http.ResponseWriter, r *http.Request) {
 	if caller != nil {
 		actorID = caller.ID
 	}
-	h.writeAuditEvent(ctx, auditReviewApproved, "info", nowStr, map[string]any{
+	approvedPayload := map[string]any{
 		"plugin_id": pluginID,
 		"name":      plugin.Name,
 		"version":   plugin.PluginVersion,
 		"actor":     actorID,
-	})
+	}
+	if snap.Version == 2 {
+		// Record what was consented to: the pinned image is the one thing a
+		// later audit cannot recover from the plugin row once it is replaced.
+		approvedPayload["manifest_version"] = snap.Version
+		approvedPayload["image"] = snap.Package.Identifier
+	}
+	h.writeAuditEvent(ctx, auditReviewApproved, "info", nowStr, approvedPayload)
 
 	// StartByPluginID is a no-op at this point — no instances exist yet. The
 	// first instance's subprocess starts when the admin creates it via
