@@ -48,6 +48,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/plugin/caphealth"
 	"github.com/felag-engineering/gleipnir/internal/plugin/container"
+	"github.com/felag-engineering/gleipnir/internal/plugin/loader/loadertest"
 	"github.com/felag-engineering/gleipnir/internal/plugin/reconciler"
 	"github.com/felag-engineering/gleipnir/internal/testutil"
 	"github.com/felag-engineering/gleipnir/internal/toolregistry"
@@ -62,14 +63,14 @@ const (
 )
 
 // e2eManifest is the consented v2 manifest: a tool provider and an event
-// source attesting one kind, served on port.
-func e2eManifest(port int) string {
+// source attesting one kind, served on port, pinning the image digest.
+func e2eManifest(port int, digest string) string {
 	return `schema_version: "2"
 name: ` + e2ePluginName + `
 version: "1.0.0"
 package:
   registry_type: oci
-  identifier: ghcr.io/acme/notify@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  identifier: ghcr.io/acme/notify@` + digest + `
   transport:
     type: streamable-http
     port: ` + strconv.Itoa(port) + `
@@ -240,8 +241,8 @@ type e2eFixture struct {
 	handler    http.Handler
 }
 
-// newE2EFixture composes the assembly over a fake runtime with a seeded, active
-// v2 plugin. Nothing is started: the caller creates an instance, then boots.
+// newE2EFixture composes the assembly over a fake runtime with an installed,
+// approved v2 plugin. Nothing is started: the caller creates an instance, then boots.
 func newE2EFixture(t *testing.T) *e2eFixture {
 	t.Helper()
 	ctx := context.Background()
@@ -288,19 +289,39 @@ func newE2EFixture(t *testing.T) *e2eFixture {
 	}
 	t.Cleanup(a.Shutdown)
 
-	// The post-install, post-approval state of a v2 bundle. The bundle install
-	// pipeline itself is covered by internal/plugin/loader; nothing in this
-	// build installs a bundle yet (see AdminDeps).
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	pluginRow, err := q.CreatePlugin(ctx, db.CreatePluginParams{
-		ID: "plug-notify", Name: e2ePluginName, PluginVersion: "1.0.0", ManifestSnapshot: e2eManifest(port),
-		TrustedPubkey: "k", Status: string(model.PluginStatusActive), CreatedAt: now, UpdatedAt: now,
+	// The plugin arrives the way an operator's does: a signed bundle through the
+	// installer the upload route and the watcher share, which lands it awaiting
+	// review. The fake runtime yields the image the manifest pins.
+	bundle := loadertest.Build(t, loadertest.Options{
+		Name: e2ePluginName, Version: "1.0.0", Seed: "e2e-image",
+		Manifest: func(digest string) []byte { return []byte(e2eManifest(port, digest)) },
 	})
+	fake.PendingImages = []container.ImageInfo{{ID: bundle.Digest}}
+	pluginID, err := a.AdminDeps().Installer.Install(ctx, bundle.Path)
 	if err != nil {
-		t.Fatalf("CreatePlugin: %v", err)
+		t.Fatalf("installing the bundle: %v", err)
+	}
+	if fake.Loads != 1 {
+		t.Fatalf("image loads = %d, want 1: the install must load the image into the runtime", fake.Loads)
+	}
+	// Approval is the consent step. The admin Approve handler refuses a v2
+	// manifest (approval belongs to the v2 substrate, which has no route yet),
+	// so the test records the outcome of that step directly.
+	pluginRow, err := q.GetPluginByID(ctx, pluginID)
+	if err != nil {
+		t.Fatalf("GetPluginByID: %v", err)
+	}
+	if pluginRow.Status != string(model.PluginStatusPendingReview) {
+		t.Fatalf("installed plugin status = %q, want %q", pluginRow.Status, model.PluginStatusPendingReview)
+	}
+	if _, err := q.UpdatePluginStatus(ctx, db.UpdatePluginStatusParams{
+		Status: string(model.PluginStatusActive), UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		ID: pluginID, ExpectedVersion: pluginRow.Version,
+	}); err != nil {
+		t.Fatalf("approving the plugin: %v", err)
 	}
 
-	f := &e2eFixture{t: t, a: a, deps: deps, q: q, pub: pub, rt: rt, plugin: plugin, arbiter: arbiter, pluginID: pluginRow.ID, pluginAddr: pluginAddr}
+	f := &e2eFixture{t: t, a: a, deps: deps, q: q, pub: pub, rt: rt, plugin: plugin, arbiter: arbiter, pluginID: pluginID, pluginAddr: pluginAddr}
 	f.handler = f.adminRouter()
 	return f
 }

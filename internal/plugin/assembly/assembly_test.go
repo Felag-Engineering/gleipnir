@@ -53,6 +53,7 @@ func newDeps(t *testing.T, pub *testutil.RecordingPublisher) Deps {
 			OAuthRefreshInterval:     time.Hour,
 			OAuthRefreshLead:         time.Hour,
 			PluginDedupSweepInterval: time.Hour,
+			PluginsDir:               t.TempDir(),
 		},
 		Store:       store,
 		Publisher:   pub,

@@ -50,3 +50,8 @@ func (a *ociInstallerAdapter) Install(ctx context.Context, tarPath string) (stri
 	result, err := a.inner.Install(ctx, tarPath)
 	return result.PluginID, err
 }
+
+// OnInstalled forwards the post-install hook registration to the OCI installer.
+func (a *ociInstallerAdapter) OnInstalled(fn func(ctx context.Context, pluginID string)) {
+	a.inner.OnInstalled(fn)
+}

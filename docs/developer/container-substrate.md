@@ -10,7 +10,7 @@ do to containers it did not create.
 > **Status:** the packages below are implemented and tested, and
 > `internal/plugin/assembly` starts the reconciler — but only in a
 > `-tags substratev2` build. The default build never starts it, so nothing here
-> runs in a default Gleipnir. The v2 build cannot install a bundle yet.
+> runs in a default Gleipnir. The v2 build installs a bundle but cannot yet approve one.
 
 ## Socket postures, and what each one costs
 

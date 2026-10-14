@@ -26,6 +26,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/plugin/inapptask"
 	"github.com/felag-engineering/gleipnir/internal/plugin/lifecycle"
 	"github.com/felag-engineering/gleipnir/internal/plugin/lifecycle/adminv2"
+	"github.com/felag-engineering/gleipnir/internal/plugin/loader"
 	"github.com/felag-engineering/gleipnir/internal/plugin/logcapture"
 	"github.com/felag-engineering/gleipnir/internal/plugin/pluginmetrics"
 	"github.com/felag-engineering/gleipnir/internal/plugin/reconciler"
@@ -58,6 +59,12 @@ type options struct {
 	selfContainerID   *container.ContainerID
 	checkForwarding   func() error
 	reconcileInterval time.Duration
+
+	// watchedInstaller wraps the installer the directory watcher calls, and
+	// watcherDebounce replaces its settle window. Tests use them to observe
+	// each install completing and to avoid waiting out the default window.
+	watchedInstaller func(loader.BundleInstaller) loader.BundleInstaller
+	watcherDebounce  time.Duration
 }
 
 // New composes the v2 plugin substrate; see the package doc for what it starts
@@ -304,7 +311,20 @@ func (a *Assembly) compose(
 
 	desired := lifecycle.NewDesiredState(nil)
 	a.kicker = &lateKicker{}
+	creds := newCredentialParts(deps, q)
+	installer := composeInstaller(deps, q, rt)
+	watched := loader.BundleInstaller(installer)
+	if o.watchedInstaller != nil {
+		watched = o.watchedInstaller(watched)
+	}
+	var watchOpts []loader.WatcherOption
+	if o.watcherDebounce > 0 {
+		watchOpts = append(watchOpts, loader.WithDebounce(o.watcherDebounce))
+	}
+	a.watcher = loader.NewWatcher(deps.Config.PluginsDir, watched, watchOpts...)
 	a.admin = AdminDeps{
+		Installer:     installer,
+		PluginsDir:    deps.Config.PluginsDir,
 		ProcMgr:       adminv2.NewProcessManager(q, desired, a.kicker, endpoints),
 		Trigger:       adminv2.NewTriggerRestarter(lateEvents{a}),
 		Inflight:      adminv2.NewInflightCounter(q, q, deps.MCPRegistry),
@@ -312,6 +332,12 @@ func (a *Assembly) compose(
 		RSSAggregator: adminv2.NewRSSAggregator(collector),
 		Unregistrar:   namespaceReleaser{arbiter: deps.Arbiter},
 		Provisioner:   desired,
+	}
+	if creds != nil {
+		a.admin.OAuthHandler = creds.oauth
+		a.admin.CredentialsHandler = creds.credentials
+		a.admin.CredentialSeeder = creds.store
+		a.admin.OnPublicURLChanged = creds.onPublicURLChanged
 	}
 
 	a.health = health
@@ -321,7 +347,7 @@ func (a *Assembly) compose(
 	a.egressProxy = egressListeners
 	a.poller = channels.poller
 	a.notifier = channels.notifier
-	a.backgrounds = newBackgroundLoops(deps, q)
+	a.backgrounds = newBackgroundLoops(deps, q, creds)
 	a.launcher = LauncherDeps{
 		ApprovalDispatcher: channels.adapters,
 		FeedbackDispatcher: channels.adapters,
