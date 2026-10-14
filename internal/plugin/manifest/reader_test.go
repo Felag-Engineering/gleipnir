@@ -185,3 +185,37 @@ func TestRead_MalformedInputErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestRead_V2PackageAndResources(t *testing.T) {
+	withResources := twinV2Manifest + "  resources:\n    memory_mb: 256\n    cpu_millicores: 500\n"
+	// The two-space indent makes resources a sibling of gleipnir.profiles.
+	snap, err := pluginmanifest.Read([]byte(withResources))
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if got := snap.Package.Digest(); got != "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" {
+		t.Errorf("Package.Digest() = %q", got)
+	}
+	if snap.Package.Repository() != "ghcr.io/acme/notify" {
+		t.Errorf("Package.Repository() = %q", snap.Package.Repository())
+	}
+	if snap.Resources == nil || snap.Resources.MemoryMB != 256 || snap.Resources.CPUMillicores != 500 {
+		t.Errorf("Resources = %+v, want 256 MiB / 500m", snap.Resources)
+	}
+
+	bare, err := pluginmanifest.Read([]byte(twinV2Manifest))
+	if err != nil {
+		t.Fatalf("Read(bare): %v", err)
+	}
+	if bare.Resources != nil {
+		t.Errorf("Resources = %+v, want nil when the manifest declares none", bare.Resources)
+	}
+
+	v1, err := pluginmanifest.Read([]byte(twinV1Manifest))
+	if err != nil {
+		t.Fatalf("Read(v1): %v", err)
+	}
+	if v1.Package.Identifier != "" || v1.Resources != nil {
+		t.Errorf("v1 snapshot carries v2-only fields: %+v / %+v", v1.Package, v1.Resources)
+	}
+}

@@ -1,5 +1,6 @@
 import { Button } from '@/components/Button'
 import type { ApiPluginDetail } from '@/api/types'
+import { PluginV2Consent } from './PluginV2Consent'
 import styles from './PluginReviewCard.module.css'
 
 interface PluginReviewCardProps {
@@ -100,7 +101,8 @@ export function PluginReviewCard({
           </dd>
         </div>
 
-        {plugin.pubkey_fingerprint && (
+        {/* A v2 plugin's signing key is shown in the v2 section, which also flags an unsigned bundle. */}
+        {plugin.pubkey_fingerprint && !plugin.v2 && (
           <div className={styles.metaRow}>
             <dt className={styles.metaLabel}>Signing key</dt>
             <dd className={styles.metaValueMono}>{plugin.pubkey_fingerprint}</dd>
@@ -139,6 +141,10 @@ export function PluginReviewCard({
           </div>
         )}
       </dl>
+
+      {plugin.v2 && (
+        <PluginV2Consent consent={plugin.v2} pubkeyFingerprint={plugin.pubkey_fingerprint} />
+      )}
 
       {/* Action footer */}
       <div className={styles.actions}>

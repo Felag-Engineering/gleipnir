@@ -332,6 +332,8 @@ func (a *Assembly) compose(
 		RSSAggregator: adminv2.NewRSSAggregator(collector),
 		Unregistrar:   namespaceReleaser{arbiter: deps.Arbiter},
 		Provisioner:   desired,
+		// Set only here, where the reconciler can run what gets approved.
+		ApproveV2Manifests: true,
 	}
 	if creds != nil {
 		a.admin.OAuthHandler = creds.oauth

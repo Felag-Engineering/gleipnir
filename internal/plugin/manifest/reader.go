@@ -68,7 +68,7 @@ type OAuthDefaultsDecl struct {
 }
 
 // Snapshot is what a manifest snapshot says, independent of which schema
-// version produced it. Profiles, Transport and Egress are v2-only — a v1
+// version produced it. Profiles, Package, Transport, Egress and Resources are v2-only — a v1
 // snapshot leaves them at their zero value, not an error, because v1 has no
 // concept of any of the three.
 type Snapshot struct {
@@ -82,10 +82,14 @@ type Snapshot struct {
 	Auth               AuthDecl
 	Tier2Capabilities  []string
 
-	// Profiles, Transport and Egress are v2 only.
+	// Profiles, Package, Transport, Egress and Resources are v2 only. Package
+	// is the image the consented manifest pins; Resources is nil when the
+	// manifest declares none (the host default then applies).
 	Profiles  manifestv2.Profiles
+	Package   manifestv2.Package
 	Transport manifestv2.Transport
 	Egress    []manifestv2.EgressGrant
+	Resources *manifestv2.Resources
 }
 
 // Read parses snapshot and returns a version-neutral Snapshot, dispatching on
@@ -209,8 +213,10 @@ func readV2(data []byte) (Snapshot, error) {
 		Auth:               authFromV2(m.Gleipnir.Auth),
 		Tier2Capabilities:  m.Gleipnir.Tier2Capabilities,
 		Profiles:           m.Gleipnir.Profiles,
+		Package:            m.Package,
 		Transport:          m.Package.Transport,
 		Egress:             m.Gleipnir.Egress,
+		Resources:          m.Gleipnir.Resources,
 	}, nil
 }
 

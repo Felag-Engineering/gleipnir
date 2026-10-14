@@ -939,6 +939,37 @@ export interface ApiPluginListItem {
   created_at: string
 }
 
+// Matches internal/admin/plugin_consent_v2.go → pluginV2Consent. Present on the
+// plugin detail response for schema_version 2 rows only.
+export interface ApiPluginV2Consent {
+  image: {
+    identifier: string
+    repository: string
+    digest: string
+    registry_type: string
+    version?: string
+    transport_type: string
+    transport_port?: number
+  }
+  egress: { domain: string; reason?: string }[]
+  // null when the manifest declares no resources (the host default applies).
+  resources: { memory_mb?: number; cpu_millicores?: number } | null
+  profiles: {
+    declared: string[]
+    human_channel_assurance?: string
+    identity_link_methods?: string[]
+  }
+  tools: { name: string; elicitation_kind?: string }[]
+  event_kinds: { kind: string; description?: string }[]
+  auth: {
+    strategy: string
+    header_name?: string
+    header_names?: string[]
+    oauth_defaults?: { authorization_url?: string; token_url: string; scopes: string[] }
+  }
+  config_schema: unknown
+}
+
 // Matches internal/admin/plugin_handler.go → pluginDetailResponse (GET /api/v1/admin/plugins/:id).
 export interface ApiPluginDetail {
   id: string
@@ -956,6 +987,10 @@ export interface ApiPluginDetail {
   has_sbom: boolean
   manifest_version: PluginManifestVersion
   created_at: string
+  v2?: ApiPluginV2Consent
+  // The row's CAS version; sent back on approve so the approval is bound to
+  // what the admin was shown.
+  row_version?: number
 }
 
 // Matches internal/admin/plugin_handler.go → approvePluginResponse
