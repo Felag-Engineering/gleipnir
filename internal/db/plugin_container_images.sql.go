@@ -12,10 +12,12 @@ import (
 const countContainerImageReferences = `-- name: CountContainerImageReferences :one
 SELECT
     (SELECT COUNT(*) FROM plugin_container_generations
-      WHERE image_digest = ?1
+      WHERE plugin_container_generations.image_digest = ?1
         AND status IN ('pending', 'starting', 'healthy', 'active', 'draining'))
   + (SELECT COUNT(*) FROM plugin_pending_manifests
       WHERE instr(candidate_manifest, CAST(?1 AS TEXT)) > 0)
+  + (SELECT COUNT(*) FROM plugin_containers
+      WHERE plugin_containers.image_digest = ?1)
 `
 
 // CountContainerImageReferences counts what pins a digest: live generations
@@ -26,7 +28,10 @@ SELECT
 // containers are gone. A pending manifest counts because accepting it makes
 // its image the desired one, and the host does not reload an image on accept;
 // the digest is matched as a substring of the candidate manifest text, which
-// is where a v2 manifest pins it.
+// is where a v2 manifest pins it. A desired-state row counts too: accepting a
+// manifest moves plugin_containers.image_digest and deletes the pending row,
+// and a stopped instance has no generation yet, so without this the image
+// would be unpinned between accept and the next start.
 func (q *Queries) CountContainerImageReferences(ctx context.Context, imageDigest string) (int64, error) {
 	row := q.db.QueryRowContext(ctx, countContainerImageReferences, imageDigest)
 	var column_1 int64
@@ -101,6 +106,7 @@ WHERE digest NOT IN (
     SELECT image_digest FROM plugin_container_generations
     WHERE status IN ('pending', 'starting', 'healthy', 'active', 'draining')
 )
+AND digest NOT IN (SELECT image_digest FROM plugin_containers)
 AND NOT EXISTS (
     SELECT 1 FROM plugin_pending_manifests
     WHERE instr(plugin_pending_manifests.candidate_manifest, plugin_container_images.digest) > 0
@@ -109,7 +115,8 @@ ORDER BY loaded_at
 `
 
 // ListUnreferencedContainerImages returns the digests GC may reclaim: images
-// no live generation still runs and no pending manifest names. Ordered oldest-first so a bounded GC pass
+// no live generation still runs, no desired-state row wants, and no pending
+// manifest names. Ordered oldest-first so a bounded GC pass
 // reclaims the stalest images before the newest.
 func (q *Queries) ListUnreferencedContainerImages(ctx context.Context) ([]PluginContainerImage, error) {
 	rows, err := q.db.QueryContext(ctx, listUnreferencedContainerImages)

@@ -30,7 +30,7 @@ const (
 // ErrCASConflict is returned by SetDesired when the row's version has moved
 // since it was read (ADR-038): another writer won, and the caller must not
 // assume its own write applied.
-var ErrCASConflict = errors.New("lifecycle: CAS conflict")
+var ErrCASConflict = desiredstate.ErrCASConflict
 
 // ErrPluginNotActive is desiredstate.ErrPluginNotActive, aliased for the same
 // reason as the DesiredState* constants above: the same variable, not a

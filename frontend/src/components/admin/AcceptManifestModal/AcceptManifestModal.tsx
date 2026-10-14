@@ -12,9 +12,12 @@ export interface AcceptManifestModalProps {
   pendingInstanceCount: number
   // The blocked v2 candidate to review before accepting; absent for a v1 plugin.
   pendingConsent?: ApiPluginV2Consent
-  // True while the plugin detail (which carries the candidate) is loading or
-  // failed: acceptance is held until the admin can see what they accept.
-  detailUnavailable?: boolean
+  // True while the plugin detail (which carries the candidate) is loading.
+  // Acceptance waits for it so a v2 candidate is never accepted unseen.
+  detailLoading?: boolean
+  // Set when the detail failed to load. Accept stays available: a v1 plugin
+  // needs no detail, and for v2 the server refuses a missing hash.
+  detailError?: string | null
   onClose: () => void
   onConfirm: () => void
   isPending: boolean
@@ -32,7 +35,8 @@ export function AcceptManifestModal({
   pluginName,
   pendingInstanceCount,
   pendingConsent,
-  detailUnavailable = false,
+  detailLoading = false,
+  detailError = null,
   onClose,
   onConfirm,
   isPending,
@@ -45,7 +49,7 @@ export function AcceptManifestModal({
       isLoading={isPending}
       submitLabel="Accept manifest change"
       loadingLabel="Accepting…"
-      submitDisabled={isPending || detailUnavailable}
+      submitDisabled={isPending || detailLoading}
     />
   )
 
@@ -68,6 +72,13 @@ export function AcceptManifestModal({
       </p>
 
       {pendingConsent && <PluginV2Consent consent={pendingConsent} />}
+
+      {detailError != null && (
+        <div className={alertStyles.alertError} role="alert">
+          Could not load the pending manifest for review: {detailError}. A container (v2)
+          plugin cannot be accepted until it loads.
+        </div>
+      )}
 
       {error != null && (
         <div className={alertStyles.alertError} role="alert">

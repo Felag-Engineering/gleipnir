@@ -715,6 +715,41 @@ func TestReconcileGC_PendingManifestKeepsItsImage(t *testing.T) {
 	}
 }
 
+// Accepting a manifest moves the desired image and deletes the pending row. A
+// stopped instance never creates a generation, so the desired-state row is the
+// only thing still pinning that image.
+func TestReconcileGC_DesiredStateRowKeepsItsImage(t *testing.T) {
+	ctx := context.Background()
+	s, fake, r, ids := gcFixture(t, 1)
+	const digest = "sha256:cd34ef56ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12cd34"
+	insertImage(t, s, fake, digest, 1000)
+
+	if _, err := s.Queries().CreatePluginContainer(ctx, db.CreatePluginContainerParams{
+		ID: "pc1", PluginInstanceID: ids[0], ImageRef: "ghcr.io/acme/slack@" + digest, ImageDigest: digest,
+		ConfigHash: "h", NetworkName: "net", DesiredState: "stopped",
+		CreatedAt: gcStamp(gcFrozen), UpdatedAt: gcStamp(gcFrozen),
+	}); err != nil {
+		t.Fatalf("CreatePluginContainer: %v", err)
+	}
+
+	if _, err := r.ReconcileGC(ctx); err != nil {
+		t.Fatalf("ReconcileGC: %v", err)
+	}
+	if _, err := fake.ImageInspect(ctx, digest); err != nil {
+		t.Fatalf("the desired image of a stopped instance was reclaimed: %v", err)
+	}
+
+	if err := s.Queries().DeletePluginContainer(ctx, "pc1"); err != nil {
+		t.Fatalf("DeletePluginContainer: %v", err)
+	}
+	if _, err := r.ReconcileGC(ctx); err != nil {
+		t.Fatalf("ReconcileGC after the row is gone: %v", err)
+	}
+	if _, err := fake.ImageInspect(ctx, digest); !errors.Is(err, container.ErrImageNotFound) {
+		t.Error("the image should be reclaimable once no desired row wants it")
+	}
+}
+
 func TestReconcileGC_RequiresAStore(t *testing.T) {
 	r, err := New(Config{Runtime: container.NewFake(), Store: &fakeStore{}})
 	if err != nil {

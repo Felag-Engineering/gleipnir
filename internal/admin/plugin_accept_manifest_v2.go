@@ -19,6 +19,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/plugin/lifecycle/desiredstate"
 	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/manifestv2"
 )
@@ -160,10 +161,13 @@ func (h *PluginHandler) acceptManifestV2(w http.ResponseWriter, r *http.Request,
 	}
 
 	nowStr := h.clock().UTC().Format(time.RFC3339Nano)
-	resynced, err := h.commitAcceptedManifestV2(ctx, plugin, pendingRow, newManifest, nowStr)
+	resynced, err := h.commitAcceptedManifestV2(ctx, plugin, pendingRow, newManifest, candidateSHA, nowStr)
 	switch {
-	case errors.Is(err, errAcceptCASConflict):
+	case errors.Is(err, errAcceptCASConflict), errors.Is(err, desiredstate.ErrCASConflict):
 		httputil.WriteError(w, http.StatusConflict, casConflictMsg, "")
+		return true
+	case errors.Is(err, errAcceptCandidateChanged):
+		httputil.WriteError(w, http.StatusConflict, "the pending manifest changed since it was shown; reload and review it again", "")
 		return true
 	case err != nil:
 		slog.ErrorContext(ctx, "accept-manifest: commit failed", "plugin_id", pluginID, "err", err)
@@ -215,7 +219,10 @@ func (h *PluginHandler) acceptManifestV2(w http.ResponseWriter, r *http.Request,
 	return true
 }
 
-var errAcceptCASConflict = errors.New("accept-manifest: CAS conflict")
+var (
+	errAcceptCASConflict      = errors.New("accept-manifest: CAS conflict")
+	errAcceptCandidateChanged = errors.New("accept-manifest: pending candidate changed")
+)
 
 // commitAcceptedManifestV2 writes the new snapshot, clears the pending row and
 // resyncs the instances' desired state in one transaction, so a failure in any
@@ -223,7 +230,7 @@ var errAcceptCASConflict = errors.New("accept-manifest: CAS conflict")
 // Status is preserved: unlike v1 this does not promote a plugin to active, so
 // accepting a candidate for a plugin still awaiting its first review does not
 // approve it.
-func (h *PluginHandler) commitAcceptedManifestV2(ctx context.Context, plugin db.Plugin, pending db.PluginPendingManifest, accepted *manifestv2.Manifest, nowStr string) (int, error) {
+func (h *PluginHandler) commitAcceptedManifestV2(ctx context.Context, plugin db.Plugin, pending db.PluginPendingManifest, accepted *manifestv2.Manifest, candidateSHA, nowStr string) (int, error) {
 	tx, err := h.store.DB().BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin tx: %w", err)
@@ -235,6 +242,21 @@ func (h *PluginHandler) commitAcceptedManifestV2(ctx context.Context, plugin db.
 	}()
 
 	q := db.New(tx)
+
+	// Re-read inside the transaction: a newer bundle may have replaced the
+	// pending row since the check above, and deleting it would discard a
+	// candidate nobody reviewed.
+	current, err := q.GetPluginPendingManifest(ctx, plugin.ID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, errAcceptCandidateChanged
+	}
+	if err != nil {
+		return 0, fmt.Errorf("re-read pending manifest: %w", err)
+	}
+	if candidateSHA256([]byte(current.CandidateManifest)) != candidateSHA {
+		return 0, errAcceptCandidateChanged
+	}
+
 	rows, err := q.UpdatePluginManifest(ctx, db.UpdatePluginManifestParams{
 		ManifestSnapshot: pending.CandidateManifest,
 		PluginVersion:    accepted.Version,

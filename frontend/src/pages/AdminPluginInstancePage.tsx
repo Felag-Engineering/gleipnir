@@ -756,7 +756,8 @@ export default function AdminPluginInstancePage() {
           pluginName={pluginName ?? ''}
           pendingInstanceCount={pendingManifestInstanceCount}
           pendingConsent={pluginDetail.data?.pending_v2}
-          detailUnavailable={!pluginDetail.data}
+          detailLoading={pluginDetail.isLoading}
+          detailError={pluginDetail.isError ? extractErrorMessage(pluginDetail.error) : null}
           onClose={() => {
             setShowAcceptManifestModal(false)
             setAcceptManifestError(null)

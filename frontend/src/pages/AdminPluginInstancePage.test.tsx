@@ -436,9 +436,15 @@ describe('AdminPluginInstancePage — Accept manifest modal', () => {
     config_schema: null,
   } as ApiPluginV2Consent
 
-  function mockPluginDetail(detail: Partial<ApiPluginDetail> | undefined) {
+  function mockPluginDetail(
+    detail: Partial<ApiPluginDetail> | undefined,
+    state: { isLoading?: boolean; error?: Error } = {},
+  ) {
     vi.mocked(usePluginDetail).mockReturnValue({
       data: detail,
+      isLoading: state.isLoading ?? false,
+      isError: state.error !== undefined,
+      error: state.error ?? null,
     } as unknown as ReturnType<typeof usePluginDetail>)
   }
 
@@ -474,12 +480,47 @@ describe('AdminPluginInstancePage — Accept manifest modal', () => {
   it('holds the accept button until the plugin detail has loaded', async () => {
     mockCurrentUser(['admin'])
     mockInstancesLoaded([PENDING_MANIFEST_INSTANCE])
-    mockPluginDetail(undefined)
+    mockPluginDetail(undefined, { isLoading: true })
 
     renderPage()
     await userEvent.click(screen.getByRole('button', { name: /review change/i }))
 
     expect(screen.getByRole('button', { name: /accept manifest change/i })).toBeDisabled()
+  })
+
+  it('shows the error and leaves a v1 accept available when the detail fails to load', async () => {
+    mockCurrentUser(['admin'])
+    mockInstancesLoaded([PENDING_MANIFEST_INSTANCE])
+    mockPluginDetail(undefined, { error: new Error('detail exploded') })
+    const mutateFn = vi.fn()
+    vi.mocked(useAcceptPluginManifest).mockReturnValue({
+      mutate: mutateFn,
+      isPending: false,
+    } as unknown as ReturnType<typeof useAcceptPluginManifest>)
+
+    renderPage()
+    await userEvent.click(screen.getByRole('button', { name: /review change/i }))
+
+    expect(screen.getByRole('alert')).toHaveTextContent(/detail exploded/)
+    const accept = screen.getByRole('button', { name: /accept manifest change/i })
+    expect(accept).toBeEnabled()
+
+    await userEvent.click(accept)
+    expect(mutateFn).toHaveBeenCalledWith(
+      { pluginId: PLUGIN_ID, expectedCandidateSha256: undefined },
+      expect.any(Object),
+    )
+  })
+
+  it('does not wait on the detail for a v1 plugin', async () => {
+    mockCurrentUser(['admin'])
+    mockInstancesLoaded([PENDING_MANIFEST_INSTANCE])
+    mockPluginDetail({ manifest_version: 1 })
+
+    renderPage()
+    await userEvent.click(screen.getByRole('button', { name: /review change/i }))
+
+    expect(screen.getByRole('button', { name: /accept manifest change/i })).toBeEnabled()
   })
 
   it('shows the banner with Review change button when instance is pending_manifest_approval', () => {
