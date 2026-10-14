@@ -255,6 +255,11 @@ type InstanceProvisioner interface {
 	// Returns desiredstate.ErrPluginNotActive for Running when the owning
 	// plugin is no longer active; Activate maps that to 409 too.
 	SetDesired(ctx context.Context, q *db.Queries, instanceID, state string) error
+	// ResyncForPlugin rewrites the image and resource limits of every
+	// instance's row from the plugin's current manifest_snapshot, so an
+	// accepted manifest change moves what the reconciler converges to. Run in
+	// the same transaction as the snapshot write.
+	ResyncForPlugin(ctx context.Context, q *db.Queries, pluginID string) (int, error)
 }
 
 // PluginHandlerDeps holds all constructor-injected dependencies for PluginHandler.
@@ -608,6 +613,9 @@ type acceptManifestResponse struct {
 //
 // Instances with no newly-required config fields move to healthy.
 // Instances for which new required config fields appear move to pending_config_migration.
+//
+// A schema_version 2 manifest is handled by acceptManifestV2, and only when the
+// v2 assembly enabled it; everywhere else it is refused below.
 func (h *PluginHandler) AcceptManifest(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	pluginID := chi.URLParam(r, "id")
@@ -619,6 +627,12 @@ func (h *PluginHandler) AcceptManifest(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
+		return
+	}
+
+	// Only the v2 assembly sets approveV2; without it a v2 manifest on either
+	// side falls through to the v1 path below, which refuses it.
+	if h.approveV2 && h.acceptManifestV2(w, r, plugin) {
 		return
 	}
 

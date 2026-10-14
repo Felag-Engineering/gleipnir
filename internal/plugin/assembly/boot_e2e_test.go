@@ -235,6 +235,9 @@ type e2eFixture struct {
 	plugin   *fakePlugin
 	arbiter  *toolregistry.Registry
 	pluginID string
+	// key signed the installed bundle; a later release signed with it is an
+	// upgrade, not a key rotation.
+	key *loadertest.Key
 	// pluginAddr is host:port of the fake plugin server.
 	pluginAddr string
 	handler    http.Handler
@@ -291,8 +294,9 @@ func newE2EFixture(t *testing.T) *e2eFixture {
 	// The plugin arrives the way an operator's does: a signed bundle through the
 	// installer the upload route and the watcher share, which lands it awaiting
 	// review. The fake runtime yields the image the manifest pins.
+	key := loadertest.NewKey(t)
 	bundle := loadertest.Build(t, loadertest.Options{
-		Name: e2ePluginName, Version: "1.0.0", Seed: "e2e-image",
+		Name: e2ePluginName, Version: "1.0.0", Seed: "e2e-image", Key: key,
 		Manifest: func(digest string) []byte { return []byte(e2eManifest(port, digest)) },
 	})
 	fake.PendingImages = []container.ImageInfo{{ID: bundle.Digest}}
@@ -311,7 +315,7 @@ func newE2EFixture(t *testing.T) *e2eFixture {
 		t.Fatalf("installed plugin status = %q, want %q", pluginRow.Status, model.PluginStatusPendingReview)
 	}
 
-	f := &e2eFixture{t: t, a: a, deps: deps, q: q, pub: pub, rt: rt, plugin: plugin, arbiter: arbiter, pluginID: pluginID, pluginAddr: pluginAddr}
+	f := &e2eFixture{t: t, a: a, deps: deps, q: q, pub: pub, rt: rt, plugin: plugin, arbiter: arbiter, pluginID: pluginID, key: key, pluginAddr: pluginAddr}
 	f.handler = f.adminRouter()
 
 	// Approval is the consent step, taken through the real Approve handler: the
@@ -345,6 +349,7 @@ func (f *e2eFixture) adminRouter() http.Handler {
 	})
 	r := chi.NewRouter()
 	r.Post("/plugins/{id}/approve", handler.ApprovePlugin)
+	r.Post("/plugins/{id}/accept-manifest", handler.AcceptManifest)
 	r.Post("/plugins/{id}/instances", handler.CreateInstance)
 	r.Delete("/plugins/{id}/instances/{iid}", handler.DeleteInstance)
 	return r

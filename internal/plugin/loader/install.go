@@ -79,6 +79,7 @@ const (
 	auditManifestCosmeticChange = "plugin_manifest_cosmetic_change"
 	auditDowngradeRefused       = "plugin_downgrade_refused"
 	auditReinstallIgnored       = "plugin_reinstall_ignored"
+	auditSchemaCrossover        = "plugin_schema_crossover_refused"
 
 	// Audit severity levels.
 	severityHigh = "high"
@@ -103,9 +104,16 @@ func (e *InstallRejectedError) Error() string {
 
 // Rejection reasons for InstallRejectedError.Reason.
 const (
-	rejectPubkeyMismatch = "pubkey_mismatch"
-	rejectMaterialChange = "material_change"
-	rejectDowngrade      = "downgrade_refused"
+	rejectPubkeyMismatch  = "pubkey_mismatch"
+	rejectMaterialChange  = "material_change"
+	rejectDowngrade       = "downgrade_refused"
+	rejectSchemaCrossover = "schema_crossover"
+)
+
+// Labels for the two manifest generations in a schema crossover refusal.
+const (
+	schemaLabelV1 = "v1"
+	schemaLabelV2 = "v2"
 )
 
 // Installer runs the extract → verify → snapshot-into-DB pipeline for a single
@@ -408,6 +416,12 @@ func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, man
 
 	nowStr := in.nowStr()
 
+	if err == nil && manifestv2.IsV2([]byte(existing.ManifestSnapshot)) {
+		// The stored snapshot is a container plugin; the v1 diff below would
+		// parse it leniently as an empty-looking v1 manifest and replace it.
+		return existing.ID, false, existing.Status, in.refuseSchemaCrossover(ctx, existing, schemaLabelV1, m.Version, nowStr)
+	}
+
 	if errors.Is(err, sql.ErrNoRows) {
 		// Unsigned-permissive installs are auto-approved: the operator's global
 		// opt-in (GLEIPNIR_ALLOW_UNSIGNED_PLUGINS=true) is the trust signal —
@@ -550,6 +564,34 @@ func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, man
 
 	id, upErr := in.updatePlugin(ctx, existing, m, manifestBytes, result, tmpDir, nowStr)
 	return id, upErr == nil && id != "", existing.Status, upErr
+}
+
+// refuseSchemaCrossover records and returns the refusal of a bundle whose
+// manifest generation differs from the installed row's. A v1 bundle must never
+// replace a v2 row and a v2 bundle must never replace a v1 row: each swap
+// would change what runs (subprocess versus container) under a consent given
+// for the other. Nothing on the row or its instances changes.
+func (in *Installer) refuseSchemaCrossover(ctx context.Context, existing db.Plugin, incoming, incomingVersion, nowStr string) error {
+	installed := schemaLabelV1
+	if manifestv2.IsV2([]byte(existing.ManifestSnapshot)) {
+		installed = schemaLabelV2
+	}
+	slog.WarnContext(ctx, "plugin schema crossover refused",
+		"name", existing.Name, "installed_schema", installed, "incoming_schema", incoming)
+	if err := in.recordAuditEvent(ctx, auditSchemaCrossover, severityHigh, nowStr, map[string]any{
+		"plugin_id":         existing.ID,
+		"name":              existing.Name,
+		"installed_schema":  installed,
+		"incoming_schema":   incoming,
+		"installed_version": existing.PluginVersion,
+		"incoming_version":  incomingVersion,
+	}); err != nil {
+		return fmt.Errorf("record schema_crossover_refused audit for %q: %w", existing.Name, err)
+	}
+	return &InstallRejectedError{
+		Reason:  rejectSchemaCrossover,
+		Message: fmt.Sprintf("plugin %q is installed as a %s plugin; a %s bundle cannot replace it. Uninstall the plugin first", existing.Name, installed, incoming),
+	}
 }
 
 // checkPubkeyPin runs the TOFU pubkey pin check for a verified bundle against
