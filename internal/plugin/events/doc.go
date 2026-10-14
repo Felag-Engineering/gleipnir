@@ -54,6 +54,19 @@
 // live instance; StopAll at quiesce latches it so a later observe pass cannot
 // reopen a stream while runs drain.
 //
+// # Waiting on health instead of sleeping through it
+//
+// A stream does not open until caphealth says the instance serves
+// event_source, and a brand-new instance has no verdict at all until the
+// prober's first pass. The Supervisor distinguishes the two: with a
+// CapabilityWatcher (caphealth.Registry) it wakes the moment the registry
+// records a change for that instance, so the first connect follows the first
+// liveness verdict rather than a timer. "Not observed yet" retries on the
+// short BackoffInitial ramp as a safety net behind that wake; only a KNOWN
+// unhealthy instance waits the full BackoffMax, and it too wakes early when
+// its health changes. A checker that is not a watcher keeps the fixed
+// BackoffMax wait.
+//
 // # Rate-limit columns are the other path's problem, not this one's
 //
 // The v1.1 EmitEvent push path is host self-protection against a plugin that

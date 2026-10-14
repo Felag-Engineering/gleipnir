@@ -46,7 +46,6 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/infra/netguard"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
-	"github.com/felag-engineering/gleipnir/internal/plugin/caphealth"
 	"github.com/felag-engineering/gleipnir/internal/plugin/container"
 	"github.com/felag-engineering/gleipnir/internal/plugin/loader/loadertest"
 	"github.com/felag-engineering/gleipnir/internal/plugin/reconciler"
@@ -473,12 +472,6 @@ func TestBootV2_EndToEnd(t *testing.T) {
 	// joins the events stream.
 	mgr := runpkg.NewRunManager()
 	t.Cleanup(mgr.Wait)
-
-	// Liveness is what the prober records within a pass of the instance
-	// appearing; the events supervisor consults it on its first connect and
-	// otherwise sleeps up to its backoff ceiling before asking again. Recording
-	// it here keeps the first stream open deterministic.
-	f.a.health.SetLiveness(instanceID, caphealth.Liveness{ContainerHealthy: true, DiscoverOK: true})
 
 	f.boot()
 	f.passUntil("the managed endpoint, its tools and both listeners", f.converged(instanceID))
