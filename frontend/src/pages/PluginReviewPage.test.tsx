@@ -252,6 +252,7 @@ describe('PluginReviewPage v2 consent', () => {
     pubkey_fingerprint: 'feedfacecafe0001',
     has_sbom: false,
     manifest_version: 2,
+    row_version: 5,
     created_at: '2026-01-01T00:00:00Z',
     v2: {
       image: {
@@ -334,6 +335,33 @@ describe('PluginReviewPage v2 consent', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Approve' }))
 
-    expect(mutate).toHaveBeenCalledWith({ pluginId: PLUGIN_ID }, expect.anything())
+    expect(mutate).toHaveBeenCalledWith(
+      { pluginId: PLUGIN_ID, expectedVersion: 5 },
+      expect.anything(),
+    )
+  })
+
+  it('renders hostile manifest text literally, creating no elements', () => {
+    const hostile = '<img src=x onerror=alert(1)>'
+    mockPluginDetail({
+      ...V2_PLUGIN,
+      v2: {
+        ...V2_PLUGIN.v2!,
+        egress: [{ domain: 'api.acme.example', reason: hostile }],
+        tools: [{ name: hostile, elicitation_kind: 'permission' }],
+      },
+    })
+    const { container } = renderPage()
+
+    expect(screen.getAllByText(hostile).length).toBeGreaterThan(0)
+    expect(container.querySelector('img')).toBeNull()
+  })
+
+  it('omits the signing key row for an unsigned bundle', () => {
+    mockPluginDetail({ ...V2_PLUGIN, pubkey_fingerprint: undefined })
+    renderPage()
+
+    expect(screen.queryByText('feedfacecafe0001')).not.toBeInTheDocument()
+    expect(screen.getByText(/Unsigned bundle/)).toBeInTheDocument()
   })
 })

@@ -2,8 +2,10 @@ package admin
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1876,6 +1878,9 @@ type pluginDetailResponse struct {
 	// V2 is the v2 consent surface; absent for v1 rows so their response is
 	// unchanged.
 	V2 *pluginV2Consent `json:"v2,omitempty"`
+	// RowVersion is the plugin row's CAS version; the review page sends it back
+	// as expected_version so approval is bound to what it displayed.
+	RowVersion *int64 `json:"row_version,omitempty"`
 }
 
 // pluginListItemResponse is the JSON shape for a single entry in the ListPlugins response.
@@ -2026,6 +2031,7 @@ func (h *PluginHandler) GetPluginDetail(w http.ResponseWriter, r *http.Request) 
 		ManifestVersion:   manifestVersion,
 		CreatedAt:         plugin.CreatedAt,
 		V2:                v2Consent,
+		RowVersion:        &plugin.Version,
 	})
 }
 
@@ -2098,6 +2104,12 @@ func (h *PluginHandler) ListPlugins(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusOK, items)
 }
 
+// approvePluginRequest is the optional body of ApprovePlugin. ExpectedVersion is
+// the row_version the detail response showed the admin.
+type approvePluginRequest struct {
+	ExpectedVersion *int64 `json:"expected_version,omitempty"`
+}
+
 // approvePluginResponse is the JSON shape returned by ApprovePlugin on success.
 type approvePluginResponse struct {
 	ID      string `json:"id"`
@@ -2113,6 +2125,16 @@ func (h *PluginHandler) ApprovePlugin(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	pluginID := chi.URLParam(r, "id")
 
+	// The body is optional: callers that omit expected_version keep the
+	// original "approve whatever is pending" behavior.
+	var req approvePluginRequest
+	if r.Body != nil {
+		if decodeErr := json.NewDecoder(r.Body).Decode(&req); decodeErr != nil && !errors.Is(decodeErr, io.EOF) {
+			httputil.WriteError(w, http.StatusBadRequest, "invalid request body", decodeErr.Error())
+			return
+		}
+	}
+
 	plugin, err := h.q.GetPluginByID(ctx, pluginID)
 	if errors.Is(err, ErrNotFound) {
 		httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
@@ -2125,6 +2147,15 @@ func (h *PluginHandler) ApprovePlugin(w http.ResponseWriter, r *http.Request) {
 
 	if plugin.Status != "pending_review" {
 		httputil.WriteError(w, http.StatusConflict, "plugin is not in pending_review status", plugin.Status)
+		return
+	}
+
+	// Bind the approval to the row the admin reviewed: a snapshot replaced
+	// between page load and click bumps the row version, and approving it
+	// unseen could grant wider egress than was consented to.
+	if req.ExpectedVersion != nil && *req.ExpectedVersion != plugin.Version {
+		httputil.WriteError(w, http.StatusConflict,
+			"plugin changed since you loaded it; reload the page and review it again", "")
 		return
 	}
 
@@ -2145,7 +2176,7 @@ func (h *PluginHandler) ApprovePlugin(w http.ResponseWriter, r *http.Request) {
 		slog.WarnContext(ctx, "approve plugin: refusing non-v1 manifest snapshot",
 			"plugin_id", pluginID, "err", snapErr)
 		httputil.WriteError(w, http.StatusConflict,
-			"plugin manifest is not schema_version 1; v2 plugins are approved through the v2 substrate", snapErr.Error())
+			"plugin manifest is not schema_version 1; v2 plugin approval is not enabled in this build", snapErr.Error())
 		return
 	}
 
@@ -2181,6 +2212,8 @@ func (h *PluginHandler) ApprovePlugin(w http.ResponseWriter, r *http.Request) {
 		// later audit cannot recover from the plugin row once it is replaced.
 		approvedPayload["manifest_version"] = snap.Version
 		approvedPayload["image"] = snap.Package.Identifier
+		sum := sha256.Sum256([]byte(plugin.ManifestSnapshot))
+		approvedPayload["manifest_sha256"] = hex.EncodeToString(sum[:])
 	}
 	h.writeAuditEvent(ctx, auditReviewApproved, "info", nowStr, approvedPayload)
 

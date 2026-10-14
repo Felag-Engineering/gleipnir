@@ -988,6 +988,9 @@ export interface ApiPluginDetail {
   manifest_version: PluginManifestVersion
   created_at: string
   v2?: ApiPluginV2Consent
+  // The row's CAS version; sent back on approve so the approval is bound to
+  // what the admin was shown.
+  row_version?: number
 }
 
 // Matches internal/admin/plugin_handler.go → approvePluginResponse

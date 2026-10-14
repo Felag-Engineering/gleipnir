@@ -3142,8 +3142,8 @@ func TestApprovePlugin_V2ManifestRefused(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409 refusing a v2 manifest; body: %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "v2 substrate") {
-		t.Errorf("body = %s, want it to say v2 plugins are approved through the v2 substrate", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "not enabled in this build") {
+		t.Errorf("body = %s, want it to say v2 plugins are not enabled in this build", rec.Body.String())
 	}
 
 	// Must not have been approved.

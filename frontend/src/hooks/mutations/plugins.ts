@@ -121,11 +121,21 @@ export function useAcceptPluginManifest() {
 // cache so any polling consumers see the new status immediately.
 export function useApprovePlugin() {
   const qc = useQueryClient()
-  return useMutation<ApiApprovePluginResponse, ApiError, { pluginId: string }>({
-    mutationFn: ({ pluginId }) =>
+  return useMutation<
+    ApiApprovePluginResponse,
+    ApiError,
+    { pluginId: string; expectedVersion?: number }
+  >({
+    mutationFn: ({ pluginId, expectedVersion }) =>
       apiFetch<ApiApprovePluginResponse>(
         `/admin/plugins/${encodeURIComponent(pluginId)}/approve`,
-        { method: 'POST' },
+        {
+          method: 'POST',
+          ...(expectedVersion !== undefined && {
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ expected_version: expectedVersion }),
+          }),
+        },
       ),
     onSuccess: (_data, { pluginId }) => {
       void qc.invalidateQueries({ queryKey: queryKeys.plugins.list() })

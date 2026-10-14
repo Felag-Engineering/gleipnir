@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -76,11 +78,11 @@ func TestApprovePlugin_ManifestVersionGate(t *testing.T) {
 		{name: "v1 approved with the v2 flag", manifest: instanceConfigManifestNoSchema, status: "pending_review", approveV2: true,
 			wantCode: http.StatusOK, wantStatus: "active", wantAudit: true},
 		{name: "v2 refused without the v2 flag", manifest: validSchemaVersion2ManifestYAML, status: "pending_review",
-			wantCode: http.StatusConflict, wantStatus: "pending_review", wantBodyPart: "v2 substrate"},
+			wantCode: http.StatusConflict, wantStatus: "pending_review", wantBodyPart: "not enabled in this build"},
 		{name: "v2 approved with the v2 flag", manifest: validSchemaVersion2ManifestYAML, status: "pending_review", approveV2: true,
 			wantCode: http.StatusOK, wantStatus: "active", wantAudit: true},
 		{name: "invalid v2 refused even with the v2 flag", manifest: "schema_version: \"2\"\nname: x\nversion: 1.0.0\n", status: "pending_review", approveV2: true,
-			wantCode: http.StatusConflict, wantStatus: "pending_review", wantBodyPart: "v2 substrate"},
+			wantCode: http.StatusConflict, wantStatus: "pending_review", wantBodyPart: "not enabled in this build"},
 		{name: "v2 already active is 409", manifest: validSchemaVersion2ManifestYAML, status: "active", approveV2: true,
 			wantCode: http.StatusConflict, wantStatus: "active", wantBodyPart: "pending_review"},
 		{name: "v2 removed is 409", manifest: validSchemaVersion2ManifestYAML, status: "removed", approveV2: true,
@@ -159,13 +161,97 @@ func TestApprovePlugin_AuditRecordsV2Image(t *testing.T) {
 				if err := json.Unmarshal([]byte(ev.PayloadJson), &payload); err != nil {
 					t.Fatalf("audit payload: %v", err)
 				}
-				if _, hasImage := payload["image"]; hasImage != tc.wantImage {
-					t.Errorf("payload has image = %v, want %v (payload %v)", hasImage, tc.wantImage, payload)
+				for _, key := range []string{"image", "manifest_version", "manifest_sha256"} {
+					if _, has := payload[key]; has != tc.wantImage {
+						t.Errorf("payload has %s = %v, want %v (payload %v)", key, has, tc.wantImage, payload)
+					}
 				}
 				return
 			}
 			t.Fatal("no plugin_review_approved event")
 		})
+	}
+}
+
+// TestApprovePlugin_ExpectedVersion binds approval to the row the admin saw.
+func TestApprovePlugin_ExpectedVersion(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantCode   int
+		wantStatus string
+	}{
+		{"absent body keeps today's behavior", "", http.StatusOK, "active"},
+		{"empty object keeps today's behavior", `{}`, http.StatusOK, "active"},
+		{"matching version approves", `{"expected_version": 3}`, http.StatusOK, "active"},
+		{"stale version is 409 and approves nothing", `{"expected_version": 2}`, http.StatusConflict, "pending_review"},
+		{"malformed body is 400", `{"expected_version":`, http.StatusBadRequest, "pending_review"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			q := newFakePluginQuerier()
+			q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", PluginVersion: "1.0.0",
+				ManifestSnapshot: validSchemaVersion2ManifestYAML, Status: "pending_review", Version: 3})
+			h := newTestPluginHandler(q, nil, testPluginHandlerConfig{approveV2: true})
+
+			req := withChiParams(httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.body)),
+				map[string]string{"id": "plugin-1"})
+			rec := httptest.NewRecorder()
+			h.ApprovePlugin(rec, req)
+
+			if rec.Code != tc.wantCode {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, tc.wantCode, rec.Body.String())
+			}
+			if tc.wantCode == http.StatusConflict && !strings.Contains(rec.Body.String(), "reload") {
+				t.Errorf("body = %s, want it to tell the admin to reload", rec.Body.String())
+			}
+			if got := q.plugins["plugin-1"].Status; got != tc.wantStatus {
+				t.Errorf("plugin.Status = %q, want %q", got, tc.wantStatus)
+			}
+		})
+	}
+}
+
+func TestApprovePlugin_V2AuditRecordsManifestHash(t *testing.T) {
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", PluginVersion: "1.0.0",
+		ManifestSnapshot: validSchemaVersion2ManifestYAML, Status: "pending_review"})
+	h := newTestPluginHandler(q, nil, testPluginHandlerConfig{approveV2: true})
+	req := withChiParams(httptest.NewRequest(http.MethodPost, "/", nil), map[string]string{"id": "plugin-1"})
+	h.ApprovePlugin(httptest.NewRecorder(), req)
+
+	sum := sha256.Sum256([]byte(validSchemaVersion2ManifestYAML))
+	for _, ev := range q.auditEvents {
+		if ev.EventType != auditReviewApproved {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(ev.PayloadJson), &payload); err != nil {
+			t.Fatalf("audit payload: %v", err)
+		}
+		if payload["manifest_sha256"] != hex.EncodeToString(sum[:]) {
+			t.Errorf("manifest_sha256 = %v, want %x", payload["manifest_sha256"], sum)
+		}
+		return
+	}
+	t.Fatal("no plugin_review_approved event")
+}
+
+func TestGetPluginDetail_ExposesRowVersion(t *testing.T) {
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", PluginVersion: "1.0.0",
+		ManifestSnapshot: fullDetailManifest, Status: "pending_review", Version: 7})
+	h := newTestPluginHandler(q, nil, testPluginHandlerConfig{})
+	req := withChiParams(httptest.NewRequest(http.MethodGet, "/", nil), map[string]string{"id": "plugin-1"})
+	rec := httptest.NewRecorder()
+	h.GetPluginDetail(rec, req)
+
+	var resp pluginDetailResponse
+	if err := json.Unmarshal(parseDataResponse(t, rec), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.RowVersion == nil || *resp.RowVersion != 7 {
+		t.Errorf("row_version = %v, want 7", resp.RowVersion)
 	}
 }
 

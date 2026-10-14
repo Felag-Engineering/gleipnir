@@ -30,7 +30,7 @@ export default function PluginReviewPage() {
     if (!id) return
     setActionError(null)
     approveMutation.mutate(
-      { pluginId: id },
+      { pluginId: id, expectedVersion: plugin?.row_version },
       {
         onSuccess: () => {
           // Navigate back to the plugins page once approved so the admin can
