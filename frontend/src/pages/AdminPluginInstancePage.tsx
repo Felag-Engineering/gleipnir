@@ -15,7 +15,7 @@ import { InstanceSetupSteps } from '@/components/admin/InstanceSetupSteps/Instan
 import { DeletePluginInstanceModal } from '@/components/admin/DeletePluginInstanceModal'
 import { AcceptManifestModal } from '@/components/admin/AcceptManifestModal'
 import { usePluginInstancesForAudience, usePluginInstanceDetail } from '@/hooks/queries/admin'
-import { usePluginInstanceCredentials } from '@/hooks/queries/plugins'
+import { usePluginDetail, usePluginInstanceCredentials } from '@/hooks/queries/plugins'
 import { useCurrentUser } from '@/hooks/queries/users'
 import { deriveSetupSteps, firstIncompleteBlockingStep, humanizeHealthDetail } from '@/utils/instanceSetup'
 import {
@@ -369,6 +369,9 @@ export default function AdminPluginInstancePage() {
   const [showAcceptManifestModal, setShowAcceptManifestModal] = useState(false)
   const [acceptManifestError, setAcceptManifestError] = useState<string | null>(null)
   const acceptManifestMutation = useAcceptPluginManifest()
+  // The detail carries the blocked candidate and its hash; only fetched once
+  // the admin opens the review modal.
+  const pluginDetail = usePluginDetail(showAcceptManifestModal ? pluginId : undefined)
   const pendingManifestInstanceCount = (allInstances ?? []).filter(
     (i) => i.plugin_id === pluginId && i.state === 'pending_manifest_approval',
   ).length
@@ -377,7 +380,7 @@ export default function AdminPluginInstancePage() {
     if (!pluginId) return
     setAcceptManifestError(null)
     acceptManifestMutation.mutate(
-      { pluginId },
+      { pluginId, expectedCandidateSha256: pluginDetail.data?.pending_manifest_sha256 },
       {
         onSuccess: () => {
           setShowAcceptManifestModal(false)
@@ -752,6 +755,8 @@ export default function AdminPluginInstancePage() {
         <AcceptManifestModal
           pluginName={pluginName ?? ''}
           pendingInstanceCount={pendingManifestInstanceCount}
+          pendingConsent={pluginDetail.data?.pending_v2}
+          detailUnavailable={!pluginDetail.data}
           onClose={() => {
             setShowAcceptManifestModal(false)
             setAcceptManifestError(null)

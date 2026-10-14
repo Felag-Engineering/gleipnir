@@ -988,6 +988,10 @@ export interface ApiPluginDetail {
   manifest_version: PluginManifestVersion
   created_at: string
   v2?: ApiPluginV2Consent
+  // A blocked v2 candidate manifest awaiting accept-manifest, and the SHA-256
+  // of its bytes. accept-manifest requires the hash back for a v2 plugin.
+  pending_v2?: ApiPluginV2Consent
+  pending_manifest_sha256?: string
   // The row's CAS version; sent back on approve so the approval is bound to
   // what the admin was shown.
   row_version?: number

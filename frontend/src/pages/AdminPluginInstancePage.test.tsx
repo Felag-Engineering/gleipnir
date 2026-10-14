@@ -5,13 +5,18 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Routes, Route } from 'react-router'
 
 import AdminPluginInstancePage from './AdminPluginInstancePage'
-import type { ApiPluginInstanceForAudience } from '@/api/types'
+import type { ApiPluginDetail, ApiPluginInstanceForAudience, ApiPluginV2Consent } from '@/api/types'
+import { usePluginDetail } from '@/hooks/queries/plugins'
 import { RefreshFailureDetailPrefix } from '@/utils/pluginHealth'
 
 // --- Module mocks ---
 
 vi.mock('@/hooks/queries/admin')
 vi.mock('@/hooks/mutations/plugins')
+vi.mock('@/hooks/queries/plugins', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/hooks/queries/plugins')>()),
+  usePluginDetail: vi.fn(() => ({ data: undefined })),
+}))
 vi.mock('@/hooks/queries/users')
 vi.mock('@/components/admin/CapabilityHealthPanel/CapabilityHealthPanel', () => ({
   CapabilityHealthPanel: () => null,
@@ -414,9 +419,67 @@ describe('AdminPluginInstancePage — Accept manifest modal', () => {
     health_detail: 'manifest changed materially; admin re-approval required',
   }
 
+  const PENDING_CONSENT = {
+    image: {
+      identifier: 'ghcr.io/acme/p@sha256:new',
+      repository: 'ghcr.io/acme/p',
+      digest: 'sha256:newdigest',
+      registry_type: 'oci',
+      transport_type: 'streamable-http',
+    },
+    egress: [{ domain: 'api.example.com' }],
+    resources: null,
+    profiles: { declared: ['tool_provider'] },
+    tools: [],
+    event_kinds: [],
+    auth: { strategy: 'none' },
+    config_schema: null,
+  } as ApiPluginV2Consent
+
+  function mockPluginDetail(detail: Partial<ApiPluginDetail> | undefined) {
+    vi.mocked(usePluginDetail).mockReturnValue({
+      data: detail,
+    } as unknown as ReturnType<typeof usePluginDetail>)
+  }
+
   beforeEach(() => {
     mockInstanceDetailLoaded()
     mockMutationNoop()
+    mockPluginDetail({ manifest_version: 1 })
+  })
+
+  it('shows the pending v2 candidate and sends its hash on accept', async () => {
+    mockCurrentUser(['admin'])
+    mockInstancesLoaded([PENDING_MANIFEST_INSTANCE])
+    mockPluginDetail({ manifest_version: 2, pending_v2: PENDING_CONSENT, pending_manifest_sha256: 'abc123' })
+    const mutateFn = vi.fn()
+    vi.mocked(useAcceptPluginManifest).mockReturnValue({
+      mutate: mutateFn,
+      isPending: false,
+    } as unknown as ReturnType<typeof useAcceptPluginManifest>)
+
+    renderPage()
+    await userEvent.click(screen.getByRole('button', { name: /review change/i }))
+
+    expect(screen.getByText('sha256:newdigest')).toBeInTheDocument()
+    expect(screen.getByText('api.example.com')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: /accept manifest change/i }))
+    expect(mutateFn).toHaveBeenCalledWith(
+      { pluginId: PLUGIN_ID, expectedCandidateSha256: 'abc123' },
+      expect.any(Object),
+    )
+  })
+
+  it('holds the accept button until the plugin detail has loaded', async () => {
+    mockCurrentUser(['admin'])
+    mockInstancesLoaded([PENDING_MANIFEST_INSTANCE])
+    mockPluginDetail(undefined)
+
+    renderPage()
+    await userEvent.click(screen.getByRole('button', { name: /review change/i }))
+
+    expect(screen.getByRole('button', { name: /accept manifest change/i })).toBeDisabled()
   })
 
   it('shows the banner with Review change button when instance is pending_manifest_approval', () => {

@@ -673,6 +673,48 @@ func TestReconcileGC_ManualPostureObservesOnly(t *testing.T) {
 	}
 }
 
+// A candidate manifest awaiting admin acceptance names an image the host has
+// already loaded and will not load again. GC must keep it while the pending row
+// exists and may reclaim it once the row is gone.
+func TestReconcileGC_PendingManifestKeepsItsImage(t *testing.T) {
+	ctx := context.Background()
+	s, fake, r, _ := gcFixture(t, 1)
+	const digest = "sha256:ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12"
+	insertImage(t, s, fake, digest, 1000)
+	insertImage(t, s, fake, "sha256:unrelated", 1000)
+
+	candidate := "package:\n  identifier: ghcr.io/acme/slack@" + digest + "\n"
+	if err := s.Queries().UpsertPluginPendingManifest(ctx, db.UpsertPluginPendingManifestParams{
+		PluginID: "pl1", CandidateManifest: candidate, OldVersion: "1.0.0", NewVersion: "1.1.0",
+		CreatedAt: gcStamp(gcFrozen), UpdatedAt: gcStamp(gcFrozen),
+	}); err != nil {
+		t.Fatalf("UpsertPluginPendingManifest: %v", err)
+	}
+
+	if _, err := r.ReconcileGC(ctx); err != nil {
+		t.Fatalf("ReconcileGC: %v", err)
+	}
+	if _, err := fake.ImageInspect(ctx, digest); err != nil {
+		t.Fatalf("a pending manifest's image was reclaimed: %v", err)
+	}
+	if _, err := fake.ImageInspect(ctx, "sha256:unrelated"); !errors.Is(err, container.ErrImageNotFound) {
+		t.Error("an unrelated unreferenced image should still be reclaimed")
+	}
+	if n, err := s.Queries().CountContainerImageReferences(ctx, digest); err != nil || n != 1 {
+		t.Errorf("reference count = %d, %v; want 1 from the pending manifest", n, err)
+	}
+
+	if err := s.Queries().DeletePluginPendingManifest(ctx, "pl1"); err != nil {
+		t.Fatalf("DeletePluginPendingManifest: %v", err)
+	}
+	if _, err := r.ReconcileGC(ctx); err != nil {
+		t.Fatalf("ReconcileGC after the pending row is gone: %v", err)
+	}
+	if _, err := fake.ImageInspect(ctx, digest); !errors.Is(err, container.ErrImageNotFound) {
+		t.Error("the image should be reclaimable once nothing pending names it")
+	}
+}
+
 func TestReconcileGC_RequiresAStore(t *testing.T) {
 	r, err := New(Config{Runtime: container.NewFake(), Store: &fakeStore{}})
 	if err != nil {

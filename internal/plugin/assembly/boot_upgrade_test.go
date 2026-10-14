@@ -9,6 +9,8 @@ package assembly
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net"
 	"net/http"
@@ -100,7 +102,13 @@ func TestBootV2_AcceptedDigestChangeRotatesGeneration(t *testing.T) {
 	}
 
 	// The admin accepts: the desired image moves and the reconciler rotates.
-	if rec := f.do(http.MethodPost, "/plugins/"+f.pluginID+"/accept-manifest", `{}`); rec.Code != http.StatusOK {
+	pending, err := f.q.GetPluginPendingManifest(ctx, f.pluginID)
+	if err != nil {
+		t.Fatalf("GetPluginPendingManifest: %v", err)
+	}
+	sum := sha256.Sum256([]byte(pending.CandidateManifest))
+	acceptBody := `{"expected_candidate_sha256":"` + hex.EncodeToString(sum[:]) + `"}`
+	if rec := f.do(http.MethodPost, "/plugins/"+f.pluginID+"/accept-manifest", acceptBody); rec.Code != http.StatusOK {
 		t.Fatalf("accept-manifest = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
 	row, _ = f.q.GetPluginContainerByInstance(ctx, instanceID)

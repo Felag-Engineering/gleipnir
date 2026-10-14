@@ -1892,6 +1892,12 @@ type pluginDetailResponse struct {
 	// V2 is the v2 consent surface; absent for v1 rows so their response is
 	// unchanged.
 	V2 *pluginV2Consent `json:"v2,omitempty"`
+	// PendingV2 is the consent surface of a blocked v2 candidate manifest
+	// awaiting accept-manifest, built by the same builder as V2.
+	// PendingManifestSHA256 is the SHA-256 of the candidate bytes; accept-manifest
+	// requires it back so acceptance is bound to what the admin was shown.
+	PendingV2             *pluginV2Consent `json:"pending_v2,omitempty"`
+	PendingManifestSHA256 string           `json:"pending_manifest_sha256,omitempty"`
 	// RowVersion is the plugin row's CAS version; the review page sends it back
 	// as expected_version so approval is bound to what it displayed.
 	RowVersion *int64 `json:"row_version,omitempty"`
@@ -2028,24 +2034,36 @@ func (h *PluginHandler) GetPluginDetail(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	var pendingConsent *pluginV2Consent
+	var pendingSHA string
+	if v2Consent != nil {
+		pendingConsent, pendingSHA, err = h.pendingV2Consent(ctx, pluginID)
+		if err != nil {
+			httputil.WriteError(w, http.StatusInternalServerError, "corrupt pending manifest", err.Error())
+			return
+		}
+	}
+
 	httputil.WriteJSON(w, http.StatusOK, pluginDetailResponse{
-		ID:                plugin.ID,
-		Name:              plugin.Name,
-		Version:           plugin.PluginVersion,
-		Description:       m.Description,
-		Author:            m.Author,
-		License:           m.License,
-		Status:            plugin.Status,
-		Services:          services,
-		Tier2Capabilities: tier2,
-		AuthStrategy:      authStrategy,
-		HasOAuthDefaults:  hasOAuthDefaults,
-		PubkeyFingerprint: fingerprint,
-		HasSBOM:           m.SBOM != "",
-		ManifestVersion:   manifestVersion,
-		CreatedAt:         plugin.CreatedAt,
-		V2:                v2Consent,
-		RowVersion:        &plugin.Version,
+		ID:                    plugin.ID,
+		Name:                  plugin.Name,
+		Version:               plugin.PluginVersion,
+		Description:           m.Description,
+		Author:                m.Author,
+		License:               m.License,
+		Status:                plugin.Status,
+		Services:              services,
+		Tier2Capabilities:     tier2,
+		AuthStrategy:          authStrategy,
+		HasOAuthDefaults:      hasOAuthDefaults,
+		PubkeyFingerprint:     fingerprint,
+		HasSBOM:               m.SBOM != "",
+		ManifestVersion:       manifestVersion,
+		CreatedAt:             plugin.CreatedAt,
+		V2:                    v2Consent,
+		PendingV2:             pendingConsent,
+		PendingManifestSHA256: pendingSHA,
+		RowVersion:            &plugin.Version,
 	})
 }
 

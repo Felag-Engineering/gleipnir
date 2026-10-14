@@ -3,6 +3,8 @@ package admin
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -106,8 +108,19 @@ func newAcceptV2Fixture(t *testing.T, status string, approveV2 bool) *acceptV2Fi
 	return f
 }
 
+func sha256Hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+// accept posts accept-manifest with the hash of the pending candidate, the way
+// the review UI does after reading the detail response.
 func (f *acceptV2Fixture) accept() *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-v2/accept-manifest", bytes.NewBufferString(`{}`))
+	return f.acceptWithBody(`{"expected_candidate_sha256":"` + sha256Hex(f.candidate) + `"}`)
+}
+
+func (f *acceptV2Fixture) acceptWithBody(body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-v2/accept-manifest", bytes.NewBufferString(body))
 	req = withChiParams(req, map[string]string{"id": "plugin-v2"})
 	rec := httptest.NewRecorder()
 	f.h.AcceptManifest(rec, req)
@@ -191,6 +204,47 @@ func TestAcceptManifest_V2(t *testing.T) {
 		}
 	})
 
+	t.Run("the hash is required and must match the pending candidate", func(t *testing.T) {
+		tests := []struct {
+			name string
+			body string
+			want int
+		}{
+			{name: "missing hash", body: `{}`, want: http.StatusBadRequest},
+			{name: "empty body", body: ``, want: http.StatusBadRequest},
+			{name: "stale hash", body: `{"expected_candidate_sha256":"` + sha256Hex("an older candidate") + `"}`, want: http.StatusConflict},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				f := newAcceptV2Fixture(t, "active", true)
+				if rec := f.acceptWithBody(tt.body); rec.Code != tt.want {
+					t.Fatalf("status = %d, want %d; body: %s", rec.Code, tt.want, rec.Body.String())
+				}
+				plugin, _ := f.store.Queries().GetPluginByID(ctx, "plugin-v2")
+				if strings.Contains(plugin.ManifestSnapshot, acceptV2NewDigest) {
+					t.Error("a candidate was accepted without a matching hash")
+				}
+				if _, err := f.store.Queries().GetPluginPendingManifest(ctx, "plugin-v2"); err != nil {
+					t.Errorf("pending manifest was consumed: %v", err)
+				}
+			})
+		}
+	})
+
+	t.Run("the accepted hash is audited", func(t *testing.T) {
+		f := newAcceptV2Fixture(t, "active", true)
+		if rec := f.accept(); rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; body: %s", rec.Code, rec.Body.String())
+		}
+		events, err := f.store.Queries().ListPluginAuditEventsByType(ctx, db.ListPluginAuditEventsByTypeParams{EventType: auditManifestAccepted, Limit: 1})
+		if err != nil || len(events) != 1 {
+			t.Fatalf("audit events = %v, %v; want one", events, err)
+		}
+		if !strings.Contains(events[0].PayloadJson, sha256Hex(f.candidate)) {
+			t.Errorf("audit payload lacks the candidate hash: %s", events[0].PayloadJson)
+		}
+	})
+
 	t.Run("a candidate of the other schema generation is refused", func(t *testing.T) {
 		f := newAcceptV2Fixture(t, "active", true)
 		if err := f.store.Queries().UpsertPluginPendingManifest(ctx, db.UpsertPluginPendingManifestParams{
@@ -212,4 +266,44 @@ func TestAcceptManifest_V2(t *testing.T) {
 			t.Error("a v1 candidate replaced a v2 snapshot")
 		}
 	})
+}
+
+func TestPluginDetail_ExposesPendingV2Candidate(t *testing.T) {
+	f := newAcceptV2Fixture(t, "active", true)
+
+	detail := func() pluginDetailResponse {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/plugins/plugin-v2", nil)
+		req = withChiParams(req, map[string]string{"id": "plugin-v2"})
+		rec := httptest.NewRecorder()
+		f.h.GetPluginDetail(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("detail status = %d; body: %s", rec.Code, rec.Body.String())
+		}
+		var resp pluginDetailResponse
+		if err := json.Unmarshal(parseDataResponse(t, rec), &resp); err != nil {
+			t.Fatalf("unmarshal detail: %v", err)
+		}
+		return resp
+	}
+
+	got := detail()
+	if got.V2 == nil || got.V2.Image.Digest != acceptV2Digest {
+		t.Errorf("v2 block = %+v, want the consented image", got.V2)
+	}
+	if got.PendingV2 == nil || got.PendingV2.Image.Digest != acceptV2NewDigest {
+		t.Fatalf("pending_v2 = %+v, want the candidate's image", got.PendingV2)
+	}
+	if got.PendingV2.Resources == nil || got.PendingV2.Resources.MemoryMB != 128 {
+		t.Errorf("pending_v2 resources = %+v, want the candidate's 128 MiB", got.PendingV2.Resources)
+	}
+	if got.PendingManifestSHA256 != sha256Hex(f.candidate) {
+		t.Errorf("pending_manifest_sha256 = %q, want the candidate's hash", got.PendingManifestSHA256)
+	}
+
+	if err := f.store.Queries().DeletePluginPendingManifest(context.Background(), "plugin-v2"); err != nil {
+		t.Fatalf("DeletePluginPendingManifest: %v", err)
+	}
+	if got := detail(); got.PendingV2 != nil || got.PendingManifestSHA256 != "" {
+		t.Errorf("detail shows a pending block with nothing pending: %+v", got)
+	}
 }

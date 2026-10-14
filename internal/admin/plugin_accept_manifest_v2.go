@@ -2,11 +2,16 @@ package admin
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -23,6 +28,44 @@ import (
 // the change up on its own tick.
 type reconcilerKicker interface {
 	Kick()
+}
+
+// acceptManifestV2Request is the accept-manifest body. ExpectedCandidateSHA256
+// is required for a v2 manifest and ignored for v1, whose behaviour is unchanged.
+type acceptManifestV2Request struct {
+	ExpectedCandidateSHA256 string `json:"expected_candidate_sha256"`
+}
+
+func candidateSHA256(candidate []byte) string {
+	sum := sha256.Sum256(candidate)
+	return hex.EncodeToString(sum[:])
+}
+
+// pendingV2Consent returns the consent surface and SHA-256 of the pending v2
+// candidate for pluginID, or nil and "" when there is none. A candidate that
+// cannot be rendered is an error: a consent screen that cannot show a field
+// must not be shown at all.
+func (h *PluginHandler) pendingV2Consent(ctx context.Context, pluginID string) (*pluginV2Consent, string, error) {
+	row, err := h.q.GetPluginPendingManifest(ctx, pluginID)
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, ErrNotFound) {
+		return nil, "", nil
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("load pending manifest: %w", err)
+	}
+	candidate := []byte(row.CandidateManifest)
+	if !manifestv2.IsV2(candidate) {
+		return nil, "", nil
+	}
+	snap, err := pluginmanifest.Read(candidate)
+	if err != nil {
+		return nil, "", fmt.Errorf("read pending manifest: %w", err)
+	}
+	consent, err := buildPluginV2Consent(snap)
+	if err != nil {
+		return nil, "", fmt.Errorf("build pending consent: %w", err)
+	}
+	return consent, candidateSHA256(candidate), nil
 }
 
 // acceptManifestV2 handles accept-manifest when either the stored snapshot or
@@ -54,6 +97,23 @@ func (h *PluginHandler) acceptManifestV2(w http.ResponseWriter, r *http.Request,
 	}
 	if snapshotIsV2 != candidateIsV2 {
 		httputil.WriteError(w, http.StatusConflict, "pending manifest is a different schema generation than the installed plugin; it cannot be accepted", "")
+		return true
+	}
+
+	// The hash binds acceptance to the candidate the admin reviewed: a later
+	// bundle can overwrite the pending row between the detail read and this call.
+	var body acceptManifestV2Request
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
+		return true
+	}
+	if body.ExpectedCandidateSHA256 == "" {
+		httputil.WriteError(w, http.StatusBadRequest, "expected_candidate_sha256 is required to accept a v2 manifest", "")
+		return true
+	}
+	candidateSHA := candidateSHA256(candidateBytes)
+	if !strings.EqualFold(body.ExpectedCandidateSHA256, candidateSHA) {
+		httputil.WriteError(w, http.StatusConflict, "the pending manifest changed since it was shown; reload and review it again", "")
 		return true
 	}
 
@@ -140,6 +200,7 @@ func (h *PluginHandler) acceptManifestV2(w http.ResponseWriter, r *http.Request,
 		"new_version":               newManifest.Version,
 		"old_image_digest":          oldManifest.Package.Digest(),
 		"new_image_digest":          newManifest.Package.Digest(),
+		"candidate_sha256":          candidateSHA,
 		"instances_resynced":        resynced,
 		"instances_unblocked":       unblocked,
 		"instances_pending_config":  pendingConfig,

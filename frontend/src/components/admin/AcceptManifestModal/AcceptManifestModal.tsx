@@ -1,4 +1,6 @@
+import type { ApiPluginV2Consent } from '@/api/types'
 import { Modal } from '@/components/Modal'
+import { PluginV2Consent } from '@/components/admin/PluginReviewCard/PluginV2Consent'
 import { ModalFooter } from '@/components/ModalFooter'
 import alertStyles from '@/styles/alerts.module.css'
 import styles from './AcceptManifestModal.module.css'
@@ -8,6 +10,11 @@ export interface AcceptManifestModalProps {
   // Number of instances currently stuck on pending_manifest_approval —
   // displayed so the operator knows how many will be unblocked.
   pendingInstanceCount: number
+  // The blocked v2 candidate to review before accepting; absent for a v1 plugin.
+  pendingConsent?: ApiPluginV2Consent
+  // True while the plugin detail (which carries the candidate) is loading or
+  // failed: acceptance is held until the admin can see what they accept.
+  detailUnavailable?: boolean
   onClose: () => void
   onConfirm: () => void
   isPending: boolean
@@ -15,15 +22,17 @@ export interface AcceptManifestModalProps {
 }
 
 // AcceptManifestModal confirms that an admin wants to commit the pending
-// candidate manifest change for a plugin. The candidate is fetched server-side
-// from the latest plugin_manifest_material_change audit event — the operator
-// approves by clicking Accept; no manifest payload is needed in the UI.
+// candidate manifest change for a plugin. A v2 candidate is shown in full
+// (image digest, egress, resources, ...) before Accept, and the caller sends
+// back the hash of what was shown.
 //
 // Caller owns the mutation state (isPending + error) so the modal is purely
 // presentational.
 export function AcceptManifestModal({
   pluginName,
   pendingInstanceCount,
+  pendingConsent,
+  detailUnavailable = false,
   onClose,
   onConfirm,
   isPending,
@@ -36,7 +45,7 @@ export function AcceptManifestModal({
       isLoading={isPending}
       submitLabel="Accept manifest change"
       loadingLabel="Accepting…"
-      submitDisabled={isPending}
+      submitDisabled={isPending || detailUnavailable}
     />
   )
 
@@ -57,6 +66,8 @@ export function AcceptManifestModal({
         healthy. Instances where the new manifest adds required fields will
         move to pending_config_migration until the missing config is supplied.
       </p>
+
+      {pendingConsent && <PluginV2Consent consent={pendingConsent} />}
 
       {error != null && (
         <div className={alertStyles.alertError} role="alert">

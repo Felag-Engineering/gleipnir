@@ -10,21 +10,28 @@ import (
 )
 
 const countContainerImageReferences = `-- name: CountContainerImageReferences :one
-SELECT COUNT(*) FROM plugin_container_generations
-WHERE image_digest = ?1
-  AND status IN ('pending', 'starting', 'healthy', 'active', 'draining')
+SELECT
+    (SELECT COUNT(*) FROM plugin_container_generations
+      WHERE image_digest = ?1
+        AND status IN ('pending', 'starting', 'healthy', 'active', 'draining'))
+  + (SELECT COUNT(*) FROM plugin_pending_manifests
+      WHERE instr(candidate_manifest, CAST(?1 AS TEXT)) > 0)
 `
 
-// CountContainerImageReferences counts the live generations pinned to a
-// digest. The count is derived on every read rather than stored in a column:
-// a hand-maintained counter drifts, and a drifted count here means either
-// deleting an image a generation still runs or never reclaiming one at all.
-// Terminal generations do not count -- their containers are gone.
+// CountContainerImageReferences counts what pins a digest: live generations
+// plus pending manifests naming it. The count is derived on every read rather
+// than stored in a column: a hand-maintained counter drifts, and a drifted
+// count here means either deleting an image a generation still runs or never
+// reclaiming one at all. Terminal generations do not count -- their
+// containers are gone. A pending manifest counts because accepting it makes
+// its image the desired one, and the host does not reload an image on accept;
+// the digest is matched as a substring of the candidate manifest text, which
+// is where a v2 manifest pins it.
 func (q *Queries) CountContainerImageReferences(ctx context.Context, imageDigest string) (int64, error) {
 	row := q.db.QueryRowContext(ctx, countContainerImageReferences, imageDigest)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const deleteContainerImage = `-- name: DeleteContainerImage :exec
@@ -94,11 +101,15 @@ WHERE digest NOT IN (
     SELECT image_digest FROM plugin_container_generations
     WHERE status IN ('pending', 'starting', 'healthy', 'active', 'draining')
 )
+AND NOT EXISTS (
+    SELECT 1 FROM plugin_pending_manifests
+    WHERE instr(plugin_pending_manifests.candidate_manifest, plugin_container_images.digest) > 0
+)
 ORDER BY loaded_at
 `
 
 // ListUnreferencedContainerImages returns the digests GC may reclaim: images
-// no live generation still runs. Ordered oldest-first so a bounded GC pass
+// no live generation still runs and no pending manifest names. Ordered oldest-first so a bounded GC pass
 // reclaims the stalest images before the newest.
 func (q *Queries) ListUnreferencedContainerImages(ctx context.Context) ([]PluginContainerImage, error) {
 	rows, err := q.db.QueryContext(ctx, listUnreferencedContainerImages)
