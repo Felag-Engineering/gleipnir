@@ -11,11 +11,13 @@ package main
 import (
 	"context"
 	"net"
+	"net/netip"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	runpkg "github.com/felag-engineering/gleipnir/internal/execution/run"
 	"github.com/felag-engineering/gleipnir/internal/infra/config"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
+	"github.com/felag-engineering/gleipnir/internal/infra/netguard"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/plugin/assembly"
 	"github.com/felag-engineering/gleipnir/internal/settings"
@@ -26,6 +28,14 @@ import (
 // boots the whole binary sets them so the outcome does not depend on the
 // container socket of the machine it runs on.
 var assemblyOptions []assembly.Option
+
+// pluginPoolExclusions is the pre-startup hook for the pool-overlap check. It
+// asks the container runtime which plugin networks Gleipnir's own container is
+// attached to, so a restart that keeps those attachments is not refused by the
+// check. Anything the runtime cannot vouch for yields no exclusions.
+func pluginPoolExclusions(ctx context.Context, pool netip.Prefix) []netguard.ExcludedAttachment {
+	return assembly.SelfAttachmentExclusions(ctx, pool, assemblyOptions...)
+}
 
 // startPluginSubsystem brings up the v2 plugin substrate and wraps it to
 // satisfy pluginSubsystem.

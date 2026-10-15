@@ -25,7 +25,7 @@ func TestCheckOverlap(t *testing.T) {
 			ipNetAddr(t, "192.168.1.5/24"),
 			ipNetAddr(t, "127.0.0.1/8"),
 		}
-		if err := checkOverlap(pool, addrs); err != nil {
+		if err := checkOverlap(pool, addrs, nil); err != nil {
 			t.Errorf("checkOverlap: unexpected error: %v", err)
 		}
 	})
@@ -35,7 +35,7 @@ func TestCheckOverlap(t *testing.T) {
 			ipNetAddr(t, "192.168.1.5/24"),
 			ipNetAddr(t, "10.83.4.1/24"),
 		}
-		err := checkOverlap(pool, addrs)
+		err := checkOverlap(pool, addrs, nil)
 		if err == nil {
 			t.Fatal("checkOverlap: expected an error, got nil")
 		}
@@ -64,7 +64,7 @@ func TestCheckOverlap(t *testing.T) {
 		addrs := []net.Addr{
 			ipNetAddr(t, "10.83.9.1/16"), // subnet 10.83.0.0/16 contains 10.83.4.0/24
 		}
-		err := checkOverlap(narrowPool, addrs)
+		err := checkOverlap(narrowPool, addrs, nil)
 		if err == nil {
 			t.Fatal("checkOverlap: expected an error, got nil")
 		}
@@ -79,7 +79,7 @@ func TestCheckOverlap(t *testing.T) {
 		addrs := []net.Addr{
 			ipNetAddr(t, "10.83.4.1/32"),
 		}
-		if err := checkOverlap(pool, addrs); err == nil {
+		if err := checkOverlap(pool, addrs, nil); err == nil {
 			t.Error("checkOverlap: expected an error, got nil")
 		}
 	})
@@ -88,7 +88,7 @@ func TestCheckOverlap(t *testing.T) {
 		addrs := []net.Addr{
 			&net.UnixAddr{Name: "/tmp/whatever.sock", Net: "unix"},
 		}
-		if err := checkOverlap(pool, addrs); err != nil {
+		if err := checkOverlap(pool, addrs, nil); err != nil {
 			t.Errorf("checkOverlap: unexpected error: %v", err)
 		}
 	})
@@ -97,7 +97,7 @@ func TestCheckOverlap(t *testing.T) {
 		addrs := []net.Addr{
 			ipNetAddr(t, "fd00::1/64"),
 		}
-		if err := checkOverlap(pool, addrs); err != nil {
+		if err := checkOverlap(pool, addrs, nil); err != nil {
 			t.Errorf("checkOverlap: unexpected error: %v", err)
 		}
 	})

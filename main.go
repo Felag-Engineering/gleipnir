@@ -67,13 +67,19 @@ func main() {
 	// doesn't depend on the operator listener at all, and exiting after the
 	// v1 plugin runtime has spawned subprocesses would orphan them. There is
 	// deliberately no override for this check — see netguard's package doc's
-	// "No escape hatch" section.
+	// "No escape hatch" section; the only exception is pluginPoolExclusions.
 	pluginSubnetPool, err := netip.ParsePrefix(cfg.PluginSubnetPool)
 	if err != nil {
 		slog.Error("invalid GLEIPNIR_PLUGIN_SUBNET_POOL (should have been rejected at config.Load)", "value", cfg.PluginSubnetPool, "err", err)
 		os.Exit(1)
 	}
-	if err := netguard.CheckPoolOverlap(pluginSubnetPool); err != nil {
+	// The one scoped exception: the substratev2 build's own verified
+	// attachments to plugin networks (nil in the default build, and whenever
+	// the container runtime cannot vouch for any). See pluginPoolExclusions.
+	exclusionCtx, cancelExclusions := context.WithTimeout(context.Background(), poolExclusionTimeout)
+	exclusions := pluginPoolExclusions(exclusionCtx, pluginSubnetPool)
+	cancelExclusions()
+	if err := netguard.CheckPoolOverlapExcluding(pluginSubnetPool, exclusions); err != nil {
 		slog.Error(err.Error())
 		os.Exit(1)
 	}

@@ -375,3 +375,31 @@ func TestCPUPercent(t *testing.T) {
 		})
 	}
 }
+
+// Gleipnir's own container is multi-homed, so the per-network address map must
+// carry every addressed endpoint (keyed by name) even where the single
+// IPAddress field is deliberately left empty as ambiguous.
+func TestFromInspectResponse_NetworkAddresses(t *testing.T) {
+	info := fromInspectResponse(dockercontainer.InspectResponse{
+		ID: "abc123",
+		NetworkSettings: &dockercontainer.NetworkSettings{
+			Networks: map[string]*dockernetwork.EndpointSettings{
+				"gleipnir-plugin-a": {NetworkID: "n1", IPAddress: netip.MustParseAddr("10.83.4.2")},
+				"podman-style":      {IPAddress: netip.MustParseAddr("10.83.5.2")},
+				"unaddressed":       {NetworkID: "n3"},
+			},
+		},
+	})
+	want := map[string]string{"gleipnir-plugin-a": "10.83.4.2", "podman-style": "10.83.5.2"}
+	if len(info.NetworkAddresses) != len(want) {
+		t.Fatalf("NetworkAddresses = %v, want %v", info.NetworkAddresses, want)
+	}
+	for name, addr := range want {
+		if info.NetworkAddresses[name] != addr {
+			t.Errorf("NetworkAddresses[%q] = %q, want %q", name, info.NetworkAddresses[name], addr)
+		}
+	}
+	if info.IPAddress != "" {
+		t.Errorf("IPAddress = %q, want empty (ambiguous)", info.IPAddress)
+	}
+}

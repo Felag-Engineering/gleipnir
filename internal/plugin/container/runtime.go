@@ -247,6 +247,14 @@ type ContainerInfo struct {
 	// SelfAttached matches on either.
 	NetworkNames []string
 
+	// NetworkAddresses is the container's IPv4 address on each network it is
+	// attached to, keyed by network NAME (set by Inspect). Unlike IPAddress it
+	// is per-network, so Gleipnir's own multi-homed container can be asked which
+	// address it holds on a given plugin network. Keyed by name because that is
+	// the key both Docker and Podman's compat API always provide; Podman may
+	// leave the endpoint's NetworkID empty.
+	NetworkAddresses map[string]string
+
 	// IPAddress is the container's IPv4 address on its instance network, set
 	// by Inspect (ListByLabel summaries do not carry it). A plugin container
 	// is created attached to exactly one network, so the address is that

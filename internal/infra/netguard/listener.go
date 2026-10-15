@@ -62,10 +62,15 @@
 // making a legitimate host address look like a plugin-network address. Once
 // the container substrate self-attaches Gleipnir to every per-instance
 // network (#958, done by the v2 assembly in the substratev2 build),
-// Gleipnir's own interfaces legitimately sit inside the pool by design, and
-// CheckPoolOverlap needs a scoped exception for those specific interfaces —
-// see the TODO on CheckPoolOverlap. That exception does not exist yet; it
-// must be added deliberately rather than by disabling the check wholesale.
+// Gleipnir's own interfaces legitimately sit inside the pool by design, and a
+// restart that keeps those attachments would otherwise lock the process out.
+// CheckPoolOverlapExcluding is the scoped exception: the caller passes the
+// attachments the container runtime reports for Gleipnir's own container, and
+// an interface is skipped only if its exact /24 and its reserved .2 address
+// both match one. Everything else, including a real LAN overlapping the pool,
+// still refuses to start, and with no runtime the list is empty so the check is
+// exactly CheckPoolOverlap. The exclusions come from the runtime, never from
+// guessing at interface names or addresses.
 //
 // # Composition requirements
 //
