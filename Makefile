@@ -1,4 +1,4 @@
-.PHONY: help build test tools security security-go security-frontend proto lint-plugins lint-plugins-self-test lint-secret-keys lint-profile-vocab lint lint-go-fmt lint-staticcheck ci-local ci-local-full ci-local-lanes ci-local-lint ci-local-drift ci-local-backend ci-local-sdk ci-local-frontend ci-local-scope-self-test relaysmoke relaysmoke-demo lint-relaysmoke-build lint-substratev2-build
+.PHONY: help build test tools security security-go security-frontend proto lint-plugins lint-plugins-self-test lint-secret-keys lint-profile-vocab lint lint-go-fmt lint-staticcheck ci-local ci-local-full ci-local-lanes ci-local-lint ci-local-drift ci-local-backend ci-local-sdk ci-local-frontend ci-local-scope-self-test conformance-stub-bundle relaysmoke relaysmoke-demo lint-relaysmoke-build lint-substratev2-build
 
 help:
 	@echo "Targets:"
@@ -289,6 +289,13 @@ ifeq ($(strip $(CI_LOCAL_GO_PKGS)),)
 else
 	GOWORK=off go test -race -p $(CI_LOCAL_TEST_P) $(CI_LOCAL_GO_PKGS)
 endif
+
+# Builds the conformance stub image and packages it as one signed v2 bundle per
+# mode manifest: dist/conformance-stub-<mode>.tgz. Needs docker or podman, so it
+# is not part of ci-local; CI's "Plugin SDK build" job runs it. See
+# scripts/build-conformance-stub.sh for the environment overrides.
+conformance-stub-bundle:
+	scripts/build-conformance-stub.sh
 
 ifeq ($(CI_LOCAL_RUN_SDK),1)
 ci-local-sdk: ci-local-drift
