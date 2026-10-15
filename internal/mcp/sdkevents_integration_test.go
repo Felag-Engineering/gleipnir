@@ -19,6 +19,7 @@ package mcp_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http/httptest"
 	"testing"
@@ -26,6 +27,7 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	sdkevents "github.com/felag-engineering/gleipnir/plugin-sdk/events"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/mcpserver"
 )
 
 // startSDKEventSource stands up the SDK Handler on an httptest server and
@@ -244,5 +246,75 @@ func TestCrossModule_ServerCloseIsCleanCloseWithCursor(t *testing.T) {
 	}
 	if closed.Cursor != mcp.FormatEventsCursor(ev.Sequence) {
 		t.Fatalf("close cursor = %q, want the last delivered sequence %d", closed.Cursor, ev.Sequence)
+	}
+}
+
+// TestCrossModule_MountedHandlerStreamsFromComposedServer pins the composed
+// shape (#968): the events Handler mounted into an mcpserver.Server beside a
+// tool, with the host client negotiating, discovering, and listening through
+// that one server rather than the Handler's own standalone ServeHTTP.
+func TestCrossModule_MountedHandlerStreamsFromComposedServer(t *testing.T) {
+	handler := sdkevents.NewHandler(
+		"composed-test",
+		[]sdkevents.Kind{{Kind: "thing.created"}},
+		sdkevents.WithHeartbeat(2*time.Second),
+	)
+
+	composed := mcpserver.NewServer("composed-test", "0.0.1")
+	if err := composed.RegisterTool(mcpserver.Tool{
+		Name: "ping",
+		Handler: func(context.Context, json.RawMessage) (any, error) {
+			return map[string]any{}, nil
+		},
+	}); err != nil {
+		t.Fatalf("RegisterTool: %v", err)
+	}
+	if err := composed.Mount(handler); err != nil {
+		t.Fatalf("Mount: %v", err)
+	}
+	if err := composed.MountStreaming("events/listen", handler.ListenHandler()); err != nil {
+		t.Fatalf("MountStreaming: %v", err)
+	}
+	srv := httptest.NewServer(composed)
+	t.Cleanup(srv.Close)
+
+	client := mcp.NewClient(srv.URL,
+		mcp.WithProtocolVersion(mcp.ProtocolVersion20260728),
+		mcp.WithTrustTier(mcp.TrustTierManaged),
+	)
+	ctx := context.Background()
+
+	probe, err := client.ProbeProtocolVersion(ctx)
+	if err != nil {
+		t.Fatalf("ProbeProtocolVersion against the composed server: %v", err)
+	}
+	if !probe.EventsDeclared || probe.Events.Heartbeat != 2*time.Second {
+		t.Fatalf("composed server/discover events declaration = declared %v, heartbeat %v; want declared, 2s",
+			probe.EventsDeclared, probe.Events.Heartbeat)
+	}
+
+	kinds, err := client.DiscoverEventKinds(ctx)
+	if err != nil {
+		t.Fatalf("DiscoverEventKinds: %v", err)
+	}
+	if len(kinds) != 1 || kinds[0].Kind != "thing.created" {
+		t.Fatalf("kinds = %+v, want [thing.created]", kinds)
+	}
+
+	stream, err := client.ListenEvents(ctx, mcp.EventsListenParams{Kinds: []string{"thing.created"}})
+	if err != nil {
+		t.Fatalf("ListenEvents through the composed server: %v", err)
+	}
+	defer stream.Close()
+
+	if _, err := handler.Publish(ctx, sdkevents.Event{Type: "thing.created", ID: "m1"}); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	ev, err := stream.Next(ctx)
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if ev.ID != "m1" || ev.Source != "composed-test" {
+		t.Fatalf("delivered %+v, want id m1 from source composed-test", ev)
 	}
 }

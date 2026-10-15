@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/felag-engineering/gleipnir/plugin-sdk/mcpserver"
 )
 
 // ExtensionEvents is the reverse-DNS identifier this package declares in
@@ -149,9 +151,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req jsonrpcRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "malformed JSON-RPC request", http.StatusBadRequest)
+	req, ok := decodeRequest(w, r)
+	if !ok {
 		return
 	}
 
@@ -167,9 +168,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleServerDiscover renders the modern handshake result declaring this
-// extension (doc §4).
-func (h *Handler) handleServerDiscover(w http.ResponseWriter, id json.RawMessage) {
+// decodeRequest reads the single JSON-RPC message a POST carries, writing a
+// 400 and returning false when the body is not one.
+func decodeRequest(w http.ResponseWriter, r *http.Request) (jsonrpcRequest, bool) {
+	var req jsonrpcRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "malformed JSON-RPC request", http.StatusBadRequest)
+		return jsonrpcRequest{}, false
+	}
+	return req, true
+}
+
+// ExtensionID satisfies mcpserver.Extension.
+func (h *Handler) ExtensionID() string { return ExtensionEvents }
+
+// Declaration satisfies mcpserver.Extension: it is marshaled as
+// server/discover's capabilities.extensions["io.gleipnir/events"] (doc §4),
+// both by a composed mcpserver.Server and by this Handler's own standalone
+// server/discover, so the two cannot disagree.
+func (h *Handler) Declaration() any {
 	decl := map[string]any{
 		"version":     ExtensionVersion,
 		"heartbeatMs": h.heartbeat.Milliseconds(),
@@ -177,11 +194,51 @@ func (h *Handler) handleServerDiscover(w http.ResponseWriter, id json.RawMessage
 	if h.maxBatch > 0 {
 		decl["maxBatch"] = h.maxBatch
 	}
+	return decl
+}
 
+// Methods satisfies mcpserver.Extension. It serves events/discover only:
+// events/listen holds its connection open past a single JSON-RPC response,
+// which a MethodFunc cannot do, so it is mounted separately — see
+// ListenHandler.
+func (h *Handler) Methods() map[string]mcpserver.MethodFunc {
+	return map[string]mcpserver.MethodFunc{
+		methodEventsDiscover: func(w http.ResponseWriter, _ *http.Request, req mcpserver.Request) {
+			h.handleEventsDiscover(w, req.ID)
+		},
+	}
+}
+
+// ListenHandler returns the handler for events/listen, to be mounted on a
+// composed server with
+//
+//	srv.Mount(h)
+//	srv.MountStreaming("events/listen", h.ListenHandler())
+//
+// Mount alone leaves events/listen unserved. The mounted path performs none
+// of mcpserver's header checks (MountStreaming applies none), same as the
+// standalone ServeHTTP.
+func (h *Handler) ListenHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		req, ok := decodeRequest(w, r)
+		if !ok {
+			return
+		}
+		h.handleEventsListen(w, r, req)
+	})
+}
+
+// handleServerDiscover renders the modern handshake result declaring this
+// extension (doc §4).
+func (h *Handler) handleServerDiscover(w http.ResponseWriter, id json.RawMessage) {
 	writeJSONRPCResult(w, id, map[string]any{
 		"supportedVersions": []string{ProtocolVersion},
 		"capabilities": map[string]any{
-			"extensions": map[string]any{ExtensionEvents: decl},
+			"extensions": map[string]any{ExtensionEvents: h.Declaration()},
 		},
 	})
 }

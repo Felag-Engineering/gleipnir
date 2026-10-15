@@ -37,4 +37,17 @@
 //   - Handler is the http.Handler a plugin's main() serves: it wires
 //     server/discover, events/discover, and events/listen together over
 //     one Buffer.
+//
+// # Composing with tools
+//
+// A plugin that also serves tools mounts the Handler on an
+// mcpserver.Server instead of serving it directly: Handler satisfies
+// mcpserver.Extension, and events/listen is mounted as a streaming method.
+//
+//	srv.Mount(h)                                           // declaration + events/discover
+//	srv.MountStreaming("events/listen", h.ListenHandler()) // the SSE stream
+//
+// The composed server's server/discover then carries the events declaration
+// beside its tools; the Handler's own server/discover is used only when it
+// is served standalone.
 package events
