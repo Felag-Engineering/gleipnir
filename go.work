@@ -3,6 +3,7 @@ go 1.26.9
 use (
 	.
 	./plugin-sdk
+	./plugin-sdk/examples/conformance-stub
 	./plugin-sdk/examples/host-client
 	./plugin-sdk/examples/minimal-event-source
 	./plugin-sdk/examples/minimal-tool

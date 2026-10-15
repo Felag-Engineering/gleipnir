@@ -11,6 +11,7 @@ For the planned structure of each example see
 | [`minimal-tool/`](minimal-tool/README.md) | Smallest possible `ToolService` plugin: one `echo` tool, one host RPC each of `GetInstanceConfig` / `EmitMetric` / `Log`. Start here. |
 | [`host-client/`](host-client/main.go) | Compile-only example of `plugin-sdk/hostclient`, the typed, zero-protobuf client for the MCP realignment host endpoint (#882): constructing a `Client` and calling a couple of typed methods, plus matching on `*hostclient.HostError` vs `*hostclient.JSONRPCError`. |
 | [`minimal-event-source/`](minimal-event-source/README.md) | Smallest possible `io.gleipnir/events` plugin (ADR-054, #904): `plugin-sdk/events.Handler` serving `server/discover` / `events/discover` / `events/listen` for one event kind, `example.ping`, with a `manifestv2` manifest declaring `profiles.event_source` kept in agreement with it by test. |
+| [`conformance-stub/`](conformance-stub/README.md) | Configurable fixture container, not a starting template: any mix of `tool_provider`, `event_source` and `human_channel` via `STUB_PROFILES`, an auto-resolving channel gated on `host/authorize_actor`, and a distroless image. |
 
 ## Planned (tracked in follow-up issues)
 
