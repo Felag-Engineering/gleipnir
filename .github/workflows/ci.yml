@@ -299,7 +299,9 @@ jobs:
       # against drift in CI, not just locally.
       - name: Test examples (workspace)
         working-directory: ${{ github.workspace }}
-        run: go test ./plugin-sdk/examples/minimal-tool/...
+        run: |
+          go test ./plugin-sdk/examples/minimal-tool/...
+          go test ./plugin-sdk/examples/conformance-stub/...
 
       # First-party plugins each live in their own module under ./plugins/,
       # so `go test ./plugins/...` from the workspace root matches no packages

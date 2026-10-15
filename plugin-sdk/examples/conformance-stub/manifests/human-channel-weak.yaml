@@ -1,0 +1,17 @@
+description: Stub plugin for exercising host conformance across profiles.
+gleipnir:
+  profiles:
+    human_channel:
+      assurance: weak
+  resources:
+    cpu_millicores: 100
+    memory_mb: 64
+name: io.example/conformance-stub
+package:
+  identifier: ghcr.io/example/conformance-stub@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  registry_type: oci
+  transport:
+    port: 8080
+    type: streamable-http
+schema_version: "2"
+version: 0.1.0

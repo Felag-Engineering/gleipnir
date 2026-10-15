@@ -1,0 +1,35 @@
+description: Stub plugin for exercising host conformance across profiles.
+gleipnir:
+  event_kinds:
+    - binding_schema:
+        properties:
+          label:
+            description: Label carried by the tick.
+            type: string
+        type: object
+      description: A synthetic event emitted on a fixed schedule.
+      guidance: Fires on a fixed schedule from the stub's own configuration; carries a label to bind on.
+      kind: conformance.tick
+      operators:
+        label:
+          - equals
+          - contains
+  profiles:
+    event_source: {}
+    human_channel:
+      assurance: authenticated
+    tool_provider: {}
+  resources:
+    cpu_millicores: 100
+    memory_mb: 64
+  tools:
+    - name: conformance.echo
+name: io.example/conformance-stub
+package:
+  identifier: ghcr.io/example/conformance-stub@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  registry_type: oci
+  transport:
+    port: 8080
+    type: streamable-http
+schema_version: "2"
+version: 0.1.0
