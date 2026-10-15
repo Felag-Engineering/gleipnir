@@ -68,11 +68,11 @@ type notifyParamsWire struct {
 // than guessing.
 func decodeTarget(w targetWire) (Target, error) {
 	if !validDelivery(w.Delivery) {
-		return Target{}, fmt.Errorf("channel/notify: target.delivery %q is not %q or %q",
+		return Target{}, fmt.Errorf("target.delivery %q is not %q or %q",
 			w.Delivery, DeliveryDirect, DeliveryShared)
 	}
 	if w.Address == "" {
-		return Target{}, fmt.Errorf("channel/notify: target.address is empty")
+		return Target{}, fmt.Errorf("target.address is empty")
 	}
 	return Target{Delivery: w.Delivery, Address: w.Address}, nil
 }
@@ -85,7 +85,7 @@ func decodeNotification(raw json.RawMessage) (Notification, error) {
 	}
 	target, err := decodeTarget(wire.Target)
 	if err != nil {
-		return Notification{}, err
+		return Notification{}, fmt.Errorf("channel/notify: %w", err)
 	}
 	return Notification{Target: target, Message: wire.Message}, nil
 }

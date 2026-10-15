@@ -159,7 +159,7 @@ func TestCrossModule_ChannelNotifyRejectsAnUnknownDelivery(t *testing.T) {
 
 // TestCrossModule_ChannelRequestFailsWithoutARequestHandler pins the
 // contract's worked example C from the client's own perspective: a
-// channelext server mounted with no request handler (#967 not yet landed)
+// channelext server mounted without WithRequest
 // never claims channel/request, so the call fails rather than hanging or
 // returning a mis-shapen success. (mcpserver answers method-not-found with
 // HTTP 404, which internal/mcp.Client surfaces as an opaque transport error
