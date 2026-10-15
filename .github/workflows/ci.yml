@@ -303,6 +303,14 @@ jobs:
           go test ./plugin-sdk/examples/minimal-tool/...
           go test ./plugin-sdk/examples/conformance-stub/...
 
+      # Builds the conformance stub image, packages one signed bundle per mode
+      # (ephemeral key, removed on exit), and opens each the way the host does.
+      - name: Conformance stub bundles smoke
+        working-directory: ${{ github.workspace }}
+        run: |
+          make conformance-stub-bundle
+          go test -tags conformance_bundle -run TestConformanceStubBundles ./internal/plugin/loader
+
       # First-party plugins each live in their own module under ./plugins/,
       # so `go test ./plugins/...` from the workspace root matches no packages
       # (the root module owns nothing there). Iterate over each module instead

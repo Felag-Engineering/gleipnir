@@ -119,3 +119,26 @@ The image is `CGO_ENABLED=0` on `gcr.io/distroless/static-debian12:nonroot`, run
 as uid 65532, and with no arguments serves until it receives SIGTERM. `/data` is
 writable by that user; mount a volume there to keep events and tasks across
 restarts.
+
+## Signed bundles
+
+```sh
+make conformance-stub-bundle
+```
+
+builds the image (docker, else podman; override with `CONTAINER_ENGINE`) and
+writes one signed v2 bundle per manifest to `dist/conformance-stub-<mode>.tgz`.
+The script (`scripts/build-conformance-stub.sh`) stamps each bundle's manifest
+with the saved image's real config digest and a bundle-safe name
+(`conformance-stub-<mode>`; the registry-style `io.example/...` name in
+`manifests/` is not a valid bundle path component), then signs with a throwaway
+keypair that lives in a temp directory and is deleted on exit. No key is
+written to the work tree, and the committed manifests are not modified.
+
+Only the bundle build touches a registry (the Dockerfile's base images). Each
+bundle carries its own image archive, so a host that installs it
+(`docker load`) never pulls. Smoke check:
+
+```sh
+go test -tags conformance_bundle -run TestConformanceStubBundles ./internal/plugin/loader
+```

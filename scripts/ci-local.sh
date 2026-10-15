@@ -126,7 +126,7 @@ summarize() {
 		echo "  ⚠ a scoped pass is an inner-loop signal, not full coverage — CI runs the whole matrix on the pushed branch."
 		echo "  run 'make ci-local-full' for the unnarrowed gate."
 	fi
-	echo "not covered locally (CI-only): docker/arm64/podman image jobs, substrate real-daemon suite, vuln scans (make security)"
+	echo "not covered locally (CI-only): docker/arm64/podman image jobs, substrate real-daemon suite, conformance-stub bundle smoke (make conformance-stub-bundle), vuln scans (make security)"
 }
 
 lock_file="${TMPDIR:-/tmp}/gleipnir-ci-local-$(id -u).lock"
