@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -27,6 +28,7 @@ import (
 	runpkg "github.com/felag-engineering/gleipnir/internal/execution/run"
 	"github.com/felag-engineering/gleipnir/internal/infra/config"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
+	"github.com/felag-engineering/gleipnir/internal/infra/netguard"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
@@ -37,6 +39,13 @@ import (
 	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 	"google.golang.org/grpc"
 )
+
+// pluginPoolExclusions is the pre-startup hook for the pool-overlap check. The
+// v1 build never attaches Gleipnir to a plugin network, so nothing about the
+// pool is ever legitimately occupied by its own interfaces: no exclusions.
+func pluginPoolExclusions(_ context.Context, _ netip.Prefix) []netguard.ExcludedAttachment {
+	return nil
+}
 
 // startPluginSubsystem brings up the v1 plugin substrate and wraps it to
 // satisfy pluginSubsystem. store, broadcaster, and systemSettings are kept on

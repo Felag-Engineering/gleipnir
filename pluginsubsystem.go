@@ -39,6 +39,7 @@ package main
 import (
 	"context"
 	"net"
+	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/admin"
 	"github.com/felag-engineering/gleipnir/internal/execution/agent"
@@ -46,6 +47,11 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/plugin/caphealth"
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
 )
+
+// poolExclusionTimeout bounds the container-runtime queries
+// pluginPoolExclusions makes before the pool-overlap check; a hung socket must
+// degrade to "no exclusions" (the check fails closed), not hang startup.
+const poolExclusionTimeout = 10 * time.Second
 
 // pluginSubsystem is the contract both startPluginSubsystem implementations
 // satisfy. run() drives it in this order: launcherDeps() (to finish wiring

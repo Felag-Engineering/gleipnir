@@ -161,7 +161,14 @@ func (f *Fake) Inspect(_ context.Context, id ContainerID) (ContainerInfo, error)
 	if !ok {
 		return ContainerInfo{}, fmt.Errorf("container: fake: no such container %q", id)
 	}
-	return c.info, nil
+	info := c.info
+	if len(c.pinnedAddrs) > 0 {
+		info.NetworkAddresses = make(map[string]string, len(c.pinnedAddrs))
+		for netID, addr := range c.pinnedAddrs {
+			info.NetworkAddresses[f.networks[netID].Name] = addr.String()
+		}
+	}
+	return info, nil
 }
 
 func (f *Fake) Stats(_ context.Context, id ContainerID) (ContainerStats, error) {
