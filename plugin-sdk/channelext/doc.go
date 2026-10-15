@@ -31,13 +31,24 @@
 //     it decodes the target and message and hands them to the author's
 //     handler, whose error return is what turns "unknown address" into a
 //     JSON-RPC error rather than a silent, false acknowledgement.
-//   - New(decl, notify) *Extension is what a plugin's main() passes to
-//     Server.Mount. Until #967 adds a request handler, Methods() serves
-//     channel/notify only — channel/request is absent, and the composed
-//     server's own dispatch answers it with method-not-found. That is the
-//     contract's worked example C (a notify-only channel with no input
-//     surface), not a gap: a server declaring the extension without a
-//     request path is a documented, first-class shape.
+//   - New(decl, notify, opts...) *Extension is what a plugin's main() passes to
+//     Server.Mount. By default Methods() serves channel/notify only —
+//     channel/request is absent, and the composed server's own dispatch
+//     answers it with method-not-found. That is the contract's worked
+//     example C (a notify-only channel with no input surface), not a gap.
+//   - WithRequest(RequestFunc) adds the request leg (contract §8): it
+//     registers channel/request, tasks/get and tasks/cancel. The question
+//     becomes a Tasks-extension task held in a TaskStore; the plugin calls
+//     Extension.Tasks().Complete(taskID, Resolution{...}) when its human
+//     answers. Complete, Cancel and Fail are compare-and-swap — the first
+//     terminal write wins and every later one gets ErrTaskTerminal — so an
+//     answer racing a cancel or a TTL expiry yields exactly one outcome.
+//     WithOnCancel replaces v1's RequestTerminated and runs only when a host
+//     cancel actually wins. NewFileTaskStore keeps tasks across a restart (for
+//     /data); NewMemoryTaskStore is the default and the test store. Task IDs
+//     are 128-bit random. The envelope carries taskId, status, pollIntervalMs
+//     and ttlMs (defaults 5s and 1h; WithTaskTiming overrides). TTL expiry is
+//     applied on observation as a failed task, never a fabricated answer.
 //
 // This package is proto-free and imports nothing from the host module
 // (github.com/felag-engineering/gleipnir/internal/...): plugin-sdk has its

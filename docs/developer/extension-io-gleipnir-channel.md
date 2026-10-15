@@ -1,6 +1,6 @@
 # `io.gleipnir/channel` — MCP extension contract
 
-**Version:** 1.0.0 · **Status:** implemented (host client) · **Spec:** `mcp-realignment-spec.md` §4, §6.4 · **ADR:** ADR-055 Amendment 1
+**Version:** 1.0.0 · **Status:** implemented (host client; SDK server: `plugin-sdk/channelext` notify + request legs) · **Spec:** `mcp-realignment-spec.md` §4, §6.4 · **ADR:** ADR-055 Amendment 1
 
 This document is the normative contract. Per spec §4.2 discipline, no vendor
 appears in normative text; concrete channels appear only in the
