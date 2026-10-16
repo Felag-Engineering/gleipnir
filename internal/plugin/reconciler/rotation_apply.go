@@ -23,7 +23,11 @@ import (
 // effect of it.
 type RotationStore interface {
 	ListLiveContainerGenerations(ctx context.Context) ([]db.PluginContainerGeneration, error)
-	GetLatestContainerGeneration(ctx context.Context, instanceID string) (db.PluginContainerGeneration, error)
+	// ListContainerGenerationsByInstance is every generation an instance has
+	// ever had, whatever its status: beginRotation reads it both for the next
+	// generation number (never reused, so terminal rows count) and for the
+	// startup-failure backoff, which is derived from that same history.
+	ListContainerGenerationsByInstance(ctx context.Context, instanceID string) ([]db.PluginContainerGeneration, error)
 	CreateContainerGeneration(ctx context.Context, arg db.CreateContainerGenerationParams) (db.PluginContainerGeneration, error)
 	UpdateContainerGenerationStatus(ctx context.Context, arg db.UpdateContainerGenerationStatusParams) (int64, error)
 	SetContainerGenerationContainerID(ctx context.Context, arg db.SetContainerGenerationContainerIDParams) (int64, error)
@@ -253,11 +257,32 @@ func (r *Reconciler) applyRotation(ctx context.Context, act RotationAction, desi
 // terminal ones: a generation number is never reused, so a failed attempt
 // consumes its number permanently. Reusing it would make two different
 // containers indistinguishable in an audit trail.
+//
+// Both mint sites come through here — the core loop's first-boot
+// ActionBeginFirstGeneration and rotation's RotationBegin — so this is also
+// where consecutive startup failures hold minting back (planStartupHold).
+// A held pass mints nothing and returns nil: the planner keeps reporting the
+// step every pass, the same split restartActiveGeneration uses for its own
+// backoff, and the next pass past the deadline mints as usual.
 func (r *Reconciler) beginRotation(ctx context.Context, act RotationAction, desired db.PluginContainer, now string) error {
-	latest, err := r.rotations.GetLatestContainerGeneration(ctx, act.InstanceID)
+	history, err := r.rotations.ListContainerGenerationsByInstance(ctx, act.InstanceID)
+	if err != nil {
+		return fmt.Errorf("list generations for %s: %w", act.InstanceID, err)
+	}
+
+	hold := planStartupHold(history, desired)
+	if hold.heldAt(rotationTimeNow()) {
+		slog.DebugContext(ctx, "reconciler: minting held after startup failures",
+			"instance_id", act.InstanceID, "consecutive_failures", hold.Failures,
+			"next_attempt", hold.Until.UTC().Format(time.RFC3339), "last_failure", hold.LastFailure)
+		return nil
+	}
+
 	next := int64(1)
-	if err == nil {
-		next = latest.Generation + 1
+	for _, gen := range history {
+		if gen.Generation >= next {
+			next = gen.Generation + 1
+		}
 	}
 
 	token, hash, err := mintInstanceToken()
@@ -286,12 +311,18 @@ func (r *Reconciler) beginRotation(ctx context.Context, act RotationAction, desi
 	// generation rather than starting a container it cannot authenticate.
 	r.stashToken(created.ID, token)
 
-	if act.CrashLoop {
+	switch {
+	case hold.Failures > 0:
+		// One line per attempt, which the backoff bounds — not one per pass.
+		slog.WarnContext(ctx, "reconciler: retrying an instance that failed to start",
+			"instance_id", act.InstanceID, "generation", next,
+			"consecutive_failures", hold.Failures, "last_failure", hold.LastFailure)
+	case act.CrashLoop:
 		// Worth an operator's attention, not just a routine upgrade log line
 		// (#955 security review item 5's "surface the crash loop").
 		slog.WarnContext(ctx, "reconciler: instance crash-looping; minting a fresh generation",
 			"instance_id", act.InstanceID, "generation", next, "reason", act.Reason)
-	} else {
+	default:
 		slog.InfoContext(ctx, "rotation begun",
 			"instance_id", act.InstanceID, "generation", next, "reason", act.Reason)
 	}
@@ -317,9 +348,9 @@ func (r *Reconciler) createRotationContainer(ctx context.Context, act RotationAc
 	if !ok {
 		// The token is gone: minted in a process that has since died, or
 		// already consumed by an earlier attempt for this same generation
-		// whose Create succeeded but whose Start then failed before the row
-		// ever advanced past pending (takeToken is destructive, so a retry
-		// finds nothing either way). The generation cannot be authenticated,
+		// that died (or hit a store fault) before the row ever advanced past
+		// pending (takeToken is destructive, so a retry finds nothing either
+		// way). The generation cannot be authenticated,
 		// so it is failed rather than retried: a container the host cannot
 		// recognize is worse than no container.
 		return r.failLostTokenGeneration(ctx, act, observed, now)
@@ -332,7 +363,7 @@ func (r *Reconciler) createRotationContainer(ctx context.Context, act RotationAc
 
 	opts, err := r.withGenerationEnv(ctx, r.createOptions(desired, image), act.InstanceID)
 	if err != nil {
-		return fmt.Errorf("generation %d container env: %w", gen.Generation, err)
+		return r.failStartupGeneration(ctx, act, "", fmt.Errorf("generation %d container env: %w", gen.Generation, err), now)
 	}
 	opts.Name = generationContainerName(act.InstanceID, gen.Generation)
 	opts.Labels[LabelGeneration] = itoa64(gen.Generation)
@@ -342,30 +373,73 @@ func (r *Reconciler) createRotationContainer(ctx context.Context, act RotationAc
 
 	id, err := r.runtime.Create(ctx, opts)
 	if err != nil {
-		return fmt.Errorf("create generation %d container: %w", gen.Generation, err)
+		return r.failStartupGeneration(ctx, act, "", fmt.Errorf("create generation %d container: %w", gen.Generation, err), now)
 	}
 	if _, err := r.rotations.SetContainerGenerationContainerID(ctx, db.SetContainerGenerationContainerIDParams{
 		ContainerID: strPtr(string(id)),
 		UpdatedAt:   now,
 		ID:          act.GenerationID,
 	}); err != nil {
+		// A store fault, not a startup failure: leave the row pending. Its
+		// token is already taken, so the next pass's failLostTokenGeneration
+		// fails it and removes this container.
 		return fmt.Errorf("record generation %d container id: %w", gen.Generation, err)
 	}
 	if err := r.runtime.Start(ctx, id); err != nil {
-		return fmt.Errorf("start generation %d container: %w", gen.Generation, err)
+		return r.failStartupGeneration(ctx, act, id, fmt.Errorf("start generation %d container: %w", gen.Generation, err), now)
 	}
 
 	return r.advanceGeneration(ctx, act.GenerationID, GenPending, GenStarting,
 		"container created and started; health gate open", now)
 }
 
+// failStartupGeneration fails a pending generation whose container could not
+// be created or started, in the same pass the failure happened.
+//
+// Before this, the row stayed pending with its token already consumed, and
+// the NEXT pass failed it through failLostTokenGeneration as "instance token
+// was lost" — true, but it buried the reason that mattered, and the instance
+// went straight on to mint another generation that would fail the same way.
+// Recording the start error under startupFailurePrefix is what lets
+// planStartupHold back minting off, and it leaves the actual cause on the
+// failed generation's row for an operator to read.
+//
+// Same order as every other terminal transition: row, then token, then the
+// socket. A Remove that fails leaves a non-live, revoked generation's
+// container for sweepOrphanedGenerationContainers, never a live token.
+func (r *Reconciler) failStartupGeneration(ctx context.Context, act RotationAction, id container.ContainerID, cause error, now string) error {
+	errs := []error{fmt.Errorf("generation %d failed to start: %w", act.Generation, cause)}
+
+	if err := r.advanceGeneration(ctx, act.GenerationID, GenPending, GenFailed,
+		startupFailurePrefix+cause.Error(), now); err != nil {
+		return errors.Join(append(errs, err)...)
+	}
+	if _, err := r.rotations.RevokeContainerGenerationToken(ctx, db.RevokeContainerGenerationTokenParams{
+		TokenRevokedAt: strPtr(now),
+		UpdatedAt:      now,
+		ID:             act.GenerationID,
+	}); err != nil {
+		return errors.Join(append(errs, fmt.Errorf("revoke generation %d's token: %w", act.Generation, err))...)
+	}
+	if id != "" {
+		// Forced: a container whose Start failed may be in any state the
+		// runtime left it in, and none of it is worth keeping.
+		if err := r.runtime.Remove(ctx, id, true); err != nil {
+			errs = append(errs, fmt.Errorf("remove generation %d's container: %w", act.Generation, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // failLostTokenGeneration fails a pending generation whose token cannot be
 // recovered (security review, #955 finding 1).
 //
-// A crash is not the only way here: Create can succeed and Start can then
-// fail (or the process can die) before the row ever advances past pending,
-// and because takeToken is destructive, the retry that follows finds the
-// token already gone. Left alone that retry silently failed the generation
+// The way here is a process that dies after takeToken — between Create and
+// Start, most sharply, which leaves a container behind — or a store fault
+// recording the container ID. Because takeToken is destructive, the retry
+// that follows finds the token already gone. (A Create or Start that merely
+// FAILS no longer comes here: failStartupGeneration settles it in the same
+// pass, with the start error as its reason.) Left alone that retry silently failed the generation
 // while leaving three things live: the token's DB row unrevoked, and — when
 // Create had already succeeded — a container carrying this generation's
 // label that nothing would ever adopt, since planFor treats a
@@ -418,7 +492,11 @@ func (r *Reconciler) abortRotation(ctx context.Context, act RotationAction, now 
 	// updated would leave a generation with no container, which the planner
 	// reads as another abort — idempotent, but noisier than recording the
 	// decision first.
-	if err := r.advanceGeneration(ctx, act.GenerationID, from, GenFailed, act.Reason, now); err != nil {
+	// Recorded as a startup failure: a generation that could not pass its
+	// gate is one planStartupHold must back minting off from, exactly like
+	// one whose container would not start at all — a container that exits
+	// the moment it starts churns generations just the same.
+	if err := r.advanceGeneration(ctx, act.GenerationID, from, GenFailed, startupFailurePrefix+act.Reason, now); err != nil {
 		return err
 	}
 	if _, err := r.rotations.RevokeContainerGenerationToken(ctx, db.RevokeContainerGenerationTokenParams{

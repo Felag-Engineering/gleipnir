@@ -633,6 +633,7 @@ func TestReconcileRotations_HealthGateFailureLeavesTheOldGenerationServing(t *te
 // in an audit trail.
 func TestReconcileRotations_RetryUsesTheNextNumber(t *testing.T) {
 	ctx := context.Background()
+	clock := useRotationClock(t)
 	store, rt, r := rotFixture(t)
 
 	seedInstance(t, store, rt, "inst-1", "sha256:aaa", "cfg-1")
@@ -649,7 +650,21 @@ func TestReconcileRotations_RetryUsesTheNextNumber(t *testing.T) {
 		t.Fatalf("abort pass: %v", err)
 	}
 
-	// Desired still names the new digest, so the next pass begins again.
+	// Desired still names the new digest, so the next pass plans to begin
+	// again — but a gate abort is a startup failure, so nothing is minted
+	// until its backoff has elapsed.
+	held, err := r.ReconcileRotations(ctx)
+	if err != nil {
+		t.Fatalf("held pass: %v", err)
+	}
+	if len(held.Actions) != 1 || held.Actions[0].Kind != RotationBegin {
+		t.Fatalf("held pass = %+v, want the %q step still reported", held.Actions, RotationBegin)
+	}
+	if n := len(liveGenerations(t, store, "inst-1")); n != 2 {
+		t.Fatalf("generations = %d inside the startup backoff, want 2", n)
+	}
+
+	clock.Advance(startupBackoffBase)
 	result, err := r.ReconcileRotations(ctx)
 	if err != nil {
 		t.Fatalf("retry pass: %v", err)
@@ -705,12 +720,15 @@ func TestReconcileRotations_LostTokenFailsTheGeneration(t *testing.T) {
 }
 
 // Security review (#955 finding 1): a generation whose container was
-// actually created, but whose Start then failed before the row ever left
-// pending, must not leave a live-looking container behind for the core loop
-// to mistake for something to adopt. The retry that follows (takeToken is
-// destructive, so it finds nothing) must revoke the token, remove the
-// leftover container, and let the next generation get minted clean.
-func TestReconcileRotations_CreateSucceedsStartFailsRevokesAndRemoves(t *testing.T) {
+// actually created, but whose row never advanced past pending — the process
+// died between Create and Start — must not leave a live-looking container
+// behind for the core loop to mistake for something to adopt. The retry that
+// follows (takeToken is destructive, and a restart loses the stash anyway)
+// must revoke the token, remove the leftover container, and let the next
+// generation get minted clean. A Start that merely FAILS no longer takes this
+// path: failStartupGeneration settles it in the same pass
+// (TestReconcileRotations_StartFailureFailsTheGenerationWithItsCause).
+func TestReconcileRotations_LostTokenWithALeftoverContainerRevokesAndRemoves(t *testing.T) {
 	ctx := context.Background()
 	store, rt, r := rotFixture(t)
 	seedFreshInstance(t, store, "inst-1", "sha256:aaa", "cfg-1")
@@ -721,28 +739,29 @@ func TestReconcileRotations_CreateSucceedsStartFailsRevokesAndRemoves(t *testing
 			t.Fatalf("core pass %d: %v", i, err)
 		}
 	}
-
-	// Create succeeds, but Start fails -- the row never advances past
-	// pending, and the container it left behind is still there.
-	rt.Runtime.(*container.Fake).StartErr = errors.New("start refused")
-	if _, err := r.ReconcileRotations(ctx); err != nil {
-		t.Fatalf("create pass (start fails): %v", err)
-	}
-	before := liveGenerations(t, store, "inst-1")
-	if len(before) != 1 || before[0].Status != GenPending {
-		t.Fatalf("generation after the failed start = %+v, want a single pending row", before)
-	}
-	leftover, err := rt.ListByLabel(ctx, LabelGeneration, "1")
-	if err != nil {
-		t.Fatalf("ListByLabel: %v", err)
-	}
-	if len(leftover) != 1 {
-		t.Fatalf("leftover containers = %d, want 1 (Create succeeded before Start failed)", len(leftover))
+	pending := liveGenerations(t, store, "inst-1")
+	if len(pending) != 1 || pending[0].Status != GenPending {
+		t.Fatalf("generations after the mint = %+v, want a single pending row", pending)
 	}
 
-	// The retry: Start would succeed now, but it never gets the chance --
-	// the stashed token was already consumed by the first attempt.
-	rt.Runtime.(*container.Fake).StartErr = nil
+	// Model the crash: Create landed (a container carrying generation 1's
+	// label exists) and the process died before Start, losing the token.
+	if _, err := rt.Create(ctx, container.CreateOptions{
+		Name:    generationContainerName("inst-1", 1),
+		Image:   "ghcr.io/acme/p@sha256:aaa",
+		Network: "gleipnir-plugin-inst-1",
+		Labels: map[string]string{
+			LabelManaged: ManagedValue, LabelInstance: "inst-1",
+			LabelGeneration: "1", LabelImageDigest: "sha256:aaa", LabelConfigHash: "cfg-1",
+		},
+		CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}, Sysctls: container.RequiredSysctls(),
+	}); err != nil {
+		t.Fatalf("seed leftover container: %v", err)
+	}
+	r.tokenMu.Lock()
+	r.tokens = map[string]string{}
+	r.tokenMu.Unlock()
+
 	if _, err := r.ReconcileRotations(ctx); err != nil {
 		t.Fatalf("retry pass: %v", err)
 	}
@@ -762,6 +781,9 @@ func TestReconcileRotations_CreateSucceedsStartFailsRevokesAndRemoves(t *testing
 	if _, err := store.Queries().GetContainerGenerationByTokenHash(ctx, failed.TokenHash); err == nil {
 		t.Error("generation 1's token still authenticates after it was failed and revoked")
 	}
+	if isStartupFailure(failed) {
+		t.Error("a lost token was recorded as a startup failure — a restart says nothing about whether the image starts")
+	}
 
 	gone, err := rt.ListByLabel(ctx, LabelGeneration, "1")
 	if err != nil {
@@ -773,8 +795,9 @@ func TestReconcileRotations_CreateSucceedsStartFailsRevokesAndRemoves(t *testing
 
 	// The core loop must not have adopted the leftover container: with it
 	// already gone and generation 1 now failed (no longer live), the next
-	// step is a fresh mint (generation 2), never an ActionStart on a
-	// container the loop should have treated as an orphan.
+	// step is a fresh mint (generation 2) — immediately, since a lost token
+	// earns no startup backoff — never an ActionStart on a container the
+	// loop should have treated as an orphan.
 	beginAgain, err := r.ReconcileOnce(ctx)
 	if err != nil {
 		t.Fatalf("begin-again pass: %v", err)
