@@ -86,7 +86,13 @@ fi
 
 echo "==> saving image archive"
 archive=$work/image.tar
-"$engine" save -o "$archive" "$image"
+# Podman's default docker-archive format stores a repeated layer as a symlink,
+# and the archive reader refuses link entries; an OCI archive needs none.
+engine_save_flags=()
+if [ "$engine" = podman ]; then
+    engine_save_flags=(--format oci-archive)
+fi
+"$engine" save "${engine_save_flags[@]}" -o "$archive" "$image"
 digest=$("$work/imagedigest" "$archive")
 echo "    config digest: $digest"
 

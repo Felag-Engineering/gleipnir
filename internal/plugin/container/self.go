@@ -10,7 +10,9 @@ import (
 )
 
 // containerenvPath is where Podman writes an identity marker into every
-// container it starts. A package-level var (not a const) purely so a test can
+// container it starts. Podman fills in its id= line only for a --privileged
+// container; an ordinary one gets an empty file, so for Podman the mountinfo
+// source below is what actually resolves. A package-level var (not a const) purely so a test can
 // point ResolveSelfContainerID at a fixture file instead of the real /run.
 var containerenvPath = "/run/.containerenv"
 
@@ -32,12 +34,16 @@ var osHostname = os.Hostname
 // source rather than a self-reported claim.
 var containerenvIDPattern = regexp.MustCompile(`(?m)^id="([0-9a-f]{64})"\s*$`)
 
-// mountinfoContainerIDPattern matches the host-side source path Docker's
-// per-container bind mounts carry: /var/lib/docker/containers/<64hex>/
-// {hostname,hosts,resolv.conf}. Like /run/.containerenv, this path is a fact
-// the daemon asserted when it created the container, not something reachable
-// by a process choosing its own hostname or environment.
-var mountinfoContainerIDPattern = regexp.MustCompile(`containers/([0-9a-f]{64})/(?:hostname|hosts|resolv\.conf)\b`)
+// mountinfoContainerIDPattern matches the host-side source path a runtime's
+// per-container bind mounts of /etc/{hostname,hosts,resolv.conf} carry:
+// Docker's /var/lib/docker/containers/<64hex>/hostname, and Podman's
+// .../overlay-containers/<64hex>/userdata/hostname (rootful and rootless
+// alike). Like /run/.containerenv, this path is a fact the runtime asserted
+// when it created the container, not something reachable by a process
+// choosing its own hostname or environment — making a bind mount needs a
+// capability a plugin-facing container does not hold.
+var mountinfoContainerIDPattern = regexp.MustCompile(
+	`(?:/containers/([0-9a-f]{64})|/overlay-containers/([0-9a-f]{64})/userdata)/(?:hostname|hosts|resolv\.conf)\b`)
 
 // selfContainerIDFromContainerenv extracts a container ID from the content of
 // /run/.containerenv (Podman), or "" when no id= line is present — e.g.
@@ -51,14 +57,17 @@ func selfContainerIDFromContainerenv(content string) string {
 }
 
 // selfContainerIDFromMountinfo extracts a container ID from the content of
-// /proc/self/mountinfo (Docker), or "" when no matching bind-mount source is
-// present.
+// /proc/self/mountinfo (Docker or Podman), or "" when no matching bind-mount
+// source is present.
 func selfContainerIDFromMountinfo(content string) string {
 	m := mountinfoContainerIDPattern.FindStringSubmatch(content)
 	if m == nil {
 		return ""
 	}
-	return m[1]
+	if m[1] != "" {
+		return m[1] // Docker layout
+	}
+	return m[2] // Podman layout
 }
 
 // candidateSelfContainerID tries both unspoofable sources in turn. Neither

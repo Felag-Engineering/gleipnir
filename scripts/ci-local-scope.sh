@@ -48,6 +48,7 @@ emit_full() {
 	echo "CI_LOCAL_RUN_SDK=1"
 	echo "CI_LOCAL_RUN_FRONTEND=1"
 	echo "CI_LOCAL_RUN_SUBSTRATE=1"
+	echo "CI_LOCAL_RUN_DOOD=1"
 	echo "CI_LOCAL_PLUGIN_DIRS=${all_plugin_dirs}"
 	exit 0
 }
@@ -82,13 +83,14 @@ fi
 
 # Changing the gate, its inputs, or the root module graph invalidates the
 # premise that a package's reverse-dependency set bounds the blast radius.
-if printf '%s\n' "$changed_files" | grep -qE '^(Makefile|scripts/|\.github/workflows/|sqlc\.yaml|buf\.yaml|buf\.gen\.yaml|go\.mod|go\.sum)'; then
+if printf '%s\n' "$changed_files" | grep -qE '^(Makefile|scripts/|\.github/workflows/|\.github/actions/|sqlc\.yaml|buf\.yaml|buf\.gen\.yaml|go\.mod|go\.sum)'; then
 	emit_full "diff touches the build/gate definition or the root module graph"
 fi
 
 run_frontend=0
 run_sdk=0
 run_substrate=0
+run_dood=0
 plugin_dirs=""
 root_go_changed=""
 
@@ -133,7 +135,30 @@ plugins/ntfy
 plugin-sdk/examples/conformance-stub
 "
 
+# Packages and inputs the DooD suite (internal/plugin/dood, issue #986) runs
+# through: the suite itself, the assembly it boots, the reconciler / container
+# runtime / loader beneath that, and the stub bundle it installs. A prefix
+# list for the same reason as substrate_dirs: the suite is behind a build tag,
+# so the default import graph does not see it. The runner and bundle scripts
+# live under scripts/ and the workflow/action files under .github/, which
+# already widen to the full gate above (emit_full sets RUN_DOOD=1).
+dood_dirs="
+internal/plugin/dood
+internal/plugin/assembly
+internal/plugin/reconciler
+internal/plugin/loader
+internal/plugin/container
+plugin-sdk/examples/conformance-stub
+"
+
 while IFS= read -r f; do
+	while IFS= read -r d; do
+		[ -z "$d" ] && continue
+		case "$f" in
+		"$d"/*) run_dood=1 ;;
+		esac
+	done <<<"$dood_dirs"
+
 	# Substrate membership is checked first and does NOT `continue`, so it still
 	# fires for a file the routing below claims with its own `continue` — plugins/
 	# ntfy and plugin-sdk/examples/conformance-stub are both in substrate_dirs
@@ -267,4 +292,5 @@ echo "CI_LOCAL_GO_PKGS=${go_pkgs}"
 echo "CI_LOCAL_RUN_SDK=${run_sdk}"
 echo "CI_LOCAL_RUN_FRONTEND=${run_frontend}"
 echo "CI_LOCAL_RUN_SUBSTRATE=${run_substrate}"
+echo "CI_LOCAL_RUN_DOOD=${run_dood}"
 echo "CI_LOCAL_PLUGIN_DIRS=${plugin_dirs# }"
