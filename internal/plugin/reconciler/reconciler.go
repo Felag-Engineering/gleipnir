@@ -964,7 +964,7 @@ func (r *Reconciler) createNetwork(ctx context.Context, row db.PluginContainer) 
 		// Internal is the default-deny the egress-grants work builds on: a
 		// plugin container has no route off its own network until something
 		// deliberately gives it one.
-		Internal: true,
+		Internal: false, // NEGATIVE TEST — DO NOT MERGE: drops east-west isolation (#985 DoD)
 		// EnableIPv6 is left at its zero value (false) deliberately (#1021
 		// review item V1): a plugin container has no legitimate use for a
 		// link-local fe80 address, and IPv6 on an instance network is a
