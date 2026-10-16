@@ -488,6 +488,15 @@ func (h *harness) probeImage() string {
 // than "not reached": otherwise a broken probe would read as isolation holding.
 func (h *harness) Dial(name, network string, addr netip.AddrPort) (reached bool, output string) {
 	h.t.Helper()
+	return h.DialFrom(name, network, nil, addr)
+}
+
+// DialFrom is Dial from a probe that is ALSO attached to the extra networks
+// before it starts. It exists for the sensitivity control: a probe that sits
+// on both A's and B's networks must reach B, or "A cannot reach B" could mean
+// the probe or B's endpoint is broken rather than that isolation holds.
+func (h *harness) DialFrom(name, network string, extra []container.NetworkInfo, addr netip.AddrPort) (reached bool, output string) {
+	h.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), convergeBudget)
 	defer cancel()
 
@@ -506,6 +515,11 @@ func (h *harness) Dial(name, network string, addr netip.AddrPort) (reached bool,
 	})
 	if err != nil {
 		h.t.Fatalf("creating probe %s: %v", name, err)
+	}
+	for _, n := range extra {
+		if err := h.rt.ConnectNetwork(ctx, n.ID, id, nil); err != nil {
+			h.t.Fatalf("attaching probe %s to network %s: %v", name, n.Name, err)
+		}
 	}
 	if err := h.rt.Start(ctx, id); err != nil {
 		h.t.Fatalf("starting probe %s: %v", name, err)

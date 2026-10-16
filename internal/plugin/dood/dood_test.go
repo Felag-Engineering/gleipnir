@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/mcp"
+	"github.com/felag-engineering/gleipnir/internal/plugin/container"
 	"github.com/felag-engineering/gleipnir/internal/plugin/hostendpoint"
 	"github.com/felag-engineering/gleipnir/internal/plugin/reconciler"
 )
@@ -109,6 +110,26 @@ func TestDooD_InstallReconcileCallIsolateHostPlane(t *testing.T) {
 				p.target, p.addr, reached, p.wantReach, p.why, strings.TrimSpace(output))
 		} else {
 			t.Logf("probe on A's network -> %s (%s): reached=%v, as required", p.target, p.addr, reached)
+		}
+	}
+
+	// Sensitivity control for the two negatives above: the same targets, from
+	// a probe attached to BOTH networks, must be reachable. Without this, a
+	// "cannot reach B" verdict could mean B's endpoint was down or the probe
+	// cannot see across networks at all, and the isolation result would be
+	// vacuous. With it, the only thing that differs between the passing and
+	// the refused dial is which networks the prober is on.
+	for _, p := range probes {
+		if p.wantReach {
+			continue
+		}
+		reached, output := h.DialFrom("both-to-"+p.name, a.Network.Name, []container.NetworkInfo{b.Network}, p.addr)
+		if !reached {
+			t.Errorf("control probe on A's and B's networks -> %s (%s): reached=false, want true: "+
+				"the isolation negative above is only meaningful if the target is reachable from its own network\noutput: %s",
+				p.target, p.addr, strings.TrimSpace(output))
+		} else {
+			t.Logf("control probe on A's and B's networks -> %s (%s): reached=true, as required", p.target, p.addr)
 		}
 	}
 
