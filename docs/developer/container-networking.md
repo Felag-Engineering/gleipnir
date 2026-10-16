@@ -34,11 +34,13 @@ it would let self-attach be steered onto the wrong container. Instead it reads t
 sources the container runtime itself asserted at container-creation time, before this
 process's own contents ever ran:
 
-- **Podman:** the `id=` line in `/run/.containerenv`, a file Podman writes into every
-  container it starts.
-- **Docker:** the `/proc/self/mountinfo` entry for this container's own bind-mounted
-  `hostname`/`hosts`/`resolv.conf` files, whose host-side source path names the
-  container by ID.
+- **Podman (privileged):** the `id=` line in `/run/.containerenv`. Podman writes the
+  file into every container but fills `id=` in only for `--privileged` ones.
+- **Docker and Podman:** the `/proc/self/mountinfo` entry for this container's own
+  bind-mounted `hostname`/`hosts`/`resolv.conf` files, whose host-side source path
+  names the container by ID — `.../containers/<id>/hostname` under Docker,
+  `.../overlay-containers/<id>/userdata/hostname` under Podman (rootful and rootless).
+  For an ordinary Podman container this is the source that resolves.
 
 Whichever candidate ID that finds is then corroborated, not trusted blind: `Inspect`
 must succeed against it, the inspected container's own ID must equal the candidate
@@ -135,6 +137,13 @@ The socket it mounts is root-equivalent on the host (or equivalent to whichever 
 owns it, for a rootless Podman socket) — see the comment at the top of that file
 before using it. It also sets the two forwarding sysctls self-attach's precondition
 check requires; do not remove them.
+
+Gleipnir's own container must sit on a **bridge** network. Compose already does this
+(the project network). A rootless `podman run` without `--network` puts the container
+on slirp4netns instead, and Podman refuses to connect a slirp4netns container to
+another network, so every self-attach fails with `"slirp4netns" is not supported:
+invalid network mode` and no plugin endpoint ever comes up. Start it with
+`--network podman` (or any bridge network) when running it outside compose.
 
 This is east-west isolation, and it exists because the alternative violates ADR-001
 by topology rather than by policy. On a shared network, a compromised plugin could

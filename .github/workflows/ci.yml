@@ -572,6 +572,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       run: ${{ steps.scope.outputs.run }}
+      dood: ${{ steps.scope.outputs.dood }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -592,6 +593,7 @@ jobs:
             # merged. Run the lane unconditionally.
             echo "substrate lane: 1 (${{ github.event_name }}, no diff to scope)"
             echo "run=1" >> "$GITHUB_OUTPUT"
+            echo "dood=1" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
@@ -600,10 +602,13 @@ jobs:
           # CI_LOCAL_SCOPE_FILES is the scoper's documented seam, so this asks
           # the same question the local gate asks, with the diff supplied
           # explicitly instead of inferred from the runner's git topology.
-          run=$(CI_LOCAL_SCOPE_FILES="$changed" ./scripts/ci-local-scope.sh |
-            sed -n 's/^CI_LOCAL_RUN_SUBSTRATE=//p')
+          scope_out=$(CI_LOCAL_SCOPE_FILES="$changed" ./scripts/ci-local-scope.sh)
+          run=$(printf '%s\n' "$scope_out" | sed -n 's/^CI_LOCAL_RUN_SUBSTRATE=//p')
+          dood=$(printf '%s\n' "$scope_out" | sed -n 's/^CI_LOCAL_RUN_DOOD=//p')
           echo "substrate lane: ${run}"
+          echo "dood lane: ${dood}"
           echo "run=${run}" >> "$GITHUB_OUTPUT"
+          echo "dood=${dood}" >> "$GITHUB_OUTPUT"
         env:
           GOWORK: off
 
@@ -637,95 +642,7 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - name: Give the runner a systemd user session
-        run: |
-          set -euo pipefail
-          uid="$(id -u)"
-
-          # Two separate things have to be true before a rootless container can
-          # start on a DNS-enabled network, and a bare Actions job has neither.
-          #
-          # First, a live *user* bus: netavark hands aardvark-dns to
-          # `systemd-run --user --scope` whenever the host is systemd-booted.
-          # An Actions job is not a login session, so logind has never created
-          # /run/user/$uid or the bus inside it. Enabling linger starts
-          # user@$uid.service, which creates both — owned by this user, which
-          # is also what makes the runtime dir safe to use below.
-          #
-          # Second, that bus has to be reachable from where netavark actually
-          # runs, which is inside podman's rootless-netns mount namespace —
-          # and there /run is REPLACED by a prepared directory (see
-          # containers/common, libnetwork/internal/rootlessnetns). Exactly
-          # three things are carried into it: /run/systemd, the resolv.conf
-          # plumbing, and a recursive bind of XDG_RUNTIME_DIR at its own path.
-          # So the bus survives into that namespace only when XDG_RUNTIME_DIR
-          # is itself under /run. That is why this is /run/user/$uid and not a
-          # directory under RUNNER_TEMP: with a temp-dir runtime dir nothing
-          # recreates /run/user/$uid inside the namespace, and aardvark-dns
-          # dies on `Failed to connect to bus: No such file or directory`
-          # however healthy the bus looks from the job shell.
-          #
-          # None of this was load-bearing while an Internal network came up
-          # with DNS disabled, because aardvark-dns was never spawned at all.
-          # The runtime on the current runner image keeps DNS enabled on
-          # internal networks, which turned both gaps into a container start
-          # that fails outright.
-          if ! sudo loginctl enable-linger "$(id -un)"; then
-            echo "::warning::loginctl enable-linger failed; falling through to the session check"
-          fi
-
-          export XDG_RUNTIME_DIR="/run/user/${uid}"
-          export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
-
-          # The readiness check ends on netavark's own invocation rather than on
-          # the bus socket existing. A runtime dir we do not own, or a bus that
-          # refuses --scope, both pass a file check and then surface 12 minutes
-          # later as a convergence timeout naming neither systemd nor dbus.
-          ready=0
-          for i in $(seq 1 30); do
-            if [ -O "${XDG_RUNTIME_DIR}" ] && systemd-run --user -q --scope true 2>/dev/null; then
-              echo "systemd user session up after ${i}s"
-              ready=1
-              break
-            fi
-            sleep 1
-          done
-          if [ "${ready}" -ne 1 ]; then
-            echo "::error::no usable systemd user session; netavark cannot start aardvark-dns"
-            ls -ld "${XDG_RUNTIME_DIR}" || true
-            systemd-run --user --scope true || true
-            exit 1
-          fi
-
-          {
-            echo "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}"
-            echo "DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS}"
-          } >> "$GITHUB_ENV"
-
-      - name: Start a rootless Podman socket
-        run: |
-          set -euo pipefail
-          # XDG_RUNTIME_DIR comes from the session step above and has to stay
-          # /run/user/$uid — read the mount-namespace reasoning there before
-          # moving it back under RUNNER_TEMP. Posture detection builds the
-          # podman socket path from it, so it is also what makes DetectPosture
-          # resolve rootless-podman rather than falling back to the Docker
-          # socket the runner also has.
-          #
-          # Ordering matters as well: netavark is exec'd by this service and
-          # inherits its environment, so the session has to exist first.
-          mkdir -p "${XDG_RUNTIME_DIR}/podman"
-          podman system service --time=0 "unix://${XDG_RUNTIME_DIR}/podman/podman.sock" &
-          for i in $(seq 1 30); do
-            if [ -S "${XDG_RUNTIME_DIR}/podman/podman.sock" ]; then
-              echo "podman socket up after ${i}s"
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "::error::rootless podman socket did not appear"
-          exit 1
-
+      - uses: ./.github/actions/rootless-podman
       - name: Build the substrate test image
         # Built rather than pulled, because the image has to satisfy two
         # requirements at once and no stock tag does both.
@@ -798,6 +715,126 @@ jobs:
             gh issue create --repo "${{ github.repository }}" --title "$title" \
               --label bug --label epic:plugin-system \
               --body "$note"$'\n\n'"Pinned tracking issue for \`substrate-integration\` nightly-schedule failures (issue #982) — each consecutive failure appends a comment here instead of filing a new issue. Close it once a nightly run goes green again."
+          fi
+
+  # The bounded DooD job (issue #986): the DooD suite (internal/plugin/dood,
+  # #985) boots the real v2 assembly inside a runner container that has the
+  # rootless Podman socket mounted, installs signed conformance-stub bundles
+  # and checks convergence plus network isolation against a real daemon. The
+  # substrate suite above proves the runtime primitives; this proves the
+  # composed system (assembly -> reconciler -> self-attach -> host endpoint).
+  #
+  # Gated by the same scoper (substrate-scope's `dood` output, from
+  # CI_LOCAL_RUN_DOOD) on PRs, and unconditionally on push, tags and the
+  # nightly schedule, the same belt-and-suspenders shape as substrate-integration.
+  #
+  # Wall time (measured on ubuntu-24.04, rootless podman 4.9.3, 2026-10-16): about
+  # 1m bundle build + about 50s suite step (about 40s compiling the test binary,
+  # about 6s of test), under 3 minutes for the job. Budget 15 minutes.
+  dood:
+    needs: substrate-scope
+    if: ${{ always() && (needs.substrate-scope.outputs.dood == '1' || github.event_name != 'pull_request') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GOWORK: off
+      # The suite's daemon is the rootless Podman started below, and the
+      # bundles' image archives are loaded into it, so they must be built by
+      # Podman too (a Docker-built archive would sit in the wrong store).
+      CONTAINER_ENGINE: podman
+      DOOD_RUNNER_IMAGE: mirror.gcr.io/library/golang:1.26-alpine
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: ./.github/actions/rootless-podman
+
+      - name: Pull the build and runner base from a mirror
+        # Docker Hub rate-limits shared runners. The stub Dockerfile names
+        # golang:1.26-alpine, which Podman resolves to docker.io/library/...;
+        # tagging the mirror's copy under that name makes the build use the
+        # local image instead of pulling. The same image is the suite's runner
+        # and probe image, so it is present when instance networks (Internal,
+        # unable to pull) need it.
+        run: |
+          set -euo pipefail
+          podman pull "${DOOD_RUNNER_IMAGE}"
+          podman tag "${DOOD_RUNNER_IMAGE}" docker.io/library/golang:1.26-alpine
+
+      - name: Build the conformance stub bundles
+        run: make conformance-stub-bundle
+
+      # TODO(#983, #987): add `make -C plugins/ntfy image archive bundle`
+      # (ephemeral key) once plugins/ntfy is a v2 container with those targets.
+      # It has no Makefile today, so there is nothing to build.
+
+      - name: DooD suite
+        run: scripts/run-dood-suite.sh
+
+      # TODO(#999): add `go test -tags conform_bundle
+      # ./plugin-sdk/cmd/gleipnir-plugin/cmd/` once the conform bundle mode lands.
+
+      - name: Diagnostics on failure
+        if: failure()
+        # run-dood-suite.sh already dumps the runner and plugin containers'
+        # logs before it removes the runner; this adds the daemon's view of what
+        # survived.
+        run: |
+          podman ps -a --format '{{.ID}} {{.Names}} {{.Status}} {{.Image}} {{.Labels}}' || true
+          podman network ls || true
+          podman volume ls || true
+          podman images || true
+          podman info || true
+
+      - name: Report leftovers
+        if: always()
+        # The suite cleans up by label. This says so out loud rather than
+        # trusting it silently.
+        run: |
+          echo "containers:"; podman ps -a --filter 'label=gleipnir.managed=true' --format '{{.Names}}' || true
+          podman ps -a --filter 'label=gleipnir.dood-test-run' --format '{{.Names}}' || true
+          podman ps -a --filter 'label=gleipnir.dood-runner' --format '{{.Names}}' || true
+          echo "networks:";   podman network ls --filter 'label=gleipnir.managed=true' --format '{{.Name}}' || true
+          echo "volumes:";    podman volume ls --format '{{.Name}}' | grep '^gleipnir-plugin-' || true
+
+      - name: Tear down
+        if: always()
+        run: |
+          for f in label=gleipnir.managed=true label=gleipnir.dood-test-run label=gleipnir.dood-runner; do
+            ids=$(podman ps -aq --filter "$f" 2>/dev/null || true)
+            if [ -n "$ids" ]; then podman rm -f $ids 2>/dev/null || true; fi
+          done
+          podman network prune -f 2>/dev/null || true
+          podman volume ls -q 2>/dev/null | grep '^gleipnir-plugin-' | xargs -r podman volume rm -f 2>/dev/null || true
+
+  # Same paper trail as substrate-integration-nightly-failure, for the DooD job.
+  dood-nightly-failure:
+    needs: dood
+    if: always() && github.event_name == 'schedule' && needs.dood.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: File or update the pinned nightly-failure tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="dood: nightly failure tracking"
+          existing=$(gh issue list --repo "${{ github.repository }}" --state open \
+            --search "in:title \"$title\"" --json number --jq '.[0].number // empty')
+          note="Nightly \`dood\` run failed: ${RUN_URL} (commit ${{ github.sha }})."
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "${{ github.repository }}" --body "$note"
+          else
+            gh issue create --repo "${{ github.repository }}" --title "$title" \
+              --label bug --label epic:plugin-system \
+              --body "$note"$'\n\n'"Pinned tracking issue for \`dood\` nightly-schedule failures (issue #986) — each consecutive failure appends a comment here instead of filing a new issue. Close it once a nightly run goes green again."
           fi
 
   # Publishes :dev on every merge to main. Bleeding-edge tag — do not pull

@@ -53,6 +53,15 @@ func WithRuntime(rt container.Runtime) Option {
 	return func(o *options) { o.runtime = rt }
 }
 
+// WithReconcileInterval replaces the reconciler's periodic pass cadence (30s by
+// default). The loop is level-triggered and takes one converging step per
+// instance per pass, so a caller with no way to kick it, such as the DooD suite
+// (#985), shortens the interval to bring a fresh instance up in seconds rather
+// than minutes.
+func WithReconcileInterval(d time.Duration) Option {
+	return func(o *options) { o.reconcileInterval = d }
+}
+
 type options struct {
 	detect            *container.DetectConfig
 	runtime           container.Runtime

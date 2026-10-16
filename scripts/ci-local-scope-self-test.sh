@@ -120,6 +120,24 @@ for d in internal/plugin/loader internal/plugin/hostendpoint internal/plugin/ass
 	check "a change under $d selects the substrate lane (forward-provisioned, issue #982)" $?
 done
 
+# The DooD lane (issue #986) is selected by the suite, the assembly it boots,
+# the substrate beneath that, and the stub bundle it installs; not by an
+# unrelated package. Gate-definition files (scripts/, workflows, actions)
+# widen to the full gate, which includes it.
+for d in internal/plugin/dood internal/plugin/assembly internal/plugin/reconciler internal/plugin/loader internal/plugin/container plugin-sdk/examples/conformance-stub; do
+	out=$(scope "$d/x.go")
+	[ "$(field "$out" CI_LOCAL_RUN_DOOD)" = "1" ]
+	check "a change under $d selects the dood lane" $?
+done
+for f in scripts/run-dood-suite.sh scripts/build-conformance-stub.sh .github/workflows/ci.yml .github/actions/rootless-podman/action.yml; do
+	out=$(scope "$f")
+	[ "$(field "$out" CI_LOCAL_RUN_DOOD)" = "1" ]
+	check "a change to $f selects the dood lane" $?
+done
+out=$(scope "internal/schemanorm/normalize.go")
+[ "$(field "$out" CI_LOCAL_RUN_DOOD)" = "0" ]
+check "an unrelated package change does not select the dood lane" $?
+
 # internal/db/migrations is a real, verified dependency: the suite stands up a
 # real on-disk, migrated DB (`go list -tags substrate -deps -test` confirms it).
 out=$(scope "internal/db/migrations/0099_synthetic.sql")
