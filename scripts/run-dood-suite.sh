@@ -155,6 +155,14 @@ runner_args=(
     -e GLEIPNIR_CONTAINER_SOCKET=/run/dood/runtime.sock
     -e DOOD_BUNDLE_DIR=/dood/bundles
 )
+# Rootless podman starts a container on slirp4netns unless told otherwise,
+# and podman refuses to connect a slirp4netns container to a bridge network —
+# which is exactly what self-attach does to each instance network. So the
+# runner starts on podman's default bridge, the way a compose-deployed
+# Gleipnir sits on its project's bridge network.
+if [ "$engine" = podman ]; then
+    runner_args+=(--network podman)
+fi
 if [ -d /proc/sys/net/ipv6 ]; then
     runner_args+=(
         --sysctl net.ipv6.conf.all.disable_ipv6=1
