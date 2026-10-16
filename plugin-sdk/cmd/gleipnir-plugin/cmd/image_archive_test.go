@@ -138,3 +138,24 @@ func TestWarnIfBundleExceedsHostExtractionCap(t *testing.T) {
 		t.Errorf("expected an extraction-cap warning for an oversized bundle, got: %q", errOut.String())
 	}
 }
+
+// TestSaveArgs pins the save command line per CLI: podman's default
+// docker-archive format carries layer symlinks the archive reader refuses,
+// so podman must be asked for an OCI archive.
+func TestSaveArgs(t *testing.T) {
+	tests := []struct {
+		cli  string
+		want string
+	}{
+		{cli: "docker", want: "save -o /tmp/out.tar -- ghcr.io/acme/plugin:1.0.0"},
+		{cli: "podman", want: "save -o /tmp/out.tar --format oci-archive -- ghcr.io/acme/plugin:1.0.0"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.cli, func(t *testing.T) {
+			got := strings.Join(saveArgs(tc.cli, "/tmp/out.tar", "ghcr.io/acme/plugin:1.0.0"), " ")
+			if got != tc.want {
+				t.Errorf("saveArgs(%q) = %q, want %q", tc.cli, got, tc.want)
+			}
+		})
+	}
+}

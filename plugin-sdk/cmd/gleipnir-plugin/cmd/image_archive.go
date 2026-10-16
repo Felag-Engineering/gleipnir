@@ -39,11 +39,7 @@ func resolveImageArchivePath(cmd *cobra.Command, imageArchive, imageRef string) 
 		return "", nil, err
 	}
 
-	// "--" tells both docker and podman to stop parsing flags, so imageRef is
-	// always taken as the positional argument it is — belt-and-suspenders
-	// alongside validateImageRef's leading-dash rejection, not a substitute
-	// for it.
-	save := exec.Command(cli, "save", "-o", tmpPath, "--", imageRef)
+	save := exec.Command(cli, saveArgs(cli, tmpPath, imageRef)...)
 	save.Stdout = cmd.OutOrStdout()
 	save.Stderr = cmd.ErrOrStderr()
 	if err := save.Run(); err != nil {
@@ -153,4 +149,22 @@ func warnIfBundleExceedsHostExtractionCap(cmd *cobra.Command, entries []bundleTa
 		fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: bundle contents total %d bytes, over the host's %d byte extraction cap; this bundle will be rejected at install time\n",
 			total, capBytes)
 	}
+}
+
+// saveArgs builds the save command line. Podman's default docker-archive
+// format stores a repeated layer as a symlink to its first copy, and the
+// archive reader refuses link entries outright (a link is how a tarball
+// reaches outside itself), so a podman save is asked for an OCI archive,
+// which names every blob by digest and needs no links. Docker 25+ already
+// writes an OCI layout by default.
+func saveArgs(cli, outPath, imageRef string) []string {
+	args := []string{"save", "-o", outPath}
+	if cli == "podman" {
+		args = append(args, "--format", "oci-archive")
+	}
+	// "--" tells both docker and podman to stop parsing flags, so imageRef is
+	// always taken as the positional argument it is — belt-and-suspenders
+	// alongside validateImageRef's leading-dash rejection, not a substitute
+	// for it.
+	return append(args, "--", imageRef)
 }

@@ -78,6 +78,33 @@ func TestSelfContainerIDFromMountinfo(t *testing.T) {
 			want: testSelfID,
 		},
 		{
+			name: "podman rootful hostname bind mount",
+			content: "105 95 254:0 /run/containers/storage/overlay-containers/" + testSelfID + "/userdata/hostname " +
+				"/etc/hostname rw,relatime - ext4 /dev/vda rw\n",
+			want: testSelfID,
+		},
+		{
+			name: "podman rootless hosts bind mount",
+			content: "211 190 0:45 /home/runner/.local/share/containers/storage/overlay-containers/" + testSelfID +
+				"/userdata/hosts /etc/hosts rw,nosuid,nodev,relatime - ext4 /dev/root rw\n",
+			want: testSelfID,
+		},
+		{
+			// Podman's userdata dir also holds files a runtime does not bind
+			// over /etc; only the three identity mounts count.
+			name: "podman userdata file that is not an identity mount",
+			content: "212 190 0:45 /run/containers/storage/overlay-containers/" + testSelfID +
+				"/userdata/run/secrets /run/secrets rw - ext4 /dev/vda rw\n",
+			want: "",
+		},
+		{
+			// A bare 64-hex directory named "containers" somewhere else in a
+			// path, without the runtime layout around it, is not evidence.
+			name:    "lookalike directory without the runtime layout",
+			content: "213 190 0:45 /srv/mycontainers/" + testSelfID + "/hostname /etc/hostname rw - ext4 /dev/vda rw\n",
+			want:    "",
+		},
+		{
 			name:    "no matching mount",
 			content: "657 656 253:1 / / rw,relatime - ext4 /dev/mapper/root rw\n",
 			want:    "",
@@ -161,6 +188,27 @@ func TestResolveSelfContainerID_DockerMountinfoCorroborated(t *testing.T) {
 	mountinfo := writeFixture(t, "mountinfo",
 		"657 656 253:1 /var/lib/docker/containers/"+testSelfID+"/hostname /etc/hostname rw,relatime - ext4 /dev/mapper/root rw\n")
 	withFixturePaths(t, missingContainerenv, mountinfo, testHostname)
+
+	stub := &stubInspectRuntime{infos: map[ContainerID]ContainerInfo{
+		ContainerID(testSelfID): {ID: testSelfID, Hostname: testHostname},
+	}}
+
+	got, err := ResolveSelfContainerID(context.Background(), stub)
+	if err != nil {
+		t.Fatalf("ResolveSelfContainerID: %v", err)
+	}
+	if got != ContainerID(testSelfID) {
+		t.Errorf("ResolveSelfContainerID() = %q, want %q", got, testSelfID)
+	}
+}
+
+// Podman leaves /run/.containerenv empty for a non-privileged container, so
+// the mountinfo layout is the only identity source it offers.
+func TestResolveSelfContainerID_PodmanMountinfoCorroborated(t *testing.T) {
+	emptyContainerenv := writeFixture(t, "containerenv", "")
+	mountinfo := writeFixture(t, "mountinfo",
+		"105 95 254:0 /run/containers/storage/overlay-containers/"+testSelfID+"/userdata/hostname /etc/hostname rw,relatime - ext4 /dev/vda rw\n")
+	withFixturePaths(t, emptyContainerenv, mountinfo, testHostname)
 
 	stub := &stubInspectRuntime{infos: map[ContainerID]ContainerInfo{
 		ContainerID(testSelfID): {ID: testSelfID, Hostname: testHostname},
