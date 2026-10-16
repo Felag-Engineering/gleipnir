@@ -728,7 +728,9 @@ jobs:
   # CI_LOCAL_RUN_DOOD) on PRs, and unconditionally on push, tags and the
   # nightly schedule, the same belt-and-suspenders shape as substrate-integration.
   #
-  # Wall time: measured: TBD on first green run. Budget 15 minutes.
+  # Wall time (measured on ubuntu-24.04, rootless podman 4.9.3, 2026-10-16): about
+  # 1m bundle build + about 50s suite step (about 40s compiling the test binary,
+  # about 6s of test), under 3 minutes for the job. Budget 15 minutes.
   dood:
     needs: substrate-scope
     if: ${{ always() && (needs.substrate-scope.outputs.dood == '1' || github.event_name != 'pull_request') }}

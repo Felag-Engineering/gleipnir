@@ -620,12 +620,29 @@ func (h *harness) removeNetworks(ctx context.Context) {
 			continue
 		}
 		if slices.Contains(self.Networks, n.ID) || slices.Contains(self.NetworkNames, n.Name) {
+			// Logged, not failed: what matters is that the network is gone,
+			// which the removal below and the leftover check after the loop
+			// assert. Rootless podman can tear down its shared network
+			// namespace once the last plugin container leaves it, after which
+			// a disconnect reports the namespace missing even though nothing
+			// is left attached.
 			if err := h.rt.DisconnectNetwork(ctx, n.ID, h.selfID); err != nil {
-				t.Errorf("cleanup: detaching from network %s: %v", n.Name, err)
+				t.Logf("cleanup: detaching from network %s: %v", n.Name, err)
 			}
 		}
 		if err := h.rt.RemoveNetwork(ctx, n.ID); err != nil {
 			t.Errorf("cleanup: removing network %s: %v", n.Name, err)
+		}
+	}
+
+	remaining, err := h.rt.ListNetworksByLabel(ctx, reconciler.LabelManaged, reconciler.ManagedValue)
+	if err != nil {
+		t.Errorf("cleanup: re-listing networks: %v", err)
+		return
+	}
+	for _, n := range remaining {
+		if subnet, err := netip.ParsePrefix(n.Subnet); err == nil && h.pool.Contains(subnet.Addr()) {
+			t.Errorf("cleanup: network %s (%s) from this run's pool is still present", n.Name, n.Subnet)
 		}
 	}
 }
