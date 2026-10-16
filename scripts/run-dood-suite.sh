@@ -25,8 +25,9 @@ set -euo pipefail
 #                           answers, else podman.
 #   DOOD_RUNNER_IMAGE       image the suite runs in; it also runs the isolation
 #                           probes, so it needs a shell and nc (default:
-#                           docker.io/library/golang:1.26-alpine, the base the
-#                           stub build already uses).
+#                           mirror.gcr.io/library/golang:1.26-alpine, the
+#                           stub's build base from a mirror: Docker Hub
+#                           rate-limits shared CI runners).
 #   DOOD_PROBE_IMAGE        run the isolation probes in a different local image.
 #   DOOD_SOCKET             runtime socket on this host (default: the engine's
 #                           own, /var/run/docker.sock for docker, the rootless
@@ -39,7 +40,7 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 dist_dir=${CONFORMANCE_DIST_DIR:-$repo_root/dist}
-runner_image=${DOOD_RUNNER_IMAGE:-docker.io/library/golang:1.26-alpine}
+runner_image=${DOOD_RUNNER_IMAGE:-mirror.gcr.io/library/golang:1.26-alpine}
 
 detect_engine() {
     if [ -n "${CONTAINER_ENGINE:-}" ]; then
@@ -69,6 +70,12 @@ docker)
     ;;
 podman)
     mode=${GLEIPNIR_CONTAINER_RUNTIME_MODE:-rootless-podman}
+    # The rootless user socket is where the CI action starts it and where the
+    # suite's DetectPosture looks. Prefer it over asking podman, whose answer
+    # depends on a running user session this script cannot assume.
+    if [ -z "${DOOD_SOCKET:-}" ] && [ -S "${XDG_RUNTIME_DIR:-/nonexistent}/podman/podman.sock" ]; then
+        DOOD_SOCKET=$XDG_RUNTIME_DIR/podman/podman.sock
+    fi
     socket=${DOOD_SOCKET:-$(podman info --format '{{.Host.RemoteSocket.Path}}')}
     socket=${socket#unix://}
     ;;
@@ -98,6 +105,31 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Everything needed to debug a red run, printed before cleanup removes the
+# runner. Best effort throughout: a diagnostic that fails must not mask the
+# suite's own exit status. The suite's labels: the reconciler stamps
+# gleipnir.managed=true on the containers and networks it creates, and the
+# isolation probes carry gleipnir.dood-test-run.
+dump_diagnostics() {
+    echo "::group::dood diagnostics"
+    echo "--- $engine ps -a"
+    "$engine" ps -a --format '{{.ID}} {{.Names}} {{.Status}} {{.Image}}' || true
+    echo "--- $engine network ls"
+    "$engine" network ls || true
+    echo "--- runner state"
+    "$engine" inspect --format '{{.Name}} status={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} error={{.State.Error}}' "$runner" || true
+    local filter id
+    for filter in label=gleipnir.managed=true label=gleipnir.dood-test-run; do
+        for id in $("$engine" ps -aq --filter "$filter" 2>/dev/null || true); do
+            echo "--- logs of container $id ($filter)"
+            "$engine" logs --tail 200 "$id" 2>&1 || true
+        done
+    done
+    echo "--- runner logs (tail)"
+    "$engine" logs --tail 100 "$runner" 2>&1 || true
+    echo "::endgroup::"
+}
+
 echo "==> engine: $engine (mode $mode, socket $socket)"
 
 # Static, so the runner image's libc does not matter. -tags dood,substratev2 is
@@ -116,6 +148,7 @@ cp -R "$dist_dir" "$work/stage/bundles"
 echo "==> creating the runner ($runner_image)"
 runner_args=(
     --security-opt label=disable
+    --label gleipnir.dood-runner=1
     --sysctl net.ipv4.ip_forward=0
     -v "$socket:/run/dood/runtime.sock"
     -e GLEIPNIR_CONTAINER_RUNTIME_MODE="$mode"
@@ -144,4 +177,8 @@ runner=$("$engine" create "${runner_args[@]}" "$runner_image" /dood/dood.test -t
 echo "==> running the suite"
 status=0
 "$engine" start -a "$runner" || status=$?
+if [ "$status" -ne 0 ]; then
+    echo "==> suite failed (exit $status)"
+    dump_diagnostics
+fi
 exit "$status"
