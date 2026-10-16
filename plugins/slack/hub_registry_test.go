@@ -186,3 +186,41 @@ func TestHubRegistry_LateReleaseDoesNotEvictSuccessor(t *testing.T) {
 	release2()
 	release3()
 }
+
+// TestHubRegistry_AcquireWithRegistersBeforeFirstDispatch pins the ordering
+// AcquireWith exists for: a runner that dispatches the moment Run starts must
+// still reach a handler registered through the callback. Registering after
+// Acquire returned raced the hub's Run goroutine and dropped such an event.
+func TestHubRegistry_AcquireWithRegistersBeforeFirstDispatch(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeSocketModeRunner{
+		events: []socketmode.Event{
+			eventsAPISocketEvent("C01CHAN", "channel", "U01USER", "hello", "1700032000.000100", "T01TEAM"),
+		},
+	}
+	r := newHubRegistry(func(_ string) (socketModeRunner, error) { return runner, nil })
+
+	got := make(chan socketmode.Event, 1)
+	_, release, err := r.AcquireWith("xapp-1", func(h *socketHub) {
+		h.RegisterEventsHandler(func(evt socketmode.Event) {
+			select {
+			case got <- evt:
+			default:
+			}
+		})
+	})
+	if err != nil {
+		t.Fatalf("AcquireWith: %v", err)
+	}
+	t.Cleanup(release)
+
+	select {
+	case evt := <-got:
+		if evt.Type != socketmode.EventTypeEventsAPI {
+			t.Fatalf("handler got event type %q, want %q", evt.Type, socketmode.EventTypeEventsAPI)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the event the runner dispatched on start never reached the handler")
+	}
+}

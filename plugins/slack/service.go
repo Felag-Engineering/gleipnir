@@ -468,15 +468,9 @@ func (s *TriggerService) Start(req *triggerv1.StartRequest, stream grpc.ServerSt
 	// inert), which is strictly no worse than pre-fix behavior.
 	s.fetchAndCacheBotUserID(hostCtx)
 
-	// Acquire the shared socketHub for this xapp-token. The hub is created on
-	// first use and shared with ChannelService's interactive handler.
-	hub, release, err := s.hubRegistry.Acquire(token)
-	if err != nil {
-		return status.Errorf(codes.Internal, "create socket mode runner: %v", err)
-	}
-	// Release our reference when Start returns so the hub can be torn down if
-	// no other caller holds a reference.
-	defer release()
+	// hub is set by the AcquireWith callback below, before any handler that
+	// reads it is registered (the handler slot's atomic store orders the two).
+	var hub *socketHub
 
 	// onEvent is called sequentially by the hub's single fanout goroutine.
 	// Per the socketModeRunner contract, this function is never called concurrently.
@@ -555,9 +549,23 @@ func (s *TriggerService) Start(req *triggerv1.StartRequest, stream grpc.ServerSt
 		}
 	}
 
-	hub.RegisterEventsHandler(onEvent)
-	hub.RegisterSlashCommandHandler(s.onSlashCommand(hostCtx))
-	hub.RegisterTriggerInteractiveHandler(s.onShortcut(hostCtx))
+	// Acquire the shared socketHub for this xapp-token. The hub is created on
+	// first use and shared with ChannelService's interactive handler. Handlers
+	// are registered inside AcquireWith so a new hub cannot dispatch an event
+	// before they exist — registering after Acquire returned dropped any event
+	// the runner delivered in between.
+	_, release, err := s.hubRegistry.AcquireWith(token, func(h *socketHub) {
+		hub = h
+		h.RegisterEventsHandler(onEvent)
+		h.RegisterSlashCommandHandler(s.onSlashCommand(hostCtx))
+		h.RegisterTriggerInteractiveHandler(s.onShortcut(hostCtx))
+	})
+	if err != nil {
+		return status.Errorf(codes.Internal, "create socket mode runner: %v", err)
+	}
+	// Release our reference when Start returns so the hub can be torn down if
+	// no other caller holds a reference.
+	defer release()
 
 	// Block until the stream context is cancelled by the host (clean shutdown)
 	// or the hub's Run goroutine exits (auth failure, connection error).

@@ -69,6 +69,14 @@ func newHubRegistry(factory socketModeFactory) *hubRegistry {
 // the map entry as absent and creates a fresh hub. Callers that block on
 // hub.Done() will see the new hub's Done channel, not the dead one.
 func (r *hubRegistry) Acquire(xappToken string) (*socketHub, releaseFn, error) {
+	return r.AcquireWith(xappToken, nil)
+}
+
+// AcquireWith is Acquire with register run against the hub before its Run
+// goroutine can dispatch anything: for a new hub, before Run starts; for a
+// running one, before AcquireWith returns. Handlers registered after Acquire
+// returned would miss any event the runner delivered in between.
+func (r *hubRegistry) AcquireWith(xappToken string, register func(*socketHub)) (*socketHub, releaseFn, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -95,6 +103,9 @@ func (r *hubRegistry) Acquire(xappToken string) (*socketHub, releaseFn, error) {
 			refCount:  0,
 		}
 		r.hubs[xappToken] = entry
+		if register != nil {
+			register(hub)
+		}
 		go func() {
 			if err := hub.Run(ctx); err != nil {
 				// Log but don't propagate — callers detect failure via their own context.
@@ -102,6 +113,9 @@ func (r *hubRegistry) Acquire(xappToken string) (*socketHub, releaseFn, error) {
 		}()
 	}
 
+	if ok && register != nil {
+		register(entry.hub)
+	}
 	entry.refCount++
 
 	release := func() {
