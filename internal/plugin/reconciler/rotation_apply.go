@@ -304,6 +304,15 @@ func (r *Reconciler) beginRotation(ctx context.Context, act RotationAction, desi
 // to distinguish "still starting" from "started and immediately exited", and a
 // created-but-never-started container is indistinguishable from the latter.
 func (r *Reconciler) createRotationContainer(ctx context.Context, act RotationAction, desired db.PluginContainer, gens []db.PluginContainerGeneration, observed map[int64]container.ContainerInfo, now string) error {
+	// Resolved before the token is taken: takeToken is destructive, and an
+	// image that is missing now (pruned, not yet reinstalled) may be present
+	// on the next pass. Failing after the take would burn the generation's
+	// token on a condition an operator can fix.
+	image, err := r.resolveImage(ctx, desired)
+	if err != nil {
+		return fmt.Errorf("generation %s image: %w", act.GenerationID, err)
+	}
+
 	token, ok := r.takeToken(act.GenerationID)
 	if !ok {
 		// The token is gone: minted in a process that has since died, or
@@ -321,7 +330,7 @@ func (r *Reconciler) createRotationContainer(ctx context.Context, act RotationAc
 		return fmt.Errorf("generation %s vanished before its container was created", act.GenerationID)
 	}
 
-	opts, err := r.withGenerationEnv(ctx, r.createOptions(desired), act.InstanceID)
+	opts, err := r.withGenerationEnv(ctx, r.createOptions(desired, image), act.InstanceID)
 	if err != nil {
 		return fmt.Errorf("generation %d container env: %w", gen.Generation, err)
 	}

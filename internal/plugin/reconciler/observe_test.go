@@ -555,7 +555,7 @@ func (c chanPublisher) Publish(eventType string, _ json.RawMessage) { c <- event
 
 func TestNew_ObserveValidation(t *testing.T) {
 	base := func() Config {
-		return Config{Runtime: container.NewFake(), Store: &fakeStore{}, Posture: container.PostureManual}
+		return Config{Runtime: newTestFake(), Store: &fakeStore{}, Posture: container.PostureManual}
 	}
 	rec := newObserverRecorder()
 

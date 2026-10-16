@@ -13,7 +13,7 @@ import (
 // recovers.
 func TestReconcile_SelfInspectFailedPassesCounter(t *testing.T) {
 	ctx := context.Background()
-	fake := container.NewFake()
+	fake := newTestFake()
 	selfID, err := fake.Create(ctx, container.CreateOptions{
 		Name: "gleipnir", Image: "gleipnir/gleipnir:test", Network: "gleipnir-self-net",
 		CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}, Sysctls: container.RequiredSysctls(),
@@ -78,7 +78,7 @@ func TestReconcile_SelfInspectFailedPassesZeroWithoutSelfAttach(t *testing.T) {
 	store := &fakeStore{}
 	store.set(*desiredRow("i1", DesiredRunning))
 	r, err := New(Config{
-		Runtime: container.NewFake(),
+		Runtime: newTestFake(),
 		Store:   store,
 		Subnets: testAllocator(t),
 		Posture: container.PostureRootlessPodman,

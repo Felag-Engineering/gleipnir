@@ -803,5 +803,6 @@ CREATE TABLE plugin_container_images (
     plugin_id     TEXT    REFERENCES plugins(id) ON DELETE SET NULL,                              -- nullable so image accounting outlives an uninstall
     size_bytes    INTEGER,                                                                        -- nullable; reported by the runtime at load
     loaded_at     TEXT    NOT NULL,                                                               -- ISO 8601 UTC
-    last_used_at  TEXT                                                                            -- nullable, ISO 8601 UTC; GC recency input
+    last_used_at  TEXT,                                                                           -- nullable, ISO 8601 UTC; GC recency input
+    local_image_id TEXT                                                                           -- nullable; runtime-local image ID the installer verified (containers are created from it); NULL = row predates the column
 );

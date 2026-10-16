@@ -30,7 +30,7 @@ func (f *failInspectRuntime) Inspect(ctx context.Context, id container.Container
 // gone and before the network is removed.
 func TestReconcile_SelfAttachBringUpAndTeardown(t *testing.T) {
 	ctx := context.Background()
-	fake := container.NewFake()
+	fake := newTestFake()
 	selfID, err := fake.Create(ctx, container.CreateOptions{
 		Name:    "gleipnir",
 		Image:   "gleipnir/gleipnir:test",
@@ -111,7 +111,7 @@ func TestReconcile_SelfAttachBringUpAndTeardown(t *testing.T) {
 // The core loop still converges normally — the precondition failure degrades
 // self-attach, not the whole reconciler.
 func TestNew_RefusesSelfAttachWhenForwardingEnabled(t *testing.T) {
-	fake := container.NewFake()
+	fake := newTestFake()
 	ctx := context.Background()
 	selfID, err := fake.Create(ctx, container.CreateOptions{
 		Name: "gleipnir", Image: "gleipnir/gleipnir:test", Network: "gleipnir-self-net",
@@ -157,7 +157,7 @@ func TestNew_RefusesSelfAttachWhenForwardingEnabled(t *testing.T) {
 // API guard confirmed, even when SelfContainerID and forwarding both check
 // out. The core loop still converges normally.
 func TestNew_RefusesSelfAttachWithoutOperatorAPIGuard(t *testing.T) {
-	fake := container.NewFake()
+	fake := newTestFake()
 	ctx := context.Background()
 	selfID, err := fake.Create(ctx, container.CreateOptions{
 		Name: "gleipnir", Image: "gleipnir/gleipnir:test", Network: "gleipnir-self-net",
@@ -213,7 +213,7 @@ func fakeContainerFor(f *container.Fake, instanceID string) (container.Container
 // status at all).
 func TestReconcile_SelfInspectFailureDegradesGracefully(t *testing.T) {
 	ctx := context.Background()
-	fake := container.NewFake()
+	fake := newTestFake()
 	selfID, err := fake.Create(ctx, container.CreateOptions{
 		Name: "gleipnir", Image: "gleipnir/gleipnir:test", Network: "gleipnir-self-net",
 		CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}, Sysctls: container.RequiredSysctls(),
@@ -256,7 +256,7 @@ func TestReconcile_SelfInspectFailureDegradesGracefully(t *testing.T) {
 // Inspect can confirm the real state.
 func TestReconcile_SelfInspectFailureRefusesCreateOnceNetworkExists(t *testing.T) {
 	ctx := context.Background()
-	fake := container.NewFake()
+	fake := newTestFake()
 	selfID, err := fake.Create(ctx, container.CreateOptions{
 		Name: "gleipnir", Image: "gleipnir/gleipnir:test", Network: "gleipnir-self-net",
 		CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}, Sysctls: container.RequiredSysctls(),
@@ -321,7 +321,7 @@ func TestReconcile_SelfInspectFailureRefusesCreateOnceNetworkExists(t *testing.T
 // ambiguous label state is worth surfacing loudly, since self-attach must
 // know unambiguously which network it is joining or leaving.
 func TestInstanceNetwork_RefusesMultipleMatches(t *testing.T) {
-	fake := container.NewFake()
+	fake := newTestFake()
 	ctx := context.Background()
 	for _, name := range []string{"net-a", "net-b"} {
 		if _, err := fake.CreateNetwork(ctx, container.NetworkOptions{

@@ -180,7 +180,7 @@ func TestDiscover_OrderIsStable(t *testing.T) {
 // code remembering to behave — a posture guaranteed by caller discipline is one
 // refactor away from being untrue.
 func TestDiscoverPass_PerformsNoWrites(t *testing.T) {
-	fake := container.NewFake()
+	fake := newTestFake()
 	counting := &countingRuntime{Runtime: container.NewReadOnlyRuntime(fake)}
 
 	store := &fakeStore{}
@@ -207,7 +207,7 @@ func TestDiscoverPass_PerformsNoWrites(t *testing.T) {
 // And the wrapper refuses even if something did ask — the enforcement is
 // structural, not a convention this package upholds.
 func TestManualPosture_WriteIsRefusedByTheWrapper(t *testing.T) {
-	readonly := container.NewReadOnlyRuntime(container.NewFake())
+	readonly := container.NewReadOnlyRuntime(newTestFake())
 
 	_, err := readonly.Create(context.Background(), container.CreateOptions{
 		Name: "c", Image: "img@sha256:abc", Network: "net",

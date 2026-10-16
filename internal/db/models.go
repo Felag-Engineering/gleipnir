@@ -165,12 +165,13 @@ type PluginContainerGeneration struct {
 }
 
 type PluginContainerImage struct {
-	Digest     string  `json:"digest"`
-	Reference  string  `json:"reference"`
-	PluginID   *string `json:"plugin_id"`
-	SizeBytes  *int64  `json:"size_bytes"`
-	LoadedAt   string  `json:"loaded_at"`
-	LastUsedAt *string `json:"last_used_at"`
+	Digest       string  `json:"digest"`
+	Reference    string  `json:"reference"`
+	PluginID     *string `json:"plugin_id"`
+	SizeBytes    *int64  `json:"size_bytes"`
+	LoadedAt     string  `json:"loaded_at"`
+	LastUsedAt   *string `json:"last_used_at"`
+	LocalImageID *string `json:"local_image_id"`
 }
 
 type PluginContainerSubnet struct {

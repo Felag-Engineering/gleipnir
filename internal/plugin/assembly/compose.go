@@ -397,6 +397,7 @@ func (a *Assembly) compose(
 			OperatorAPIGuard:        guard,
 			Rotations:               q,
 			GC:                      q,
+			Images:                  q,
 			Attach:                  &reconciler.AttachDeps{Store: q, Endpoints: endpoints},
 			Observe: &reconciler.ObserveDeps{
 				Events: streams,

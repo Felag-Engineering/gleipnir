@@ -49,7 +49,7 @@ func (q *Queries) DeleteContainerImage(ctx context.Context, digest string) error
 }
 
 const getContainerImage = `-- name: GetContainerImage :one
-SELECT digest, reference, plugin_id, size_bytes, loaded_at, last_used_at FROM plugin_container_images WHERE digest = ?1
+SELECT digest, reference, plugin_id, size_bytes, loaded_at, last_used_at, local_image_id FROM plugin_container_images WHERE digest = ?1
 `
 
 func (q *Queries) GetContainerImage(ctx context.Context, digest string) (PluginContainerImage, error) {
@@ -62,12 +62,13 @@ func (q *Queries) GetContainerImage(ctx context.Context, digest string) (PluginC
 		&i.SizeBytes,
 		&i.LoadedAt,
 		&i.LastUsedAt,
+		&i.LocalImageID,
 	)
 	return i, err
 }
 
 const listContainerImages = `-- name: ListContainerImages :many
-SELECT digest, reference, plugin_id, size_bytes, loaded_at, last_used_at FROM plugin_container_images ORDER BY loaded_at
+SELECT digest, reference, plugin_id, size_bytes, loaded_at, last_used_at, local_image_id FROM plugin_container_images ORDER BY loaded_at
 `
 
 func (q *Queries) ListContainerImages(ctx context.Context) ([]PluginContainerImage, error) {
@@ -86,6 +87,7 @@ func (q *Queries) ListContainerImages(ctx context.Context) ([]PluginContainerIma
 			&i.SizeBytes,
 			&i.LoadedAt,
 			&i.LastUsedAt,
+			&i.LocalImageID,
 		); err != nil {
 			return nil, err
 		}
@@ -101,7 +103,7 @@ func (q *Queries) ListContainerImages(ctx context.Context) ([]PluginContainerIma
 }
 
 const listUnreferencedContainerImages = `-- name: ListUnreferencedContainerImages :many
-SELECT digest, reference, plugin_id, size_bytes, loaded_at, last_used_at FROM plugin_container_images
+SELECT digest, reference, plugin_id, size_bytes, loaded_at, last_used_at, local_image_id FROM plugin_container_images
 WHERE digest NOT IN (
     SELECT image_digest FROM plugin_container_generations
     WHERE status IN ('pending', 'starting', 'healthy', 'active', 'draining')
@@ -134,6 +136,7 @@ func (q *Queries) ListUnreferencedContainerImages(ctx context.Context) ([]Plugin
 			&i.SizeBytes,
 			&i.LoadedAt,
 			&i.LastUsedAt,
+			&i.LocalImageID,
 		); err != nil {
 			return nil, err
 		}
@@ -166,29 +169,33 @@ func (q *Queries) TouchContainerImage(ctx context.Context, arg TouchContainerIma
 }
 
 const upsertContainerImage = `-- name: UpsertContainerImage :one
-INSERT INTO plugin_container_images (digest, reference, plugin_id, size_bytes, loaded_at, last_used_at)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+INSERT INTO plugin_container_images (digest, reference, plugin_id, size_bytes, loaded_at, last_used_at, local_image_id)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
 ON CONFLICT(digest) DO UPDATE SET
     reference = excluded.reference,
     plugin_id = excluded.plugin_id,
     size_bytes = excluded.size_bytes,
-    last_used_at = excluded.last_used_at
-RETURNING digest, reference, plugin_id, size_bytes, loaded_at, last_used_at
+    last_used_at = excluded.last_used_at,
+    local_image_id = excluded.local_image_id
+RETURNING digest, reference, plugin_id, size_bytes, loaded_at, last_used_at, local_image_id
 `
 
 type UpsertContainerImageParams struct {
-	Digest     string  `json:"digest"`
-	Reference  string  `json:"reference"`
-	PluginID   *string `json:"plugin_id"`
-	SizeBytes  *int64  `json:"size_bytes"`
-	LoadedAt   string  `json:"loaded_at"`
-	LastUsedAt *string `json:"last_used_at"`
+	Digest       string  `json:"digest"`
+	Reference    string  `json:"reference"`
+	PluginID     *string `json:"plugin_id"`
+	SizeBytes    *int64  `json:"size_bytes"`
+	LoadedAt     string  `json:"loaded_at"`
+	LastUsedAt   *string `json:"last_used_at"`
+	LocalImageID *string `json:"local_image_id"`
 }
 
 // UpsertContainerImage records a loaded OCI image. Loading the same digest
 // again is not an error -- a reinstall or a second instance of the same plugin
 // reaches the same bytes -- so the conflict path refreshes the mutable fields
-// instead of failing.
+// instead of failing. local_image_id is the runtime's own ID for the image
+// the installer verified; a reload refreshes it because the same bytes can
+// land under a different ID after the operator pruned and reloaded them.
 func (q *Queries) UpsertContainerImage(ctx context.Context, arg UpsertContainerImageParams) (PluginContainerImage, error) {
 	row := q.db.QueryRowContext(ctx, upsertContainerImage,
 		arg.Digest,
@@ -197,6 +204,7 @@ func (q *Queries) UpsertContainerImage(ctx context.Context, arg UpsertContainerI
 		arg.SizeBytes,
 		arg.LoadedAt,
 		arg.LastUsedAt,
+		arg.LocalImageID,
 	)
 	var i PluginContainerImage
 	err := row.Scan(
@@ -206,6 +214,7 @@ func (q *Queries) UpsertContainerImage(ctx context.Context, arg UpsertContainerI
 		&i.SizeBytes,
 		&i.LoadedAt,
 		&i.LastUsedAt,
+		&i.LocalImageID,
 	)
 	return i, err
 }

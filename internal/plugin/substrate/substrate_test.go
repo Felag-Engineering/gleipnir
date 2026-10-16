@@ -126,6 +126,7 @@ func newHarness(t *testing.T) *harness {
 		Runtime: rt,
 		Store:   h.store.Queries(),
 		GC:      h.store.Queries(),
+		Images:  h.store.Queries(),
 		Subnets: alloc,
 		Posture: result.Posture,
 	})
@@ -192,6 +193,22 @@ func (h *harness) seedInstance(t *testing.T, instanceID, imageRef, digest string
 		instanceID, "name-"+instanceID, now, now,
 	); err != nil {
 		t.Fatalf("insert plugin instance: %v", err)
+	}
+	if digest == "" {
+		// The reconciler creates from the local image ID recorded against the
+		// row's digest, as the installer would have. A synthetic digest per
+		// instance keeps the probe image's own accounting row (which the GC
+		// test manages) out of this instance's pin.
+		digest = "sha256:substrate-" + instanceID
+		info, err := h.rt.ImageInspect(context.Background(), imageRef)
+		if err != nil {
+			t.Fatalf("ImageInspect(%s): %v", imageRef, err)
+		}
+		if _, err := h.store.Queries().UpsertContainerImage(context.Background(), db.UpsertContainerImageParams{
+			Digest: digest, Reference: imageRef, LoadedAt: now, LocalImageID: &info.ID,
+		}); err != nil {
+			t.Fatalf("record image for %s: %v", instanceID, err)
+		}
 	}
 	if _, err := h.store.Queries().CreatePluginContainer(context.Background(), db.CreatePluginContainerParams{
 		ID:               "pc-" + instanceID,
@@ -1143,6 +1160,7 @@ func TestSubstrate_SelfAttachPinsAddressAndDetachesOnTeardown(t *testing.T) {
 	rec, err := reconciler.New(reconciler.Config{
 		Runtime:          h.rt,
 		Store:            h.store.Queries(),
+		Images:           h.store.Queries(),
 		Subnets:          alloc,
 		Posture:          container.PostureRootlessPodman,
 		SelfContainerID:  selfID,

@@ -182,7 +182,7 @@ func newAttachFixture(t *testing.T, posture container.Posture) *attachFixture {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	fake := container.NewFake()
+	fake := newTestFake()
 	rt := &countingRuntime{Runtime: fake}
 
 	var seq int
@@ -471,7 +471,7 @@ func TestNew_AttachRequiresRotationsOutsideManual(t *testing.T) {
 	t.Cleanup(func() { store.Close() })
 
 	_, err = New(Config{
-		Runtime: container.NewFake(),
+		Runtime: newTestFake(),
 		Store:   store.Queries(),
 		Posture: container.PostureRootlessPodman,
 		Attach:  &AttachDeps{Store: store.Queries(), Endpoints: &mcp.ManagedRegistrar{}},

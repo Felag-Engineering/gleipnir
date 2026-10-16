@@ -290,7 +290,7 @@ func (p *capturePublisher) waitForRotationPasses(t *testing.T, n int) {
 
 func newTestReconciler(t *testing.T, store *fakeStore) (*Reconciler, *countingRuntime, *capturePublisher) {
 	t.Helper()
-	rt := &countingRuntime{Runtime: container.NewFake()}
+	rt := &countingRuntime{Runtime: newTestFake()}
 	pub := &capturePublisher{}
 	r, err := New(Config{
 		Runtime:   rt,
@@ -388,7 +388,7 @@ func TestReconcile_ResumesAfterRestart(t *testing.T) {
 	store := &fakeStore{}
 	store.set(*desiredRow("i1", DesiredRunning))
 
-	fake := container.NewFake()
+	fake := newTestFake()
 	allocator := testAllocator(t)
 	first, err := New(Config{Runtime: fake, Store: store, Subnets: allocator, Posture: container.PostureDocker, Interval: time.Hour})
 	if err != nil {
@@ -483,7 +483,7 @@ func TestReconcile_OrphanIsStoppedThenRemoved(t *testing.T) {
 func TestStart_ManualPostureNeverTouchesTheSocket(t *testing.T) {
 	store := &fakeStore{}
 	store.set(*desiredRow("i1", DesiredRunning))
-	rt := &countingRuntime{Runtime: container.NewFake()}
+	rt := &countingRuntime{Runtime: newTestFake()}
 	pub := &capturePublisher{}
 
 	r, err := New(Config{
@@ -597,7 +597,7 @@ func TestReconcileOnce_ActionFailureIsCountedNotFatal(t *testing.T) {
 	store := &fakeStore{}
 	store.set(*desiredRow("i1", DesiredRunning), *desiredRow("i2", DesiredRunning))
 
-	fake := container.NewFake()
+	fake := newTestFake()
 	r, err := New(Config{Runtime: fake, Store: store, Subnets: testAllocator(t), Posture: container.PostureDocker, Interval: time.Hour})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -638,7 +638,7 @@ func TestCreateOptions(t *testing.T) {
 	row.CpuLimitMillicores = &cpu
 
 	r, _, _ := newTestReconciler(t, &fakeStore{})
-	opts := r.createOptions(row)
+	opts := r.createOptions(row, "img-id")
 
 	if opts.Network != "net-i1" {
 		t.Errorf("Network = %q, want the row's network", opts.Network)
@@ -649,8 +649,8 @@ func TestCreateOptions(t *testing.T) {
 	if opts.Volume.Name == "" || opts.Volume.MountPath == "" {
 		t.Error("create options omit the per-instance volume")
 	}
-	if opts.Image != "gleipnir/slack:1.0.0@sha256:aaaa" {
-		t.Errorf("Image = %q, want the digest-pinned reference", opts.Image)
+	if opts.Image != "img-id" {
+		t.Errorf("Image = %q, want the resolved runtime image ID, not the row's repo@digest reference", opts.Image)
 	}
 	if opts.Labels[LabelManaged] != ManagedValue || opts.Labels[LabelInstance] != "i1" {
 		t.Errorf("Labels = %v, want the discovery labels", opts.Labels)
@@ -679,7 +679,7 @@ func TestCreateOptions_FallbackNetwork(t *testing.T) {
 	row.NetworkName = ""
 
 	r, _, _ := newTestReconciler(t, &fakeStore{})
-	if err := container.ValidateCreate(r.createOptions(row)); err != nil {
+	if err := container.ValidateCreate(r.createOptions(row, "img-id")); err != nil {
 		t.Errorf("ValidateCreate: %v", err)
 	}
 }
@@ -688,7 +688,7 @@ func TestNew_RequiresDependencies(t *testing.T) {
 	if _, err := New(Config{Store: &fakeStore{}}); err == nil {
 		t.Error("New: want an error when Runtime is nil")
 	}
-	if _, err := New(Config{Runtime: container.NewFake()}); err == nil {
+	if _, err := New(Config{Runtime: newTestFake()}); err == nil {
 		t.Error("New: want an error when Store is nil")
 	}
 }
@@ -728,7 +728,7 @@ func TestReconcile_CreatesTheInstanceNetworkFirst(t *testing.T) {
 	store := &fakeStore{}
 	store.set(*desiredRow("i1", DesiredRunning))
 
-	fake := container.NewFake()
+	fake := newTestFake()
 	r, err := New(Config{Runtime: fake, Store: store, Subnets: testAllocator(t), Posture: container.PostureDocker, Interval: time.Hour})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -771,7 +771,7 @@ func TestReconcile_NetworkWithoutAnAllocatorFails(t *testing.T) {
 	store := &fakeStore{}
 	store.set(*desiredRow("i1", DesiredRunning))
 
-	r, err := New(Config{Runtime: container.NewFake(), Store: store, Posture: container.PostureDocker, Interval: time.Hour})
+	r, err := New(Config{Runtime: newTestFake(), Store: store, Posture: container.PostureDocker, Interval: time.Hour})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -798,7 +798,7 @@ func TestReconcile_PoolExhaustionSurfaces(t *testing.T) {
 		t.Fatalf("NewSubnetAllocator: %v", err)
 	}
 
-	r, err := New(Config{Runtime: container.NewFake(), Store: store, Subnets: allocator, Posture: container.PostureDocker, Interval: time.Hour})
+	r, err := New(Config{Runtime: newTestFake(), Store: store, Subnets: allocator, Posture: container.PostureDocker, Interval: time.Hour})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -817,7 +817,7 @@ func TestReconcile_PoolExhaustionSurfaces(t *testing.T) {
 // would be a hole in the containment while every other line still looked
 // correct (#812).
 func TestReconciler_CreatePointsAtTheEgressProxy(t *testing.T) {
-	fake := container.NewFake()
+	fake := newTestFake()
 	store := &fakeStore{}
 	r, err := New(Config{
 		Runtime: fake,
@@ -857,7 +857,7 @@ func TestReconciler_CreatePointsAtTheEgressProxy(t *testing.T) {
 // plugin-supplied survives to override either.
 func TestReconciler_GenerationEnvScopesNoProxyToTheHostEndpoint(t *testing.T) {
 	r, err := New(Config{
-		Runtime: container.NewFake(),
+		Runtime: newTestFake(),
 		Store:   &fakeStore{},
 		EgressEnv: func(_ context.Context, instanceID string) []string {
 			return []string{"HTTPS_PROXY=http://10.83.1.1:8118", "HTTP_PROXY=http://10.83.1.1:8118", "NO_PROXY=", "no_proxy="}
@@ -922,7 +922,7 @@ func TestReconciler_RefusesHostEndpointAtGateway(t *testing.T) {
 	gateway := subnetGatewayAddr(subnet).String()
 
 	r, err := New(Config{
-		Runtime: container.NewFake(),
+		Runtime: newTestFake(),
 		Store:   &fakeStore{},
 		Subnets: subnets,
 		HostEndpointEnv: func(_ context.Context, instanceID string) []string {
@@ -957,7 +957,7 @@ func TestReconciler_AllowsHostEndpointAtGleipnirsReservedAddr(t *testing.T) {
 	}
 
 	r, err := New(Config{
-		Runtime: container.NewFake(),
+		Runtime: newTestFake(),
 		Store:   &fakeStore{},
 		Subnets: subnets,
 		HostEndpointEnv: func(_ context.Context, instanceID string) []string {
@@ -977,7 +977,7 @@ func TestReconciler_AllowsHostEndpointAtGleipnirsReservedAddr(t *testing.T) {
 // network that means the instance reaches nothing, which is the correct
 // default rather than a degraded one.
 func TestReconciler_NoEgressProxyLeavesEnvAlone(t *testing.T) {
-	r, err := New(Config{Runtime: container.NewFake(), Store: &fakeStore{}})
+	r, err := New(Config{Runtime: newTestFake(), Store: &fakeStore{}})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -1030,11 +1030,11 @@ func TestReconciler_CreateOptionsAlwaysCarryLimits(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			r, err := New(Config{Runtime: container.NewFake(), Store: &fakeStore{}})
+			r, err := New(Config{Runtime: newTestFake(), Store: &fakeStore{}})
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
-			opts := r.createOptions(tc.row)
+			opts := r.createOptions(tc.row, "img-id")
 			if opts.Resources.MemoryBytes != tc.wantMemory {
 				t.Errorf("memory = %d, want %d", opts.Resources.MemoryBytes, tc.wantMemory)
 			}
@@ -1043,4 +1043,13 @@ func TestReconciler_CreateOptionsAlwaysCarryLimits(t *testing.T) {
 			}
 		})
 	}
+}
+
+// newTestFake returns a Fake that treats every image as present, for tests
+// about convergence rather than image handling (see image_resolve_test.go for
+// those, which use container.NewFake directly).
+func newTestFake() *container.Fake {
+	f := container.NewFake()
+	f.AssumeImagesPresent = true
+	return f
 }

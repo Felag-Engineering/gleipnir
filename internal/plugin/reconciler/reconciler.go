@@ -191,6 +191,13 @@ type Config struct {
 	// either variable is wired in.
 	HostEndpointEnv func(ctx context.Context, instanceID string) []string
 
+	// Images supplies the runtime-local image ID the installer recorded for
+	// each pinned digest. Optional: without it every row is treated as having
+	// no recorded ID, which resolves only on runtimes that answer to the bare
+	// config digest (see resolveImage). It never relaxes the requirement that
+	// the image be present.
+	Images ImageRecords
+
 	// GC is the cleanup store. Required only for ReconcileGC; neither the core
 	// convergence loop nor rotation touches it.
 	GC GCStore
@@ -246,6 +253,7 @@ type Reconciler struct {
 
 	runtime   container.Runtime
 	store     Store
+	images    ImageRecords
 	posture   container.Posture
 	interval  time.Duration
 	publisher event.Publisher
@@ -443,6 +451,7 @@ func New(cfg Config) (*Reconciler, error) {
 	return &Reconciler{
 		runtime:         cfg.Runtime,
 		store:           cfg.Store,
+		images:          cfg.Images,
 		posture:         cfg.Posture,
 		interval:        interval,
 		publisher:       cfg.Publisher,
@@ -860,7 +869,11 @@ func (r *Reconciler) apply(ctx context.Context, action Action, desired []db.Plug
 			// future refactor from turning a bug into a crash.
 			return fmt.Errorf("no desired row for instance %q", action.InstanceID)
 		}
-		id, err := r.runtime.Create(ctx, r.withEgressEnv(ctx, r.createOptions(row), row.PluginInstanceID))
+		image, err := r.resolveImage(ctx, row)
+		if err != nil {
+			return fmt.Errorf("resolving image for instance %q: %w", action.InstanceID, err)
+		}
+		id, err := r.runtime.Create(ctx, r.withEgressEnv(ctx, r.createOptions(row, image), row.PluginInstanceID))
 		if err != nil {
 			return fmt.Errorf("creating container for instance %q: %w", action.InstanceID, err)
 		}
@@ -1086,10 +1099,14 @@ func (r *Reconciler) instanceNetwork(ctx context.Context, instanceID string) (co
 // self-constraint cares about (no extra mounts, no privileges, an internal
 // per-instance network) is set here and validated inside Runtime.Create —
 // this function cannot opt out of that check.
-func (r *Reconciler) createOptions(row db.PluginContainer) container.CreateOptions {
+//
+// image is the runtime-local name from resolveImage, not row.ImageRef: the
+// row's reference is a repo@config-digest string a daemon cannot resolve for a
+// locally loaded image.
+func (r *Reconciler) createOptions(row db.PluginContainer, image string) container.CreateOptions {
 	opts := container.CreateOptions{
 		Name:  containerName(row.PluginInstanceID),
-		Image: pinnedImage(row.ImageRef, row.ImageDigest),
+		Image: image,
 		Labels: map[string]string{
 			LabelManaged:     ManagedValue,
 			LabelInstance:    row.PluginInstanceID,
@@ -1340,19 +1357,6 @@ func withStrippedEnv(opts container.CreateOptions, env []string) container.Creat
 	}
 	opts.Env = append(egress.StripProxyEnv(opts.Env), env...)
 	return opts
-}
-
-// pinnedImage returns the digest-pinned reference to run (spec §7:
-// "digest-pinned images inside a signed tarball"). A reference that already
-// carries a digest is used as-is; otherwise the digest is appended. A row with
-// no digest falls back to the bare reference — the loader is what guarantees a
-// digest is recorded, and refusing to run here would turn its omission into a
-// silent no-op instead of a visible one.
-func pinnedImage(ref, digest string) string {
-	if digest == "" || strings.Contains(ref, "@") {
-		return ref
-	}
-	return ref + "@" + digest
 }
 
 const instanceVolumeMountPath = "/data"

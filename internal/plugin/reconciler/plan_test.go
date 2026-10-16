@@ -593,24 +593,3 @@ func TestPlanPass_OneActionPerInstance(t *testing.T) {
 		}
 	}
 }
-
-func TestPinnedImage(t *testing.T) {
-	tests := []struct {
-		name   string
-		ref    string
-		digest string
-		want   string
-	}{
-		{name: "digest appended", ref: "gleipnir/slack:1.0.0", digest: "sha256:aaaa", want: "gleipnir/slack:1.0.0@sha256:aaaa"},
-		{name: "already pinned is left alone", ref: "gleipnir/slack@sha256:bbbb", digest: "sha256:aaaa", want: "gleipnir/slack@sha256:bbbb"},
-		{name: "no digest falls back to the bare reference", ref: "gleipnir/slack:1.0.0", want: "gleipnir/slack:1.0.0"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := pinnedImage(tc.ref, tc.digest); got != tc.want {
-				t.Errorf("pinnedImage(%q, %q) = %q, want %q", tc.ref, tc.digest, got, tc.want)
-			}
-		})
-	}
-}

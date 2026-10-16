@@ -102,7 +102,7 @@ func TestWithGenerationEnv_StripsInheritedProxyEnvBeforeBothHooks(t *testing.T) 
 	hostport := net.JoinHostPort(gleipnir.String(), "8765")
 
 	r, err := New(Config{
-		Runtime:         container.NewFake(),
+		Runtime:         newTestFake(),
 		Store:           &fakeStore{},
 		Subnets:         subnets,
 		EgressEnv:       EgressEnv(subnets, DefaultEgressProxyPort),
@@ -164,7 +164,7 @@ func TestRotationCreate_UsesGleipnirsAddressForBothEnvSets(t *testing.T) {
 	}
 	gleipnir, _ := egress.GleipnirAddrOf(subnet.String())
 
-	rt := &countingRuntime{Runtime: container.NewFake()}
+	rt := &countingRuntime{Runtime: newTestFake()}
 	r, err := New(Config{
 		Runtime:         rt,
 		Store:           store.Queries(),

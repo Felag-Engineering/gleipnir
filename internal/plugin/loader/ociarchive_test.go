@@ -402,7 +402,7 @@ func TestOCIInstall_ContainerdStoreManifestDigestID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, rt, in := newOCIFixture(t, false)
+			store, rt, in := newOCIFixture(t, false)
 			tarPath := buildOCIBundle(t, ociBundleOptions{
 				name: "containerd-plugin", version: "1.0.0", digest: pin, archive: archive,
 			})
@@ -415,6 +415,15 @@ func TestOCIInstall_ContainerdStoreManifestDigestID(t *testing.T) {
 				}
 				if !res.ImageLoaded {
 					t.Error("ImageLoaded = false for a containerd-store ID matching the manifest digest")
+				}
+				// The pin is the config digest; the recorded ID is what the
+				// daemon answers to, which here is a different digest.
+				row, err := store.Queries().GetContainerImage(ctx, pin)
+				if err != nil {
+					t.Fatalf("GetContainerImage: %v", err)
+				}
+				if row.LocalImageID == nil || *row.LocalImageID != verified.ManifestDigest {
+					t.Errorf("local_image_id = %v, want the manifest digest %q", row.LocalImageID, verified.ManifestDigest)
 				}
 				return
 			}
