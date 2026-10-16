@@ -358,6 +358,7 @@ type testPluginHandlerConfig struct {
 	credSeeder  CredentialSeeder
 	provisioner InstanceProvisioner
 	capHealth   *caphealth.Registry
+	startup     InstanceStartupReader
 	approveV2   bool
 }
 
@@ -394,6 +395,7 @@ func newTestPluginHandler(q PluginQuerier, clock func() time.Time, cfg testPlugi
 		Store:              cfg.store,
 		Provisioner:        cfg.provisioner,
 		CapabilityHealth:   cfg.capHealth,
+		StartupReader:      cfg.startup,
 		ApproveV2Manifests: cfg.approveV2,
 	})
 }

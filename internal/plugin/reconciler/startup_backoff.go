@@ -56,6 +56,9 @@ type startupHold struct {
 	// LastGeneration is that generation's number.
 	LastGeneration int64
 
+	// LastFailedAt is when that generation failed: its updated_at.
+	LastFailedAt time.Time
+
 	// Until is the earliest instant the next generation may be minted.
 	Until time.Time
 }
@@ -98,6 +101,7 @@ func planStartupHold(history []db.PluginContainerGeneration, desired db.PluginCo
 			if err != nil {
 				return startupHold{}
 			}
+			hold.LastFailedAt = failedAt
 			hold.Until = failedAt
 		}
 		hold.Failures++

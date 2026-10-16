@@ -460,6 +460,7 @@ func run(cfg config.Config, pluginSubnetPool netip.Prefix) error {
 		Store:            store,
 		Provisioner:      pluginAdminDeps.Provisioner,
 		CapabilityHealth: pluginAdminDeps.CapabilityHealth,
+		StartupReader:    pluginAdminDeps.StartupReader,
 		// false in the default build: a v2 manifest stays refused.
 		ApproveV2Manifests: pluginAdminDeps.ApproveV2Manifests,
 	})

@@ -1,0 +1,40 @@
+/* Two tones on purpose: a failing upgrade with a generation still serving is a
+   warning (amber), an instance with nothing serving is down (red). */
+.banner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-radius: 4px;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.bannerDown {
+  composes: banner;
+  background: color-mix(in srgb, var(--color-red) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-red) 30%, transparent);
+}
+
+.bannerServing {
+  composes: banner;
+  background: color-mix(in srgb, var(--color-amber) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-amber) 30%, transparent);
+}
+
+.title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.error {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.meta {
+  margin: 0;
+  color: var(--text-muted);
+}

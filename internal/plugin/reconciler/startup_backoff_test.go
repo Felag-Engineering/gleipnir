@@ -384,6 +384,24 @@ func TestReconcile_PersistentStartFailureBacksOffAndRecovers(t *testing.T) {
 				t.Errorf("managed containers = %d, want %d — failed starts must not accumulate containers", len(managed), wantContainers)
 			}
 
+			// What the operator is shown is what the reconciler acted on:
+			// every failure counted, the start error named, and the serving
+			// generation reported rather than the instance read as down.
+			fault, ok := DescribeStartupFault(allGenerations(t, store, "inst-1"), storedDesiredRow(t, store, "inst-1"))
+			if !ok {
+				t.Fatal("DescribeStartupFault reports nothing for an instance that keeps failing to start")
+			}
+			if fault.Failures != failed || !strings.Contains(fault.LastError, "disable_ipv6") {
+				t.Errorf("fault = %d failures, %q; want %d failures naming the start error", fault.Failures, fault.LastError, failed)
+			}
+			wantServing := int64(0)
+			if servingGenID != "" {
+				wantServing = genByID(t, store, servingGenID).Generation
+			}
+			if fault.ServingGeneration != wantServing {
+				t.Errorf("ServingGeneration = %d, want %d", fault.ServingGeneration, wantServing)
+			}
+
 			// Recovery: Start works again. Within one full backoff the next
 			// attempt runs and the instance converges to a new active
 			// generation, superseding the old one if there was one.
@@ -398,6 +416,9 @@ func TestReconcile_PersistentStartFailureBacksOffAndRecovers(t *testing.T) {
 			active, ok := activeGeneration(t, store, "inst-1")
 			if !ok || active.Generation != before+1 {
 				t.Fatalf("after recovery active = %+v (ok=%v), want generation %d — the first attempt after Start recovers should succeed", active, ok, before+1)
+			}
+			if fault, ok := DescribeStartupFault(allGenerations(t, store, "inst-1"), storedDesiredRow(t, store, "inst-1")); ok {
+				t.Errorf("fault still reported after a generation reached active: %+v", fault)
 			}
 		})
 	}
@@ -547,4 +568,14 @@ func TestReconcileRotations_StopIsHonouredDuringStartupBackoff(t *testing.T) {
 	if got := genByID(t, store, seed); got.Status != GenStopped || got.TokenRevokedAt == nil {
 		t.Fatalf("serving generation after stop = %q (revoked %v), want stopped and revoked", got.Status, got.TokenRevokedAt != nil)
 	}
+}
+
+// storedDesiredRow reads an instance's plugin_containers row back.
+func storedDesiredRow(t *testing.T, store *db.Store, instanceID string) db.PluginContainer {
+	t.Helper()
+	row, err := store.Queries().GetPluginContainerByInstance(context.Background(), instanceID)
+	if err != nil {
+		t.Fatalf("GetPluginContainerByInstance: %v", err)
+	}
+	return row
 }

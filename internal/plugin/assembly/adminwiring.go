@@ -8,8 +8,10 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/felag-engineering/gleipnir/internal/admin"
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
+	"github.com/felag-engineering/gleipnir/internal/plugin/reconciler"
 	"github.com/felag-engineering/gleipnir/internal/toolregistry"
 )
 
@@ -147,4 +149,51 @@ func (r namespaceReleaser) UnregisterInstance(_ context.Context, instanceName st
 		return
 	}
 	r.arbiter.ReleaseAllFor(toolregistry.Source{Kind: toolregistry.KindMCP, Name: instanceName})
+}
+
+// startupFaultStore is the generation history an instance's startup fault is
+// derived from. *db.Queries satisfies it.
+type startupFaultStore interface {
+	GetPluginContainerByInstance(ctx context.Context, pluginInstanceID string) (db.PluginContainer, error)
+	ListContainerGenerationsByInstance(ctx context.Context, pluginInstanceID string) ([]db.PluginContainerGeneration, error)
+}
+
+// startupFaults answers the admin instance detail's `startup` field from the
+// same durable rows the reconciler's mint backoff reads, so what an operator is
+// shown is what the reconciler is acting on. It writes nothing: instance health
+// keeps its one writer, the capability prober.
+type startupFaults struct{ store startupFaultStore }
+
+func (s startupFaults) InstanceStartup(ctx context.Context, instanceID string) (*admin.InstanceStartupFault, error) {
+	desired, err := s.store.GetPluginContainerByInstance(ctx, instanceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		// No desired row means no container is wanted, so none can fail to
+		// start.
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading desired container for instance %s: %w", instanceID, err)
+	}
+	history, err := s.store.ListContainerGenerationsByInstance(ctx, instanceID)
+	if err != nil {
+		return nil, fmt.Errorf("listing generations for instance %s: %w", instanceID, err)
+	}
+
+	fault, ok := reconciler.DescribeStartupFault(history, desired)
+	if !ok {
+		return nil, nil
+	}
+	out := &admin.InstanceStartupFault{
+		Failures:          fault.Failures,
+		LastError:         fault.LastError,
+		LastGeneration:    fault.LastGeneration,
+		LastFailedAt:      fault.LastFailedAt,
+		NextAttemptAt:     fault.NextAttemptAt,
+		AttemptInProgress: fault.AttemptInProgress,
+	}
+	if fault.ServingGeneration != 0 {
+		serving := fault.ServingGeneration
+		out.ServingGeneration = &serving
+	}
+	return out, nil
 }

@@ -830,6 +830,24 @@ export interface ApiPluginInstanceDetail {
   subscription_scope_json: string
   config_json: string
   config_schema: Record<string, unknown> | null
+  // startup is present only when the instance's container keeps failing to
+  // start (v2 substrate). It is not a health state: serving_generation is
+  // non-null when a failed upgrade leaves the previous generation serving.
+  startup?: ApiPluginInstanceStartupFault
+}
+
+// ApiPluginInstanceStartupFault matches internal/admin/plugin_instance_startup.go →
+// InstanceStartupFault. last_error comes from the container runtime or health
+// gate and may quote container output — untrusted text. next_attempt_at may be
+// in the past (the next reconcile pass will retry).
+export interface ApiPluginInstanceStartupFault {
+  failures: number
+  last_error: string
+  last_generation: number
+  last_failed_at: string
+  next_attempt_at: string
+  attempt_in_progress: boolean
+  serving_generation: number | null
 }
 
 // ApiPluginCapabilityHealth matches internal/admin/plugin_handler.go → capabilityResponse

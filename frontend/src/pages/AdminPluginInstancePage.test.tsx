@@ -29,7 +29,7 @@ vi.mock('@/components/admin/ReauthorizeButton/ReauthorizeButton', () => ({
 
 import { usePluginInstancesForAudience, usePluginInstanceDetail } from '@/hooks/queries/admin'
 import { useSetInstanceSubscriptionScope, useBeginPluginOAuth, useDeletePluginInstance, useDeactivatePluginInstance, useActivatePluginInstance, useSetInstanceConfig, useAcceptPluginManifest } from '@/hooks/mutations/plugins'
-import type { ApiPluginInstanceDetail } from '@/api/types'
+import type { ApiPluginInstanceDetail, ApiPluginInstanceStartupFault } from '@/api/types'
 import { useCurrentUser } from '@/hooks/queries/users'
 import { ApiError } from '@/api/fetch'
 
@@ -167,6 +167,7 @@ function mockCurrentUser(roles: string[] = ['admin']) {
 function mockInstanceDetailLoaded(
   configJson = '{}',
   configSchema: Record<string, unknown> | null = null,
+  startup?: ApiPluginInstanceStartupFault,
 ) {
   vi.mocked(usePluginInstanceDetail).mockReturnValue({
     data: {
@@ -180,6 +181,7 @@ function mockInstanceDetailLoaded(
       subscription_scope_json: '{}',
       config_json: configJson,
       config_schema: configSchema,
+      ...(startup ? { startup } : {}),
     } satisfies ApiPluginInstanceDetail,
     status: 'success',
   } as unknown as ReturnType<typeof usePluginInstanceDetail>)
@@ -409,6 +411,39 @@ describe('AdminPluginInstancePage — Re-authorize banner visibility', () => {
     mockInstancesLoaded([INSTANCE_OAUTH_REFRESH_FAILED])
     renderPage()
     expect(screen.getByTestId('reauth-btn')).toHaveAttribute('data-strategy', 'oauth2_authcode')
+  })
+})
+
+describe('AdminPluginInstancePage — container startup fault', () => {
+  const FAULT: ApiPluginInstanceStartupFault = {
+    failures: 3,
+    last_error: 'start container: no ipv6 sysctl',
+    last_generation: 3,
+    last_failed_at: '2026-10-01T12:00:00Z',
+    next_attempt_at: '2026-10-01T12:00:40Z',
+    attempt_in_progress: false,
+    serving_generation: null,
+  }
+
+  beforeEach(() => {
+    mockCurrentUser(['admin'])
+    mockMutationNoop()
+    mockInstancesLoaded([INSTANCE_NO_SCHEMA])
+  })
+
+  it('shows why the container fails to start when the detail carries a fault', () => {
+    mockInstanceDetailLoaded('{}', null, FAULT)
+    renderPage()
+    expect(screen.getByRole('status', { name: 'Container startup' })).toHaveTextContent(
+      'Plugin container failed to start',
+    )
+    expect(screen.getByText('start container: no ipv6 sysctl')).toBeInTheDocument()
+  })
+
+  it('shows nothing when there is no fault', () => {
+    mockInstanceDetailLoaded()
+    renderPage()
+    expect(screen.queryByRole('status', { name: 'Container startup' })).not.toBeInTheDocument()
   })
 })
 
