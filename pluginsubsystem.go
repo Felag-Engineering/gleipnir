@@ -153,6 +153,10 @@ type adminPluginDeps struct {
 	// nil in v1, which makes the endpoint answer with an empty list.
 	CapabilityHealth *caphealth.Registry
 
+	// StartupReader backs the instance detail's `startup` field. nil in v1,
+	// which has no container generations to fail.
+	StartupReader admin.InstanceStartupReader
+
 	// ApproveV2Manifests lets the Approve handler approve a v2 plugin. false
 	// in v1, which has no substrate to run one.
 	ApproveV2Manifests bool

@@ -345,7 +345,7 @@ func (f *e2eFixture) adminRouter() http.Handler {
 	handler := admin.NewPluginHandler(admin.PluginHandlerDeps{
 		Q: f.q, Publisher: f.deps.Publisher, ProcessManager: d.ProcMgr, Lifecycle: lifecycle,
 		Store: f.deps.Store, Provisioner: d.Provisioner, CapabilityHealth: d.CapabilityHealth,
-		ApproveV2Manifests: d.ApproveV2Manifests,
+		StartupReader: d.StartupReader, ApproveV2Manifests: d.ApproveV2Manifests,
 	})
 	r := chi.NewRouter()
 	r.Post("/plugins/{id}/approve", handler.ApprovePlugin)

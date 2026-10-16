@@ -293,6 +293,9 @@ type PluginHandlerDeps struct {
 	// CapabilityHealth backs ListInstanceCapabilities. nil in the live v1
 	// assembly, where the endpoint answers with an empty list.
 	CapabilityHealth *caphealth.Registry
+	// StartupReader backs GetInstance's `startup` field. nil in the live v1
+	// assembly, where the field is never present.
+	StartupReader InstanceStartupReader
 	// ApproveV2Manifests lets ApprovePlugin approve a schema_version 2 plugin.
 	// Only the v2 assembly sets it: the v1 build has no container substrate to
 	// run an approved v2 plugin, so it keeps refusing them.
@@ -304,17 +307,18 @@ type PluginHandler struct {
 	q              PluginQuerier
 	publisher      event.Publisher
 	clock          func() time.Time
-	installer      PluginInstaller      // may be nil in tests
-	pluginsDir     string               // empty disables FS cleanup in RejectPlugin
-	processManager PluginProcessManager // nil means skip subprocess spawn in CreateInstance/ApprovePlugin
-	rssAggregator  RSSAggregator        // may be nil in tests; GetPluginRSS returns 503
-	lifecycle      *InstanceLifecycle   // owns Deactivate/Activate/Delete/Uninstall
-	config         *InstanceConfig      // owns PutSubscriptionScope/PutConfig/PutConfigProperty
-	credSeeder     CredentialSeeder     // nil means skip credential seeding on create
-	store          *db.Store            // nil (or a nil provisioner) skips the create-instance provisioning tx
-	provisioner    InstanceProvisioner  // nil in v1: CreateInstance/DeleteInstance skip container provisioning
-	capHealth      *caphealth.Registry  // nil in v1: ListInstanceCapabilities returns an empty list
-	approveV2      bool                 // false in v1: ApprovePlugin refuses a v2 manifest
+	installer      PluginInstaller       // may be nil in tests
+	pluginsDir     string                // empty disables FS cleanup in RejectPlugin
+	processManager PluginProcessManager  // nil means skip subprocess spawn in CreateInstance/ApprovePlugin
+	rssAggregator  RSSAggregator         // may be nil in tests; GetPluginRSS returns 503
+	lifecycle      *InstanceLifecycle    // owns Deactivate/Activate/Delete/Uninstall
+	config         *InstanceConfig       // owns PutSubscriptionScope/PutConfig/PutConfigProperty
+	credSeeder     CredentialSeeder      // nil means skip credential seeding on create
+	store          *db.Store             // nil (or a nil provisioner) skips the create-instance provisioning tx
+	provisioner    InstanceProvisioner   // nil in v1: CreateInstance/DeleteInstance skip container provisioning
+	capHealth      *caphealth.Registry   // nil in v1: ListInstanceCapabilities returns an empty list
+	startup        InstanceStartupReader // nil in v1: GetInstance never reports a startup fault
+	approveV2      bool                  // false in v1: ApprovePlugin refuses a v2 manifest
 }
 
 // NewPluginHandler constructs a PluginHandler from the given deps struct.
@@ -347,6 +351,7 @@ func NewPluginHandler(deps PluginHandlerDeps) *PluginHandler {
 		store:          deps.Store,
 		provisioner:    deps.Provisioner,
 		capHealth:      deps.CapabilityHealth,
+		startup:        deps.StartupReader,
 		approveV2:      deps.ApproveV2Manifests,
 	}
 }
@@ -424,6 +429,10 @@ type instanceResponse struct {
 	// for EmitEvent. nil means "use the plugin default" (no override set).
 	HostEventRatePerSec *float64 `json:"host_event_rate_per_sec"`
 	HostEventBurst      *int64   `json:"host_event_burst"`
+	// Startup explains an instance whose container keeps failing to start.
+	// Only GetInstance fills it; it is absent when there is no such fault,
+	// and from every mutation response.
+	Startup *InstanceStartupFault `json:"startup,omitempty"`
 }
 
 // GetInstance handles GET /api/v1/admin/plugins/{id}/instances/{iid}.
@@ -458,7 +467,17 @@ func (h *PluginHandler) GetInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeInstanceResponseWithRedactionForPlugin(w, plugin, row)
+	var startup *InstanceStartupFault
+	if h.startup != nil {
+		startup, err = h.startup.InstanceStartup(r.Context(), instanceID)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "reading instance startup fault", "instance_id", instanceID, "err", err)
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to read instance startup state", "")
+			return
+		}
+	}
+
+	h.writeInstanceResponseWithRedactionForPlugin(w, plugin, row, startup)
 }
 
 // capabilityResponse is one per-capability health entry. Name is empty for a
@@ -1270,7 +1289,7 @@ func (h *PluginHandler) writeInstanceResponseWithRedaction(
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
 		return false
 	}
-	return h.writeInstanceResponseWithRedactionForPlugin(w, plugin, inst)
+	return h.writeInstanceResponseWithRedactionForPlugin(w, plugin, inst, nil)
 }
 
 // writeInstanceResponseWithRedactionForPlugin is the inner variant that accepts
@@ -1281,6 +1300,7 @@ func (h *PluginHandler) writeInstanceResponseWithRedactionForPlugin(
 	w http.ResponseWriter,
 	plugin db.Plugin,
 	inst db.PluginInstance,
+	startup *InstanceStartupFault,
 ) bool {
 	m, parseErr := pluginmanifest.Read([]byte(plugin.ManifestSnapshot))
 	if parseErr != nil {
@@ -1327,6 +1347,7 @@ func (h *PluginHandler) writeInstanceResponseWithRedactionForPlugin(
 		ConfigSchema:          configSchema,
 		HostEventRatePerSec:   inst.HostEventRatePerSec,
 		HostEventBurst:        inst.HostEventBurst,
+		Startup:               startup,
 	})
 	return true
 }

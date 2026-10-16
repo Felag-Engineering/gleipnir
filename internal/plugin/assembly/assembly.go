@@ -111,6 +111,11 @@ type AdminDeps struct {
 	// nil while plugins are disabled.
 	CapabilityHealth *caphealth.Registry
 
+	// StartupReader backs the instance detail's `startup` field: why an
+	// instance's container keeps failing to start, read from generation
+	// history. nil while plugins are disabled.
+	StartupReader admin.InstanceStartupReader
+
 	// ApproveV2Manifests lets the admin Approve handler approve a v2 plugin.
 	// True only while plugins are enabled: the default build and a
 	// plugins-disabled assembly cannot run a v2 plugin, so they keep refusing.

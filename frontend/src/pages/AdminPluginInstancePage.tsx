@@ -11,6 +11,7 @@ import { useOptionsContext } from '@/hooks/useOptionsContext'
 import { ReauthorizeButton } from '@/components/admin/ReauthorizeButton/ReauthorizeButton'
 import { CredentialsTab } from '@/components/admin/CredentialsTab/CredentialsTab'
 import { CapabilityHealthPanel } from '@/components/admin/CapabilityHealthPanel/CapabilityHealthPanel'
+import { StartupFaultBanner } from '@/components/admin/StartupFaultBanner/StartupFaultBanner'
 import { InstanceSetupSteps } from '@/components/admin/InstanceSetupSteps/InstanceSetupSteps'
 import { DeletePluginInstanceModal } from '@/components/admin/DeletePluginInstanceModal'
 import { AcceptManifestModal } from '@/components/admin/AcceptManifestModal'
@@ -692,6 +693,8 @@ export default function AdminPluginInstancePage() {
           onNavigate={setActiveTab}
         />
       )}
+
+      {detail?.startup && <StartupFaultBanner fault={detail.startup} />}
 
       <CapabilityHealthPanel pluginId={pluginId!} instanceId={instanceId!} />
 
