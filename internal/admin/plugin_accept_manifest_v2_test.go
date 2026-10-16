@@ -192,6 +192,36 @@ func TestAcceptManifest_V2(t *testing.T) {
 		}
 	})
 
+	t.Run("the runtime image ID recorded for the candidate is what the new desired digest resolves to", func(t *testing.T) {
+		f := newAcceptV2Fixture(t, "active", true)
+		// The installer records this when it loads and verifies the candidate's
+		// image; accepting loads nothing, so the record must simply survive and
+		// be keyed by the digest the desired row moves to.
+		localID := "sha256:runtime-local-id"
+		if _, err := f.store.Queries().UpsertContainerImage(ctx, db.UpsertContainerImageParams{
+			Digest: acceptV2NewDigest, Reference: "ghcr.io/acme/v2-tool@" + acceptV2NewDigest,
+			LoadedAt: "2026-08-06T12:00:00Z", LocalImageID: &localID,
+		}); err != nil {
+			t.Fatalf("seed image record: %v", err)
+		}
+
+		if rec := f.accept(); rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; body: %s", rec.Code, rec.Body.String())
+		}
+
+		row, err := f.store.Queries().GetPluginContainerByInstance(ctx, f.instanceID)
+		if err != nil {
+			t.Fatalf("GetPluginContainerByInstance: %v", err)
+		}
+		img, err := f.store.Queries().GetContainerImage(ctx, row.ImageDigest)
+		if err != nil {
+			t.Fatalf("no image record for the desired digest %q: %v", row.ImageDigest, err)
+		}
+		if img.LocalImageID == nil || *img.LocalImageID != localID {
+			t.Errorf("local_image_id = %v, want %q", img.LocalImageID, localID)
+		}
+	})
+
 	t.Run("accepting does not approve a plugin awaiting review", func(t *testing.T) {
 		f := newAcceptV2Fixture(t, "pending_review", true)
 

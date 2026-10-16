@@ -51,6 +51,22 @@ type Fake struct {
 	// expresses "the archive contained something else".
 	PendingImages []ImageInfo
 
+	// StrictImages makes Create refuse an image the Fake does not hold under
+	// the exact reference given, the way a daemon does when it is told never to
+	// pull. Off by default so tests that are not about images need not seed
+	// one. Which references resolve is whatever AddImage / PendingImages
+	// registered: a classic-store image answers to its config digest, a
+	// containerd-store image only to its manifest digest, and neither answers
+	// to "repo@config-digest" unless it lists that among its RepoDigests.
+	StrictImages bool
+
+	// AssumeImagesPresent makes ImageInspect answer for any reference nobody
+	// registered, reporting it as an image whose ID is the reference itself
+	// (the classic-store shape for a bare digest). It is for tests that
+	// converge containers and are not about images; a test of image handling
+	// leaves it off.
+	AssumeImagesPresent bool
+
 	// LoadErr, when non-nil, fails ImageLoad after the archive has been read.
 	LoadErr error
 
@@ -96,6 +112,9 @@ func (f *Fake) Create(_ context.Context, opts CreateOptions) (ContainerID, error
 	defer f.mu.Unlock()
 	if f.CreateErr != nil {
 		return "", f.CreateErr
+	}
+	if _, ok := f.images[opts.Image]; f.StrictImages && !ok {
+		return "", fmt.Errorf("%w: %s", ErrImageNotFound, opts.Image)
 	}
 
 	f.nextID++
@@ -438,6 +457,9 @@ func (f *Fake) ImageInspect(_ context.Context, ref string) (ImageInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	info, ok := f.images[ref]
+	if !ok && f.AssumeImagesPresent {
+		return ImageInfo{ID: ref}, nil
+	}
 	if !ok {
 		return ImageInfo{}, fmt.Errorf("%w: %s", ErrImageNotFound, ref)
 	}

@@ -2105,3 +2105,71 @@ func TestAddOAuthNonceActorSkipsOnFreshSchema(t *testing.T) {
 		t.Fatal("ShouldSkip returned false on a fresh initial schema — did 0001_initial.sql forget actor_user_id?")
 	}
 }
+
+// TestAddContainerImageLocalID verifies migration 0060 adds local_image_id,
+// leaves existing image rows NULL (legacy rows resolve by bare digest or fail
+// closed), and is idempotent.
+func TestAddContainerImageLocalID(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	for _, stmt := range []string{
+		`CREATE TABLE schema_migrations (
+			version     INTEGER PRIMARY KEY,
+			applied_at  TEXT    NOT NULL
+		)`,
+		`INSERT INTO schema_migrations(version, applied_at) VALUES (1, '2024-01-01T00:00:00Z')`,
+		`CREATE TABLE plugin_container_images (
+			digest        TEXT PRIMARY KEY,
+			reference     TEXT NOT NULL,
+			plugin_id     TEXT,
+			size_bytes    INTEGER,
+			loaded_at     TEXT NOT NULL,
+			last_used_at  TEXT
+		)`,
+		`INSERT INTO plugin_container_images(digest, reference, loaded_at) VALUES ('sha256:a', 'repo@sha256:a', '2024-01-01T00:00:00Z')`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seed: %v\nstatement: %s", err, stmt)
+		}
+	}
+
+	m := &migrations.AddContainerImageLocalID{}
+	skip, err := m.ShouldSkip(ctx, db)
+	if err != nil {
+		t.Fatalf("ShouldSkip: %v", err)
+	}
+	if skip {
+		t.Fatal("ShouldSkip returned true against the pre-target baseline")
+	}
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	var localID sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT local_image_id FROM plugin_container_images WHERE digest = 'sha256:a'`).Scan(&localID); err != nil {
+		t.Fatalf("read local_image_id: %v", err)
+	}
+	if localID.Valid {
+		t.Errorf("existing row local_image_id = %q, want NULL", localID.String)
+	}
+
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("second Apply (idempotency): %v", err)
+	}
+}
+
+// TestAddContainerImageLocalIDSkipsOnFreshSchema is the regression gate for
+// forgetting to hand-sync 0001_initial.sql (which sqlc reads).
+func TestAddContainerImageLocalIDSkipsOnFreshSchema(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	applyInitialSchema(t, db)
+
+	skip, err := (&migrations.AddContainerImageLocalID{}).ShouldSkip(ctx, db)
+	if err != nil {
+		t.Fatalf("ShouldSkip: %v", err)
+	}
+	if !skip {
+		t.Fatal("ShouldSkip returned false on a fresh initial schema — did 0001_initial.sql forget local_image_id?")
+	}
+}

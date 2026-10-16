@@ -262,3 +262,51 @@ func TestFake_Close(t *testing.T) {
 		t.Fatal("Closed() = false after Close()")
 	}
 }
+
+// StrictImages models a daemon that never pulls: only a reference the image
+// answers to creates. The cases mirror what was measured on real daemons, so a
+// reconciler that builds the reference from the pin alone fails here the way
+// it failed there.
+func TestFake_StrictImagesResolution(t *testing.T) {
+	const (
+		repo           = "ghcr.io/example/stub"
+		configDigest   = "sha256:aaaa"
+		manifestDigest = "sha256:bbbb"
+	)
+
+	classic := ImageInfo{ID: configDigest}
+	containerd := ImageInfo{ID: manifestDigest}
+
+	tests := []struct {
+		name    string
+		image   ImageInfo
+		ref     string
+		wantErr bool
+	}{
+		{name: "classic store: bare config digest is the ID", image: classic, ref: configDigest},
+		{name: "classic store: repo@config digest does not resolve", image: classic, ref: repo + "@" + configDigest, wantErr: true},
+		{name: "containerd store: bare config digest does not resolve", image: containerd, ref: configDigest, wantErr: true},
+		{name: "containerd store: repo@config digest does not resolve", image: containerd, ref: repo + "@" + configDigest, wantErr: true},
+		{name: "containerd store: the daemon's own ID resolves", image: containerd, ref: manifestDigest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := NewFake()
+			f.StrictImages = true
+			f.AddImage(tt.image)
+			opts := validCreateOptions()
+			opts.Image = tt.ref
+
+			_, err := f.Create(context.Background(), opts)
+			if tt.wantErr {
+				if !errors.Is(err, ErrImageNotFound) {
+					t.Fatalf("Create() error = %v, want ErrImageNotFound", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Create(): %v", err)
+			}
+		})
+	}
+}

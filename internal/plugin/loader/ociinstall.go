@@ -451,13 +451,22 @@ func recordLoadedImage(ctx context.Context, q *db.Queries, bundle *OCIBundle, lo
 	if size := loaded.info.SizeBytes; size > 0 {
 		sizePtr = &size
 	}
+	// The ID the runtime itself reports for the image that matched the signed
+	// archive. Containers are created from it: the pin is the config digest,
+	// which a containerd-store daemon cannot resolve, so the reconciler needs
+	// the name the daemon actually answers to.
+	var localIDPtr *string
+	if localID := loaded.info.ID; localID != "" {
+		localIDPtr = &localID
+	}
 	if _, err := q.UpsertContainerImage(ctx, db.UpsertContainerImageParams{
-		Digest:     bundle.ImageDigest(),
-		Reference:  bundle.ImageReference(),
-		PluginID:   &pluginID,
-		SizeBytes:  sizePtr,
-		LoadedAt:   nowStr,
-		LastUsedAt: &nowStr,
+		Digest:       bundle.ImageDigest(),
+		Reference:    bundle.ImageReference(),
+		PluginID:     &pluginID,
+		SizeBytes:    sizePtr,
+		LoadedAt:     nowStr,
+		LastUsedAt:   &nowStr,
+		LocalImageID: localIDPtr,
 	}); err != nil {
 		return fmt.Errorf("record loaded image %s: %w", bundle.ImageDigest(), err)
 	}

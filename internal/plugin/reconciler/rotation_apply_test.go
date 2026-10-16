@@ -33,7 +33,7 @@ func rotFixture(t *testing.T) (*db.Store, *countingRuntime, *Reconciler) {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	rt := &countingRuntime{Runtime: container.NewFake()}
+	rt := &countingRuntime{Runtime: newTestFake()}
 	r, err := New(Config{
 		Runtime:   rt,
 		Store:     store.Queries(),
@@ -65,7 +65,7 @@ func rotFixtureWithPublisher(t *testing.T) (*db.Store, *countingRuntime, *Reconc
 		t.Fatalf("migrate: %v", err)
 	}
 
-	rt := &countingRuntime{Runtime: container.NewFake()}
+	rt := &countingRuntime{Runtime: newTestFake()}
 	pub := &capturePublisher{}
 	r, err := New(Config{
 		Runtime:   rt,
@@ -123,7 +123,7 @@ func rotFixtureWithProxyEnv(t *testing.T) (*db.Store, *countingRuntime, *Reconci
 		t.Fatalf("migrate: %v", err)
 	}
 
-	rt := &countingRuntime{Runtime: container.NewFake()}
+	rt := &countingRuntime{Runtime: newTestFake()}
 	r, err := New(Config{
 		Runtime:   rt,
 		Store:     store.Queries(),
@@ -1503,7 +1503,7 @@ func TestReconciler_RotationMuSerializesRunPassAndReconcileRotations(t *testing.
 
 	cds := &concurrencyDetectingStore{Store: dbStore.Queries(), delay: 10 * time.Millisecond}
 	r, err := New(Config{
-		Runtime: &countingRuntime{Runtime: container.NewFake()}, Store: cds,
+		Runtime: &countingRuntime{Runtime: newTestFake()}, Store: cds,
 		Rotations: dbStore.Queries(), Subnets: testAllocator(t),
 		Posture: container.PostureRootlessPodman, Interval: time.Hour,
 	})

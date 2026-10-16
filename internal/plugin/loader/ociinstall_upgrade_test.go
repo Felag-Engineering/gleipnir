@@ -302,9 +302,14 @@ func TestOCIInstall_UpgradeOfExistingPlugin(t *testing.T) {
 				t.Error("a pending manifest was recorded for a change that was not blocked")
 			}
 
-			_, imgErr := b.store.Queries().GetContainerImage(ctx, nextDigest)
+			img, imgErr := b.store.Queries().GetContainerImage(ctx, nextDigest)
 			if wantRow := tt.wantImageRow == nextDigest; wantRow != (imgErr == nil) {
 				t.Errorf("image row for the candidate digest present = %v, want %v", imgErr == nil, wantRow)
+			}
+			// Accept-manifest loads nothing: the ID it will later create from
+			// is the one recorded here, when the candidate was verified.
+			if imgErr == nil && (img.LocalImageID == nil || *img.LocalImageID != tt.pending) {
+				t.Errorf("candidate local_image_id = %v, want %q", img.LocalImageID, tt.pending)
 			}
 		})
 	}

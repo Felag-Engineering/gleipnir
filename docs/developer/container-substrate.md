@@ -93,6 +93,19 @@ hostnames an admin consented to in the plugin's manifest.
 Design record, including why a firewall or DNS filter was rejected:
 **[egress-containment.md](egress-containment.md)**.
 
+## Which image a container is created from
+
+The manifest pins an image by its config digest, but Docker reads
+`repo@sha256:<config digest>` as a registry manifest digest, and a daemon on the
+containerd image store (Docker 29's default) resolves neither that nor the bare
+config digest for a loaded image. The installer therefore records the local
+image ID the daemon reported for the image it verified against the signed
+archive, and the reconciler creates every container from that ID. If the image
+is gone (for example after a `docker image prune`) the instance is not created
+and the reconciler logs why; nothing is pulled. Reinstalling the bundle loads
+and records it again. Installs that predate the recorded ID work on the classic
+store and Podman and need a reinstall on the containerd store.
+
 ## Reclamation
 
 Unreferenced images, orphaned subnets, and long-revoked generation tokens are

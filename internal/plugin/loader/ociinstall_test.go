@@ -203,6 +203,10 @@ func TestOCIInstall_SignedBundleLoadsAndPins(t *testing.T) {
 	if image.SizeBytes == nil || *image.SizeBytes != 4096 {
 		t.Errorf("size_bytes = %v, want 4096", image.SizeBytes)
 	}
+	// Classic store: the runtime's ID for the image is the config digest.
+	if image.LocalImageID == nil || *image.LocalImageID != digest {
+		t.Errorf("local_image_id = %v, want %q", image.LocalImageID, digest)
+	}
 }
 
 // The pin is the whole mechanism by which an admin's consent means anything.

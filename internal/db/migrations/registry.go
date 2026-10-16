@@ -53,5 +53,6 @@ func All() []Migration {
 		&AddPolicyArchive{},
 		&AddDeciderIdentity{},
 		&AddOAuthNonceActor{},
+		&AddContainerImageLocalID{},
 	}
 }

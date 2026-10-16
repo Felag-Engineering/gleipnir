@@ -303,7 +303,7 @@ func newListenerFixture(t *testing.T) *listenerFixture {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	fake := container.NewFake()
+	fake := newTestFake()
 	selfID, err := fake.Create(ctx, container.CreateOptions{
 		Name: "gleipnir", Image: "gleipnir/gleipnir:test", Network: "gleipnir-self-net",
 		CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}, Sysctls: container.RequiredSysctls(),
@@ -560,7 +560,7 @@ func TestAttachPass_ManualPostureHasNoListeners(t *testing.T) {
 	}
 	host := newFakeListenerSet()
 	r, err := New(Config{
-		Runtime:       container.NewFake(),
+		Runtime:       newTestFake(),
 		Store:         store.Queries(),
 		Posture:       container.PostureManual,
 		Attach:        &AttachDeps{Store: store.Queries(), Endpoints: &mcp.ManagedRegistrar{}},
@@ -587,7 +587,7 @@ func TestNew_ListenersRequireAttachAndSubnets(t *testing.T) {
 	}
 	t.Cleanup(func() { store.Close() })
 
-	base := Config{Runtime: container.NewFake(), Store: store.Queries(), Posture: container.PostureRootlessPodman, Rotations: store.Queries()}
+	base := Config{Runtime: newTestFake(), Store: store.Queries(), Posture: container.PostureRootlessPodman, Rotations: store.Queries()}
 
 	noAttach := base
 	noAttach.Subnets = testAllocator(t)
@@ -609,7 +609,7 @@ func TestNew_ListenersRequireAttachAndSubnets(t *testing.T) {
 func TestDrainGeneration_CallsBeginDrainBeforeStopping(t *testing.T) {
 	ctx := context.Background()
 	slots := &fakeSlots{}
-	fake := container.NewFake()
+	fake := newTestFake()
 	rt := &countingRuntime{Runtime: fake}
 	r, err := New(Config{Runtime: rt, Store: &fakeStore{}, Generations: slots})
 	if err != nil {

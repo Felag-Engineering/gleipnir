@@ -1,15 +1,18 @@
 -- UpsertContainerImage records a loaded OCI image. Loading the same digest
 -- again is not an error -- a reinstall or a second instance of the same plugin
 -- reaches the same bytes -- so the conflict path refreshes the mutable fields
--- instead of failing.
+-- instead of failing. local_image_id is the runtime's own ID for the image
+-- the installer verified; a reload refreshes it because the same bytes can
+-- land under a different ID after the operator pruned and reloaded them.
 -- name: UpsertContainerImage :one
-INSERT INTO plugin_container_images (digest, reference, plugin_id, size_bytes, loaded_at, last_used_at)
-VALUES (:digest, :reference, :plugin_id, :size_bytes, :loaded_at, :last_used_at)
+INSERT INTO plugin_container_images (digest, reference, plugin_id, size_bytes, loaded_at, last_used_at, local_image_id)
+VALUES (:digest, :reference, :plugin_id, :size_bytes, :loaded_at, :last_used_at, :local_image_id)
 ON CONFLICT(digest) DO UPDATE SET
     reference = excluded.reference,
     plugin_id = excluded.plugin_id,
     size_bytes = excluded.size_bytes,
-    last_used_at = excluded.last_used_at
+    last_used_at = excluded.last_used_at,
+    local_image_id = excluded.local_image_id
 RETURNING *;
 
 -- name: GetContainerImage :one

@@ -90,7 +90,9 @@ func TestFirstBoot_TokenAuthenticatesAgainstTheRealResolver(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSubnetAllocator: %v", err)
 	}
-	rt := &envCapturingRuntime{Runtime: container.NewFake()}
+	fake := container.NewFake()
+	fake.AssumeImagesPresent = true // this test is about the token, not the image
+	rt := &envCapturingRuntime{Runtime: fake}
 	r, err := reconciler.New(reconciler.Config{
 		Runtime:   rt,
 		Store:     q,
