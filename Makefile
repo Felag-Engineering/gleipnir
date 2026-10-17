@@ -291,7 +291,8 @@ else
 endif
 
 # Builds the conformance stub image and packages it as one signed v2 bundle per
-# mode manifest: dist/conformance-stub-<mode>.tgz. Needs docker or podman, so it
+# mode manifest: dist/conformance-stub-<mode>.tgz, plus the DooD suite's scenario
+# bundles (dist/conformance-stub-dood-*.tgz). Needs docker or podman, so it
 # is not part of ci-local; CI's "Plugin SDK build" job runs it. See
 # scripts/build-conformance-stub.sh for the environment overrides.
 conformance-stub-bundle:

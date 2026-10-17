@@ -14,6 +14,14 @@
 // conformance-stub bundles (make conformance-stub-bundle) the way an operator's
 // upload does, and drives them to a running state through the reconciler.
 //
+// Part 2 (#998) binds a real RunLauncher to the assembly, with only the LLM
+// scripted, and drives two flows end to end: events redelivered across a plugin
+// container restart (exactly one run per event), and a policy-gated approval
+// answered through a plugin channel that authorizes its actor at the host
+// endpoint. Those need the stub configured beyond its defaults, which an
+// instance cannot carry, so they install the scenario bundles
+// (conformance-stub-dood-*.tgz) that bake the settings into the image.
+//
 // This package deliberately contains no production code. The suite itself is
 // behind the `dood` and `substratev2` build tags and is a no-op without them,
 // for the reason given in dood_test.go. Run it with scripts/run-dood-suite.sh;

@@ -34,6 +34,9 @@ func TestParseConfig(t *testing.T) {
 				if c.Assurance != "authenticated" || c.AutoResolve != "off" || c.AutoResolveDelay != 0 {
 					t.Errorf("unexpected channel defaults: %+v", c)
 				}
+				if c.EmitStart != "immediate" {
+					t.Errorf("EmitStart = %q, want immediate", c.EmitStart)
+				}
 				if c.DataDir != "/data" {
 					t.Errorf("DataDir = %q, want /data", c.DataDir)
 				}
@@ -70,6 +73,16 @@ func TestParseConfig(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "emission waits for the first listener",
+			env:  map[string]string{"STUB_EMIT_START": "first_listener"},
+			check: func(t *testing.T, c Config) {
+				if c.EmitStart != "first_listener" {
+					t.Errorf("EmitStart = %q, want first_listener", c.EmitStart)
+				}
+			},
+		},
+		{name: "bad emit start", env: map[string]string{"STUB_EMIT_START": "later"}, wantErr: "STUB_EMIT_START"},
 		{name: "unknown profile", env: map[string]string{"STUB_PROFILES": "tool_provider,bogus"}, wantErr: `STUB_PROFILES: unknown profile "bogus"`},
 		{name: "duplicate profile", env: map[string]string{"STUB_PROFILES": "event_source,event_source"}, wantErr: "listed twice"},
 		{name: "trailing comma", env: map[string]string{"STUB_PROFILES": "event_source,"}, wantErr: "unknown profile"},

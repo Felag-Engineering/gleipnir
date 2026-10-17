@@ -67,6 +67,10 @@ type stub struct {
 	Events  *events.Handler // nil unless event_source is enabled
 	Channel *autoResolver   // nil unless human_channel is enabled
 
+	// EmitStart is closed when tick emission may begin: at once, or when the
+	// first events/listen stream opens (STUB_EMIT_START=first_listener).
+	EmitStart <-chan struct{}
+
 	closers []func() error
 }
 
@@ -109,7 +113,18 @@ func newStub(ctx context.Context, cfg Config, host actorAuthorizer) (*stub, erro
 		if err := srv.Mount(s.Events); err != nil {
 			return nil, fmt.Errorf("mount events: %w", err)
 		}
-		if err := srv.MountStreaming("events/listen", s.Events.ListenHandler()); err != nil {
+		listen := s.Events.ListenHandler()
+		switch cfg.EmitStart {
+		case emitStartFirstListener:
+			gate := newListenGate()
+			listen = gate.Wrap(listen)
+			s.EmitStart = gate.Started()
+		default:
+			immediate := make(chan struct{})
+			close(immediate)
+			s.EmitStart = immediate
+		}
+		if err := srv.MountStreaming("events/listen", listen); err != nil {
 			return nil, fmt.Errorf("mount events/listen: %w", err)
 		}
 	}
@@ -138,31 +153,6 @@ func newStub(ctx context.Context, cfg Config, host actorAuthorizer) (*stub, erro
 		}
 	}
 	return s, nil
-}
-
-// publisher is the slice of *events.Handler that emission needs.
-type publisher interface {
-	Publish(ctx context.Context, e events.Event) (uint64, error)
-}
-
-// emitTicks publishes count conformance.tick events, waiting interval before
-// each, and stops early when ctx ends. runID keeps event ids unique across
-// restarts of the same container.
-func emitTicks(ctx context.Context, pub publisher, count int, interval time.Duration, runID string) {
-	for i := 1; i <= count; i++ {
-		if err := sleepCtx(ctx, interval); err != nil {
-			return
-		}
-		label := fmt.Sprintf("tick-%d", i)
-		_, err := pub.Publish(ctx, events.Event{
-			Type: "conformance.tick",
-			ID:   runID + "-" + label,
-			Data: map[string]any{"label": label},
-		})
-		if err != nil {
-			log.Printf("conformance-stub: publish %s: %v", label, err)
-		}
-	}
 }
 
 func main() {
@@ -195,7 +185,7 @@ func run() error {
 	}
 
 	if s.Events != nil {
-		go emitTicks(ctx, s.Events, cfg.EmitCount, cfg.EmitInterval, fmt.Sprintf("%x", time.Now().UnixNano()))
+		go emitTicks(ctx, s.Events, cfg.EmitCount, cfg.EmitInterval, newFileProgress(cfg.DataDir), s.EmitStart)
 	}
 
 	httpSrv := &http.Server{

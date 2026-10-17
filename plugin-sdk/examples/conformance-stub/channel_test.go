@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/felag-engineering/gleipnir/plugin-sdk/channelext"
-	"github.com/felag-engineering/gleipnir/plugin-sdk/events"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/hostclient"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/hostclient/hostclienttest"
 )
@@ -285,48 +284,4 @@ func TestResolutionFor(t *testing.T) {
 			}
 		})
 	}
-}
-
-type recordingPublisher struct {
-	published []events.Event
-}
-
-func (r *recordingPublisher) Publish(_ context.Context, e events.Event) (uint64, error) {
-	r.published = append(r.published, e)
-	return uint64(len(r.published)), nil
-}
-
-func TestEmitTicks(t *testing.T) {
-	t.Run("emits count events with unique ids and a label", func(t *testing.T) {
-		pub := &recordingPublisher{}
-		emitTicks(t.Context(), pub, 3, 0, "run")
-		if len(pub.published) != 3 {
-			t.Fatalf("published %d events, want 3", len(pub.published))
-		}
-		for i, e := range pub.published {
-			label := map[string]any{"label": []string{"tick-1", "tick-2", "tick-3"}[i]}
-			if e.Type != "conformance.tick" || e.ID != "run-"+label["label"].(string) {
-				t.Errorf("event %d = %+v", i, e)
-			}
-			if data, _ := e.Data.(map[string]any); data["label"] != label["label"] {
-				t.Errorf("event %d data = %v, want %v", i, e.Data, label)
-			}
-		}
-	})
-	t.Run("zero count emits nothing", func(t *testing.T) {
-		pub := &recordingPublisher{}
-		emitTicks(t.Context(), pub, 0, 0, "run")
-		if len(pub.published) != 0 {
-			t.Errorf("published %d events, want 0", len(pub.published))
-		}
-	})
-	t.Run("cancelled context stops emission", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
-		pub := &recordingPublisher{}
-		emitTicks(ctx, pub, 3, time.Hour, "run")
-		if len(pub.published) != 0 {
-			t.Errorf("published %d events after cancel, want 0", len(pub.published))
-		}
-	})
 }

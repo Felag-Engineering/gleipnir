@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Build the conformance stub (plugin-sdk/examples/conformance-stub) as one
-# signed v2 OCI bundle per mode manifest: dist/conformance-stub-<mode>.tgz.
+# signed v2 OCI bundle per mode manifest: dist/conformance-stub-<mode>.tgz,
+# plus one per suite scenario: dist/conformance-stub-<scenario>.tgz (below).
 #
 # Flow: build the image -> save it to one archive -> for each manifest in
 # manifests/, stamp a temp copy with the archive's real config digest and a
@@ -103,10 +104,12 @@ GLEIPNIR_PLUGIN_SIGNING_KEY_PASSPHRASE=ephemeral \
 
 mkdir -p "$dist_dir"
 bundles=()
-for src in "$stub_dir"/manifests/*.yaml; do
-    mode=$(basename "$src" .yaml)
-    name=conformance-stub-$mode
-    manifest=$work/manifest-$mode.yaml
+
+# package_bundle NAME MANIFEST ARCHIVE DIGEST: sign one bundle into
+# $dist_dir/NAME.tgz.
+package_bundle() {
+    local name=$1 src=$2 archive=$3 digest=$4
+    local manifest=$work/manifest-$name.yaml
 
     # The committed manifests carry a placeholder digest and the registry-style
     # name io.example/conformance-stub, whose '/' package rejects as a bundle
@@ -116,7 +119,7 @@ for src in "$stub_dir"/manifests/*.yaml; do
         -e "s|^  identifier: \(.*\)@sha256:.*|  identifier: \1@$digest|" \
         "$src" >"$manifest"
 
-    outdir=$work/out-$mode
+    local outdir=$work/out-$name
     GLEIPNIR_PLUGIN_SIGNING_KEY_PASSPHRASE=ephemeral \
         "$work/gleipnir-plugin" package \
         --manifest "$manifest" \
@@ -125,12 +128,47 @@ for src in "$stub_dir"/manifests/*.yaml; do
         --pubkey "$keys/signing.pub" \
         --out-dir "$outdir" >/dev/null
 
-    produced=("$outdir"/*.tar.gz)
+    local produced=("$outdir"/*.tar.gz)
     cp "${produced[0]}" "$dist_dir/$name.tgz"
     bundles+=("$dist_dir/$name.tgz")
+}
+
+for src in "$stub_dir"/manifests/*.yaml; do
+    mode=$(basename "$src" .yaml)
+    package_bundle "conformance-stub-$mode" "$src" "$archive" "$digest"
 done
 
-echo "==> produced bundles (image config digest $digest)"
+# Scenario bundles. The stub is configured by environment only, and a plugin
+# instance has no way to carry environment, so a suite that needs anything but
+# the defaults gets an image with its settings baked in: a one-layer image FROM
+# the stub plus ENV, saved and digested on its own, packaged with the manifest
+# of the mode whose profiles it serves. Each is its own plugin to the host.
+#
+#   <scenario>|<mode manifest>|<ENV assignments>
+scenarios=(
+    # DooD suite part 2 (#998): redelivery across a container restart.
+    "dood-events|event-only|STUB_PROFILES=event_source STUB_EMIT_COUNT=5 STUB_EMIT_START=first_listener STUB_EMIT_INTERVAL_MS=2000"
+    # DooD suite part 2 (#998): a policy-gated approval answered by the stub.
+    "dood-request|all|STUB_AUTO_RESOLVE=first_option STUB_EMIT_COUNT=0"
+)
+for spec in "${scenarios[@]}"; do
+    IFS='|' read -r scenario mode env_words <<<"$spec"
+    scenario_image="$repository:$scenario"
+    scenario_dir=$work/scenario-$scenario
+    mkdir -p "$scenario_dir"
+    printf 'FROM %s\nENV %s\n' "$image" "$env_words" >"$scenario_dir/Dockerfile"
+
+    echo "==> building scenario $scenario ($env_words)"
+    "$engine" build "${engine_build_flags[@]}" -t "$scenario_image" "$scenario_dir"
+    scenario_archive=$scenario_dir/image.tar
+    "$engine" save "${engine_save_flags[@]}" -o "$scenario_archive" "$scenario_image"
+    scenario_digest=$("$work/imagedigest" "$scenario_archive")
+    echo "    config digest: $scenario_digest"
+
+    package_bundle "conformance-stub-$scenario" "$stub_dir/manifests/$mode.yaml" "$scenario_archive" "$scenario_digest"
+done
+
+echo "==> produced bundles (stub image config digest $digest)"
 for b in "${bundles[@]}"; do
     echo "    $b"
 done
