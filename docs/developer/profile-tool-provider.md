@@ -66,7 +66,8 @@ on the host, or says that none does yet (§5).
 7. **Profile agreement.** A server that serves tools declares `tool_provider`.
    The host refuses every grant on an instance whose manifest does not declare
    it, so tools served without the declaration are unusable rather than
-   unsafe.
+   unsafe. This is the one constraint with no checklist item: the checklist
+   runs only for plugins that declare the profile.
 8. **Unknown calls fail.** `tools/call` for a name the server does not serve
    returns an error (a JSON-RPC error, or an `isError` result), never a
    success.

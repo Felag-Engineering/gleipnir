@@ -18,7 +18,10 @@ The ID and mode on each item line are machine-read: the runner's
 `checklist_test.go` pins its check registry to this file, so adding, removing or
 re-moding an item here without the matching check fails the build.
 
-A plugin that does not declare `tool_provider` runs none of these items.
+A plugin that does not declare `tool_provider` runs none of these items. That
+is also why "a server serving tools declares the profile" is not an item here:
+it could only fire on a plugin that runs none of them. The host enforces it
+instead (profile doc §3.7).
 
 ## Protocol and discovery
 
@@ -64,10 +67,6 @@ A plugin that does not declare `tool_provider` runs none of these items.
   in `tools/list`.
   - Host: none. Grants are checked against discovered tools, not the manifest
     (`internal/plugin/assembly`, managed tool classifier).
-- **TP-MAN-02** `auto` — A server whose `tools/list` is non-empty declares the
-  `tool_provider` profile.
-  - Host: `internal/plugin/assembly` (managed tool classifier) refuses every
-    grant on an instance that does not declare it, at run start.
 
 ## Calls
 
