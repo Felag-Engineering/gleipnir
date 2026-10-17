@@ -149,7 +149,7 @@ ground; it validates the contracts but does not define them).
 
 | Profile | Contract | Minimum obligation |
 |---|---|---|
-| **Tool provider** | Baseline MCP. | None — any existing ecosystem MCP server qualifies with zero code changes. Wrapping + manifest + signature yields containment, lifecycle, audit. |
+| **Tool provider** | Baseline MCP. [`profile-tool-provider.md`](profile-tool-provider.md) | None — any MCP server speaking the 2026-07-28 protocol qualifies with zero code changes (for v0.2.0-alpha; servers on earlier revisions are an open gap, profile doc §6.3). Wrapping + manifest + signature yields containment, lifecycle, audit. |
 | **Event source** | Implements `io.gleipnir/events` (§5). | `events/discover` + `events/listen`. **No reserved field names with fixed semantics** — `mention_only` becomes an ordinary boolean field the Slack plugin declares, not spec vocabulary. |
 | **Human channel** | Implements `io.gleipnir/channel` (§6.4): `channel/notify` + `channel/request`. | `channel/request` carries an elicitation-shaped payload (`message`, `requestedSchema?`, `options[]`) and returns a Tasks-extension task; task result `{option_id \| content, actor_external_id}`. Declares an **actor-assurance level** in the extension capability declaration (§4.1). |
 | **Identity provider** | Link methods + actor authorization participation (§9.1). | At least one link method, or none (profile omitted entirely). `external_user_id` is an opaque string namespaced by instance. |

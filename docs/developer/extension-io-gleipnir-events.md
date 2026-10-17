@@ -383,7 +383,7 @@ Anchors CI for the events profile and pre-packages the WG submission (§4.2's
 
 ### `events/discover`
 - [ ] Returns a `kinds` array; each entry carries a non-empty `kind`.
-- [ ] Every `kind` matches a kind attested in the signed manifest (drift is a health fault).
+- [ ] Every `kind` matches a kind attested in the signed manifest (drift is a health fault). Identified as EV-GL-01 below.
 - [ ] `binding_schema`, where present, is valid JSON Schema.
 
 ### `events/listen`
@@ -400,6 +400,18 @@ Anchors CI for the events profile and pre-packages the WG submission (§4.2's
 ### Discipline
 - [ ] No vendor name appears in normative contract text.
 - [ ] No coined vocabulary beyond the two method names, the notification method name, and `gleipnirseq` (§2).
+
+### Gleipnir host addendum
+
+Items that only mean something against a Gleipnir install, because they compare
+a server with its signed manifest. Identified and mode-tagged like the profile
+checklists (`auto` = checked by `plugin-sdk/conform` against a running server).
+The rest of this list gains IDs in #972, which also adds EV-GL-02.
+
+- **EV-GL-01** `auto` — The kinds `events/discover` returns are exactly the
+  kinds in the manifest's `event_kinds`, in both directions.
+  - Host: `internal/plugin/caphealth`'s drift pass records any difference as an
+    `event_source` capability fault.
 
 ---
 
