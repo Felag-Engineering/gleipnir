@@ -30,6 +30,11 @@ plugin-sdk/
                     default, or a Store-backed durable buffer) for plugin authors
                     implementing the event_source profile. Owns server/discover outright
                     today; a future issue mounts it into mcpserver.Server instead.
+  conform/        — conformance runner (#977): Run(ctx, Target) checks a running plugin
+                    server against the checklists of the profiles its v2 manifest
+                    declares (tool-provider TP-* items, plus manifest-agreement checks
+                    such as EV-GL-01). checklists/ holds the checklists; the check
+                    registry is drift-pinned to them by checklist_test.go.
   serve/          — plugin entry point: serve.Serve() + WithXHandler / WithXService options
   tool/           — tool.Service ergonomic interface (plain-Go tool handlers)
   channel/        — channel.Service ergonomic interface (Notify / Request handlers)
