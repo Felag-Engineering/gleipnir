@@ -32,15 +32,15 @@ A plugin that does not declare `tool_provider` runs none of these items.
   - Host: `internal/mcp` discovers tools in the attach pass
     (`internal/plugin/assembly`). A failure is logged at WARN and the endpoint
     is kept with no tools.
-- **TP-DISC-02** `auto` — Every tool's `inputSchema`, where present, compiles
-  as JSON Schema.
-  - Host: none at compile level.
-- **TP-DISC-03** `auto` — Every tool's `inputSchema`, where present,
-  canonicalizes: valid UTF-8, no duplicate object keys, at most 1 MiB, depth
-  at most 64, at most 10,000 nodes.
-  - Host: `internal/schemanorm` via `internal/mcp` at discovery, fail-open. The
-    tool is kept with no canonical schema and no argument validation.
-- **TP-DISC-04** `auto` — Tool names are unique within `tools/list`.
+- **TP-DISC-02** `auto` — Every tool's `inputSchema`, where present, is valid
+  JSON (valid UTF-8, no duplicate object keys) and compiles as JSON Schema.
+  - Host: `internal/schemanorm` via `internal/mcp` at discovery canonicalizes
+    each schema byte-for-byte and enforces its size limits (1 MiB, depth 64,
+    10,000 nodes). It is fail-open: a schema it refuses leaves the tool kept,
+    with no canonical schema and no argument validation. Nothing on the host
+    compiles the schema. Canonicalization itself is not repeated by the
+    runner; it stays at install time.
+- **TP-DISC-03** `auto` — Tool names are unique within `tools/list`.
   - Host: the `mcp_tools` unique constraint (`internal/db`) fails the whole
     discovery.
 
