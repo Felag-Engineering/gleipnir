@@ -27,6 +27,7 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/admin"
 	"github.com/felag-engineering/gleipnir/internal/db"
+	runpkg "github.com/felag-engineering/gleipnir/internal/execution/run"
 	"github.com/felag-engineering/gleipnir/internal/infra/config"
 	"github.com/felag-engineering/gleipnir/internal/infra/netguard"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
@@ -88,30 +89,17 @@ type harness struct {
 	arbiter *toolregistry.Registry
 	mcpReg  *mcp.Registry
 	asm     *assembly.Assembly
-	passes  *passPublisher
+	pub     *suitePublisher
 	admin   http.Handler
+
+	// runs and launcher are the run stack main.go builds, bound to the
+	// assembly so plugin events and plugin-routed approvals reach real runs.
+	runs     *runpkg.RunManager
+	launcher *runpkg.RunLauncher
+	llm      scriptedLLM
 
 	mu        sync.Mutex
 	instances []string
-}
-
-// passPublisher is the event.Publisher the assembly publishes to. It turns the
-// reconciler's per-pass event into a wake-up for WaitConverged, so the suite
-// re-evaluates exactly when the world could have changed.
-type passPublisher struct {
-	passes chan struct{}
-}
-
-func (p *passPublisher) Publish(eventType string, _ json.RawMessage) {
-	if eventType != reconciler.EventPassCompleted {
-		return
-	}
-	// A buffer of one coalesces bursts: a waiter only needs to know "at least
-	// one pass finished since I last looked".
-	select {
-	case p.passes <- struct{}{}:
-	default:
-	}
 }
 
 // newHarness resolves the real socket, boots the assembly against it and hands
@@ -146,7 +134,7 @@ func newHarness(t *testing.T) *harness {
 		socketPath: result.SocketPath,
 		rt:         rt,
 		pool:       pickPool(t),
-		passes:     &passPublisher{passes: make(chan struct{}, 1)},
+		pub:        newSuitePublisher(),
 		arbiter:    toolregistry.New(),
 	}
 
@@ -172,8 +160,9 @@ func newHarness(t *testing.T) *harness {
 	}
 	t.Logf("dood self container: %s", h.selfID)
 
-	// The assembly's Shutdown is registered below, after the store, so it runs
-	// first (cleanup is LIFO) and nothing writes to a closed store.
+	// Teardown runs in the order main.go drives it, which cleanup's LIFO order
+	// gives by registering it backwards: quiesce the events streams, drain the
+	// runs, shut the assembly down, then close the store.
 	h.store = testutil.NewTestStore(t)
 	h.q = h.store.Queries()
 	h.mcpReg = mcp.NewRegistry(h.q, mcp.WithToolNamespaceArbiter(h.arbiter))
@@ -187,7 +176,7 @@ func newHarness(t *testing.T) *harness {
 			PluginDedupSweepInterval: time.Hour,
 		},
 		Store:       h.store,
-		Publisher:   h.passes,
+		Publisher:   h.pub,
 		Arbiter:     h.arbiter,
 		MCPRegistry: h.mcpReg,
 	}
@@ -196,6 +185,18 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("assembly.New: %v", err)
 	}
 	t.Cleanup(h.asm.Shutdown)
+
+	// A run blocked on a plugin-routed approval would hold the drain open, so
+	// whatever is still in flight at teardown is cancelled first.
+	h.runs = runpkg.NewRunManager()
+	t.Cleanup(func() {
+		h.runs.CancelAll()
+		h.runs.Wait()
+	})
+	h.bindLauncher()
+	// Registered last so it runs first: a stream still delivering events could
+	// otherwise launch a run after the drain has returned (#787).
+	t.Cleanup(h.asm.Quiesce)
 
 	h.admin = h.adminRouter()
 
@@ -241,12 +242,12 @@ func pickPool(t *testing.T) netip.Prefix {
 func (h *harness) adminRouter() http.Handler {
 	d := h.asm.AdminDeps()
 	lifecycle := admin.NewInstanceLifecycle(admin.InstanceLifecycleDeps{
-		Q: h.q, Store: h.store, Publisher: h.passes,
+		Q: h.q, Store: h.store, Publisher: h.pub,
 		ProcMgr: d.ProcMgr, Trigger: d.Trigger, Inflight: d.Inflight, Evictor: d.Evictor,
 		Unreg: d.Unregistrar, Provisioner: d.Provisioner,
 	})
 	handler := admin.NewPluginHandler(admin.PluginHandlerDeps{
-		Q: h.q, Publisher: h.passes, ProcessManager: d.ProcMgr, Lifecycle: lifecycle,
+		Q: h.q, Publisher: h.pub, ProcessManager: d.ProcMgr, Lifecycle: lifecycle,
 		Store: h.store, Provisioner: d.Provisioner, CapabilityHealth: d.CapabilityHealth,
 		ApproveV2Manifests: d.ApproveV2Manifests,
 	})
@@ -333,12 +334,25 @@ func (h *harness) CreateInstance(pluginID, name string) string {
 // it waits for the system rather than polling on a timer.
 func (h *harness) WaitConverged(instanceIDs ...string) {
 	h.t.Helper()
+	h.waitConverged(true, instanceIDs)
+}
+
+// WaitRunning is WaitConverged for a plugin that serves no tools (an event
+// source alone): a managed endpoint row and a running container with an
+// address, and no tool discovery to wait for.
+func (h *harness) WaitRunning(instanceIDs ...string) {
+	h.t.Helper()
+	h.waitConverged(false, instanceIDs)
+}
+
+func (h *harness) waitConverged(requireTools bool, instanceIDs []string) {
+	h.t.Helper()
 	deadline := time.After(convergeBudget)
 	var missing string
 	for {
 		missing = ""
 		for _, id := range instanceIDs {
-			if why := h.notConverged(id); why != "" {
+			if why := h.notConverged(id, requireTools); why != "" {
 				missing = fmt.Sprintf("instance %s: %s", id, why)
 				break
 			}
@@ -347,7 +361,7 @@ func (h *harness) WaitConverged(instanceIDs ...string) {
 			return
 		}
 		select {
-		case <-h.passes.passes:
+		case <-h.pub.passes:
 		case <-deadline:
 			h.t.Fatalf("did not converge within %s; last state: %s", convergeBudget, missing)
 		}
@@ -355,7 +369,7 @@ func (h *harness) WaitConverged(instanceIDs ...string) {
 }
 
 // notConverged returns why an instance is not up yet, or "" when it is.
-func (h *harness) notConverged(instanceID string) string {
+func (h *harness) notConverged(instanceID string, requireTools bool) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -363,12 +377,14 @@ func (h *harness) notConverged(instanceID string) string {
 	if err != nil {
 		return "no managed endpoint row yet"
 	}
-	tools, err := h.q.ListMCPToolsByServer(ctx, srv.ID)
-	if err != nil {
-		return fmt.Sprintf("listing tools: %v", err)
-	}
-	if len(tools) == 0 {
-		return "no tools discovered yet"
+	if requireTools {
+		tools, err := h.q.ListMCPToolsByServer(ctx, srv.ID)
+		if err != nil {
+			return fmt.Sprintf("listing tools: %v", err)
+		}
+		if len(tools) == 0 {
+			return "no tools discovered yet"
+		}
 	}
 	if _, ok := h.runningContainer(ctx, instanceID); !ok {
 		return "no running container with an address yet"

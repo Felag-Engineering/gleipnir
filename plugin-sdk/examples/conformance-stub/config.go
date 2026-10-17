@@ -17,6 +17,11 @@ const (
 )
 
 const (
+	emitStartImmediate     = "immediate"
+	emitStartFirstListener = "first_listener"
+)
+
+const (
 	autoResolveOff         = "off"
 	autoResolveFirstOption = "first_option"
 	autoResolveReject      = "reject"
@@ -28,6 +33,9 @@ type Config struct {
 
 	EmitCount    int
 	EmitInterval time.Duration
+	// EmitStart is when emission begins: immediate, or first_listener to wait
+	// for the first events/listen stream.
+	EmitStart string
 
 	Assurance string
 
@@ -77,6 +85,7 @@ func ParseConfig(lookup func(string) (string, bool)) (Config, error) {
 	fail := func(key string, err error) { errs = append(errs, fmt.Errorf("%s: %w", key, err)) }
 
 	cfg := Config{
+		EmitStart:   get("STUB_EMIT_START", emitStartImmediate),
 		Assurance:   get("STUB_ASSURANCE", manifestv2.AssuranceAuthenticated),
 		AutoResolve: get("STUB_AUTO_RESOLVE", autoResolveOff),
 		ActorID:     get("STUB_ACTOR_ID", "conformance-actor"),
@@ -97,6 +106,13 @@ func ParseConfig(lookup func(string) (string, bool)) (Config, error) {
 		fail("STUB_EMIT_INTERVAL_MS", err)
 	}
 	cfg.EmitInterval = time.Duration(emitMs) * time.Millisecond
+
+	switch cfg.EmitStart {
+	case emitStartImmediate, emitStartFirstListener:
+	default:
+		fail("STUB_EMIT_START", fmt.Errorf("must be %q or %q, got %q",
+			emitStartImmediate, emitStartFirstListener, cfg.EmitStart))
+	}
 
 	switch cfg.Assurance {
 	case manifestv2.AssuranceAuthenticated, manifestv2.AssuranceWeak:

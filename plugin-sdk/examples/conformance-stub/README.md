@@ -31,12 +31,30 @@ fails the start with an error naming every offending variable.
 | `STUB_PROFILES` | `tool_provider,event_source,human_channel` | Comma-separated subset of the three profiles. |
 | `STUB_EMIT_COUNT` | `3` | Number of `conformance.tick` events to emit after startup (`0` = none). Labels are `tick-1`, `tick-2`, ... |
 | `STUB_EMIT_INTERVAL_MS` | `1000` | Wait before each emitted event. |
+| `STUB_EMIT_START` | `immediate` | `immediate`, or `first_listener` to hold the first tick until an `events/listen` stream is open. |
 | `STUB_ASSURANCE` | `authenticated` | `authenticated` or `weak`; the assurance the channel declares. Must agree with the manifest in use. |
 | `STUB_AUTO_RESOLVE` | `off` | `off`, `first_option` or `reject`; see below. Needs `human_channel`. |
 | `STUB_AUTO_RESOLVE_DELAY_MS` | `0` | Wait between a request arriving and the stub answering it. |
 | `STUB_ACTOR_ID` | `conformance-actor` | The external actor id the stub claims to be when it answers. |
 | `STUB_DATA_DIR` | `/data` | Where the event and task stores live. |
 | `GLEIPNIR_HOST_ENDPOINT_URL`, `GLEIPNIR_INSTANCE_TOKEN` | set by the host | Used by `hostclient`; required only when `STUB_AUTO_RESOLVE` is not `off`. |
+
+### Emission across restarts
+
+The count is a total over the life of the data directory, not per process. The
+stub records how many ticks it has published in `$STUB_DATA_DIR/emit-progress.json`
+(with the run id that prefixes their event ids), and a restarted container
+continues from the next one. A crash between a publish and its record re-emits
+that one tick under the same id, which a host's dedup absorbs.
+
+`events/listen` with no cursor delivers only events published after the stream
+subscribed, so with `immediate` a tick emitted before the host first connects
+reaches nobody. `first_listener` waits for the first stream, but only before the
+first tick the data directory ever emits. A restarted stub never waits: it
+publishes its next tick at once, before its server is listening, and keeps the
+interval after that. That tick can reach a host only through a cursor resume
+served from the durable event store, which is the redelivery a restart test
+is there to check.
 
 ### Auto-resolve
 
@@ -86,7 +104,8 @@ build.
 
 ```
 conformance-stub/
-  main.go          — event kinds, echo tool, composition of the server, emission loop, shutdown
+  main.go          — event kinds, echo tool, composition of the server, shutdown
+  emit.go          — the emission loop, its durable progress, the first-listener gate
   config.go        — STUB_* parsing (pure function, table-tested)
   channel.go       — channel/notify, the auto-resolver
   manifest.go      — the manifest modes and their projection to manifestv2

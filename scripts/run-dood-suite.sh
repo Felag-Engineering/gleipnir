@@ -89,10 +89,12 @@ if [ ! -S "$socket" ]; then
     exit 1
 fi
 
-if [ ! -f "$dist_dir/conformance-stub-all.tgz" ]; then
-    echo "error: $dist_dir/conformance-stub-all.tgz is missing; run: make conformance-stub-bundle" >&2
-    exit 1
-fi
+for bundle in all dood-events dood-request; do
+    if [ ! -f "$dist_dir/conformance-stub-$bundle.tgz" ]; then
+        echo "error: $dist_dir/conformance-stub-$bundle.tgz is missing; run: make conformance-stub-bundle" >&2
+        exit 1
+    fi
+done
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/dood-suite.XXXXXX")
 mkdir "$work/stage"
