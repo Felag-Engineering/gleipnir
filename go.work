@@ -9,4 +9,5 @@ use (
 	./plugin-sdk/examples/minimal-tool
 	./plugins/ntfy
 	./plugins/slack
+	./plugins/slack-v2
 )
