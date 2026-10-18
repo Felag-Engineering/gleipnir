@@ -145,6 +145,24 @@ func (m *mockAuthQuerier) SetUserSlackUserID(_ context.Context, arg db.SetUserSl
 	return m.setSlackUserIDErr
 }
 
+// The identity methods are exercised against a real store in
+// identities_handler_test.go; the mock only needs to satisfy the interface.
+func (m *mockAuthQuerier) GetPluginInstanceByID(_ context.Context, _ string) (db.PluginInstance, error) {
+	return db.PluginInstance{}, sql.ErrNoRows
+}
+
+func (m *mockAuthQuerier) SetAdminIdentity(_ context.Context, _ db.SetAdminIdentityParams) error {
+	return nil
+}
+
+func (m *mockAuthQuerier) DeleteIdentity(_ context.Context, _ db.DeleteIdentityParams) (int64, error) {
+	return 0, nil
+}
+
+func (m *mockAuthQuerier) ListIdentitiesByUser(_ context.Context, _ string) ([]db.ListIdentitiesByUserRow, error) {
+	return nil, nil
+}
+
 func (m *mockAuthQuerier) ListSessionsByUser(_ context.Context, _ db.ListSessionsByUserParams) ([]db.ListSessionsByUserRow, error) {
 	return m.sessions, m.listSessionsErr
 }

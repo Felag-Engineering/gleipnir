@@ -400,12 +400,16 @@ itself is unchanged — resolution requires a Gleipnir user with role
 `approver`, `operator`, or `admin` (`auditor` is deliberately excluded: an
 auditor's job is to observe the record, not to become part of it).
 
-**Resolution is verified-identity-only.** `ActorDirectory` is the seam:
-today's only implementation, `DBActorDirectory`, resolves against the
-admin-managed `users.slack_user_id` mapping — an admin-set link, which is
-exactly the "admin-set" half of ADR-058's bar for what may feed actor
-authorization. Milestone #18's verified `plugin_user_identities` link table
-widens what backs this interface without this handler changing at all.
+**Resolution is verified-identity-only, and per instance.** The seam is
+`internal/plugin/actordir.Directory`; today's only implementation, `actordir.DB`,
+resolves against `plugin_user_identities` rows with `link_method = 'admin_set'`
+— a mapping an admin made, which is exactly the "admin-set" half of ADR-058's
+bar for what may feed actor authorization (#964). The lookup is keyed by the
+**calling instance** and the actor id together: an actor mapped on one instance
+is not authorized for a request from another, because two instances of one
+channel plugin can serve workspaces whose actor ids overlap. The verified link
+methods of spec §9.1 widen what backs the interface without this handler
+changing.
 
 **An unauthorized actor is a non-error result, audited.** `found=false` (no
 mapping) and a mapped user with none of the three roles are treated

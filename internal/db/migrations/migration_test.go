@@ -2173,3 +2173,98 @@ func TestAddContainerImageLocalIDSkipsOnFreshSchema(t *testing.T) {
 		t.Fatal("ShouldSkip returned false on a fresh initial schema — did 0001_initial.sql forget local_image_id?")
 	}
 }
+
+// TestAddPluginUserIdentities runs Up against a pre-0061 database holding v1
+// plugin rows and a user with the old global slack_user_id mapping, and checks
+// the keys, the link_method CHECK, the cascades, and that nothing was
+// backfilled from slack_user_id (owner decision: admins re-enter mappings per
+// instance).
+func TestAddPluginUserIdentities(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	seedPreContainerSubstrateBaseline(t, db)
+	if _, err := db.ExecContext(ctx, `CREATE TABLE users (
+		id TEXT PRIMARY KEY,
+		username TEXT NOT NULL UNIQUE,
+		password_hash TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		deactivated_at TEXT,
+		slack_user_id TEXT UNIQUE
+	)`); err != nil {
+		t.Fatalf("create users: %v", err)
+	}
+	for _, stmt := range []string{
+		`INSERT INTO plugins(id, name, plugin_version, manifest_snapshot, trusted_pubkey, status, created_at, updated_at)
+		 VALUES ('pl1', 'slack', '1.0.0', '{}', 'pubkey', 'active', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+		`INSERT INTO plugin_instances(id, plugin_id, instance_name, health_state, created_at, updated_at)
+		 VALUES ('inst1', 'pl1', 'prod', 'healthy', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+		`INSERT INTO users(id, username, password_hash, created_at, slack_user_id)
+		 VALUES ('u1', 'ann', 'x', '2024-01-01T00:00:00Z', 'U-SLACK')`,
+		`INSERT INTO users(id, username, password_hash, created_at)
+		 VALUES ('u2', 'bob', 'x', '2024-01-01T00:00:00Z')`,
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	m := &migrations.AddPluginUserIdentities{}
+	if skip, err := m.ShouldSkip(ctx, db); err != nil || skip {
+		t.Fatalf("ShouldSkip = %v, %v; want false against the pre-0061 baseline", skip, err)
+	}
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	var backfilled int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM plugin_user_identities`).Scan(&backfilled); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if backfilled != 0 {
+		t.Errorf("%d identities after Up, want 0: slack_user_id must not be backfilled", backfilled)
+	}
+
+	insert := func(user, external, method string) error {
+		_, err := db.ExecContext(ctx,
+			`INSERT INTO plugin_user_identities(instance_id, user_id, external_user_id, link_method, created_at)
+			 VALUES ('inst1', ?, ?, ?, '2024-01-02T00:00:00Z')`, user, external, method)
+		return err
+	}
+	if err := insert("u1", "U1", "admin_set"); err != nil {
+		t.Fatalf("insert admin_set identity: %v", err)
+	}
+	if err := insert("u2", "U1", "admin_set"); err == nil {
+		t.Error("a second user took the same actor id on the same instance")
+	}
+	if err := insert("u1", "U9", "admin_set"); err == nil {
+		t.Error("a user got a second identity on the same instance")
+	}
+	if err := insert("u2", "U2", "self_asserted"); err == nil {
+		t.Error("a link_method outside the CHECK was accepted")
+	}
+
+	if _, err := db.ExecContext(ctx, `DELETE FROM users WHERE id = 'u1'`); err != nil {
+		t.Fatalf("delete user: %v", err)
+	}
+	var left int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM plugin_user_identities`).Scan(&left); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if left != 0 {
+		t.Errorf("%d identities left after deleting their user, want 0 (ON DELETE CASCADE)", left)
+	}
+}
+
+func TestAddPluginUserIdentitiesSkipsOnFreshSchema(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	applyInitialSchema(t, db)
+
+	skip, err := (&migrations.AddPluginUserIdentities{}).ShouldSkip(ctx, db)
+	if err != nil {
+		t.Fatalf("ShouldSkip: %v", err)
+	}
+	if !skip {
+		t.Fatal("ShouldSkip returned false on a fresh initial schema — did 0001_initial.sql forget plugin_user_identities?")
+	}
+}

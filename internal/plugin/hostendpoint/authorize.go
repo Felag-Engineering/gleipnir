@@ -9,6 +9,7 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/plugin/actordir"
 )
 
 // host/authorize_actor (spec §6.4, §8) is the method ADR-055's audience
@@ -56,87 +57,6 @@ var authorizedActorRoles = map[model.Role]bool{
 	model.RoleAdmin:    true,
 }
 
-// ActorResolution is what an ActorDirectory found for one external actor id:
-// the single Gleipnir user it is mapped to (admin-set today; ADR-058) and
-// every role that user holds.
-type ActorResolution struct {
-	UserID   string
-	Username string
-	Roles    []model.Role
-}
-
-// ActorDirectory resolves an externally-asserted actor id (a Slack user.id
-// or similar) to the Gleipnir user it names, if any.
-//
-// ADR-058 constraint: only a VERIFIED or admin-set identity link may feed
-// actor authorization — a plugin's own claim about who clicked a button is
-// not evidence on its own, and must not be trusted to assert a Gleipnir
-// identity by itself. Until milestone #18 lands the `plugin_user_identities`
-// verified-link table, DBActorDirectory below is the ONLY source, reading
-// the admin-managed `users.slack_user_id` column: a mapping an operator
-// typed into the admin UI, which is exactly the "admin-set" half of the
-// ADR-058 bar, with no unverified path riding alongside it.
-//
-// This interface is the seam #18 widens: a verified plugin-attested link
-// will fold in behind the same Resolve method, keyed off its own
-// verified_at, without AuthorizeActor's handler (below) changing at all —
-// the widening is in what backs ActorDirectory, not in how the handler uses
-// it.
-type ActorDirectory interface {
-	// Resolve looks up actorExternalID. found=false means no admin-set
-	// mapping exists (an unknown external id, or a mapped user with zero
-	// granted roles) — the caller treats that identically to "mapped but
-	// unauthorized," per the S6 precedent in hostsvc.
-	Resolve(ctx context.Context, actorExternalID string) (resolution ActorResolution, found bool, err error)
-}
-
-// DBActorDirectoryQuerier is the sqlc surface DBActorDirectory needs.
-// *db.Queries satisfies it.
-type DBActorDirectoryQuerier interface {
-	GetUserBySlackUserID(ctx context.Context, slackUserID *string) ([]db.GetUserBySlackUserIDRow, error)
-}
-
-// DBActorDirectory is the Tier-1 ActorDirectory: the admin-managed
-// `users.slack_user_id` mapping, joined to `user_roles`, deactivated users
-// excluded by the query itself (see GetUserBySlackUserID's SQL). This is the
-// ADR-058-compliant source available today; see ActorDirectory's doc comment
-// for what #18 adds alongside it.
-type DBActorDirectory struct {
-	Querier DBActorDirectoryQuerier
-}
-
-// Resolve implements ActorDirectory.
-func (d DBActorDirectory) Resolve(ctx context.Context, actorExternalID string) (ActorResolution, bool, error) {
-	rows, err := d.Querier.GetUserBySlackUserID(ctx, &actorExternalID)
-	if err != nil {
-		return ActorResolution{}, false, fmt.Errorf("look up actor external id: %w", err)
-	}
-	if len(rows) == 0 {
-		// Unknown external id, or a mapped user with no roles at all — the
-		// query's JOIN against user_roles already collapses "no roles" into
-		// "no rows" (see the SQL comment in queries/users.sql).
-		return ActorResolution{}, false, nil
-	}
-	res := ActorResolution{UserID: rows[0].ID, Username: rows[0].Username}
-	for _, row := range rows {
-		res.Roles = append(res.Roles, model.Role(row.Role))
-	}
-	return res, true, nil
-}
-
-// ResolveActor returns the Gleipnir user an external actor id maps to and the
-// roles that user holds, for callers that verify and stamp identity on a
-// decision record (approval_requests decided_by) rather than authorize a
-// click. found=false means no mapping (unknown id, deactivated user, or a
-// user with no roles).
-func (d DBActorDirectory) ResolveActor(ctx context.Context, actorExternalID string) (string, []model.Role, bool, error) {
-	res, found, err := d.Resolve(ctx, actorExternalID)
-	if err != nil || !found {
-		return "", nil, false, err
-	}
-	return res.UserID, res.Roles, true, nil
-}
-
 // hasAuthorizedRole reports whether roles contains one of
 // approver/operator/admin.
 func hasAuthorizedRole(roles []model.Role) bool {
@@ -167,8 +87,8 @@ type PollHint interface {
 }
 
 // AuthorizeActorQuerier is the slice of the sqlc surface the AuthorizeActor
-// handler needs directly (ActorDirectory carries its own, narrower,
-// interface — see DBActorDirectoryQuerier above).
+// handler needs directly (the actor directory carries its own, narrower,
+// interface — see actordir.Querier).
 type AuthorizeActorQuerier interface {
 	GetPluginInstanceByID(ctx context.Context, id string) (db.PluginInstance, error)
 	InsertPluginAuditEvent(ctx context.Context, arg db.InsertPluginAuditEventParams) (db.PluginAuditEvent, error)
@@ -186,10 +106,11 @@ type AuthorizeActorQuerier interface {
 type AuthorizeActorDeps struct {
 	Querier AuthorizeActorQuerier
 
-	// Directory resolves the caller-supplied actor_external_id to a Gleipnir
-	// user and its roles. Required — see ActorDirectory's doc comment for
-	// the ADR-058 constraint on what may back it.
-	Directory ActorDirectory
+	// Directory resolves the caller-supplied actor_external_id, as the
+	// calling instance names it, to a Gleipnir user and its roles. Required —
+	// see the actordir package doc for the ADR-058 constraint on what may
+	// back it.
+	Directory actordir.Directory
 
 	// PollHint is the poll-now signal, e.g. an *mcp.PollScheduler. Optional:
 	// nil means authorization still happens correctly, it just resolves at
@@ -269,7 +190,9 @@ func (d AuthorizeActorDeps) authorizeActor(ctx context.Context, args json.RawMes
 		return nil, &ToolError{Code: "invalid_argument", Message: "actor_external_id is required"}
 	}
 
-	resolution, found, err := d.Directory.Resolve(ctx, a.ActorExternalID)
+	// Resolved against the calling instance: an actor id is only meaningful
+	// together with the instance that issued it (internal/plugin/actordir).
+	resolution, found, err := d.Directory.Resolve(ctx, inst.ID, a.ActorExternalID)
 	if err != nil {
 		return nil, &ToolError{Code: "internal", Message: fmt.Sprintf("resolve actor: %v", err)}
 	}

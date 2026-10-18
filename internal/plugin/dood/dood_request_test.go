@@ -57,7 +57,7 @@ func TestDooD_PolicyApprovalRoundTripThroughPluginChannel(t *testing.T) {
 	instanceID := h.CreateInstance(pluginID, "dood-req")
 	h.WaitConverged(instanceID)
 
-	approverID := h.CreateApprover("dood-approver", stubActorID)
+	approverID := h.CreateApprover("dood-approver", instanceID, stubActorID)
 	h.CreateRequestAudience("dood-approvers", instanceID, "dood-approver")
 
 	const tool = "dood-req.conformance.echo"

@@ -14,6 +14,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/infra/netguard"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/plugin/actordir"
 	"github.com/felag-engineering/gleipnir/internal/plugin/caphealth"
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
 	"github.com/felag-engineering/gleipnir/internal/plugin/container"
@@ -202,7 +203,7 @@ func composeChannels(ctx context.Context, deps Deps, q *db.Queries, health *caph
 	}
 	// Without a directory every plugin-routed approval is refused outright, so
 	// this is what makes an approval from a channel possible at all.
-	adapters.WithActorResolver(hostendpoint.DBActorDirectory{Querier: q})
+	adapters.WithActorResolver(actordir.DB{Querier: q})
 
 	notifier := hitl.NewNotifier(hitl.NotifyConfig{
 		Clients: notifyClients{clients},
@@ -277,7 +278,7 @@ func (a *Assembly) compose(
 	hostServer.Register(hostendpoint.Tier2Tools(hostendpoint.Tier2Deps{Querier: q})...)
 	hostServer.Register(hostendpoint.AuthorizeActorTools(hostendpoint.AuthorizeActorDeps{
 		Querier:   q,
-		Directory: hostendpoint.DBActorDirectory{Querier: q},
+		Directory: actordir.DB{Querier: q},
 		PollHint:  channels.poller,
 	})...)
 	hostServer.Register(hostendpoint.UserLinkTools(hostendpoint.UserLinkDeps{Querier: q})...)

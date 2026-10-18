@@ -806,3 +806,18 @@ CREATE TABLE plugin_container_images (
     last_used_at  TEXT,                                                                           -- nullable, ISO 8601 UTC; GC recency input
     local_image_id TEXT                                                                           -- nullable; runtime-local image ID the installer verified (containers are created from it); NULL = row predates the column
 );
+
+-- ---------------------------------------------------------------------------
+-- Plugin user identities (ADR-058, mcp-realignment-spec.md §9.1)
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE plugin_user_identities (
+    instance_id      TEXT NOT NULL REFERENCES plugin_instances(id) ON DELETE CASCADE,  -- the channel instance whose actor ids this maps
+    user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    external_user_id TEXT NOT NULL,                                                     -- opaque actor id as that instance names it
+    link_method      TEXT NOT NULL CHECK(link_method IN ('admin_set')),                 -- how the link was established; verified methods widen this (§9.1)
+    verified_at      TEXT,                                                              -- nullable, ISO 8601 UTC; NULL for admin_set
+    created_at       TEXT NOT NULL,                                                     -- ISO 8601 UTC
+    PRIMARY KEY (instance_id, user_id),                                                 -- one identity per user per instance
+    UNIQUE (instance_id, external_user_id)                                              -- one user per actor id per instance
+);

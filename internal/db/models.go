@@ -246,6 +246,15 @@ type PluginPendingRequest struct {
 	CreatedAt        string  `json:"created_at"`
 }
 
+type PluginUserIdentity struct {
+	InstanceID     string  `json:"instance_id"`
+	UserID         string  `json:"user_id"`
+	ExternalUserID string  `json:"external_user_id"`
+	LinkMethod     string  `json:"link_method"`
+	VerifiedAt     *string `json:"verified_at"`
+	CreatedAt      string  `json:"created_at"`
+}
+
 type Policy struct {
 	ID                     string  `json:"id"`
 	Name                   string  `json:"name"`

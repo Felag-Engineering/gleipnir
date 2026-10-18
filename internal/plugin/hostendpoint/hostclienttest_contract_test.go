@@ -12,6 +12,7 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/plugin/actordir"
 	"github.com/felag-engineering/gleipnir/internal/plugin/caphealth"
 	"github.com/felag-engineering/gleipnir/internal/plugin/dispatch"
 	"github.com/felag-engineering/gleipnir/internal/plugin/generation"
@@ -140,15 +141,15 @@ func (f *contractCallResolver) LookupCall(callID string) (dispatch.CallInfo, boo
 	return info, ok
 }
 
-// contractActorDirectory implements hostendpoint.ActorDirectory with a
-// static map, mirroring authorize_test.go's fakeActorDirectory (duplicated
+// contractActorDirectory implements actordir.Directory with a static map
+// (any calling instance), mirroring authorize_test.go's fakeActorDirectory (duplicated
 // here since that fake is unexported in an internal test file this external
 // test package cannot reach).
 type contractActorDirectory struct {
-	byExternalID map[string]hostendpoint.ActorResolution
+	byExternalID map[string]actordir.Resolution
 }
 
-func (d contractActorDirectory) Resolve(_ context.Context, actorExternalID string) (hostendpoint.ActorResolution, bool, error) {
+func (d contractActorDirectory) Resolve(_ context.Context, _, actorExternalID string) (actordir.Resolution, bool, error) {
 	res, ok := d.byExternalID[actorExternalID]
 	return res, ok, nil
 }
@@ -234,7 +235,7 @@ func newRealContractFixture(t *testing.T) (baseURL, token string) {
 	srv.Register(hostendpoint.Tier2Tools(hostendpoint.Tier2Deps{Querier: q})...)
 	srv.Register(hostendpoint.AuthorizeActorTools(hostendpoint.AuthorizeActorDeps{
 		Querier: q,
-		Directory: contractActorDirectory{byExternalID: map[string]hostendpoint.ActorResolution{
+		Directory: contractActorDirectory{byExternalID: map[string]actordir.Resolution{
 			"U123": {UserID: "user-1", Roles: []model.Role{model.RoleOperator}},
 		}},
 	})...)

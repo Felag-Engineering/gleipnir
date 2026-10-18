@@ -235,6 +235,11 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 			r.Get("/", cfg.Handlers.AuthHandler.ListUsersHandler)
 			r.With(httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Post("/", cfg.Handlers.AuthHandler.CreateUserHandler)
 			r.With(httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Patch("/{id}", cfg.Handlers.AuthHandler.UpdateUserHandler)
+			// Plugin user identities: the actor id each channel instance knows a
+			// user by (ADR-058, admin_set). Replaces the global slack_user_id.
+			r.Get("/{id}/identities", cfg.Handlers.AuthHandler.ListIdentitiesHandler)
+			r.With(httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Put("/{id}/identities/{instanceID}", cfg.Handlers.AuthHandler.SetIdentityHandler)
+			r.Delete("/{id}/identities/{instanceID}", cfg.Handlers.AuthHandler.DeleteIdentityHandler)
 		})
 
 		// Manual trigger: operators fire a run from the UI or API.

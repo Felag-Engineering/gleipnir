@@ -51,6 +51,11 @@ type AuthQuerier interface {
 	ListSessionsByUser(ctx context.Context, arg db.ListSessionsByUserParams) ([]db.ListSessionsByUserRow, error)
 	DeleteSessionByID(ctx context.Context, arg db.DeleteSessionByIDParams) error
 	SetUserSlackUserID(ctx context.Context, arg db.SetUserSlackUserIDParams) error
+	// Plugin user identities (ADR-058): per-instance actor id mappings.
+	GetPluginInstanceByID(ctx context.Context, id string) (db.PluginInstance, error)
+	SetAdminIdentity(ctx context.Context, arg db.SetAdminIdentityParams) error
+	DeleteIdentity(ctx context.Context, arg db.DeleteIdentityParams) (int64, error)
+	ListIdentitiesByUser(ctx context.Context, userID string) ([]db.ListIdentitiesByUserRow, error)
 }
 
 // Handler handles the authentication flow: login, logout, setup check, initial

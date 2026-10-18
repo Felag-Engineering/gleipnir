@@ -324,7 +324,6 @@ func TestPoller_CheckMatchFires(t *testing.T) {
 	if len(runs) == 0 {
 		t.Fatal("expected at least one run to be created, but none appeared")
 	}
-	manager.Wait()
 }
 
 // TestPoller_CheckNoMatchNoRun verifies that when the check condition does not
@@ -468,7 +467,6 @@ func TestPoller_MatchAny_OnePassFires(t *testing.T) {
 	if len(runs) == 0 {
 		t.Fatal("expected a run when match=any and one check passes, but none appeared")
 	}
-	manager.Wait()
 }
 
 // TestPoller_MatchAll_OneFailNoRun verifies that match=all does not fire when

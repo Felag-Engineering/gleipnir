@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/execution/agent"
-	"github.com/felag-engineering/gleipnir/internal/execution/run"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/plugin/actordir"
 	"github.com/felag-engineering/gleipnir/internal/plugin/decision"
 	"github.com/felag-engineering/gleipnir/internal/plugin/hitl"
 )
@@ -22,22 +22,29 @@ type fakeLinkedUser struct {
 // mapActorResolver is a fixed external-id -> linked-user directory. An id that
 // is absent resolves as not found, which is also what the real directory does
 // for a deactivated user (its query excludes them).
+//
+// instances, when set, restricts the mappings to those instances (the real
+// directory is per instance); nil means every instance.
 type mapActorResolver struct {
-	users map[string]fakeLinkedUser
-	err   error
+	users     map[string]fakeLinkedUser
+	instances map[string]bool
+	err       error
 }
 
-func (m mapActorResolver) ResolveActor(_ context.Context, actorExternalID string) (string, []model.Role, bool, error) {
+func (m mapActorResolver) Resolve(_ context.Context, instanceID, actorExternalID string) (actordir.Resolution, bool, error) {
 	if m.err != nil {
-		return "", nil, false, m.err
+		return actordir.Resolution{}, false, m.err
+	}
+	if m.instances != nil && !m.instances[instanceID] {
+		return actordir.Resolution{}, false, nil
 	}
 	u, ok := m.users[actorExternalID]
-	return u.id, u.roles, ok, nil
+	return actordir.Resolution{UserID: u.id, Roles: u.roles}, ok, nil
 }
 
 // defaultTestActors links the actor ids the shared channel-adapter tests use
 // to an approver, so tests not about verification can still approve.
-func defaultTestActors() run.ActorUserResolver {
+func defaultTestActors() actordir.Directory {
 	approver := fakeLinkedUser{id: "u-approver", roles: []model.Role{model.RoleApprover}}
 	return mapActorResolver{users: map[string]fakeLinkedUser{
 		"U123": approver, "U9": approver, "U1": approver, "U7": approver,
@@ -50,7 +57,7 @@ func defaultTestActors() run.ActorUserResolver {
 func TestTaskChannelAdapters_DispatchApproval_VerifiesApprovingActor(t *testing.T) {
 	cases := []struct {
 		name         string
-		resolver     run.ActorUserResolver
+		resolver     actordir.Directory
 		optionID     string
 		wantApproved bool
 		wantRefused  bool
@@ -66,6 +73,14 @@ func TestTaskChannelAdapters_DispatchApproval_VerifiesApprovingActor(t *testing.
 			name:     "linked admin",
 			resolver: mapActorResolver{users: map[string]fakeLinkedUser{"U123": {"u-root", []model.Role{model.RoleAdmin}}}},
 			optionID: "approve", wantApproved: true, wantUser: "u-root", wantLink: decision.LinkDirectory,
+		},
+		{
+			name: "approver linked on a different instance",
+			resolver: mapActorResolver{
+				users:     map[string]fakeLinkedUser{"U123": {"u-alice", []model.Role{model.RoleApprover}}},
+				instances: map[string]bool{"inst-other": true},
+			},
+			optionID: "approve", wantRefused: true,
 		},
 		{
 			name:     "unknown or deactivated actor",
