@@ -85,6 +85,9 @@ type Config struct {
 	// FeedbackDispatcher routes feedback requests through a plugin channel (e.g.
 	// Slack threaded reply).  Nil when plugins are disabled or no audience is configured.
 	FeedbackDispatcher FeedbackChannelDispatcher
+	// InputChannelRouter routes a tool-initiated ask (MRTR input_required)
+	// through the audience's plugin entries. Nil keeps every ask in-app.
+	InputChannelRouter InputChannelRouter
 	// AudienceID is the DB row ID of the policy's audience, resolved by the
 	// launcher.  Empty string means no audience — fall back to in-app.
 	AudienceID string
@@ -156,6 +159,15 @@ func New(cfg Config) (*BoundAgent, error) {
 		))
 	}
 
+	inputOpts := inputRequiredOptions(cfg.Policy)
+	if cfg.InputChannelRouter != nil && cfg.AudienceID != "" {
+		policyName := ""
+		if cfg.Policy != nil {
+			policyName = cfg.Policy.Name
+		}
+		inputOpts = append(inputOpts, WithInputChannelRouter(cfg.InputChannelRouter, cfg.AudienceID, policyName))
+	}
+
 	return &BoundAgent{
 		policy:             cfg.Policy,
 		policyID:           cfg.PolicyID,
@@ -169,7 +181,7 @@ func New(cfg Config) (*BoundAgent, error) {
 		sm:                 cfg.StateMachine,
 		approvals:          NewApprovalHandler(cfg.Audit, cfg.StateMachine, cfg.ApprovalCh, approvalOpts...),
 		feedback:           NewFeedbackHandler(cfg.Audit, cfg.StateMachine, cfg.DefaultFeedbackTimeout, feedbackOpts...),
-		inputRequired:      NewInputRequiredHandler(cfg.Audit, cfg.StateMachine, cfg.DefaultFeedbackTimeout, inputRequiredOptions(cfg.Policy)...),
+		inputRequired:      NewInputRequiredHandler(cfg.Audit, cfg.StateMachine, cfg.DefaultFeedbackTimeout, inputOpts...),
 		triggeredBy:        cfg.TriggeredBy,
 		publicURL:          cfg.PublicURL,
 	}, nil

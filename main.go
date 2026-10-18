@@ -319,6 +319,7 @@ func run(cfg config.Config, pluginSubnetPool netip.Prefix) error {
 		PluginDispatcher:       pluginLauncherDeps.Dispatcher,
 		ApprovalDispatcher:     pluginLauncherDeps.ApprovalDispatcher,
 		FeedbackDispatcher:     pluginLauncherDeps.FeedbackDispatcher,
+		InputChannelRouter:     pluginLauncherDeps.InputChannelRouter,
 	})
 
 	// Complete the two-phase wiring now that the launcher is available: the

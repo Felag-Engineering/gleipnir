@@ -340,6 +340,12 @@ type InputRequiredHandler struct {
 	defaultTimeout time.Duration
 	budget         ElicitationBudget
 
+	// channel, when set, routes a single-entry ask through audienceID's
+	// plugin entries before falling back to in-app (inputchannel.go).
+	channel    InputChannelRouter
+	audienceID string
+	policyName string
+
 	mu      sync.Mutex
 	waiters map[string]*inputWaiter
 }
@@ -542,8 +548,18 @@ func (h *InputRequiredHandler) Route(ctx context.Context, req InputRoutingReques
 
 	kind := classifyElicitationKind(req.Result.InputRequests)
 
+	// A single-entry ask goes to the audience first. Its in-app answer slot is
+	// NOT opened while a plugin channel may hold the ask: two people must not
+	// race to answer one question, and an in-app answer accepted into a slot
+	// nobody reads would tell the operator it counted when it never did. An
+	// in-app attempt meanwhile gets ErrUnknownInputRequestID (410 at the API).
+	routeToChannel := h.channel != nil && len(req.Result.InputRequests) == 1
+
 	// Register before the transition; release on every exit path.
-	responses := h.registerWaiter(requestID, req.Result.InputRequests, kind)
+	var responses <-chan inputAnswer
+	if !routeToChannel {
+		responses = h.registerWaiter(requestID, req.Result.InputRequests, kind)
+	}
 	defer h.unregisterWaiter(requestID)
 
 	if err := h.sm.Transition(ctx, model.RunStatusWaitingForFeedback, "", WithToolInputPayload(ToolInputPayload{
@@ -572,6 +588,30 @@ func (h *InputRequiredHandler) Route(ctx context.Context, req InputRoutingReques
 		ChannelAssurance:  decision.AssuranceOf(mcp.ChannelAssuranceAuthenticated),
 		EffectiveDeadline: deadline,
 		DeadlineSource:    string(source),
+	}
+
+	if h.channel != nil && !routeToChannel {
+		// A bundle stays in-app: a channel request carries one ask, and
+		// neither splitting the bundle nor folding it into one form can
+		// express a per-entry decline. The record says why no plugin entry
+		// was asked.
+		decisionBase.Considered = []decision.Candidate{{Reason: considerMultiEntryBundle}}
+	}
+	if routeToChannel {
+		handled, answers, err := h.askThroughChannel(ctx, req, requestID, kind, waitFor, timeout, source, &decisionBase)
+		if handled {
+			if err != nil {
+				return nil, "", err
+			}
+			return answers, requestID, nil
+		}
+		// No plugin entry could take it: ask in-app as always, against the
+		// same deadline, which routing has already spent a little of.
+		responses = h.registerWaiter(requestID, req.Result.InputRequests, kind)
+		waitFor = time.Until(deadline)
+		if waitFor < 0 {
+			waitFor = 0
+		}
 	}
 
 	timer := time.NewTimer(waitFor)
@@ -610,35 +650,7 @@ func (h *InputRequiredHandler) Route(ctx context.Context, req InputRoutingReques
 		return ans.responses, requestID, nil
 
 	case <-timer.C:
-		logctx.Logger(ctx).WarnContext(ctx, "tool input request timed out",
-			"tool", req.ToolName, "request_id", requestID, "timeout", timeout.String())
-		// Race the timeout scanner for the pending row, exactly as the approval
-		// and feedback waits do: the conditional UPDATE arbitrates, and only the
-		// winner writes the error step and the decision record. The scanner's
-		// OWN win (this process restarted, or simply lost the race) is recorded
-		// separately by its WithOnTerminated hook in main.go — every settlement
-		// path gets a decision record, not only this live one.
-		err := claimRequestTimeout(ctx, h.audit, timeoutClaim{
-			name:      "tool input",
-			runID:     req.RunID,
-			requestID: requestID,
-			claim: func(dbCtx context.Context, now string) (int64, error) {
-				return h.sm.Queries().ExpireToolInputRequest(dbCtx, db.ExpireToolInputRequestParams{
-					ResolvedAt: &now,
-					ID:         requestID,
-				})
-			},
-			errorCode:   model.ErrorCodeFeedbackTimeout,
-			wonMessage:  timeoutMessage(req.ToolName, source, timeout),
-			lostMessage: fmt.Sprintf("tool input timeout: already resolved by scanner for tool %s", req.ToolName),
-			onWon: func() {
-				rec := decisionBase
-				rec.Outcome = decision.OutcomeTimeout
-				rec.LinkMethod = decision.LinkNone
-				h.recordDecision(ctx, rec)
-			},
-		})
-		return nil, "", &InputRoutingError{RequestID: requestID, Err: err}
+		return nil, "", h.settleTimeout(ctx, req, requestID, timeout, source, decisionBase)
 
 	case <-ctx.Done():
 		// The run's context can be cancelled at almost the same instant an
@@ -651,37 +663,81 @@ func (h *InputRequiredHandler) Route(ctx context.Context, req InputRoutingReques
 		// for CancelToolInputRequest to clobber in that scenario; the answer
 		// is simply never applied, and labeling the row cancelled matches
 		// what actually happened to the run.
-		//
-		// The real hazard the conditional UPDATE guards against is the
-		// INDEPENDENT timeout scanner, racing on its own goroutine and ticker:
-		// it can claim the very same row as expired at nearly the same moment
-		// this run is cancelled. WHERE status='pending' is what makes the two
-		// writers race safely — whichever CAS lands first wins, and the loser
-		// (rows==0) records nothing rather than overwrite a decision that
-		// already happened, so a row an operator or the scanner had already
-		// settled is never relabelled cancelled underneath them.
-		// A fresh, bounded context for every write below: ctx is the run's own
-		// context and is already cancelled on this branch, so both the claim
-		// and the decision record it may produce need their own deadline
-		// rather than inheriting one that is already done.
-		cancelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		now := time.Now().UTC().Format(time.RFC3339Nano)
-		rows, cancelErr := h.sm.Queries().CancelToolInputRequest(cancelCtx, db.CancelToolInputRequestParams{
-			ResolvedAt: &now,
-			ID:         requestID,
-		})
-		if cancelErr != nil {
-			logctx.Logger(ctx).WarnContext(ctx, "tool input: CancelToolInputRequest failed",
-				"request_id", requestID, "run_id", req.RunID, "err", cancelErr)
-		} else if rows == 1 {
-			rec := decisionBase
-			rec.Outcome = decision.OutcomeCancelled
-			rec.LinkMethod = decision.LinkNone
-			h.recordDecision(cancelCtx, rec)
-		}
-		return nil, "", &InputRoutingError{RequestID: requestID, Err: fmt.Errorf("context cancelled waiting for tool input: %w", ctx.Err())}
+		rec := decisionBase
+		rec.Outcome = decision.OutcomeCancelled
+		rec.LinkMethod = decision.LinkNone
+		return nil, "", h.settleCancelled(ctx, req, requestID, rec, fmt.Errorf("context cancelled waiting for tool input: %w", ctx.Err()))
 	}
+}
+
+// settleTimeout ends a wait whose deadline passed with no answer. rec carries
+// the channel fields; the outcome is filled in here. It always returns an
+// *InputRoutingError: an unanswered wait is fatal to the run.
+func (h *InputRequiredHandler) settleTimeout(ctx context.Context, req InputRoutingRequest, requestID string, timeout time.Duration, source DeadlineSource, rec decision.Record) error {
+	logctx.Logger(ctx).WarnContext(ctx, "tool input request timed out",
+		"tool", req.ToolName, "request_id", requestID, "timeout", timeout.String())
+	// Race the timeout scanner for the pending row, exactly as the approval
+	// and feedback waits do: the conditional UPDATE arbitrates, and only the
+	// winner writes the error step and the decision record. The scanner's
+	// OWN win (this process restarted, or simply lost the race) is recorded
+	// separately by its WithOnTerminated hook in main.go — every settlement
+	// path gets a decision record, not only this live one.
+	err := claimRequestTimeout(ctx, h.audit, timeoutClaim{
+		name:      "tool input",
+		runID:     req.RunID,
+		requestID: requestID,
+		claim: func(dbCtx context.Context, now string) (int64, error) {
+			return h.sm.Queries().ExpireToolInputRequest(dbCtx, db.ExpireToolInputRequestParams{
+				ResolvedAt: &now,
+				ID:         requestID,
+			})
+		},
+		errorCode:   model.ErrorCodeFeedbackTimeout,
+		wonMessage:  timeoutMessage(req.ToolName, source, timeout),
+		lostMessage: fmt.Sprintf("tool input timeout: already resolved by scanner for tool %s", req.ToolName),
+		onWon: func() {
+			rec.Outcome = decision.OutcomeTimeout
+			rec.LinkMethod = decision.LinkNone
+			rec.ActorExternalID, rec.ActorUserID = "", ""
+			h.recordDecision(ctx, rec)
+		},
+	})
+	return &InputRoutingError{RequestID: requestID, Err: err}
+}
+
+// settleCancelled ends a wait that will get no usable answer — the run was
+// cancelled, the channel task ended without one, or the host refused the one
+// it got — by cancelling the pending row and, if that CAS wins, recording rec
+// exactly as given (the caller chose its outcome). It returns cause wrapped in
+// an *InputRoutingError.
+func (h *InputRequiredHandler) settleCancelled(ctx context.Context, req InputRoutingRequest, requestID string, rec decision.Record, cause error) error {
+	// The real hazard the conditional UPDATE guards against is the
+	// INDEPENDENT timeout scanner, racing on its own goroutine and ticker:
+	// it can claim the very same row as expired at nearly the same moment
+	// this wait ends. WHERE status='pending' is what makes the two writers
+	// race safely — whichever CAS lands first wins, and the loser (rows==0)
+	// records nothing rather than overwrite a decision that already happened,
+	// so a row an operator or the scanner had already settled is never
+	// relabelled cancelled underneath them.
+	//
+	// A fresh, bounded context for every write below: ctx may be the run's
+	// own context and already cancelled, so both the claim and the decision
+	// record it may produce need their own deadline rather than inheriting
+	// one that is already done.
+	cancelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	rows, cancelErr := h.sm.Queries().CancelToolInputRequest(cancelCtx, db.CancelToolInputRequestParams{
+		ResolvedAt: &now,
+		ID:         requestID,
+	})
+	if cancelErr != nil {
+		logctx.Logger(ctx).WarnContext(ctx, "tool input: CancelToolInputRequest failed",
+			"request_id", requestID, "run_id", req.RunID, "err", cancelErr)
+	} else if rows == 1 {
+		h.recordDecision(cancelCtx, rec)
+	}
+	return &InputRoutingError{RequestID: requestID, Err: cause}
 }
 
 // outcomeFor classifies a settled answer, in this priority order:

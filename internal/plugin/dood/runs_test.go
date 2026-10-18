@@ -102,6 +102,7 @@ func (h *harness) bindLauncher() {
 		PluginDispatcher:   d.Dispatcher,
 		ApprovalDispatcher: d.ApprovalDispatcher,
 		FeedbackDispatcher: d.FeedbackDispatcher,
+		InputChannelRouter: d.InputChannelRouter,
 	})
 	h.asm.BindLauncher(context.Background(), h.launcher)
 }

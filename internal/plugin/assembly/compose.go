@@ -210,6 +210,13 @@ func composeChannels(ctx context.Context, deps Deps, q *db.Queries, health *caph
 		Health:  health,
 		Audit:   q,
 	})
+	// A nil *settings.Service must not become a non-nil interface: the
+	// adapters read a nil reader as "no public URL, so no run link".
+	var publicURL runpkg.PublicURLReader
+	if deps.SystemSettings != nil {
+		publicURL = deps.SystemSettings
+	}
+	adapters.WithNotifier(notifier, publicURL)
 	return channelParts{poller: poller, adapters: adapters, notifier: notifier}, nil
 }
 
@@ -360,10 +367,12 @@ func (a *Assembly) compose(
 	a.egressProxy = egressListeners
 	a.poller = channels.poller
 	a.notifier = channels.notifier
+	a.adapters = channels.adapters
 	a.backgrounds = newBackgroundLoops(deps, q, creds)
 	a.launcher = LauncherDeps{
 		ApprovalDispatcher: channels.adapters,
 		FeedbackDispatcher: channels.adapters,
+		InputChannelRouter: channels.adapters,
 		ToolClassifier:     &managedToolClassifier{q: q},
 	}
 	a.bindEvents = func(launcher plugintrigger.RunLauncher) eventStreams {

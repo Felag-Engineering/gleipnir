@@ -22,9 +22,9 @@ import (
 
 // This file is the Notify half of ADR-044's Notify/Request split, carried over
 // the `io.gleipnir/channel` extension (spec §6.4) instead of v1.1's gRPC
-// ChannelService. Nothing calls it yet — the actual fire happens where a HITL
-// request is routed, which lives in the task adapters and #995's routing, both
-// still to be built. NotifyRequestRouted is the seam those callers use.
+// ChannelService. NotifyRequestRouted is the seam callers fire it through;
+// today that is the task adapters' tool-initiated route (internal/execution/run
+// AskInput, #995), once per routed ask.
 //
 // # What the message may never carry
 //

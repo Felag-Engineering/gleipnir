@@ -277,6 +277,9 @@ func TestLauncherDeps(t *testing.T) {
 			if d.Dispatcher != nil || d.Registrar != nil || d.ToolResolver != nil || d.Canceller != nil {
 				t.Errorf("v1 dispatch fields must stay nil: %+v", d)
 			}
+			if got := d.InputChannelRouter != nil; got != tt.enabled {
+				t.Errorf("InputChannelRouter set = %v, want %v", got, tt.enabled)
+			}
 			if tt.enabled && a.notifier == nil {
 				t.Error("notifier was not composed")
 			}

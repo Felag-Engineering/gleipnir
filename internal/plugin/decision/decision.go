@@ -152,8 +152,10 @@ const (
 	LinkSession LinkMethod = "session"
 
 	// LinkDirectory — an external ID resolved through the admin-managed user
-	// mapping (the `users.slack_user_id` shape). The mapping is an operator's
-	// assertion, verified once at configuration time rather than per action.
+	// mapping: a `plugin_user_identities` row for the instance that answered,
+	// whose manifest-vocabulary link method is `admin_set` (ADR-058). The
+	// mapping is an operator's assertion, verified once at configuration time
+	// rather than per action.
 	LinkDirectory LinkMethod = "directory_mapping"
 
 	// LinkUnverified — the channel named someone the host could not tie to any
