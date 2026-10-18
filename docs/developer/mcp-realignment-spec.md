@@ -500,7 +500,9 @@ Link methods (manifest-declared, all optional):
 Only **verified or admin-set** identities feed actor authorization. Unverified
 self-assertion is disqualifying: it cannot escalate roles (roles come from the
 Gleipnir account) but it corrupts actor attribution in the audit trail.
-`users.slack_user_id` and `GetUserBySlackUserID` migrate into this table.
+`users.slack_user_id` and `GetUserBySlackUserID` migrate into this table: the
+table and per-instance resolution landed in #964 (no backfill: admins re-enter
+mappings per instance), and the old column goes with #1002/#1010.
 
 ### 9.2 Tier 2 — user-scoped preferences
 

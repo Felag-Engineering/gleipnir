@@ -54,5 +54,6 @@ func All() []Migration {
 		&AddDeciderIdentity{},
 		&AddOAuthNonceActor{},
 		&AddContainerImageLocalID{},
+		&AddPluginUserIdentities{},
 	}
 }

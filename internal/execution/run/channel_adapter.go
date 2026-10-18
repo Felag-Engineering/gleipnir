@@ -50,6 +50,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/infra/logctx"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/plugin/actordir"
 	"github.com/felag-engineering/gleipnir/internal/plugin/decision"
 	"github.com/felag-engineering/gleipnir/internal/plugin/hitl"
 	"github.com/felag-engineering/gleipnir/internal/plugin/inapptask"
@@ -128,22 +129,16 @@ type TaskChannelAdapters struct {
 	entries   AudienceEntriesResolver
 	store     decision.Store
 	decisions *decision.Recorder
-	actors    ActorUserResolver
-}
-
-// ActorUserResolver maps a channel's external actor id to the Gleipnir user an
-// admin linked it to, with the roles that user holds (ADR-058: admin-set or
-// verified mappings only; deactivated users never resolve).
-// hostendpoint.DBActorDirectory satisfies it.
-type ActorUserResolver interface {
-	ResolveActor(ctx context.Context, actorExternalID string) (userID string, roles []model.Role, found bool, err error)
+	actors    actordir.Directory
 }
 
 // WithActorResolver enables verifying the actor of a plugin-routed settlement
-// against the identity directory. Without it a plugin-routed approval is
+// against the identity directory (ADR-058: admin-set or verified mappings
+// only; deactivated users never resolve). The actor is resolved as the
+// instance that settled the task names it. Without it a plugin-routed approval is
 // refused outright (it cannot be verified), and feedback settlements stay
 // unattributed: an external id the host cannot map is never recorded as a user.
-func (a *TaskChannelAdapters) WithActorResolver(r ActorUserResolver) *TaskChannelAdapters {
+func (a *TaskChannelAdapters) WithActorResolver(r actordir.Directory) *TaskChannelAdapters {
 	a.actors = r
 	return a
 }
@@ -160,23 +155,24 @@ type settlementActor struct {
 	mayResolve bool
 }
 
-// resolveActor looks the channel's claimed actor up in the identity directory.
-// An external id with no mapping, or no configured directory, yields an
+// resolveActor looks the channel's claimed actor up in the identity directory,
+// as instanceID (the instance that settled the task) names it. An external id
+// with no mapping on that instance, or no configured directory, yields an
 // unverified actor rather than an error.
-func (a *TaskChannelAdapters) resolveActor(ctx context.Context, kind model.ElicitationKind, actorExternalID string) (settlementActor, error) {
+func (a *TaskChannelAdapters) resolveActor(ctx context.Context, kind model.ElicitationKind, instanceID, actorExternalID string) (settlementActor, error) {
 	actor := settlementActor{externalID: actorExternalID}
 	if a.actors == nil || actorExternalID == "" {
 		return actor, nil
 	}
-	userID, roles, found, err := a.actors.ResolveActor(ctx, actorExternalID)
+	res, found, err := a.actors.Resolve(ctx, instanceID, actorExternalID)
 	if err != nil {
 		return actor, fmt.Errorf("resolve actor: %w", err)
 	}
 	if !found {
 		return actor, nil
 	}
-	actor.userID = userID
-	actor.mayResolve = holdsRoleFor(kind, roles)
+	actor.userID = res.UserID
+	actor.mayResolve = holdsRoleFor(kind, res.Roles)
 	return actor, nil
 }
 
@@ -328,7 +324,7 @@ func (a *TaskChannelAdapters) DispatchApproval(ctx context.Context, req agent.Ap
 		return agent.ApprovalSettlement{}, fmt.Errorf("approval request: %w", err)
 	}
 
-	actor, err := a.resolveActor(ctx, p.Kind, actorExternalID)
+	actor, err := a.resolveActor(ctx, p.Kind, result.routed.InstanceID, actorExternalID)
 	if err != nil && approved {
 		a.writeUndecodableEvidence(ctx, p, result.routed, decision.OutcomeRejected, eventTypeUnauthorizedApprovalActor,
 			fmt.Sprintf("approval by actor %q could not be verified: %v", actorExternalID, err))
@@ -439,7 +435,7 @@ func (a *TaskChannelAdapters) DispatchFeedback(ctx context.Context, req agent.Fe
 	}
 
 	response := string(result.resolution.Content)
-	actor, err := a.resolveActor(ctx, p.Kind, result.resolution.ActorExternalID)
+	actor, err := a.resolveActor(ctx, p.Kind, result.routed.InstanceID, result.resolution.ActorExternalID)
 	if err != nil {
 		// The answer itself is valid; a failed lookup only costs attribution.
 		logctx.Logger(ctx).WarnContext(ctx, "task channel adapter: resolving responder identity failed", "err", err)

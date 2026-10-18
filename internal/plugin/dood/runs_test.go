@@ -183,8 +183,9 @@ func (h *harness) StopPluginContainer(instanceID string) container.ContainerID {
 }
 
 // CreateApprover creates a user holding the approver role and maps actorID to
-// it, the admin-managed external identity that authorize_actor resolves.
-func (h *harness) CreateApprover(username, actorID string) string {
+// it on instanceID: the per-instance, admin-set identity authorize_actor and
+// the task channel adapter resolve.
+func (h *harness) CreateApprover(username, instanceID, actorID string) string {
 	h.t.Helper()
 	ctx := context.Background()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -197,8 +198,10 @@ func (h *harness) CreateApprover(username, actorID string) string {
 	if err := h.q.AssignRole(ctx, db.AssignRoleParams{UserID: user.ID, Role: string(model.RoleApprover), CreatedAt: now}); err != nil {
 		h.t.Fatalf("assigning approver to %s: %v", username, err)
 	}
-	if err := h.q.SetUserSlackUserID(ctx, db.SetUserSlackUserIDParams{ID: user.ID, SlackUserID: &actorID}); err != nil {
-		h.t.Fatalf("mapping actor %q to %s: %v", actorID, username, err)
+	if err := h.q.SetAdminIdentity(ctx, db.SetAdminIdentityParams{
+		InstanceID: instanceID, UserID: user.ID, ExternalUserID: actorID, CreatedAt: now,
+	}); err != nil {
+		h.t.Fatalf("mapping actor %q to %s on instance %s: %v", actorID, username, instanceID, err)
 	}
 	return user.ID
 }

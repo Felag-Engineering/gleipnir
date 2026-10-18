@@ -12,6 +12,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/plugin/actordir"
 )
 
 // fakeAuthorizeQuerier is an in-memory AuthorizeActorQuerier with an audit
@@ -64,17 +65,26 @@ func (f *fakeAuthorizeQuerier) GetMCPTaskByServerAndTaskID(_ context.Context, ar
 	return db.McpTask{ID: "row-" + serverID + "-" + arg.TaskID}, nil
 }
 
-// fakeActorDirectory is a hand-rolled ActorDirectory — the #18 seam under
-// test: nothing here reaches an actual DB, pinning that AuthorizeActor's
-// handler is written against the interface, not against DBActorDirectory.
+// fakeActorDirectory is a hand-rolled actordir.Directory: nothing here reaches
+// an actual DB, pinning that AuthorizeActor's handler is written against the
+// interface. Its mappings hold only on the instances listed, so a lookup on
+// behalf of any other instance finds nothing, as the real per-instance
+// directory does.
 type fakeActorDirectory struct {
-	byExternalID map[string]ActorResolution
+	instances    map[string]bool
+	byExternalID map[string]actordir.Resolution
 	err          error
+	// lookups records the instance each Resolve was asked about.
+	lookups []string
 }
 
-func (f *fakeActorDirectory) Resolve(_ context.Context, actorExternalID string) (ActorResolution, bool, error) {
+func (f *fakeActorDirectory) Resolve(_ context.Context, instanceID, actorExternalID string) (actordir.Resolution, bool, error) {
+	f.lookups = append(f.lookups, instanceID)
 	if f.err != nil {
-		return ActorResolution{}, false, f.err
+		return actordir.Resolution{}, false, f.err
+	}
+	if !f.instances[instanceID] {
+		return actordir.Resolution{}, false, nil
 	}
 	res, ok := f.byExternalID[actorExternalID]
 	return res, ok, nil
@@ -104,8 +114,9 @@ func newAuthorizeFixture(t *testing.T, poll PollHint) *authorizeFixture {
 	t.Helper()
 	q := &fakeAuthorizeQuerier{instances: map[string]db.PluginInstance{
 		"inst-a": {ID: "inst-a", PluginID: "plug-a", InstanceName: "slack-prod"},
+		"inst-b": {ID: "inst-b", PluginID: "plug-a", InstanceName: "slack-other"},
 	}}
-	dir := &fakeActorDirectory{byExternalID: map[string]ActorResolution{}}
+	dir := &fakeActorDirectory{instances: map[string]bool{"inst-a": true}, byExternalID: map[string]actordir.Resolution{}}
 	srv := NewServer()
 	srv.Register(AuthorizeActorTools(AuthorizeActorDeps{
 		Querier:   q,
@@ -156,7 +167,7 @@ func (f *authorizeFixture) callTool(t *testing.T, instanceID string, args any) (
 func TestAuthorizeActor_AuthorizedActor(t *testing.T) {
 	poll := &fakePollHint{}
 	f := newAuthorizeFixture(t, poll)
-	f.dir.byExternalID["U-APPROVER"] = ActorResolution{
+	f.dir.byExternalID["U-APPROVER"] = actordir.Resolution{
 		UserID: "user-1", Username: "ann", Roles: []model.Role{model.RoleApprover},
 	}
 
@@ -184,12 +195,43 @@ func TestAuthorizeActor_AuthorizedActor(t *testing.T) {
 	}
 }
 
+// An actor mapped on one instance authorizes nothing on another: the directory
+// is asked about the CALLING instance, never any instance the actor happens to
+// be mapped on (two instances of one channel plugin may serve workspaces whose
+// actor ids overlap).
+func TestAuthorizeActor_MappingIsPerInstance(t *testing.T) {
+	poll := &fakePollHint{}
+	f := newAuthorizeFixture(t, poll)
+	f.dir.byExternalID["U-APPROVER"] = actordir.Resolution{
+		UserID: "user-1", Username: "ann", Roles: []model.Role{model.RoleApprover},
+	}
+
+	isErr, text := f.callTool(t, "inst-b", map[string]any{
+		"request_id": "task-123", "actor_external_id": "U-APPROVER",
+	})
+	if isErr {
+		t.Fatalf("error: %s", text)
+	}
+	if res := decodeResult(t, text); res["authorized"] != false {
+		t.Errorf("authorized = %v for a request from inst-b, want false: the actor is mapped on inst-a only", res["authorized"])
+	}
+	if len(f.dir.lookups) != 1 || f.dir.lookups[0] != "inst-b" {
+		t.Errorf("directory lookups = %v, want exactly [inst-b], the calling instance", f.dir.lookups)
+	}
+	if len(poll.calls) != 0 {
+		t.Errorf("PollNow fired %v for an unauthorized actor", poll.calls)
+	}
+	if len(f.q.audits) != 1 || f.q.audits[0].EventType != EventTypeUnauthorizedApproval {
+		t.Errorf("audits = %+v, want one %s", f.q.audits, EventTypeUnauthorizedApproval)
+	}
+}
+
 func TestAuthorizeActor_RolesThatMayAuthorize(t *testing.T) {
 	for _, role := range []model.Role{model.RoleApprover, model.RoleOperator, model.RoleAdmin} {
 		t.Run(string(role), func(t *testing.T) {
 			poll := &fakePollHint{}
 			f := newAuthorizeFixture(t, poll)
-			f.dir.byExternalID["U-X"] = ActorResolution{UserID: "u", Roles: []model.Role{role}}
+			f.dir.byExternalID["U-X"] = actordir.Resolution{UserID: "u", Roles: []model.Role{role}}
 
 			isErr, text := f.callTool(t, "inst-a", map[string]any{
 				"request_id": "task-1", "actor_external_id": "U-X",
@@ -249,7 +291,7 @@ func TestAuthorizeActor_UnmappedActorIsRefusedAndAudited(t *testing.T) {
 func TestAuthorizeActor_AuditorRoleOnlyIsRefusedAndAudited(t *testing.T) {
 	poll := &fakePollHint{}
 	f := newAuthorizeFixture(t, poll)
-	f.dir.byExternalID["U-AUDITOR"] = ActorResolution{
+	f.dir.byExternalID["U-AUDITOR"] = actordir.Resolution{
 		UserID: "user-2", Username: "audrey", Roles: []model.Role{model.RoleAuditor},
 	}
 
@@ -274,7 +316,7 @@ func TestAuthorizeActor_NilPollHintStillAuthorizes(t *testing.T) {
 	// Passing a nil PollHint (not a typed-nil *fakePollHint) exercises the
 	// interface's own nil check in the handler.
 	f := newAuthorizeFixture(t, nil)
-	f.dir.byExternalID["U-APPROVER"] = ActorResolution{UserID: "user-1", Roles: []model.Role{model.RoleApprover}}
+	f.dir.byExternalID["U-APPROVER"] = actordir.Resolution{UserID: "user-1", Roles: []model.Role{model.RoleApprover}}
 
 	isErr, text := f.callTool(t, "inst-a", map[string]any{
 		"request_id": "task-1", "actor_external_id": "U-APPROVER",
@@ -290,7 +332,7 @@ func TestAuthorizeActor_NilPollHintStillAuthorizes(t *testing.T) {
 func TestAuthorizeActor_PollHintFailureDoesNotFlipAuthorization(t *testing.T) {
 	poll := &fakePollHint{err: errors.New("scheduler unavailable")}
 	f := newAuthorizeFixture(t, poll)
-	f.dir.byExternalID["U-APPROVER"] = ActorResolution{UserID: "user-1", Roles: []model.Role{model.RoleApprover}}
+	f.dir.byExternalID["U-APPROVER"] = actordir.Resolution{UserID: "user-1", Roles: []model.Role{model.RoleApprover}}
 
 	isErr, text := f.callTool(t, "inst-a", map[string]any{
 		"request_id": "task-1", "actor_external_id": "U-APPROVER",
@@ -316,7 +358,7 @@ func TestAuthorizeActor_TaskRowResolveFailureDoesNotFlipAuthorization(t *testing
 	poll := &fakePollHint{}
 	f := newAuthorizeFixture(t, poll)
 	f.q.taskLookupErr = errors.New("no mcp_tasks row for this server/task_id")
-	f.dir.byExternalID["U-APPROVER"] = ActorResolution{UserID: "user-1", Roles: []model.Role{model.RoleApprover}}
+	f.dir.byExternalID["U-APPROVER"] = actordir.Resolution{UserID: "user-1", Roles: []model.Role{model.RoleApprover}}
 
 	isErr, text := f.callTool(t, "inst-a", map[string]any{
 		"request_id": "task-1", "actor_external_id": "U-APPROVER",
@@ -341,7 +383,10 @@ func TestAuthorizeActor_PollNowScopesTaskLookupToTheCallingInstance(t *testing.T
 	poll := &fakePollHint{}
 	f := newAuthorizeFixture(t, poll)
 	f.q.instances["inst-b"] = db.PluginInstance{ID: "inst-b", PluginID: "plug-b", InstanceName: "slack-staging"}
-	f.dir.byExternalID["U-APPROVER"] = ActorResolution{UserID: "user-1", Roles: []model.Role{model.RoleApprover}}
+	f.dir.byExternalID["U-APPROVER"] = actordir.Resolution{UserID: "user-1", Roles: []model.Role{model.RoleApprover}}
+	// Mapped on both instances: identity is per instance, and this test is
+	// about the task-row scoping, not the actor lookup.
+	f.dir.instances["inst-b"] = true
 
 	for _, instanceID := range []string{"inst-a", "inst-b"} {
 		if isErr, text := f.callTool(t, instanceID, map[string]any{
@@ -418,84 +463,4 @@ func TestAuthorizeActor_RegisteredInInventory(t *testing.T) {
 	if len(env.Result.Tools) != 1 || env.Result.Tools[0].Name != ToolAuthorizeActor {
 		t.Errorf("tools = %+v, want exactly [%s]", env.Result.Tools, ToolAuthorizeActor)
 	}
-}
-
-// TestDBActorDirectory_Resolve pins the ADR-058 Tier-1 source directly,
-// separately from the handler tests above (which exercise the interface via
-// a fake): an unmapped external id resolves to found=false, and a mapped
-// user's roles come back verbatim.
-func TestDBActorDirectory_Resolve(t *testing.T) {
-	q := &fakeSlackUserQuerier{
-		bySlackID: map[string][]db.GetUserBySlackUserIDRow{
-			"U-KNOWN": {
-				{ID: "user-1", Username: "ann", Role: "operator"},
-				{ID: "user-1", Username: "ann", Role: "approver"},
-			},
-		},
-	}
-	dir := DBActorDirectory{Querier: q}
-
-	t.Run("known actor resolves with every held role", func(t *testing.T) {
-		res, found, err := dir.Resolve(context.Background(), "U-KNOWN")
-		if err != nil {
-			t.Fatalf("resolve: %v", err)
-		}
-		if !found || res.UserID != "user-1" || len(res.Roles) != 2 {
-			t.Errorf("resolve = %+v found=%v, want user-1 with 2 roles", res, found)
-		}
-	})
-
-	t.Run("unknown actor is not found", func(t *testing.T) {
-		_, found, err := dir.Resolve(context.Background(), "U-UNKNOWN")
-		if err != nil {
-			t.Fatalf("resolve: %v", err)
-		}
-		if found {
-			t.Error("an unmapped external id must not resolve")
-		}
-	})
-
-	t.Run("querier error propagates", func(t *testing.T) {
-		q.err = errors.New("db down")
-		_, _, err := dir.Resolve(context.Background(), "U-KNOWN")
-		if err == nil {
-			t.Fatal("want a propagated error")
-		}
-	})
-}
-
-func TestDBActorDirectory_ResolveActor(t *testing.T) {
-	q := &fakeSlackUserQuerier{
-		bySlackID: map[string][]db.GetUserBySlackUserIDRow{
-			"U-KNOWN": {{ID: "user-1", Username: "ann", Role: "operator"}},
-		},
-	}
-	dir := DBActorDirectory{Querier: q}
-
-	id, roles, found, err := dir.ResolveActor(context.Background(), "U-KNOWN")
-	if err != nil || !found || id != "user-1" || len(roles) != 1 || roles[0] != model.RoleOperator {
-		t.Errorf("ResolveActor(known) = %q, %v, %v, %v; want user-1, [operator], true, nil", id, roles, found, err)
-	}
-	if _, _, found, err := dir.ResolveActor(context.Background(), "U-UNKNOWN"); err != nil || found {
-		t.Errorf("ResolveActor(unknown) found=%v err=%v; want false, nil", found, err)
-	}
-	q.err = errors.New("db down")
-	if _, _, _, err := dir.ResolveActor(context.Background(), "U-KNOWN"); err == nil {
-		t.Error("want a propagated error")
-	}
-}
-
-type fakeSlackUserQuerier struct {
-	bySlackID map[string][]db.GetUserBySlackUserIDRow
-	err       error
-}
-
-func (f *fakeSlackUserQuerier) GetUserBySlackUserID(_ context.Context, slackUserID *string) ([]db.GetUserBySlackUserIDRow, error) {
-	if f.err != nil {
-		return nil, f.err
-	}
-	if slackUserID == nil {
-		return nil, nil
-	}
-	return f.bySlackID[*slackUserID], nil
 }
