@@ -78,6 +78,7 @@ func (s *v2PluginSubsystem) launcherDeps() launcherPluginDeps {
 		Dispatcher:         d.Dispatcher,
 		ApprovalDispatcher: d.ApprovalDispatcher,
 		FeedbackDispatcher: d.FeedbackDispatcher,
+		InputChannelRouter: d.InputChannelRouter,
 		ToolClassifier:     d.ToolClassifier,
 		ToolResolver:       d.ToolResolver,
 		Canceller:          d.Canceller,

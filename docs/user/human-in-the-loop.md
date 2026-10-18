@@ -162,7 +162,21 @@ problem worth hearing about immediately.
 
 Only one channel is asked. An audience is a priority list, not a broadcast —
 asking two channels the same question would put two people in a race whose loser
-is told their decision did not count.
+is told their decision did not count. For the same reason, while a channel holds
+a request the in-app card does not accept an answer for it.
+
+A channel gets the question as a permission prompt (Approve / Reject) or as the
+form the server asked for. A server that bundles **several questions** into one
+request is always asked in-app: a channel request carries one question, and
+splitting the bundle could not express a refusal of just one of them. The
+decision record says so.
+
+Audience entries with notifications turned on also get a short "input requested"
+message linking to the run. It never contains the question itself, which the
+server wrote and Gleipnir does not vouch for.
+
+Routing tool requests through audiences is part of the containerized plugin
+build (v0.2.0-alpha); until that ships, they are asked in-app.
 
 ## Limits a misbehaving server will hit
 

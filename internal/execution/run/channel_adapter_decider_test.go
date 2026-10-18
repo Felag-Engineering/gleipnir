@@ -39,7 +39,7 @@ func (m mapActorResolver) Resolve(_ context.Context, instanceID, actorExternalID
 		return actordir.Resolution{}, false, nil
 	}
 	u, ok := m.users[actorExternalID]
-	return actordir.Resolution{UserID: u.id, Roles: u.roles}, ok, nil
+	return actordir.Resolution{UserID: u.id, Username: u.id, Roles: u.roles}, ok, nil
 }
 
 // defaultTestActors links the actor ids the shared channel-adapter tests use

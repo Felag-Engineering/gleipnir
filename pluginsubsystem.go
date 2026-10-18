@@ -106,18 +106,20 @@ type pluginInstallNotifier interface {
 
 // launcherPluginDeps carries the plugin-only inputs run() needs to finish
 // building the RunLauncher: RunLauncherConfig's plugin fields (Registrar,
-// Dispatcher, ApprovalDispatcher, FeedbackDispatcher), the classifier/resolver
+// Dispatcher, ApprovalDispatcher, FeedbackDispatcher, InputChannelRouter), the classifier/resolver
 // pair runpkg.NewDefaultToolResolver combines with the MCP registry into
 // RunLauncherConfig.Resolver, and the RunManager canceller. A subsystem with
 // plugins disabled (the v2 assembly with no container socket) leaves every
 // field at its nil zero value, which is exactly what "plugins disabled"
 // already means to both RunLauncherConfig and RunManager. An enabled v2
-// assembly sets only the approval/feedback dispatchers and the classifier.
+// assembly sets only the approval/feedback dispatchers, the tool-input router
+// and the classifier.
 type launcherPluginDeps struct {
 	Registrar          agent.PluginGenerationLookup
 	Dispatcher         agent.PluginToolDispatcher
 	ApprovalDispatcher agent.ApprovalChannelDispatcher
 	FeedbackDispatcher agent.FeedbackChannelDispatcher
+	InputChannelRouter agent.InputChannelRouter
 	ToolClassifier     runpkg.ToolSourceClassifier
 	ToolResolver       runpkg.PluginToolResolver
 	Canceller          pluginCanceller

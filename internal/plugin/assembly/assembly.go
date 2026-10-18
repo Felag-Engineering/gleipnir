@@ -77,6 +77,7 @@ type LauncherDeps struct {
 	Dispatcher         agent.PluginToolDispatcher
 	ApprovalDispatcher agent.ApprovalChannelDispatcher
 	FeedbackDispatcher agent.FeedbackChannelDispatcher
+	InputChannelRouter agent.InputChannelRouter
 	ToolClassifier     runpkg.ToolSourceClassifier
 	ToolResolver       runpkg.PluginToolResolver
 	Canceller          interface{ CancelRun(runID string) }

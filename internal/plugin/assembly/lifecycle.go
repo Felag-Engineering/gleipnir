@@ -108,9 +108,10 @@ type Assembly struct {
 	kicker *lateKicker
 
 	// notifier fans the fixed "input requested" message out to notify-enabled
-	// audience entries. It has no live call site yet: the HITL routing that
-	// fires it after a request is routed is a later slice.
+	// audience entries. adapters fires it when a tool-initiated ask is routed
+	// (#995); Shutdown joins the fan-outs still in flight.
 	notifier *hitl.Notifier
+	adapters *runpkg.TaskChannelAdapters
 
 	// newReconciler constructs the reconciler. It takes the netguard proof as
 	// an argument so the guard cannot be supplied any other way than through
@@ -303,6 +304,9 @@ func (a *Assembly) Quiesce() {
 func (a *Assembly) Shutdown() {
 	a.shutdownOnce.Do(func() {
 		a.Quiesce()
+		if a.adapters != nil {
+			a.adapters.WaitNotifications()
+		}
 
 		stopLoop(a.prober)
 		stopLoop(a.collector)

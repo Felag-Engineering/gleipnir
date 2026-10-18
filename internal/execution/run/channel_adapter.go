@@ -33,9 +33,9 @@
 // adapters (approval_adapter.go / feedback_adapter.go), which make the exact
 // same unconditional fallback via dispatch.ErrNoRequestCapableEntry. An
 // operator who disables in-app fallback on an audience is opting a
-// TOOL-INITIATED ask (routed through internal/plugin/hitl directly, not
-// through this file) out of it — not a policy-gated approval or an
-// agent-initiated feedback request.
+// TOOL-INITIATED ask (AskInput, input_channel.go) out of it — not a
+// policy-gated approval or an agent-initiated feedback request (#1107 tracks
+// whether those should follow).
 package run
 
 import (
@@ -130,6 +130,7 @@ type TaskChannelAdapters struct {
 	store     decision.Store
 	decisions *decision.Recorder
 	actors    actordir.Directory
+	notify    *notifications
 }
 
 // WithActorResolver enables verifying the actor of a plugin-routed settlement
@@ -150,6 +151,9 @@ type settlementActor struct {
 	// userID is set only when the directory linked externalID to a Gleipnir
 	// user; empty means the channel's claim is unverified.
 	userID string
+	// username is the linked user's username, for the responder identity a
+	// tool-initiated answer asserts to the server that asked.
+	username string
 	// mayResolve reports whether the linked user holds the role the request
 	// kind requires (admins always do).
 	mayResolve bool
@@ -172,6 +176,7 @@ func (a *TaskChannelAdapters) resolveActor(ctx context.Context, kind model.Elici
 		return actor, nil
 	}
 	actor.userID = res.UserID
+	actor.username = res.Username
 	actor.mayResolve = holdsRoleFor(kind, res.Roles)
 	return actor, nil
 }
