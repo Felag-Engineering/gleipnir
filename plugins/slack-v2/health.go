@@ -40,6 +40,16 @@ var toolScopes = map[string][]string{
 	"set_topic":      {"channels:manage", "groups:write"}, // conversations.setTopic
 }
 
+// channelScopeHint is the operator-facing sentence naming the scope a
+// channel/notify step needs.
+func channelScopeHint(step string) string {
+	return fmt.Sprintf("channel/notify (%s) needs the %s OAuth scope", step, strings.Join(channelScopes[step], ", "))
+}
+
+// channelHealthKey keys the human_channel report in healthReporter.reported;
+// the leading character keeps it from colliding with any tool name.
+const channelHealthKey = "profile:human_channel"
+
 // healthSetter is the slice of hostclient.Client the reporter needs.
 type healthSetter interface {
 	SetHealthState(ctx context.Context, req hostclient.SetHealthStateRequest) (*hostclient.SetHealthStateResponse, error)
@@ -115,6 +125,33 @@ func (h *healthReporter) reportScopeFailure(ctx context.Context, tool, code stri
 
 	h.mu.Lock()
 	h.reported[tool] = true
+	h.mu.Unlock()
+}
+
+// reportChannelScopeFailure reports the whole human_channel profile unhealthy
+// once per process. It is profile-wide, not per step, because the host's notify
+// gate asks Serves for the profile: a channel that cannot open DMs or cannot
+// post is skipped as a whole and the audience falls through to the next entry.
+func (h *healthReporter) reportChannelScopeFailure(ctx context.Context, step, code string) {
+	h.mu.Lock()
+	already := h.reported[channelHealthKey]
+	h.mu.Unlock()
+	if already {
+		return
+	}
+
+	_, err := h.host.SetHealthState(ctx, hostclient.SetHealthStateRequest{
+		Profile: hostclient.ProfileHumanChannel,
+		State:   hostclient.HealthStateUnhealthy,
+		Detail:  fmt.Sprintf("%s: %s", code, channelScopeHint(step)),
+	})
+	if err != nil {
+		log.Printf("slack-v2: report human_channel unhealthy: %v", err)
+		return
+	}
+
+	h.mu.Lock()
+	h.reported[channelHealthKey] = true
 	h.mu.Unlock()
 }
 

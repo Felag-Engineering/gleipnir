@@ -47,9 +47,11 @@ func TestManifestScopesAreTheUnionOfToolScopes(t *testing.T) {
 	m := loadManifest(t)
 
 	want := map[string]bool{}
-	for _, scopes := range toolScopes {
-		for _, s := range scopes {
-			want[s] = true
+	for _, table := range []map[string][]string{toolScopes, channelScopes} {
+		for _, scopes := range table {
+			for _, s := range scopes {
+				want[s] = true
+			}
 		}
 	}
 	got := map[string]bool{}
@@ -77,8 +79,11 @@ func TestManifestShape(t *testing.T) {
 	if got := m.Gleipnir.Auth.Strategy; got != manifestv2.AuthStrategyOAuth2Authcode {
 		t.Errorf("auth strategy = %q, want %q", got, manifestv2.AuthStrategyOAuth2Authcode)
 	}
-	if got := m.Gleipnir.Profiles.Declared(); !slices.Equal(got, []string{"tool_provider"}) {
-		t.Errorf("profiles = %v, want [tool_provider]", got)
+	if got := m.Gleipnir.Profiles.Declared(); !slices.Equal(got, []string{"tool_provider", "human_channel"}) {
+		t.Errorf("profiles = %v, want [tool_provider human_channel]", got)
+	}
+	if got := m.Gleipnir.Profiles.HumanChannel.Assurance; got != channelDeclaration.Assurance {
+		t.Errorf("manifest human_channel assurance = %q, served declaration says %q", got, channelDeclaration.Assurance)
 	}
 
 	var domains []string

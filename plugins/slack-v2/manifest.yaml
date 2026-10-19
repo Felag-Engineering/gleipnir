@@ -1,7 +1,7 @@
 schema_version: "2"
 name: slack-v2
 version: 0.1.0
-description: Reads and writes Slack channels, messages, reactions and topics.
+description: Reads and writes Slack channels, messages, reactions and topics, and delivers Gleipnir notifications.
 package:
   registry_type: oci
   # Placeholder digest: `make bundle` stamps the real image config digest into
@@ -13,12 +13,14 @@ package:
 gleipnir:
   profiles:
     tool_provider: {}
+    human_channel:
+      assurance: authenticated
   auth:
     strategy: oauth2_authcode
     oauth_defaults:
       authorization_url: https://slack.com/oauth/v2/authorize
       token_url: https://slack.com/api/oauth.v2.access
-      # Union of the per-tool scopes in health.go (toolScopes).
+      # Union of the scopes in health.go (toolScopes and channelScopes).
       scopes:
         - channels:history
         - channels:manage
@@ -27,6 +29,7 @@ gleipnir:
         - groups:history
         - groups:read
         - groups:write
+        - im:write
         - reactions:write
         - users:read
   egress:
