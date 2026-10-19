@@ -43,7 +43,7 @@ type hostAPI interface {
 // keeps the two in step. The socket hub reports health only for declared
 // profiles, so adding human_channel or event_source here (with the manifest)
 // is all it takes for connection loss to be reported against them.
-var declaredProfiles = []string{hostclient.ProfileToolProvider}
+var declaredProfiles = []string{hostclient.ProfileToolProvider, hostclient.ProfileHumanChannel}
 
 // newServer registers every tool on a fresh MCP server.
 func newServer(host hostAPI, apiURL string) (*mcpserver.Server, error) {
@@ -56,6 +56,15 @@ func newServer(host hostAPI, apiURL string) (*mcpserver.Server, error) {
 		if err := srv.RegisterTool(tool); err != nil {
 			return nil, fmt.Errorf("register tool: %w", err)
 		}
+	}
+	// channel/request (#992) is not mounted yet: it is refused as an unknown
+	// method rather than accepted and never answered.
+	ext, err := p.newChannelExtension()
+	if err != nil {
+		return nil, fmt.Errorf("build channel extension: %w", err)
+	}
+	if err := srv.Mount(ext); err != nil {
+		return nil, fmt.Errorf("mount channel extension: %w", err)
 	}
 	return srv, nil
 }
