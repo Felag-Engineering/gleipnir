@@ -38,6 +38,7 @@ type plugin struct {
 	health *healthReporter
 	refs   *messageRefStore
 	tasks  channelext.TaskStore
+	events *eventSource
 }
 
 // hostAPI is everything the plugin needs from the host endpoint;
@@ -49,9 +50,9 @@ type hostAPI interface {
 
 // declaredProfiles is the capability profiles manifest.yaml declares; a test
 // keeps the two in step. The socket hub reports health only for declared
-// profiles, so adding human_channel or event_source here (with the manifest)
-// is all it takes for connection loss to be reported against them.
-var declaredProfiles = []string{hostclient.ProfileToolProvider, hostclient.ProfileHumanChannel, hostclient.ProfileIdentityProvider}
+// profiles: human_channel and event_source are reported against when the
+// connection is lost.
+var declaredProfiles = []string{hostclient.ProfileToolProvider, hostclient.ProfileEventSource, hostclient.ProfileHumanChannel, hostclient.ProfileIdentityProvider}
 
 // newServer registers every tool on a fresh MCP server.
 func newServer(host hostAPI, apiURL, dataDir string) (*mcpserver.Server, *plugin, error) {
@@ -72,6 +73,17 @@ func newServer(host hostAPI, apiURL, dataDir string) (*mcpserver.Server, *plugin
 	p.tasks = ext.Tasks()
 	if err := srv.Mount(ext); err != nil {
 		return nil, nil, fmt.Errorf("mount channel extension: %w", err)
+	}
+	src, err := newEventSource(dataDir, p.slack)
+	if err != nil {
+		return nil, nil, err
+	}
+	p.events = src
+	if err := srv.Mount(src.handler); err != nil {
+		return nil, nil, errors.Join(fmt.Errorf("mount events extension: %w", err), src.close())
+	}
+	if err := srv.MountStreaming("events/listen", src.listenHandler()); err != nil {
+		return nil, nil, errors.Join(fmt.Errorf("mount events/listen: %w", err), src.close())
 	}
 	return srv, p, nil
 }
@@ -107,8 +119,14 @@ func run() error {
 	// is inert and no connection is opened.
 	hub := newSocketHub(newClientRunnerFactory(host, p.slack), host, declaredProfiles)
 	clicks := newClickHandler(p, host)
-	if err := hub.Handle(EnvelopeInteractive, clicks.handle); err != nil {
-		return fmt.Errorf("register click handler: %w", err)
+	if err := hub.Handle(EnvelopeInteractive, routeInteractive(clicks.handle, p.events)); err != nil {
+		return fmt.Errorf("register interactive handler: %w", err)
+	}
+	if err := hub.Handle(EnvelopeEventsAPI, p.events.handleEventsAPI); err != nil {
+		return fmt.Errorf("register events handler: %w", err)
+	}
+	if err := hub.Handle(EnvelopeSlashCommands, p.events.handleSlashCommand); err != nil {
+		return fmt.Errorf("register slash command handler: %w", err)
 	}
 	hubDone := make(chan struct{})
 	go func() {
@@ -129,6 +147,12 @@ func run() error {
 	}
 	<-hubDone
 	clicks.wait()
+	p.events.closeStreams()
+	defer func() {
+		if err := p.events.close(); err != nil {
+			log.Printf("slack-v2: close event store: %v", err)
+		}
+	}()
 	if serveFailure != nil {
 		return serveFailure
 	}
