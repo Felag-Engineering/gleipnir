@@ -18,7 +18,7 @@ set -euo pipefail
 # time: the bundles carry their own image archives (make conformance-stub-bundle)
 # and the isolation probes reuse the runner image.
 #
-# Prerequisites: make conformance-stub-bundle slack-v2-bundle
+# Prerequisites: make conformance-stub-bundle slack-v2-bundle ntfy-bundle
 #
 # Environment:
 #   CONTAINER_ENGINE        docker or podman. Default: docker if its daemon
@@ -34,7 +34,8 @@ set -euo pipefail
 #                           user socket for podman).
 #   GLEIPNIR_CONTAINER_RUNTIME_MODE
 #                           docker or rootless-podman (default: from the engine).
-#   CONFORMANCE_DIST_DIR    where the bundles are (default: <repo>/dist).
+#   CONFORMANCE_DIST_DIR    where the bundles are, ntfy.tgz included (default:
+#                           <repo>/dist).
 #   DOOD_TEST_ARGS          extra words for the test binary (-test.v is already
 #                           set), e.g. -test.run=...
 
@@ -95,6 +96,10 @@ for bundle in all dood-events dood-request; do
         exit 1
     fi
 done
+if [ ! -f "$dist_dir/ntfy.tgz" ]; then
+    echo "error: $dist_dir/ntfy.tgz is missing; run: make ntfy-bundle" >&2
+    exit 1
+fi
 
 if [ ! -f "$dist_dir/slack-v2.tgz" ]; then
     echo "error: $dist_dir/slack-v2.tgz is missing; run: make slack-v2-bundle" >&2

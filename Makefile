@@ -1,4 +1,4 @@
-.PHONY: help build test tools security security-go security-frontend proto lint-plugins lint-plugins-self-test lint-secret-keys lint-profile-vocab lint lint-go-fmt lint-staticcheck ci-local ci-local-full ci-local-lanes ci-local-lint ci-local-drift ci-local-backend ci-local-sdk ci-local-frontend ci-local-scope-self-test conformance-stub-bundle slack-v2-bundle relaysmoke relaysmoke-demo lint-relaysmoke-build lint-substratev2-build
+.PHONY: help build test tools security security-go security-frontend proto lint-plugins lint-plugins-self-test lint-secret-keys lint-profile-vocab lint lint-go-fmt lint-staticcheck ci-local ci-local-full ci-local-lanes ci-local-lint ci-local-drift ci-local-backend ci-local-sdk ci-local-frontend ci-local-scope-self-test conformance-stub-bundle slack-v2-bundle ntfy-bundle relaysmoke relaysmoke-demo lint-relaysmoke-build lint-substratev2-build
 
 help:
 	@echo "Targets:"
@@ -304,6 +304,13 @@ conformance-stub-bundle:
 # scripts/build-slack-v2-bundle.sh.
 slack-v2-bundle:
 	scripts/build-slack-v2-bundle.sh
+
+# Builds plugins/ntfy and packages it as a signed v2 bundle, dist/ntfy.tgz, for
+# the DooD suite's ntfy case. Needs docker or podman, so it is not part of
+# ci-local; CI's `dood` job runs it. See scripts/build-ntfy-bundle.sh for the
+# environment overrides.
+ntfy-bundle:
+	scripts/build-ntfy-bundle.sh
 
 ifeq ($(CI_LOCAL_RUN_SDK),1)
 ci-local-sdk: ci-local-drift

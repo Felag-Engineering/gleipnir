@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/netip"
 	"strings"
 	"time"
@@ -63,7 +64,18 @@ func WithReconcileInterval(d time.Duration) Option {
 	return func(o *options) { o.reconcileInterval = d }
 }
 
+// WithHostCallObserver reports every request that passed the host endpoint's
+// authentication, with the identity the token resolved to. It is a seam for
+// suites that must assert who the host endpoint believed a caller was, which
+// is not otherwise observable from outside the process (the DooD suite, #987).
+// fn runs on the request goroutine and must not block.
+func WithHostCallObserver(fn func(HostCall)) Option {
+	return func(o *options) { o.hostCallObserver = fn }
+}
+
 type options struct {
+	hostCallObserver func(HostCall)
+
 	detect            *container.DetectConfig
 	runtime           container.Runtime
 	selfContainerID   *container.ContainerID
@@ -289,8 +301,13 @@ func (a *Assembly) compose(
 		PollHint:  channels.poller,
 	})...)
 	hostServer.Register(hostendpoint.UserLinkTools(hostendpoint.UserLinkDeps{Querier: q})...)
+	// The observer sits inside the chain so it sees the resolved identity.
+	var hostHandler http.Handler = hostServer
+	if o.hostCallObserver != nil {
+		hostHandler = observeHostCalls(hostHandler, o.hostCallObserver)
+	}
 	hostListeners := hostendpoint.NewListenerSet(
-		hostendpoint.Chain(hostServer, hostendpoint.GenerationTokenResolver{Querier: q}, generations))
+		hostendpoint.Chain(hostHandler, hostendpoint.GenerationTokenResolver{Querier: q}, generations))
 
 	// Egress proxy: the only way out of a plugin's internal network.
 	gateways := egress.NewGatewayRegistry()
@@ -365,6 +382,9 @@ func (a *Assembly) compose(
 	a.collector = collector
 	a.hostListeners = hostListeners
 	a.egressProxy = egressListeners
+	a.hostSet = hostListeners
+	a.egressSet = egressListeners
+	a.proxy = proxy
 	a.poller = channels.poller
 	a.notifier = channels.notifier
 	a.adapters = channels.adapters

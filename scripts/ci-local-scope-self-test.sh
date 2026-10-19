@@ -124,12 +124,12 @@ done
 # the substrate beneath that, and the stub bundle it installs; not by an
 # unrelated package. Gate-definition files (scripts/, workflows, actions)
 # widen to the full gate, which includes it.
-for d in internal/plugin/dood internal/plugin/assembly internal/plugin/reconciler internal/plugin/loader internal/plugin/container plugin-sdk/examples/conformance-stub; do
+for d in internal/plugin/dood internal/plugin/assembly internal/plugin/reconciler internal/plugin/loader internal/plugin/container internal/plugin/hitl plugins/ntfy plugin-sdk/examples/conformance-stub; do
 	out=$(scope "$d/x.go")
 	[ "$(field "$out" CI_LOCAL_RUN_DOOD)" = "1" ]
 	check "a change under $d selects the dood lane" $?
 done
-for f in scripts/run-dood-suite.sh scripts/build-conformance-stub.sh .github/workflows/ci.yml .github/actions/rootless-podman/action.yml; do
+for f in scripts/run-dood-suite.sh scripts/build-conformance-stub.sh scripts/build-ntfy-bundle.sh .github/workflows/ci.yml .github/actions/rootless-podman/action.yml; do
 	out=$(scope "$f")
 	[ "$(field "$out" CI_LOCAL_RUN_DOOD)" = "1" ]
 	check "a change to $f selects the dood lane" $?

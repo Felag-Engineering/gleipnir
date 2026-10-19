@@ -100,6 +100,28 @@ type harness struct {
 
 	mu        sync.Mutex
 	instances []string
+	hostCalls []assembly.HostCall
+}
+
+// recordHostCall is the assembly's host-endpoint observer: every authenticated
+// request, with the identity (instance and generation) its token resolved to.
+func (h *harness) recordHostCall(c assembly.HostCall) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.hostCalls = append(h.hostCalls, c)
+}
+
+// HostCalls returns the host-endpoint requests observed so far for an instance.
+func (h *harness) HostCalls(instanceID string) []assembly.HostCall {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []assembly.HostCall
+	for _, c := range h.hostCalls {
+		if c.InstanceID == instanceID {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // newHarness resolves the real socket, boots the assembly against it and hands
@@ -180,7 +202,8 @@ func newHarness(t *testing.T) *harness {
 		Arbiter:     h.arbiter,
 		MCPRegistry: h.mcpReg,
 	}
-	h.asm, err = assembly.New(context.Background(), deps, assembly.WithReconcileInterval(reconcileInterval))
+	h.asm, err = assembly.New(context.Background(), deps, assembly.WithReconcileInterval(reconcileInterval),
+		assembly.WithHostCallObserver(h.recordHostCall))
 	if err != nil {
 		t.Fatalf("assembly.New: %v", err)
 	}
@@ -254,11 +277,17 @@ func (h *harness) adminRouter() http.Handler {
 	r := chi.NewRouter()
 	r.Post("/plugins/{id}/approve", handler.ApprovePlugin)
 	r.Post("/plugins/{id}/instances", handler.CreateInstance)
+	r.Post("/plugins/{id}/instances/{iid}/deactivate", handler.DeactivateInstance)
+	r.Delete("/plugins/{id}/instances/{iid}", handler.DeleteInstance)
 	return r
 }
 
 func (h *harness) post(path, body string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	return h.do(http.MethodPost, path, body)
+}
+
+func (h *harness) do(method, path, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.admin.ServeHTTP(rec, req)
 	return rec
@@ -284,7 +313,7 @@ func (h *harness) InstallBundleFile(name string) string {
 
 	path := filepath.Join(bundleDir(), name+".tgz")
 	if _, err := os.Stat(path); err != nil {
-		h.t.Fatalf("bundle missing: %v\nbuild it with `make conformance-stub-bundle` or `make slack-v2-bundle` (see scripts/run-dood-suite.sh)", err)
+		h.t.Fatalf("bundle missing: %v\nbuild it with `make conformance-stub-bundle`, `make slack-v2-bundle` or `make ntfy-bundle` (see scripts/run-dood-suite.sh)", err)
 	}
 	pluginID, err := h.asm.AdminDeps().Installer.Install(ctx, path)
 	if err != nil {
@@ -521,10 +550,28 @@ func (h *harness) Dial(name, network string, addr netip.AddrPort) (reached bool,
 // the probe or B's endpoint is broken rather than that isolation holds.
 func (h *harness) DialFrom(name, network string, extra []container.NetworkInfo, addr netip.AddrPort) (reached bool, output string) {
 	h.t.Helper()
+	script := fmt.Sprintf("nc -w 3 -z %s %d; echo exit=$?", addr.Addr(), addr.Port())
+	output = h.runProbe(name, network, extra, script)
+	switch {
+	case strings.Contains(output, "exit=0"):
+		return true, output
+	case strings.Contains(output, "exit=1"):
+		return false, output
+	default:
+		h.t.Fatalf("probe %s did not run nc to a verdict (a missing nc or shell would otherwise read as isolation): %q",
+			name, strings.TrimSpace(output))
+		return false, output
+	}
+}
+
+// runProbe runs script in a fresh probe container attached to network (and
+// extra) and returns its output once it exits. Any failure to run it is fatal: a probe
+// that could not run says nothing about what it was probing.
+func (h *harness) runProbe(name, network string, extra []container.NetworkInfo, script string) string {
+	h.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), convergeBudget)
 	defer cancel()
 
-	script := fmt.Sprintf("nc -w 3 -z %s %d; echo exit=$?", addr.Addr(), addr.Port())
 	id, err := h.rt.Create(ctx, container.CreateOptions{
 		Name:    "gleipnir-dood-" + h.runID + "-" + name,
 		Image:   h.probeImage(),
@@ -566,17 +613,7 @@ func (h *harness) DialFrom(name, network string, extra []container.NetworkInfo, 
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	output = h.logsOf(ctx, id)
-	switch {
-	case strings.Contains(output, "exit=0"):
-		return true, output
-	case strings.Contains(output, "exit=1"):
-		return false, output
-	default:
-		h.t.Fatalf("probe %s did not run nc to a verdict (a missing nc or shell would otherwise read as isolation): %q",
-			name, strings.TrimSpace(output))
-		return false, output
-	}
+	return h.logsOf(ctx, id)
 }
 
 func (h *harness) logsOf(ctx context.Context, id container.ContainerID) string {
