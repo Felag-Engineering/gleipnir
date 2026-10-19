@@ -24,12 +24,18 @@ const (
 	// slackAPIURLEnvVar overrides the Slack Web API base URL, so the plugin
 	// can be pointed at a fake Slack. Unset means the real API.
 	slackAPIURLEnvVar = "SLACK_API_URL"
+
+	// dataDirEnvVar names the instance volume holding the durable task store
+	// and the posted-message records, so an open request survives a restart.
+	dataDirEnvVar  = "DATA_DIR"
+	defaultDataDir = "/data"
 )
 
 // plugin holds what the tool handlers share.
 type plugin struct {
 	slack  *slackProvider
 	health *healthReporter
+	refs   *messageRefStore
 }
 
 // hostAPI is everything the plugin needs from the host endpoint;
@@ -46,7 +52,7 @@ type hostAPI interface {
 var declaredProfiles = []string{hostclient.ProfileToolProvider, hostclient.ProfileHumanChannel}
 
 // newServer registers every tool on a fresh MCP server.
-func newServer(host hostAPI, apiURL string) (*mcpserver.Server, error) {
+func newServer(host hostAPI, apiURL, dataDir string) (*mcpserver.Server, error) {
 	p := &plugin{
 		slack:  newSlackProvider(host, apiURL, nil),
 		health: newHealthReporter(host),
@@ -57,9 +63,7 @@ func newServer(host hostAPI, apiURL string) (*mcpserver.Server, error) {
 			return nil, fmt.Errorf("register tool: %w", err)
 		}
 	}
-	// channel/request (#992) is not mounted yet: it is refused as an unknown
-	// method rather than accepted and never answered.
-	ext, err := p.newChannelExtension()
+	ext, err := p.newChannelExtension(dataDir)
 	if err != nil {
 		return nil, fmt.Errorf("build channel extension: %w", err)
 	}
@@ -84,7 +88,11 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("host client: %w", err)
 	}
-	srv, err := newServer(host, os.Getenv(slackAPIURLEnvVar))
+	dataDir := os.Getenv(dataDirEnvVar)
+	if dataDir == "" {
+		dataDir = defaultDataDir
+	}
+	srv, err := newServer(host, os.Getenv(slackAPIURLEnvVar), dataDir)
 	if err != nil {
 		return err
 	}

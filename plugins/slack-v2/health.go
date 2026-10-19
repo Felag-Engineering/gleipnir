@@ -43,7 +43,7 @@ var toolScopes = map[string][]string{
 // channelScopeHint is the operator-facing sentence naming the scope a
 // channel/notify step needs.
 func channelScopeHint(step string) string {
-	return fmt.Sprintf("channel/notify (%s) needs the %s OAuth scope", step, strings.Join(channelScopes[step], ", "))
+	return fmt.Sprintf("channel delivery (%s) needs the %s OAuth scope", step, strings.Join(channelScopes[step], ", "))
 }
 
 // channelHealthKey keys the human_channel report in healthReporter.reported;

@@ -51,16 +51,18 @@ type fakeSlack struct {
 	responses map[string]string
 	tokens    []string
 	forms     map[string]url.Values // last form each method received
+	counts    map[string]int
 }
 
 func newFakeSlack(t *testing.T, responses map[string]string) *fakeSlack {
 	t.Helper()
-	f := &fakeSlack{responses: responses, forms: map[string]url.Values{}}
+	f := &fakeSlack{responses: responses, forms: map[string]url.Values{}, counts: map[string]int{}}
 	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		method := strings.TrimPrefix(r.URL.Path, "/api/")
 		f.mu.Lock()
 		f.tokens = append(f.tokens, r.FormValue("token"))
 		f.forms[method] = r.PostForm
+		f.counts[method]++
 		body, ok := f.responses[method]
 		f.mu.Unlock()
 		if !ok {
@@ -79,6 +81,13 @@ func (f *fakeSlack) form(method string) url.Values {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.forms[method]
+}
+
+// calls returns how many times Slack received method.
+func (f *fakeSlack) calls(method string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.counts[method]
 }
 
 type toolResult struct {
@@ -123,7 +132,7 @@ func callTool(t *testing.T, srv http.Handler, name string, args map[string]any) 
 
 func newTestServer(t *testing.T, host *fakeHost, slackURL string) http.Handler {
 	t.Helper()
-	srv, err := newServer(host, slackURL)
+	srv, err := newServer(host, slackURL, t.TempDir())
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
