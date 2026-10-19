@@ -178,13 +178,13 @@ func TestTaskSurvivesARestart(t *testing.T) {
 	slackAPI := requestSlack(t)
 	dataDir := t.TempDir()
 	host := &fakeHost{credentials: testCredentials}
-	first, err := newServer(host, slackAPI.URL+"/api/", dataDir)
+	first, _, err := newServer(host, slackAPI.URL+"/api/", dataDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	env := decodeTask(t, rpc(t, first, "channel/request", requestParams("shared", "C0123ABC", "ok?", "", opt("yes", "Yes"))))
 
-	restarted, err := newServer(host, slackAPI.URL+"/api/", dataDir)
+	restarted, _, err := newServer(host, slackAPI.URL+"/api/", dataDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +228,7 @@ func TestCancelUpdatesTheMessageToAResolvedSummary(t *testing.T) {
 func TestCancelAfterCompletionDoesNotUpdate(t *testing.T) {
 	slackAPI := requestSlack(t)
 	dataDir := t.TempDir()
-	srv, err := newServer(&fakeHost{credentials: testCredentials}, slackAPI.URL+"/api/", dataDir)
+	srv, _, err := newServer(&fakeHost{credentials: testCredentials}, slackAPI.URL+"/api/", dataDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func TestCancelAfterCompletionDoesNotUpdate(t *testing.T) {
 
 func TestMarkResolvedIsIdempotent(t *testing.T) {
 	slackAPI := requestSlack(t)
-	srv, err := newServer(&fakeHost{credentials: testCredentials}, slackAPI.URL+"/api/", t.TempDir())
+	srv, _, err := newServer(&fakeHost{credentials: testCredentials}, slackAPI.URL+"/api/", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

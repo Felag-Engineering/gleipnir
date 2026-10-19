@@ -59,6 +59,15 @@ func (r messageRef) label(optionID string) string {
 	return optionID
 }
 
+func (r messageRef) hasOption(optionID string) bool {
+	for _, o := range r.Options {
+		if o.ID == optionID {
+			return true
+		}
+	}
+	return false
+}
+
 type messageRefStore struct{ dir string }
 
 func newMessageRefStore(dir string) (*messageRefStore, error) {

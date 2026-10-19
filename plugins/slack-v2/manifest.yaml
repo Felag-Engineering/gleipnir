@@ -15,6 +15,9 @@ gleipnir:
     tool_provider: {}
     human_channel:
       assurance: authenticated
+    identity_provider:
+      # Slack user IDs are mapped to Gleipnir users by an admin, per instance.
+      link_methods: [admin_set]
   auth:
     strategy: oauth2_authcode
     oauth_defaults:
