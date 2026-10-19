@@ -19,7 +19,7 @@ A plugin can implement any combination — tool-only, channel-only, trigger-only
 **SDK location.** The SDK and reference plugins live in this monorepo for v1.1 (a separate repository is planned but not yet available):
 
 - SDK module: `plugin-sdk/` — module path `github.com/felag-engineering/gleipnir/plugin-sdk`
-- Reference plugins: `plugins/ntfy/` (channel Notify only), `plugins/slack/` (all three services + OAuth)
+- Reference plugins: `plugins/slack/` (all three services + OAuth). `plugins/ntfy/` is already a v2 plugin (a containerized MCP server, notify-only channel) and is no longer a v1 example; the sections below that cite it describe the v1 shape.
 - Minimal example: `plugin-sdk/examples/minimal-tool/`
 
 ## 2. Prerequisites
@@ -130,7 +130,7 @@ type Service interface {
 
 Notify-only plugins should return `pluginerr.Unimplemented("Request not supported")` from `Request`. This produces the correct application-level envelope rather than a gRPC-level error.
 
-Register with `serve.WithChannelHandler`. See `plugins/ntfy/service.go` for the canonical Notify-only example (~100 LOC).
+Register with `serve.WithChannelHandler`. For a Notify-only channel in the v2 shape, see `plugins/ntfy/notify.go`; the v1 gRPC example it replaced is in git history before #983.
 
 ### TriggerService
 
@@ -225,7 +225,7 @@ Returns exit 0 on match, exit 1 with a diff when they diverge.
 
 The committed `manifest.yaml` is the canonical signed artifact. Do not hand-edit it after running `gen-manifest` — the host verifies the signature against the bundle's `manifest.yaml` as-is.
 
-**`TestManifestYAMLIsCanonical`.** Both reference plugins include this test (see `plugins/ntfy/manifest_test.go`). Copy the pattern: unmarshal the committed `manifest.yaml`, re-marshal it, and compare byte-for-byte. This catches drift when `manifest.go` is updated without regenerating the YAML.
+**`TestManifestYAMLIsCanonical`.** The Slack reference plugin includes this test (see `plugins/slack/manifest_test.go`). Copy the pattern: unmarshal the committed `manifest.yaml`, re-marshal it, and compare byte-for-byte. This catches drift when `manifest.go` is updated without regenerating the YAML.
 
 ## 6. Credentials and OAuth
 
@@ -430,7 +430,7 @@ Inspection methods on `FakeHost`: `Events()`, `Metrics()`, `AuditSteps()`, `Logs
 
 **Import alias.** Import `plugin-sdk/testing` as `plugintest` (not `testing`) to avoid shadowing the stdlib package.
 
-Both reference plugins use this pattern extensively. See `plugins/ntfy/service_test.go` and `plugins/slack/service_test.go` for complete examples.
+See `plugins/slack/service_test.go` for a complete example.
 
 ### Interactive dev with `gleipnir-plugin run`
 
@@ -466,5 +466,5 @@ Additional flags for `run`:
 | ADR tracker | [`docs/developer/ADR_Tracker.md`](ADR_Tracker.md) |
 | SDK README | [`plugin-sdk/README.md`](../../plugin-sdk/README.md) |
 | Minimal tool example | [`plugin-sdk/examples/minimal-tool/`](../../plugin-sdk/examples/minimal-tool/) |
-| ntfy reference (channel) | [`plugins/ntfy/`](../../plugins/ntfy/) |
-| slack reference (full) | [`plugins/slack/`](../../plugins/slack/) |
+| ntfy (v2, notify-only channel) | [`plugins/ntfy/`](../../plugins/ntfy/) |
+| slack reference (full, v1) | [`plugins/slack/`](../../plugins/slack/) |

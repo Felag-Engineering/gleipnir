@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **`plugins/ntfy` is now a v2 plugin.** Rewritten as a signed, containerized MCP server: a notify-only, weak-assurance `io.gleipnir/channel` publishing to an ntfy topic, configured through host instance config (`server_url`, `default_topic`, secret `api_token`). The v1 gRPC binary, its manifest and tests are removed; no compose, CI or nightly consumed them (#983).
 - **`mcp_servers.protocol_version` column.** Pins the MCP protocol version negotiated per registry entry at `server/discover` time (mcp-realignment-spec.md §11); nullable, NULL/`""` means unpinned (#733).
 - **`mcp_tools.canonical_schema` column.** Populated at discovery with schemanorm-normalized bytes (ADR-059 / mcp-realignment-spec.md §10 step 1) alongside the raw schema. Drift detection now compares the canonical form so key-order-only schema changes no longer flag a tool as modified. `Registry.ResolveForPolicy` already reads the column into `ResolvedTool.CanonicalSchema`, ~~but nothing consumes it yet~~ (#738).
 - **Bilingual MCP request path.** A server pinned to `2026-07-28` now gets stateless `tools/list`/`tools/call` POSTs carrying `MCP-Protocol-Version`, `Mcp-Method`, and (on `tools/call`) `Mcp-Name`, with no session, no `Mcp-Session-Id`, and no 401 re-init retry; unpinned and legacy-pinned servers stay byte-for-byte unchanged (#741).

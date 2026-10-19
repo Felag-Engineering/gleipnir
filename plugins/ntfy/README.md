@@ -1,177 +1,78 @@
 # ntfy
 
-A channel-only reference plugin that delivers fire-and-forget notifications to
-an [ntfy](https://ntfy.sh) server via HTTP POST. It implements `ChannelService.Notify`
-only — no `Request` surface.
+A notify-only `io.gleipnir/channel` plugin that publishes Gleipnir
+notifications to an [ntfy](https://ntfy.sh) topic. It is a v2 plugin: a signed,
+containerized MCP server on streamable HTTP. It has no gRPC or go-plugin
+involvement and links nothing from `plugin-sdk/serve`.
 
-## What this plugin demonstrates
+## What it demonstrates
 
-- Declaring a `ChannelService` with `implements_notify: true` only.
-- Using `static_api_key` auth strategy: the host stores an optional API key
-  that the plugin fetches at call time via `GetCredentials`. No OAuth, not
-  auth-required at install.
-- Per-audience topic override: the `channels[].config_schema` carries a single
-  `topic` field that the audience editor surfaces per entry.
-- Instance config (`server_url`, `default_topic`, `auth_header_name`) fetched
-  via `GetInstanceConfig`.
+- The smallest useful channel: `mcpserver` + `channelext` with a notify handler
+  and no `channelext.WithRequest`, so `channel/request` is answered with
+  method-not-found.
+- A `weak` assurance declaration. An ntfy topic is a shared space and cannot
+  establish which Gleipnir user acted; the manifest and the served
+  `server/discover` declaration both say so, and a test pins them together.
+- Instance configuration through the host endpoint (`host/get_instance_config`),
+  including an `x-gleipnir-secret` field, and logging through `host/log`.
+
+## Behaviour
+
+`channel/notify` POSTs the message body to `<server_url>/<topic>`.
+
+- The topic is the target's `address`, falling back to `default_topic`. It must
+  match ntfy's own topic syntax (1-64 letters, digits, `-`, `_`); anything else
+  is refused before a request is made, so an address cannot add path segments
+  or a query string.
+- A non-2xx response, a transport failure, or an invalid config fails the call
+  with a JSON-RPC error. The caller's context bounds the publish.
+- `Authorization: Bearer <api_token>` is sent only when a token is configured.
+- Config is read on every notification, so an admin's change applies without a
+  container restart.
+
+## Instance config
+
+| Field           | Default           | Description |
+|-----------------|-------------------|-------------|
+| `server_url`    | `https://ntfy.sh` | Base URL of the ntfy server |
+| `default_topic` | none              | Topic used when a notification's address is empty |
+| `api_token`     | none              | Access token for protected topics (secret, read back as `***`) |
+
+## Egress
+
+The manifest declares `ntfy.sh` only. A self-hosted `server_url` needs an
+egress grant for its host; letting operators add destinations at configuration
+time is a post-alpha contract adjustment.
 
 ## Layout
 
 ```
-ntfy/
-  main.go            — calls serve.Serve(); entry point for the plugin binary
-  service.go         — ChannelService.Notify implementation (~100 LOC)
-  manifest.go        — pluginManifest variable (source of truth for metadata)
-  manifest.yaml      — canonical YAML projection of manifest.go (generated)
-  manifest_test.go   — TestManifestYAMLIsCanonical: round-trip + Go-source equality
-  service_test.go    — 5 test cases (happy path, topic override, errors, no auth)
-  integration_test.go — end-to-end test booting the binary against a fake ntfy server
-  go.mod             — per-plugin module; resolved by the repo-root go.work
+main.go          server composition, LISTEN_ADDR (default :8080), graceful shutdown
+notify.go        the channel/notify handler
+manifest.yaml    the v2 manifest (placeholder image digest; the Makefile stamps a copy)
+Dockerfile       static, distroless, nonroot image; build from the repository root
+Makefile         image, archive, manifest-digest, bundle
+notify_test.go   behaviour tests and manifest-vs-served-surface pins
 ```
-
-## Instance config schema
-
-| Field              | Required | Default         | Description |
-|--------------------|----------|-----------------|-------------|
-| `server_url`       | yes      | —               | Base URL of the ntfy server (e.g. `https://ntfy.sh`) |
-| `default_topic`    | no       | —               | Topic to post to when no per-audience override is set |
-| `auth_header_name` | no       | `Authorization` | HTTP header to carry the API key |
-
-## Channel (per-audience) config schema
-
-| Field   | Required | Description |
-|---------|----------|-------------|
-| `topic` | no       | Overrides `default_topic` for this audience entry |
-
-## Credentials
-
-Credentials JSON shape: `{"api_key": "<your-token>"}`.
-
-The API key is optional — ntfy supports unauthenticated topics. When `api_key`
-is present the plugin sends `Bearer <key>` in the auth header (or whatever
-`auth_header_name` is set to).
-
-**This plugin uses `static_api_key` auth strategy** — it is not auth-required
-at install (no OAuth). An admin installs it and sets the API key once in the
-instance credentials screen.
-
-## Build
-
-```sh
-go build .
-```
-
-The binary is a go-plugin subprocess: executing it directly prints a "this is a
-plugin" notice rather than running, since it expects the host to launch it over
-the go-plugin handshake. Use the test suite below, or `gleipnir-plugin run` to
-drive it against a fake host.
 
 ## Test
 
-From this directory:
+```sh
+make test        # go vet + go test -race
+```
+
+## Build and sign a bundle
+
+Needs a container engine (`CONTAINER_ENGINE=podman` for Podman) and a signing
+key kept outside the repository (`gleipnir-plugin keygen`, with the `.pub` file
+next to the key):
 
 ```sh
-go test .
+make bundle SIGNING_KEY=/path/to/ntfy.key
 ```
 
-Or from the repo root via the workspace:
-
-```sh
-go test ./plugins/ntfy/...
-```
-
-| Test | What it asserts |
-|------|-----------------|
-| `TestNotify_Happy` | Correct path, Title header, Authorization header, body forwarded. |
-| `TestNotify_PerAudienceTopicOverride` | `channel_config_json.topic` overrides `default_topic`. |
-| `TestNotify_NoTopicConfigured` | Missing topic → `ok=false`, INVALID_ARG, zero HTTP requests made. |
-| `TestNotify_NtfyServerError` | HTTP 503 → `ok=false`, populated ErrorEnvelope. |
-| `TestNotify_NoAPIKey` | No `api_key` in credentials → no Authorization header sent. |
-| `TestManifestYAMLIsCanonical` | `manifest.yaml` round-trips and matches `manifest.go`. |
-
-## Install and audience setup flow
-
-1. **Build** the binary:
-   ```sh
-   go build -o ntfy-plugin .
-   ```
-
-2. **Generate signing keys** (not committed — keep the private key secret):
-   ```sh
-   gleipnir-plugin keygen --out-dir . --name ntfy --unencrypted
-   # produces ntfy.key (private) and ntfy.pub (public)
-   ```
-
-3. **Sign and package** (the `package` subcommand signs internally):
-   ```sh
-   gleipnir-plugin package --binary ./ntfy-plugin --manifest manifest.yaml \
-     --key ntfy.key --pubkey ntfy.pub --out-dir dist
-   # produces dist/ntfy-0.1.0.tar.gz
-   ```
-
-4. **Install** via the Gleipnir admin UI at `/admin/plugins` → "Install plugin"
-   → upload `dist/ntfy-0.1.0.tar.gz`.
-
-5. **Configure the instance** in the plugin settings:
-   - `server_url` — your ntfy server URL
-   - `default_topic` (optional)
-   - `api_key` in credentials (optional, for authenticated topics)
-
-6. **Add an audience entry** to a policy:
-   - Select the ntfy plugin as the channel.
-   - Optionally set `topic` in the channel config to override the default.
-   - Toggle `notify: true`.
-
-## Manifest
-
-`manifest.go` is the source of truth. `manifest.yaml` is its canonical
-projection — generated by `manifest.Marshal`, never written by hand.
-
-If you edit `manifest.go`, regenerate the YAML with a throwaway helper. Create
-`gen_manifest_local.go` (the `//go:build ignore` tag keeps it out of normal builds):
-
-```go
-//go:build ignore
-
-package main
-
-import (
-    "fmt"
-    "os"
-
-    "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
-)
-
-func main() {
-    b, err := manifest.Marshal(&pluginManifest)
-    if err != nil {
-        fmt.Fprintln(os.Stderr, err)
-        os.Exit(1)
-    }
-    os.Stdout.Write(b)
-}
-```
-
-Then run (passing `manifest.go` so `go run` compiles it alongside the helper):
-
-```sh
-go run gen_manifest_local.go manifest.go > manifest.yaml
-```
-
-Delete `gen_manifest_local.go` before committing. Run `go test .` to confirm
-`TestManifestYAMLIsCanonical` still passes.
-
-## Using outside the monorepo
-
-This plugin's `go.mod` declares:
-
-```
-require github.com/felag-engineering/gleipnir/plugin-sdk v0.0.0
-```
-
-`v0.0.0` is a workspace-only pseudo-version resolved by the repo-root `go.work`.
-Outside the monorepo, add a `replace` directive:
-
-```
-replace github.com/felag-engineering/gleipnir/plugin-sdk => ../path/to/plugin-sdk
-```
+The chain is `image` -> `archive` (`docker save`) -> `manifest-digest` (stamps
+the archive's image config digest into a copy of `manifest.yaml` under
+`dist/`, leaving the committed file untouched) -> `bundle` (signs and packages
+into `dist/bundle`). Install the result through the admin UI at
+`/admin/plugins`.
