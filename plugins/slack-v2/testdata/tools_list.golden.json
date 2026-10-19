@@ -1,0 +1,125 @@
+{
+  "tools": [
+    {
+      "description": "List Slack channels the token can see.",
+      "inputSchema": {
+        "properties": {
+          "exclude_archived": {
+            "type": "boolean",
+            "title": "Exclude archived",
+            "default": true
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 1000,
+            "minimum": 1,
+            "title": "Limit",
+            "description": "Max channels to return (1-1000). Defaults to 200"
+          },
+          "types": {
+            "type": "string",
+            "title": "Types",
+            "description": "Comma-separated channel types (public_channel,private_channel). Defaults to public_channel."
+          },
+          "cursor": {
+            "type": "string",
+            "title": "Cursor",
+            "description": "Pagination cursor from a previous response"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "name": "list_channels"
+    },
+    {
+      "description": "Look up a Slack user by ID.",
+      "inputSchema": {
+        "properties": {
+          "user": {
+            "type": "string",
+            "title": "User ID",
+            "description": "Slack user ID (U… format) to look up"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "user"
+        ]
+      },
+      "name": "lookup_user"
+    },
+    {
+      "description": "Read recent messages from a Slack channel.",
+      "inputSchema": {
+        "properties": {
+          "channel": {
+            "type": "string",
+            "title": "Channel",
+            "description": "Channel ID (C… or G…) to read history from"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 200,
+            "minimum": 1,
+            "title": "Limit",
+            "description": "Max messages to return (1-200). Defaults to 100"
+          },
+          "oldest": {
+            "type": "string",
+            "title": "Oldest",
+            "description": "Return messages after this Unix timestamp (exclusive)"
+          },
+          "cursor": {
+            "type": "string",
+            "title": "Cursor",
+            "description": "Pagination cursor from a previous response"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "channel"
+        ]
+      },
+      "name": "read_history"
+    },
+    {
+      "description": "Read the replies in a Slack message thread.",
+      "inputSchema": {
+        "properties": {
+          "channel": {
+            "type": "string",
+            "title": "Channel",
+            "description": "Channel ID (C… or G…) containing the thread"
+          },
+          "ts": {
+            "type": "string",
+            "title": "Thread TS",
+            "description": "Parent message timestamp (ts) that identifies the thread"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 200,
+            "minimum": 1,
+            "title": "Limit",
+            "description": "Max messages to return (1-200). Defaults to 200"
+          },
+          "cursor": {
+            "type": "string",
+            "title": "Cursor",
+            "description": "Pagination cursor from a previous response"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "channel",
+          "ts"
+        ]
+      },
+      "name": "read_thread"
+    }
+  ]
+}

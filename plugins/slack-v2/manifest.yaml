@@ -1,0 +1,47 @@
+schema_version: "2"
+name: slack-v2
+version: 0.1.0
+description: Reads Slack channels, message history, threads and users.
+package:
+  registry_type: oci
+  # Placeholder digest: `make bundle` stamps the real image config digest into
+  # a copy of this file; the committed pin is never the one that ships.
+  identifier: ghcr.io/felag-engineering/gleipnir-plugin-slack-v2@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  transport:
+    type: streamable-http
+    port: 8080
+gleipnir:
+  profiles:
+    tool_provider: {}
+  auth:
+    strategy: oauth2_authcode
+    oauth_defaults:
+      authorization_url: https://slack.com/oauth/v2/authorize
+      token_url: https://slack.com/api/oauth.v2.access
+      # Union of the per-tool scopes in health.go (toolScopes).
+      scopes:
+        - channels:history
+        - channels:read
+        - groups:history
+        - groups:read
+        - users:read
+  egress:
+    - domain: slack.com
+      reason: Slack Web API (slack.com/api)
+    - domain: "*.slack.com"
+      reason: Slack API and workspace hosts
+  resources:
+    cpu_millicores: 250
+    memory_mb: 128
+  tools:
+    - name: list_channels
+    - name: read_history
+    - name: read_thread
+    - name: lookup_user
+  config_schema:
+    type: object
+    properties:
+      app_token:
+        type: string
+        description: Slack app-level token (xapp-…) for Socket Mode. Declared now, read by the event and channel work that follows.
+        x-gleipnir-secret: true
