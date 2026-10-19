@@ -19,7 +19,7 @@ const (
 	slackErrNotAllowedTokenType = "not_allowed_token_type"
 )
 
-// toolScopes is the OAuth scope each read tool needs, one entry per Slack
+// toolScopes is the OAuth scope each tool needs, one entry per Slack
 // method it calls. An entry with several scopes means ONE of them, depending
 // on the kind of conversation the call targets (public vs private channel).
 //
@@ -32,6 +32,12 @@ var toolScopes = map[string][]string{
 	"read_history":  {"channels:history", "groups:history"}, // conversations.history
 	"read_thread":   {"channels:history", "groups:history"}, // conversations.replies
 	"lookup_user":   {"users:read"},                         // users.info
+
+	"post_message":   {"chat:write"},                      // chat.postMessage
+	"update_message": {"chat:write"},                      // chat.update
+	"delete_message": {"chat:write"},                      // chat.delete
+	"react":          {"reactions:write"},                 // reactions.add
+	"set_topic":      {"channels:manage", "groups:write"}, // conversations.setTopic
 }
 
 // healthSetter is the slice of hostclient.Client the reporter needs.

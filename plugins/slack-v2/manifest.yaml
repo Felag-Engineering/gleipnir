@@ -1,7 +1,7 @@
 schema_version: "2"
 name: slack-v2
 version: 0.1.0
-description: Reads Slack channels, message history, threads and users.
+description: Reads and writes Slack channels, messages, reactions and topics.
 package:
   registry_type: oci
   # Placeholder digest: `make bundle` stamps the real image config digest into
@@ -21,9 +21,13 @@ gleipnir:
       # Union of the per-tool scopes in health.go (toolScopes).
       scopes:
         - channels:history
+        - channels:manage
         - channels:read
+        - chat:write
         - groups:history
         - groups:read
+        - groups:write
+        - reactions:write
         - users:read
   egress:
     - domain: slack.com
@@ -38,6 +42,11 @@ gleipnir:
     - name: read_history
     - name: read_thread
     - name: lookup_user
+    - name: post_message
+    - name: update_message
+    - name: delete_message
+    - name: react
+    - name: set_topic
   config_schema:
     type: object
     properties:

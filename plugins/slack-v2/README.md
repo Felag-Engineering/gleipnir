@@ -1,8 +1,8 @@
 # slack-v2
 
 The Slack plugin rebuilt as a containerized MCP server (ADR-053..ADR-060). It
-serves four read-only tools today; the rest of the v1 surface follows in later
-issues.
+serves the nine v1 tools: four read tools and five write tools. Channel and
+event features follow in later issues.
 
 **The v1 plugin (`plugins/slack`) stays live until the flip (#1005).** Nothing
 here replaces or changes it, and the two are never run side by side: the v2
@@ -20,8 +20,19 @@ manifest's `auth.oauth_defaults.scopes` is the union, which a test enforces.
 | `read_history` | `conversations.history` | `channels:history` (public), `groups:history` (private) |
 | `read_thread` | `conversations.replies` | `channels:history` (public), `groups:history` (private) |
 | `lookup_user` | `users.info` | `users:read` |
+| `post_message` | `chat.postMessage` | `chat:write` |
+| `update_message` | `chat.update` | `chat:write` |
+| `delete_message` | `chat.delete` | `chat:write` |
+| `react` | `reactions.add` | `reactions:write` |
+| `set_topic` | `conversations.setTopic` | `channels:manage` (public), `groups:write` (private) |
 
 DMs and group DMs (`im:*`, `mpim:*`) are deliberately not requested yet.
+
+`post_message` and `update_message` take `text`, Block Kit `blocks` (a JSON
+array, passed to Slack untouched), or both; `text` is then the notification
+fallback. Input that cannot be valid (a missing channel or timestamp, neither
+text nor blocks, `blocks` that is not an array, a topic over 250 characters) is
+refused with an `isError` result before Slack is called.
 
 ## Per-capability health
 

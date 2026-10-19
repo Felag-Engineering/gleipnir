@@ -32,7 +32,7 @@ func TestManifestDeclaresTheRegisteredTools(t *testing.T) {
 
 	p := &plugin{}
 	var registered []string
-	for _, tool := range p.readTools() {
+	for _, tool := range p.allTools() {
 		registered = append(registered, tool.Name)
 	}
 

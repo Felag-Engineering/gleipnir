@@ -1,6 +1,30 @@
 {
   "tools": [
     {
+      "description": "Delete a message the bot previously posted.",
+      "inputSchema": {
+        "properties": {
+          "channel": {
+            "type": "string",
+            "title": "Channel",
+            "description": "Channel ID containing the message to delete"
+          },
+          "ts": {
+            "type": "string",
+            "title": "Message TS",
+            "description": "Timestamp of the message to delete"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "channel",
+          "ts"
+        ]
+      },
+      "name": "delete_message"
+    },
+    {
       "description": "List Slack channels the token can see.",
       "inputSchema": {
         "properties": {
@@ -49,6 +73,71 @@
         ]
       },
       "name": "lookup_user"
+    },
+    {
+      "description": "Post a message to a Slack channel or thread, as plain text or Block Kit blocks.",
+      "inputSchema": {
+        "properties": {
+          "channel": {
+            "type": "string",
+            "title": "Channel",
+            "description": "Channel ID (C…) or name (#general)"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": "Message text. Used as the notification / fallback text when blocks are present, or as the message body when blocks are absent."
+          },
+          "blocks": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Blocks"
+          },
+          "thread_ts": {
+            "type": "string",
+            "title": "Thread TS",
+            "description": "Optional parent thread timestamp to reply in-thread"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "channel"
+        ]
+      },
+      "name": "post_message"
+    },
+    {
+      "description": "Add an emoji reaction to a Slack message.",
+      "inputSchema": {
+        "properties": {
+          "channel": {
+            "type": "string",
+            "title": "Channel",
+            "description": "Channel ID containing the message"
+          },
+          "timestamp": {
+            "type": "string",
+            "title": "Timestamp",
+            "description": "Message ts (e.g. 1700000000.123456)"
+          },
+          "name": {
+            "type": "string",
+            "title": "Emoji name",
+            "description": "Reaction name without colons (e.g. thumbsup)"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "channel",
+          "timestamp",
+          "name"
+        ]
+      },
+      "name": "react"
     },
     {
       "description": "Read recent messages from a Slack channel.",
@@ -120,6 +209,67 @@
         ]
       },
       "name": "read_thread"
+    },
+    {
+      "description": "Set a Slack channel's topic.",
+      "inputSchema": {
+        "properties": {
+          "channel": {
+            "type": "string",
+            "title": "Channel",
+            "description": "Channel ID"
+          },
+          "topic": {
+            "type": "string",
+            "maxLength": 250,
+            "title": "Topic",
+            "description": "New channel topic (max 250 chars)"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "channel",
+          "topic"
+        ]
+      },
+      "name": "set_topic"
+    },
+    {
+      "description": "Edit a message the bot previously posted.",
+      "inputSchema": {
+        "properties": {
+          "channel": {
+            "type": "string",
+            "title": "Channel",
+            "description": "Channel ID containing the message to update"
+          },
+          "ts": {
+            "type": "string",
+            "title": "Message TS",
+            "description": "Timestamp of the message to update"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": "Message text. Used as the notification / fallback text when blocks are present, or as the message body when blocks are absent."
+          },
+          "blocks": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Blocks"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "channel",
+          "ts"
+        ]
+      },
+      "name": "update_message"
     }
   ]
 }

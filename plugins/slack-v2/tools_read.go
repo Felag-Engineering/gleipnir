@@ -64,10 +64,18 @@ func reflectInputSchema(v any) json.RawMessage {
 	return b
 }
 
-// readTool builds an mcpserver.Tool whose handler decodes arguments into In,
-// obtains a Slack client for the current credentials, runs call, and routes
-// any Slack failure through slackToolError (which owns health reporting).
-func readTool[In any](p *plugin, name, description string, call func(ctx context.Context, sc *slack.Client, in In) (any, error)) mcpserver.Tool {
+// argsValidator is implemented by input types that have constraints a JSON
+// schema cannot enforce on its own (non-empty strings, text-or-blocks). A
+// failure is reported before any credential lookup or Slack call.
+type argsValidator interface {
+	validate() error
+}
+
+// slackTool builds an mcpserver.Tool whose handler decodes arguments into In,
+// validates them, obtains a Slack client for the current credentials, runs
+// call, and routes any Slack failure through slackToolError (which owns
+// health reporting).
+func slackTool[In any](p *plugin, name, description string, call func(ctx context.Context, sc *slack.Client, in In) (any, error)) mcpserver.Tool {
 	return mcpserver.Tool{
 		Name:        name,
 		Description: description,
@@ -76,6 +84,11 @@ func readTool[In any](p *plugin, name, description string, call func(ctx context
 			var in In
 			if err := json.Unmarshal(args, &in); err != nil {
 				return nil, fmt.Errorf("invalid arguments: %w", err)
+			}
+			if v, ok := any(in).(argsValidator); ok {
+				if err := v.validate(); err != nil {
+					return nil, fmt.Errorf("invalid arguments: %w", err)
+				}
 			}
 			sc, err := p.slack.client(ctx)
 			if err != nil {
@@ -105,10 +118,10 @@ func (p *plugin) slackToolError(ctx context.Context, tool string, err error) err
 
 func (p *plugin) readTools() []mcpserver.Tool {
 	return []mcpserver.Tool{
-		readTool(p, toolListChannels, "List Slack channels the token can see.", listChannels),
-		readTool(p, toolReadHistory, "Read recent messages from a Slack channel.", readHistory),
-		readTool(p, toolReadThread, "Read the replies in a Slack message thread.", readThread),
-		readTool(p, toolLookupUser, "Look up a Slack user by ID.", lookupUser),
+		slackTool(p, toolListChannels, "List Slack channels the token can see.", listChannels),
+		slackTool(p, toolReadHistory, "Read recent messages from a Slack channel.", readHistory),
+		slackTool(p, toolReadThread, "Read the replies in a Slack message thread.", readThread),
+		slackTool(p, toolLookupUser, "Look up a Slack user by ID.", lookupUser),
 	}
 }
 
