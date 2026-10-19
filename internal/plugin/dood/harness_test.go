@@ -271,12 +271,20 @@ func (h *harness) post(path, body string) *httptest.ResponseRecorder {
 // no-op that returns the same ID.
 func (h *harness) InstallBundle(mode string) string {
 	h.t.Helper()
+	return h.InstallBundleFile("conformance-stub-" + mode)
+}
+
+// InstallBundleFile is InstallBundle for any signed bundle in the bundle
+// directory, named without its .tgz extension (slack-v2, for example, which
+// make slack-v2-bundle produces).
+func (h *harness) InstallBundleFile(name string) string {
+	h.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), convergeBudget)
 	defer cancel()
 
-	path := filepath.Join(bundleDir(), "conformance-stub-"+mode+".tgz")
+	path := filepath.Join(bundleDir(), name+".tgz")
 	if _, err := os.Stat(path); err != nil {
-		h.t.Fatalf("bundle missing: %v\nbuild it with `make conformance-stub-bundle` (see scripts/run-dood-suite.sh)", err)
+		h.t.Fatalf("bundle missing: %v\nbuild it with `make conformance-stub-bundle` or `make slack-v2-bundle` (see scripts/run-dood-suite.sh)", err)
 	}
 	pluginID, err := h.asm.AdminDeps().Installer.Install(ctx, path)
 	if err != nil {

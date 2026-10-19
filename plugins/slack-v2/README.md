@@ -77,6 +77,7 @@ with the user-scoping work (M6).
 | `GLEIPNIR_INSTANCE_TOKEN` | set by the host | Bearer token for the host endpoint |
 | `DATA_DIR` | `/data` | Instance volume for durable `channel/request` tasks (`tasks/`) and the record of each posted message (`messages/`). The image creates it owned by uid 65532; mount a volume there for tasks to outlive the container |
 | `SLACK_API_URL` | `https://slack.com/api/` | Slack Web API base. Point it at a fake Slack in tests; egress still bounds what the container can reach |
+| `LISTEN_ADDR` | `:8080` | Address the MCP endpoint listens on. The host dials the manifest's transport port, so leave it alone in a container; the in-process e2e (`internal/plugin/e2e`) sets it to run the binary beside other listeners |
 
 The credentials blob is fetched on every call and the Slack client is cached by
 access token, so a token the host rotates is picked up on its next use.
