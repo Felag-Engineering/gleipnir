@@ -501,6 +501,8 @@ CREATE TABLE plugin_instances (
     last_oauth_callback_url  TEXT,                                                        -- nullable; OAuth-flow plumbing (#230)
     host_event_rate_per_sec  REAL,                                                        -- nullable; host-owned EmitEvent sustained rate (events/sec); NULL → default 100 (#577)
     host_event_burst         INTEGER,                                                     -- nullable; host-owned EmitEvent burst ceiling; NULL → default 200 (#577)
+    resource_memory_mb_override       INTEGER,  -- nullable; admin override of the manifest memory limit (MiB); NULL → not overridden (#1000)
+    resource_cpu_millicores_override  INTEGER,  -- nullable; admin override of the manifest CPU limit (millicores); NULL → not overridden (#1000)
     version                  INTEGER NOT NULL DEFAULT 0,                                  -- ADR-038 CAS counter
     created_at               TEXT    NOT NULL,                                            -- ISO 8601 UTC
     updated_at               TEXT    NOT NULL,                                            -- ISO 8601 UTC

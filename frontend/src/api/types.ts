@@ -847,6 +847,18 @@ export interface ApiPluginInstanceDetail {
   // start (v2 substrate). It is not a health state: serving_generation is
   // non-null when a failed upgrade leaves the previous generation serving.
   startup?: ApiPluginInstanceStartupFault
+  // Container plugins only. override is the admin-set per-instance limit
+  // (null when none); effective is the resolved value with its source
+  // ('manifest' | 'admin_override' | 'default').
+  resources?: {
+    override: { memory_mb?: number; cpu_millicores?: number } | null
+    effective: {
+      memory_mb: number
+      cpu_millicores: number
+      memory_source: string
+      cpu_source: string
+    }
+  }
 }
 
 // ApiPluginInstanceStartupFault matches internal/admin/plugin_instance_startup.go →
@@ -985,6 +997,15 @@ export interface ApiPluginV2Consent {
   egress: { domain: string; reason?: string }[]
   // null when the manifest declares no resources (the host default applies).
   resources: { memory_mb?: number; cpu_millicores?: number } | null
+  // What the container is capped at before any per-instance admin override:
+  // the declared figure, else the host default, each with its source
+  // ('manifest' | 'default').
+  effective_resources: {
+    memory_mb: number
+    cpu_millicores: number
+    memory_source: string
+    cpu_source: string
+  }
   profiles: {
     declared: string[]
     human_channel_assurance?: string

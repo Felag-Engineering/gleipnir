@@ -299,6 +299,10 @@ func TestGetPluginDetail_V2Consent(t *testing.T) {
 	if v2.Resources == nil || v2.Resources.MemoryMB != 256 || v2.Resources.CPUMillicores != 500 {
 		t.Errorf("resources = %+v", v2.Resources)
 	}
+	if eff := v2.EffectiveResources; eff.MemoryMB != 256 || eff.CPUMillicores != 500 ||
+		eff.MemorySource != "manifest" || eff.CPUSource != "manifest" {
+		t.Errorf("effective_resources = %+v, want the manifest's figures", eff)
+	}
 	if got := strings.Join(v2.Profiles.Declared, ","); got != "tool_provider,event_source,human_channel,identity_provider" {
 		t.Errorf("profiles = %s", got)
 	}
@@ -344,6 +348,13 @@ func TestGetPluginDetail_V2MinimalHasEmptyArraysNotNull(t *testing.T) {
 	}
 	if string(raw.V2["resources"]) != "null" {
 		t.Errorf("v2.resources = %s, want null when the manifest declares none", raw.V2["resources"])
+	}
+	var eff pluginV2EffectiveResources
+	if err := json.Unmarshal(raw.V2["effective_resources"], &eff); err != nil {
+		t.Fatalf("effective_resources: %v", err)
+	}
+	if eff.MemorySource != "default" || eff.CPUSource != "default" || eff.MemoryMB != 256 || eff.CPUMillicores != 500 {
+		t.Errorf("effective_resources = %+v, want the host defaults", eff)
 	}
 }
 

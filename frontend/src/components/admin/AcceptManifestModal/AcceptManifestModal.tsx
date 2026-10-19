@@ -1,7 +1,9 @@
 import type { ApiPluginV2Consent } from '@/api/types'
 import { Modal } from '@/components/Modal'
 import { PluginV2Consent } from '@/components/admin/PluginReviewCard/PluginV2Consent'
+import { diffConsent } from '@/components/admin/PluginReviewCard/consentFormat'
 import { ModalFooter } from '@/components/ModalFooter'
+import { ConsentChanges } from './ConsentChanges'
 import alertStyles from '@/styles/alerts.module.css'
 import styles from './AcceptManifestModal.module.css'
 
@@ -12,6 +14,9 @@ export interface AcceptManifestModalProps {
   pendingInstanceCount: number
   // The blocked v2 candidate to review before accepting; absent for a v1 plugin.
   pendingConsent?: ApiPluginV2Consent
+  // What the admin consented to earlier; the egress and limit changes are
+  // shown against it.
+  currentConsent?: ApiPluginV2Consent
   // True while the plugin detail (which carries the candidate) is loading.
   // Acceptance waits for it so a v2 candidate is never accepted unseen.
   detailLoading?: boolean
@@ -35,6 +40,7 @@ export function AcceptManifestModal({
   pluginName,
   pendingInstanceCount,
   pendingConsent,
+  currentConsent,
   detailLoading = false,
   detailError = null,
   onClose,
@@ -70,6 +76,10 @@ export function AcceptManifestModal({
         healthy. Instances where the new manifest adds required fields will
         move to pending_config_migration until the missing config is supplied.
       </p>
+
+      {pendingConsent && currentConsent && (
+        <ConsentChanges diff={diffConsent(currentConsent, pendingConsent)} />
+      )}
 
       {pendingConsent && <PluginV2Consent consent={pendingConsent} />}
 

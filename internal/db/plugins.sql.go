@@ -58,7 +58,7 @@ func (q *Queries) CreatePlugin(ctx context.Context, arg CreatePluginParams) (Plu
 const createPluginInstance = `-- name: CreatePluginInstance :one
 INSERT INTO plugin_instances (id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, version, created_at, updated_at)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12, ?13)
-RETURNING id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, host_event_rate_per_sec, host_event_burst, version, created_at, updated_at
+RETURNING id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, host_event_rate_per_sec, host_event_burst, resource_memory_mb_override, resource_cpu_millicores_override, version, created_at, updated_at
 `
 
 type CreatePluginInstanceParams struct {
@@ -108,6 +108,8 @@ func (q *Queries) CreatePluginInstance(ctx context.Context, arg CreatePluginInst
 		&i.LastOauthCallbackUrl,
 		&i.HostEventRatePerSec,
 		&i.HostEventBurst,
+		&i.ResourceMemoryMbOverride,
+		&i.ResourceCpuMillicoresOverride,
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -198,7 +200,7 @@ func (q *Queries) GetPluginByName(ctx context.Context, name string) (Plugin, err
 }
 
 const getPluginInstanceByGlobalName = `-- name: GetPluginInstanceByGlobalName :one
-SELECT id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, host_event_rate_per_sec, host_event_burst, version, created_at, updated_at FROM plugin_instances WHERE instance_name = ?1 LIMIT 1
+SELECT id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, host_event_rate_per_sec, host_event_burst, resource_memory_mb_override, resource_cpu_millicores_override, version, created_at, updated_at FROM plugin_instances WHERE instance_name = ?1 LIMIT 1
 `
 
 // GetPluginInstanceByGlobalName finds the first instance with the given name
@@ -224,6 +226,8 @@ func (q *Queries) GetPluginInstanceByGlobalName(ctx context.Context, instanceNam
 		&i.LastOauthCallbackUrl,
 		&i.HostEventRatePerSec,
 		&i.HostEventBurst,
+		&i.ResourceMemoryMbOverride,
+		&i.ResourceCpuMillicoresOverride,
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -232,7 +236,7 @@ func (q *Queries) GetPluginInstanceByGlobalName(ctx context.Context, instanceNam
 }
 
 const getPluginInstanceByID = `-- name: GetPluginInstanceByID :one
-SELECT id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, host_event_rate_per_sec, host_event_burst, version, created_at, updated_at FROM plugin_instances WHERE id = ?1
+SELECT id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, host_event_rate_per_sec, host_event_burst, resource_memory_mb_override, resource_cpu_millicores_override, version, created_at, updated_at FROM plugin_instances WHERE id = ?1
 `
 
 func (q *Queries) GetPluginInstanceByID(ctx context.Context, id string) (PluginInstance, error) {
@@ -252,6 +256,8 @@ func (q *Queries) GetPluginInstanceByID(ctx context.Context, id string) (PluginI
 		&i.LastOauthCallbackUrl,
 		&i.HostEventRatePerSec,
 		&i.HostEventBurst,
+		&i.ResourceMemoryMbOverride,
+		&i.ResourceCpuMillicoresOverride,
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -260,7 +266,7 @@ func (q *Queries) GetPluginInstanceByID(ctx context.Context, id string) (PluginI
 }
 
 const getPluginInstanceByName = `-- name: GetPluginInstanceByName :one
-SELECT id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, host_event_rate_per_sec, host_event_burst, version, created_at, updated_at FROM plugin_instances WHERE plugin_id = ?1 AND instance_name = ?2
+SELECT id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, host_event_rate_per_sec, host_event_burst, resource_memory_mb_override, resource_cpu_millicores_override, version, created_at, updated_at FROM plugin_instances WHERE plugin_id = ?1 AND instance_name = ?2
 `
 
 type GetPluginInstanceByNameParams struct {
@@ -285,6 +291,8 @@ func (q *Queries) GetPluginInstanceByName(ctx context.Context, arg GetPluginInst
 		&i.LastOauthCallbackUrl,
 		&i.HostEventRatePerSec,
 		&i.HostEventBurst,
+		&i.ResourceMemoryMbOverride,
+		&i.ResourceCpuMillicoresOverride,
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -311,7 +319,7 @@ func (q *Queries) GetPluginPendingManifest(ctx context.Context, pluginID string)
 }
 
 const listPluginInstances = `-- name: ListPluginInstances :many
-SELECT id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, host_event_rate_per_sec, host_event_burst, version, created_at, updated_at FROM plugin_instances ORDER BY plugin_id, instance_name
+SELECT id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, host_event_rate_per_sec, host_event_burst, resource_memory_mb_override, resource_cpu_millicores_override, version, created_at, updated_at FROM plugin_instances ORDER BY plugin_id, instance_name
 `
 
 func (q *Queries) ListPluginInstances(ctx context.Context) ([]PluginInstance, error) {
@@ -337,6 +345,8 @@ func (q *Queries) ListPluginInstances(ctx context.Context) ([]PluginInstance, er
 			&i.LastOauthCallbackUrl,
 			&i.HostEventRatePerSec,
 			&i.HostEventBurst,
+			&i.ResourceMemoryMbOverride,
+			&i.ResourceCpuMillicoresOverride,
 			&i.Version,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -355,7 +365,7 @@ func (q *Queries) ListPluginInstances(ctx context.Context) ([]PluginInstance, er
 }
 
 const listPluginInstancesByHealth = `-- name: ListPluginInstancesByHealth :many
-SELECT id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, host_event_rate_per_sec, host_event_burst, version, created_at, updated_at FROM plugin_instances WHERE health_state = ?1 ORDER BY plugin_id, instance_name
+SELECT id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, host_event_rate_per_sec, host_event_burst, resource_memory_mb_override, resource_cpu_millicores_override, version, created_at, updated_at FROM plugin_instances WHERE health_state = ?1 ORDER BY plugin_id, instance_name
 `
 
 func (q *Queries) ListPluginInstancesByHealth(ctx context.Context, healthState string) ([]PluginInstance, error) {
@@ -381,6 +391,8 @@ func (q *Queries) ListPluginInstancesByHealth(ctx context.Context, healthState s
 			&i.LastOauthCallbackUrl,
 			&i.HostEventRatePerSec,
 			&i.HostEventBurst,
+			&i.ResourceMemoryMbOverride,
+			&i.ResourceCpuMillicoresOverride,
 			&i.Version,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -399,7 +411,7 @@ func (q *Queries) ListPluginInstancesByHealth(ctx context.Context, healthState s
 }
 
 const listPluginInstancesByPlugin = `-- name: ListPluginInstancesByPlugin :many
-SELECT id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, host_event_rate_per_sec, host_event_burst, version, created_at, updated_at FROM plugin_instances WHERE plugin_id = ?1 ORDER BY instance_name
+SELECT id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, host_event_rate_per_sec, host_event_burst, resource_memory_mb_override, resource_cpu_millicores_override, version, created_at, updated_at FROM plugin_instances WHERE plugin_id = ?1 ORDER BY instance_name
 `
 
 func (q *Queries) ListPluginInstancesByPlugin(ctx context.Context, pluginID string) ([]PluginInstance, error) {
@@ -425,6 +437,8 @@ func (q *Queries) ListPluginInstancesByPlugin(ctx context.Context, pluginID stri
 			&i.LastOauthCallbackUrl,
 			&i.HostEventRatePerSec,
 			&i.HostEventBurst,
+			&i.ResourceMemoryMbOverride,
+			&i.ResourceCpuMillicoresOverride,
 			&i.Version,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -443,7 +457,7 @@ func (q *Queries) ListPluginInstancesByPlugin(ctx context.Context, pluginID stri
 }
 
 const listPluginInstancesForCallbackRescan = `-- name: ListPluginInstancesForCallbackRescan :many
-SELECT id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, host_event_rate_per_sec, host_event_burst, version, created_at, updated_at FROM plugin_instances
+SELECT id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, host_event_rate_per_sec, host_event_burst, resource_memory_mb_override, resource_cpu_millicores_override, version, created_at, updated_at FROM plugin_instances
 WHERE last_oauth_callback_url IS NOT NULL
   AND health_state IN ('healthy', 'unsigned_permissive', 'crashed', 'circuit_broken')
 ORDER BY plugin_id, instance_name
@@ -477,6 +491,8 @@ func (q *Queries) ListPluginInstancesForCallbackRescan(ctx context.Context) ([]P
 			&i.LastOauthCallbackUrl,
 			&i.HostEventRatePerSec,
 			&i.HostEventBurst,
+			&i.ResourceMemoryMbOverride,
+			&i.ResourceCpuMillicoresOverride,
 			&i.Version,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -495,7 +511,7 @@ func (q *Queries) ListPluginInstancesForCallbackRescan(ctx context.Context) ([]P
 }
 
 const listPluginInstancesWithExpiringCredentials = `-- name: ListPluginInstancesWithExpiringCredentials :many
-SELECT id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, host_event_rate_per_sec, host_event_burst, version, created_at, updated_at FROM plugin_instances
+SELECT id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, host_event_rate_per_sec, host_event_burst, resource_memory_mb_override, resource_cpu_millicores_override, version, created_at, updated_at FROM plugin_instances
 WHERE credentials_expires_at IS NOT NULL
   AND credentials_expires_at <= ?1
   AND health_state IN ('healthy', 'unhealthy', 'unsigned_permissive')
@@ -530,6 +546,8 @@ func (q *Queries) ListPluginInstancesWithExpiringCredentials(ctx context.Context
 			&i.LastOauthCallbackUrl,
 			&i.HostEventRatePerSec,
 			&i.HostEventBurst,
+			&i.ResourceMemoryMbOverride,
+			&i.ResourceCpuMillicoresOverride,
 			&i.Version,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -810,6 +828,40 @@ type UpdatePluginInstanceOAuthCallbackParams struct {
 func (q *Queries) UpdatePluginInstanceOAuthCallback(ctx context.Context, arg UpdatePluginInstanceOAuthCallbackParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, updatePluginInstanceOAuthCallback,
 		arg.LastOauthCallbackUrl,
+		arg.UpdatedAt,
+		arg.ID,
+		arg.ExpectedVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const updatePluginInstanceResourceOverride = `-- name: UpdatePluginInstanceResourceOverride :execrows
+UPDATE plugin_instances
+SET resource_memory_mb_override      = ?1,
+    resource_cpu_millicores_override = ?2,
+    version                          = version + 1,
+    updated_at                       = ?3
+WHERE id = ?4 AND version = ?5
+`
+
+type UpdatePluginInstanceResourceOverrideParams struct {
+	ResourceMemoryMbOverride      *int64 `json:"resource_memory_mb_override"`
+	ResourceCpuMillicoresOverride *int64 `json:"resource_cpu_millicores_override"`
+	UpdatedAt                     string `json:"updated_at"`
+	ID                            string `json:"id"`
+	ExpectedVersion               int64  `json:"expected_version"`
+}
+
+// UpdatePluginInstanceResourceOverride writes the admin override of a v2
+// instance's resource limits and bumps the CAS version. NULL clears that
+// field's override. ADR-038 CAS (#1000).
+func (q *Queries) UpdatePluginInstanceResourceOverride(ctx context.Context, arg UpdatePluginInstanceResourceOverrideParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updatePluginInstanceResourceOverride,
+		arg.ResourceMemoryMbOverride,
+		arg.ResourceCpuMillicoresOverride,
 		arg.UpdatedAt,
 		arg.ID,
 		arg.ExpectedVersion,

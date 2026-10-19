@@ -343,6 +343,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 				r.Put("/plugins/{id}/instances/{iid}/config", cfg.Handlers.PluginAdminHandler.PutInstanceConfig)
 				r.Put("/plugins/{id}/instances/{iid}/config/{property}", cfg.Handlers.PluginAdminHandler.PutInstanceConfigProperty)
 				r.Put("/plugins/{id}/instances/{iid}/event-rate-limit", cfg.Handlers.PluginAdminHandler.PutEventRateLimit)
+				r.Put("/plugins/{id}/instances/{iid}/resources", cfg.Handlers.PluginAdminHandler.PutResources)
 				r.Delete("/plugins/{id}/instances/{iid}", cfg.Handlers.PluginAdminHandler.DeleteInstance)
 				r.Post("/plugins/{id}/instances/{iid}/deactivate", cfg.Handlers.PluginAdminHandler.DeactivateInstance)
 				r.Post("/plugins/{id}/instances/{iid}/activate", cfg.Handlers.PluginAdminHandler.ActivateInstance)

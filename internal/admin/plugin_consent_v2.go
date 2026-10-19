@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
+	"github.com/felag-engineering/gleipnir/internal/plugin/resources"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/manifestv2"
 )
 
 // pluginV2Consent is everything a v2 manifest asks an admin to agree to, as the
@@ -13,14 +15,19 @@ import (
 // enforced. Present on the detail response for v2 rows only; v1 responses
 // carry no "v2" key at all.
 type pluginV2Consent struct {
-	Image        pluginV2Image      `json:"image"`
-	Egress       []pluginV2Egress   `json:"egress"`
-	Resources    *pluginV2Resources `json:"resources"`
-	Profiles     pluginV2Profiles   `json:"profiles"`
-	Tools        []pluginV2Tool     `json:"tools"`
-	EventKinds   []pluginV2Event    `json:"event_kinds"`
-	Auth         pluginV2Auth       `json:"auth"`
-	ConfigSchema interface{}        `json:"config_schema"`
+	Image     pluginV2Image      `json:"image"`
+	Egress    []pluginV2Egress   `json:"egress"`
+	Resources *pluginV2Resources `json:"resources"`
+	// EffectiveResources is what the container is actually capped at when no
+	// instance carries an admin override: the manifest's figure, else the host
+	// default, each with its source. The per-instance resolved value (override
+	// applied) is on the instance response.
+	EffectiveResources pluginV2EffectiveResources `json:"effective_resources"`
+	Profiles           pluginV2Profiles           `json:"profiles"`
+	Tools              []pluginV2Tool             `json:"tools"`
+	EventKinds         []pluginV2Event            `json:"event_kinds"`
+	Auth               pluginV2Auth               `json:"auth"`
+	ConfigSchema       interface{}                `json:"config_schema"`
 }
 
 type pluginV2Image struct {
@@ -46,6 +53,36 @@ type pluginV2Egress struct {
 type pluginV2Resources struct {
 	MemoryMB      int `json:"memory_mb,omitempty"`
 	CPUMillicores int `json:"cpu_millicores,omitempty"`
+}
+
+// pluginV2EffectiveResources is a resolved limit envelope (resources.Resolve).
+// Sources are "manifest", "admin_override" or "default".
+type pluginV2EffectiveResources struct {
+	MemoryMB      int64  `json:"memory_mb"`
+	CPUMillicores int64  `json:"cpu_millicores"`
+	MemorySource  string `json:"memory_source"`
+	CPUSource     string `json:"cpu_source"`
+}
+
+// resolveV2Resources applies the manifest declaration and an optional admin
+// override through resources.Resolve, the same function the container create
+// path uses, so the figure shown is the figure enforced.
+func resolveV2Resources(declared *manifestv2.Resources, override resources.Limits) (pluginV2EffectiveResources, error) {
+	var manifestLimits resources.Limits
+	if declared != nil {
+		var err error
+		manifestLimits, err = resources.FromManifestMiB(declared.MemoryMB, declared.CPUMillicores)
+		if err != nil {
+			return pluginV2EffectiveResources{}, err
+		}
+	}
+	eff := resources.Resolve(manifestLimits, override)
+	return pluginV2EffectiveResources{
+		MemoryMB:      eff.MemoryBytes >> 20,
+		CPUMillicores: eff.CPUMillicores,
+		MemorySource:  string(eff.MemorySource),
+		CPUSource:     string(eff.CPUSource),
+	}, nil
 }
 
 type pluginV2Profiles struct {
@@ -116,6 +153,11 @@ func buildPluginV2Consent(snap pluginmanifest.Snapshot) (*pluginV2Consent, error
 			CPUMillicores: snap.Resources.CPUMillicores,
 		}
 	}
+	effective, err := resolveV2Resources(snap.Resources, resources.Limits{})
+	if err != nil {
+		return nil, fmt.Errorf("resolve resources: %w", err)
+	}
+	out.EffectiveResources = effective
 	if hc := snap.Profiles.HumanChannel; hc != nil {
 		out.Profiles.HumanChannelAssurance = hc.Assurance
 	}

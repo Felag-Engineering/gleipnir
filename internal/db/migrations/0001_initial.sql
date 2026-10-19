@@ -436,6 +436,8 @@ CREATE TABLE plugin_instances (
     last_oauth_callback_url  TEXT,
     host_event_rate_per_sec  REAL,     -- host-owned EmitEvent sustained rate (events/sec); NULL → default 100 (#577)
     host_event_burst         INTEGER,  -- host-owned EmitEvent burst ceiling; NULL → default 200 (#577)
+    resource_memory_mb_override       INTEGER,  -- admin override of the manifest's memory limit (MiB); NULL → not overridden (#1000)
+    resource_cpu_millicores_override  INTEGER,  -- admin override of the manifest's CPU limit; NULL → not overridden (#1000)
     version                  INTEGER NOT NULL DEFAULT 0,
     created_at               TEXT    NOT NULL,
     updated_at               TEXT    NOT NULL,

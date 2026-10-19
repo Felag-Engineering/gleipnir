@@ -464,11 +464,28 @@ describe('AdminPluginInstancePage — Accept manifest modal', () => {
     },
     egress: [{ domain: 'api.example.com' }],
     resources: null,
+    effective_resources: {
+      memory_mb: 512,
+      cpu_millicores: 500,
+      memory_source: 'manifest',
+      cpu_source: 'default',
+    },
     profiles: { declared: ['tool_provider'] },
     tools: [],
     event_kinds: [],
     auth: { strategy: 'none' },
     config_schema: null,
+  } as ApiPluginV2Consent
+
+  const CURRENT_CONSENT = {
+    ...PENDING_CONSENT,
+    egress: [{ domain: 'old.example.com' }],
+    effective_resources: {
+      memory_mb: 256,
+      cpu_millicores: 500,
+      memory_source: 'manifest',
+      cpu_source: 'default',
+    },
   } as ApiPluginV2Consent
 
   function mockPluginDetail(
@@ -510,6 +527,28 @@ describe('AdminPluginInstancePage — Accept manifest modal', () => {
       { pluginId: PLUGIN_ID, expectedCandidateSha256: 'abc123' },
       expect.any(Object),
     )
+  })
+
+  it('shows egress and limit changes against the consented manifest', async () => {
+    mockCurrentUser(['admin'])
+    mockInstancesLoaded([PENDING_MANIFEST_INSTANCE])
+    mockPluginDetail({
+      manifest_version: 2,
+      v2: CURRENT_CONSENT,
+      pending_v2: PENDING_CONSENT,
+      pending_manifest_sha256: 'abc123',
+    })
+
+    renderPage()
+    await userEvent.click(screen.getByRole('button', { name: /review change/i }))
+
+    const changes = screen.getByRole('region', { name: 'Changes since last review' })
+    expect(within(changes).getByText('New network access')).toBeInTheDocument()
+    expect(within(changes).getByText('api.example.com')).toBeInTheDocument()
+    expect(within(changes).getByText('Network access removed')).toBeInTheDocument()
+    expect(within(changes).getByText('old.example.com')).toBeInTheDocument()
+    expect(changes).toHaveTextContent('256 MiB to 512 MiB')
+    expect(changes).not.toHaveTextContent('CPU')
   })
 
   it('holds the accept button until the plugin detail has loaded', async () => {

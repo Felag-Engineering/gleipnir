@@ -759,6 +759,7 @@ export default function AdminPluginInstancePage() {
           pluginName={pluginName ?? ''}
           pendingInstanceCount={pendingManifestInstanceCount}
           pendingConsent={pluginDetail.data?.pending_v2}
+          currentConsent={pluginDetail.data?.v2}
           detailLoading={pluginDetail.isLoading}
           detailError={pluginDetail.isError ? extractErrorMessage(pluginDetail.error) : null}
           onClose={() => {
