@@ -57,6 +57,18 @@ colours conventional approve/deny option ids. `tasks/cancel` rewrites the
 message to a resolved summary without buttons (a cancel that lost to a
 completion changes nothing).
 
+## Linking users
+
+The plugin declares the `identity_provider` profile with the `admin_set` link
+method. A button click asserts only the clicker's Slack user ID (`U…`, never a
+display name), and the host decides whether that ID may settle the request via
+`host/authorize_actor`. The ID must be mapped to a Gleipnir user by an admin,
+per plugin instance, in the user's identities (`PUT
+/api/v1/users/{id}/identities/{instanceID}`, #964/#1002). An unmapped or
+unauthorized clicker gets an ephemeral "not authorized" reply and the request
+stays open; a host error fails closed the same way. Other link methods arrive
+with the user-scoping work (M6).
+
 ## Environment
 
 | Variable | Default | Purpose |

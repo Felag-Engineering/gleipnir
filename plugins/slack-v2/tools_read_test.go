@@ -132,7 +132,7 @@ func callTool(t *testing.T, srv http.Handler, name string, args map[string]any) 
 
 func newTestServer(t *testing.T, host *fakeHost, slackURL string) http.Handler {
 	t.Helper()
-	srv, err := newServer(host, slackURL, t.TempDir())
+	srv, _, err := newServer(host, slackURL, t.TempDir())
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}

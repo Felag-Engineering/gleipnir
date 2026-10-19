@@ -19,6 +19,7 @@ var channelScopes = map[string][]string{
 	"open_direct":    {"im:write"},   // conversations.open
 	"post_message":   {"chat:write"}, // chat.postMessage
 	"update_message": {"chat:write"}, // chat.update
+	"post_ephemeral": {"chat:write"}, // chat.postEphemeral
 }
 
 var (

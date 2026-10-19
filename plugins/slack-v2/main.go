@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/felag-engineering/gleipnir/plugin-sdk/channelext"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/hostclient"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/mcpserver"
 )
@@ -36,6 +37,7 @@ type plugin struct {
 	slack  *slackProvider
 	health *healthReporter
 	refs   *messageRefStore
+	tasks  channelext.TaskStore
 }
 
 // hostAPI is everything the plugin needs from the host endpoint;
@@ -49,10 +51,10 @@ type hostAPI interface {
 // keeps the two in step. The socket hub reports health only for declared
 // profiles, so adding human_channel or event_source here (with the manifest)
 // is all it takes for connection loss to be reported against them.
-var declaredProfiles = []string{hostclient.ProfileToolProvider, hostclient.ProfileHumanChannel}
+var declaredProfiles = []string{hostclient.ProfileToolProvider, hostclient.ProfileHumanChannel, hostclient.ProfileIdentityProvider}
 
 // newServer registers every tool on a fresh MCP server.
-func newServer(host hostAPI, apiURL, dataDir string) (*mcpserver.Server, error) {
+func newServer(host hostAPI, apiURL, dataDir string) (*mcpserver.Server, *plugin, error) {
 	p := &plugin{
 		slack:  newSlackProvider(host, apiURL, nil),
 		health: newHealthReporter(host),
@@ -60,17 +62,18 @@ func newServer(host hostAPI, apiURL, dataDir string) (*mcpserver.Server, error) 
 	srv := mcpserver.NewServer("slack-v2", pluginVersion)
 	for _, tool := range p.allTools() {
 		if err := srv.RegisterTool(tool); err != nil {
-			return nil, fmt.Errorf("register tool: %w", err)
+			return nil, nil, fmt.Errorf("register tool: %w", err)
 		}
 	}
 	ext, err := p.newChannelExtension(dataDir)
 	if err != nil {
-		return nil, fmt.Errorf("build channel extension: %w", err)
+		return nil, nil, fmt.Errorf("build channel extension: %w", err)
 	}
+	p.tasks = ext.Tasks()
 	if err := srv.Mount(ext); err != nil {
-		return nil, fmt.Errorf("mount channel extension: %w", err)
+		return nil, nil, fmt.Errorf("mount channel extension: %w", err)
 	}
-	return srv, nil
+	return srv, p, nil
 }
 
 func (p *plugin) allTools() []mcpserver.Tool {
@@ -92,7 +95,7 @@ func run() error {
 	if dataDir == "" {
 		dataDir = defaultDataDir
 	}
-	srv, err := newServer(host, os.Getenv(slackAPIURLEnvVar), dataDir)
+	srv, p, err := newServer(host, os.Getenv(slackAPIURLEnvVar), dataDir)
 	if err != nil {
 		return err
 	}
@@ -100,9 +103,13 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Handlers register on the hub here as the channel and event features
-	// land; until one does the hub is inert and no connection is opened.
-	hub := newSocketHub(newClientRunnerFactory(host, newSlackProvider(host, os.Getenv(slackAPIURLEnvVar), nil)), host, declaredProfiles)
+	// Handlers register on the hub before it runs; with none registered the hub
+	// is inert and no connection is opened.
+	hub := newSocketHub(newClientRunnerFactory(host, p.slack), host, declaredProfiles)
+	clicks := newClickHandler(p, host)
+	if err := hub.Handle(EnvelopeInteractive, clicks.handle); err != nil {
+		return fmt.Errorf("register click handler: %w", err)
+	}
 	hubDone := make(chan struct{})
 	go func() {
 		defer close(hubDone)
@@ -121,6 +128,7 @@ func run() error {
 	case <-ctx.Done():
 	}
 	<-hubDone
+	clicks.wait()
 	if serveFailure != nil {
 		return serveFailure
 	}
