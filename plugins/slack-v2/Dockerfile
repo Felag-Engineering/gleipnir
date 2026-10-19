@@ -20,9 +20,14 @@ COPY plugins/slack-v2/ ./plugins/slack-v2/
 RUN cd plugins/slack-v2 && GOWORK=off CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w" -o /slack-v2 .
 
+# The runtime image has no shell or mkdir, so the data directory (durable
+# channel/request tasks) is made here and handed to the nonroot user (uid 65532).
+RUN mkdir -p /data && chown -R 65532:65532 /data
+
 # Distroless static: no shell, no package manager, runs as nonroot by default.
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=builder /slack-v2 /slack-v2
+COPY --from=builder --chown=65532:65532 /data /data
 USER 65532:65532
 EXPOSE 8080
 # Configuration is environment-only (see README.md).

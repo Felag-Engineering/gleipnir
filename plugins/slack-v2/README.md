@@ -47,12 +47,23 @@ report is sent once per process per tool. The tool call itself returns an
 An instance with no credentials returns an error result but reports no health:
 that state belongs to the host.
 
+## Asking questions (`channel/request`)
+
+A request is posted as one button per option and returned as a durable task.
+The task and the `{channel, ts}` of its message live under `DATA_DIR`, so a
+restart does not lose the wait. A form-only request (`requestedSchema` with no
+options) is refused so the audience falls through to in-app; `kind: permission`
+colours conventional approve/deny option ids. `tasks/cancel` rewrites the
+message to a resolved summary without buttons (a cancel that lost to a
+completion changes nothing).
+
 ## Environment
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `GLEIPNIR_HOST_ENDPOINT_URL` | set by the host | Host endpoint for credentials and health |
 | `GLEIPNIR_INSTANCE_TOKEN` | set by the host | Bearer token for the host endpoint |
+| `DATA_DIR` | `/data` | Instance volume for durable `channel/request` tasks (`tasks/`) and the record of each posted message (`messages/`). The image creates it owned by uid 65532; mount a volume there for tasks to outlive the container |
 | `SLACK_API_URL` | `https://slack.com/api/` | Slack Web API base. Point it at a fake Slack in tests; egress still bounds what the container can reach |
 
 The credentials blob is fetched on every call and the Slack client is cached by

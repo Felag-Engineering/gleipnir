@@ -246,11 +246,3 @@ func TestServerDiscoverDeclaresTheChannelExtension(t *testing.T) {
 		t.Errorf("deliveries = %v, want %v", decl.Deliveries, want)
 	}
 }
-
-func TestChannelRequestIsNotMountedYet(t *testing.T) {
-	srv := newTestServer(t, &fakeHost{credentials: testCredentials}, "")
-	res := rpc(t, srv, "channel/request", map[string]any{})
-	if res.Error == nil || res.Error.Code != -32601 {
-		t.Errorf("channel/request error = %+v, want -32601 method not found", res.Error)
-	}
-}

@@ -16,8 +16,9 @@ import (
 // shape and for the same reason as toolScopes. The manifest test requires
 // manifest.yaml's scopes to be the union of both tables.
 var channelScopes = map[string][]string{
-	"open_direct":  {"im:write"},   // conversations.open
-	"post_message": {"chat:write"}, // chat.postMessage
+	"open_direct":    {"im:write"},   // conversations.open
+	"post_message":   {"chat:write"}, // chat.postMessage
+	"update_message": {"chat:write"}, // chat.update
 }
 
 var (
@@ -127,9 +128,4 @@ func (p *plugin) reportChannelFailure(ctx context.Context, step string, err erro
 	if code := scopeErrorCode(err); code != "" {
 		p.health.reportChannelScopeFailure(ctx, step, code)
 	}
-}
-
-// newChannelExtension builds the notify-only io.gleipnir/channel extension.
-func (p *plugin) newChannelExtension() (*channelext.Extension, error) {
-	return channelext.New(channelDeclaration, p.notify)
 }
