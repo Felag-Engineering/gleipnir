@@ -11,6 +11,7 @@ import {
   type Role,
 } from '@/components/UsersPage/roles'
 import { PermissionsPanel } from '@/components/UsersPage/PermissionsPanel'
+import { IdentityFields } from '@/components/UsersPage/IdentityFields'
 import styles from './CreateUserModal.module.css'
 
 type BaseProps = {
@@ -27,8 +28,8 @@ type CreateProps = BaseProps & {
 type EditProps = BaseProps & {
   mode: 'edit'
   initialRole: Role | null
-  initialSlackUserId: string | null
-  onSubmit: (roles: string[], slackUserId: string | null) => void
+  userId: string
+  onSubmit: (roles: string[]) => void
 }
 
 type Props = CreateProps | EditProps
@@ -40,9 +41,6 @@ export function CreateUserModal(props: Props) {
   const [password, setPassword] = useState('')
   const [selectedRole, setSelectedRole] = useState<Role | null>(
     props.mode === 'edit' ? props.initialRole : null,
-  )
-  const [slackUserId, setSlackUserId] = useState<string>(
-    props.mode === 'edit' ? (props.initialSlackUserId ?? '') : '',
   )
   const [clientIssues, setClientIssues] = useState<BannerIssue[]>([])
   const [fieldErrors, setFieldErrors] = useState<{ username?: string; password?: string }>({})
@@ -73,11 +71,7 @@ export function CreateUserModal(props: Props) {
 
       props.onSubmit(username, password, selectedRole ? rolesForHighest(selectedRole) : [])
     } else {
-      const trimmedSlackId = slackUserId.trim()
-      props.onSubmit(
-        selectedRole ? rolesForHighest(selectedRole) : [],
-        trimmedSlackId !== '' ? trimmedSlackId : null,
-      )
+      props.onSubmit(selectedRole ? rolesForHighest(selectedRole) : [])
     }
   }
 
@@ -166,22 +160,7 @@ export function CreateUserModal(props: Props) {
           </div>
         </div>
 
-        {!isCreate && (
-          <div className={styles.fieldGroup}>
-            <label htmlFor="slack-user-id" className={styles.label}>
-              Slack user ID
-            </label>
-            <input
-              id="slack-user-id"
-              type="text"
-              className={styles.input}
-              value={slackUserId}
-              onChange={(e) => setSlackUserId(e.target.value)}
-              autoComplete="off"
-              placeholder="e.g. U01ABC123DE (leave empty to clear)"
-            />
-          </div>
-        )}
+        {props.mode === 'edit' && <IdentityFields userId={props.userId} />}
 
         <ErrorBanner issues={bannerIssues} />
       </form>

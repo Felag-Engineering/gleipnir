@@ -1,11 +1,13 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
+	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
 )
 
 // This file owns the GET /api/v1/admin/plugin-instances endpoint and its
@@ -84,6 +86,32 @@ type pluginInstanceDTO struct {
 	// only). Each entry carries the tool name and description for the admin UI
 	// detail pane. Omitted when the plugin declares no tools.
 	Tools []pluginToolDTO `json:"tools,omitempty"`
+	// IdentityLinkMethods is identity_provider.link_methods from the consented
+	// v2 manifest (e.g. "admin_set"). Always an array; empty for v1 plugins and
+	// for v2 plugins that declare no identity_provider profile. The Users modal
+	// renders one actor-id field per instance whose list contains "admin_set".
+	IdentityLinkMethods []string `json:"identity_link_methods"`
+}
+
+// identityLinkMethods reads identity_provider.link_methods from the plugin's
+// consented manifest snapshot. A snapshot manifest.Read rejects yields no
+// methods rather than failing the listing: the other fields are still useful
+// and the field is purely additive.
+func (h *AudienceHandler) identityLinkMethods(ctx context.Context, instanceID, pluginID string) []string {
+	plugin, err := h.store.Queries().GetPluginByID(ctx, pluginID)
+	if err != nil {
+		slog.Warn("list plugin instances: load plugin for identity methods", "instance_id", instanceID, "err", err)
+		return []string{}
+	}
+	snap, err := pluginmanifest.Read([]byte(plugin.ManifestSnapshot))
+	if err != nil {
+		slog.Warn("list plugin instances: read manifest for identity methods", "instance_id", instanceID, "err", err)
+		return []string{}
+	}
+	if snap.Profiles.IdentityProvider == nil {
+		return []string{}
+	}
+	return append([]string{}, snap.Profiles.IdentityProvider.LinkMethods...)
 }
 
 // ListPluginInstances handles GET /api/v1/admin/plugin-instances.
@@ -242,6 +270,7 @@ func (h *AudienceHandler) ListPluginInstances(w http.ResponseWriter, r *http.Req
 			PluginVersion:        manifest.Version,
 			Services:             services,
 			Tools:                tools,
+			IdentityLinkMethods:  h.identityLinkMethods(ctx, inst.ID, inst.PluginID),
 		})
 	}
 

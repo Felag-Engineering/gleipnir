@@ -53,10 +53,6 @@ type mockAuthQuerier struct {
 	sessions             []db.ListSessionsByUserRow
 	listSessionsErr      error
 	deleteSessionByIDErr error
-
-	// Fields for slack-user-id mapping tests (#624)
-	setSlackUserIDErr   error
-	slackUserIDSetParam db.SetUserSlackUserIDParams
 }
 
 func (m *mockAuthQuerier) GetUserByUsername(_ context.Context, _ string) (db.User, error) {
@@ -138,11 +134,6 @@ func (m *mockAuthQuerier) ListActiveUsersByRole(_ context.Context, _ string) ([]
 
 func (m *mockAuthQuerier) UpdateUserPassword(_ context.Context, _ db.UpdateUserPasswordParams) error {
 	return m.updatePasswordErr
-}
-
-func (m *mockAuthQuerier) SetUserSlackUserID(_ context.Context, arg db.SetUserSlackUserIDParams) error {
-	m.slackUserIDSetParam = arg
-	return m.setSlackUserIDErr
 }
 
 // The identity methods are exercised against a real store in
