@@ -39,6 +39,12 @@ type hostAPI interface {
 	healthSetter
 }
 
+// declaredProfiles is the capability profiles manifest.yaml declares; a test
+// keeps the two in step. The socket hub reports health only for declared
+// profiles, so adding human_channel or event_source here (with the manifest)
+// is all it takes for connection loss to be reported against them.
+var declaredProfiles = []string{hostclient.ProfileToolProvider}
+
 // newServer registers every tool on a fresh MCP server.
 func newServer(host hostAPI, apiURL string) (*mcpserver.Server, error) {
 	p := &plugin{
@@ -73,15 +79,29 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Handlers register on the hub here as the channel and event features
+	// land; until one does the hub is inert and no connection is opened.
+	hub := newSocketHub(newClientRunnerFactory(host, newSlackProvider(host, os.Getenv(slackAPIURLEnvVar), nil)), host, declaredProfiles)
+	hubDone := make(chan struct{})
+	go func() {
+		defer close(hubDone)
+		runSocketHub(ctx, hub, host)
+	}()
+
 	httpSrv := &http.Server{Addr: listenAddr, Handler: srv, ReadHeaderTimeout: 10 * time.Second}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- httpSrv.ListenAndServe() }()
 	log.Printf("slack-v2 listening on %s", listenAddr)
 
+	var serveFailure error
 	select {
-	case err := <-serveErr:
-		return err
+	case serveFailure = <-serveErr:
+		stop()
 	case <-ctx.Done():
+	}
+	<-hubDone
+	if serveFailure != nil {
+		return serveFailure
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)

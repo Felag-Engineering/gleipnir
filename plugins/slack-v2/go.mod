@@ -4,6 +4,7 @@ go 1.25.11
 
 require (
 	github.com/felag-engineering/gleipnir/plugin-sdk v0.0.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/invopop/jsonschema v0.13.0
 	github.com/slack-go/slack v0.26.0
 )
@@ -11,7 +12,6 @@ require (
 require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect

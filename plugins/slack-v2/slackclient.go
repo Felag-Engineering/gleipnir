@@ -62,23 +62,46 @@ func newSlackProvider(creds credentialSource, apiURL string, httpClient *http.Cl
 	return &slackProvider{creds: creds, apiURL: normalizeAPIURL(apiURL), httpClient: httpClient}
 }
 
-// client returns a Slack client for the current token, or errNoCredentials
-// when none is configured.
-func (p *slackProvider) client(ctx context.Context) (*slack.Client, error) {
+// token returns the instance's current bot token, or errNoCredentials when
+// none is configured.
+func (p *slackProvider) token(ctx context.Context) (string, error) {
 	resp, err := p.creds.GetCredentials(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("get credentials: %w", err)
+		return "", fmt.Errorf("get credentials: %w", err)
 	}
 	if resp.CredentialsJSON == "" || resp.CredentialsJSON == "{}" {
-		return nil, errNoCredentials
+		return "", errNoCredentials
 	}
 	var creds storedCredentials
 	if err := json.Unmarshal([]byte(resp.CredentialsJSON), &creds); err != nil {
-		return nil, fmt.Errorf("parse credentials: %w", err)
+		return "", fmt.Errorf("parse credentials: %w", err)
 	}
-	token := creds.Token.AccessToken
-	if token == "" {
-		return nil, errNoCredentials
+	if creds.Token.AccessToken == "" {
+		return "", errNoCredentials
+	}
+	return creds.Token.AccessToken, nil
+}
+
+// socketAPI builds an uncached Slack client carrying both the current bot
+// token and the app-level token, which is what a Socket Mode connection needs.
+func (p *slackProvider) socketAPI(ctx context.Context, appToken string) (*slack.Client, error) {
+	token, err := p.token(ctx)
+	if err != nil {
+		return nil, err
+	}
+	opts := []slack.Option{slack.OptionAPIURL(p.apiURL), slack.OptionAppLevelToken(appToken)}
+	if p.httpClient != nil {
+		opts = append(opts, slack.OptionHTTPClient(p.httpClient))
+	}
+	return slack.New(token, opts...), nil
+}
+
+// client returns a Slack client for the current token, or errNoCredentials
+// when none is configured.
+func (p *slackProvider) client(ctx context.Context) (*slack.Client, error) {
+	token, err := p.token(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	p.mu.Lock()
