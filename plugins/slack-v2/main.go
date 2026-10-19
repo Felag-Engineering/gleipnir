@@ -52,12 +52,16 @@ func newServer(host hostAPI, apiURL string) (*mcpserver.Server, error) {
 		health: newHealthReporter(host),
 	}
 	srv := mcpserver.NewServer("slack-v2", pluginVersion)
-	for _, tool := range p.readTools() {
+	for _, tool := range p.allTools() {
 		if err := srv.RegisterTool(tool); err != nil {
 			return nil, fmt.Errorf("register tool: %w", err)
 		}
 	}
 	return srv, nil
+}
+
+func (p *plugin) allTools() []mcpserver.Tool {
+	return append(p.readTools(), p.writeTools()...)
 }
 
 func main() {

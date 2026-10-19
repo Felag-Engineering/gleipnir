@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -49,15 +50,17 @@ type fakeSlack struct {
 	mu        sync.Mutex
 	responses map[string]string
 	tokens    []string
+	forms     map[string]url.Values // last form each method received
 }
 
 func newFakeSlack(t *testing.T, responses map[string]string) *fakeSlack {
 	t.Helper()
-	f := &fakeSlack{responses: responses}
+	f := &fakeSlack{responses: responses, forms: map[string]url.Values{}}
 	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		method := strings.TrimPrefix(r.URL.Path, "/api/")
 		f.mu.Lock()
 		f.tokens = append(f.tokens, r.FormValue("token"))
+		f.forms[method] = r.PostForm
 		body, ok := f.responses[method]
 		f.mu.Unlock()
 		if !ok {
@@ -69,6 +72,13 @@ func newFakeSlack(t *testing.T, responses map[string]string) *fakeSlack {
 	}))
 	t.Cleanup(f.Close)
 	return f
+}
+
+// form returns the last form Slack received for method.
+func (f *fakeSlack) form(method string) url.Values {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.forms[method]
 }
 
 type toolResult struct {
