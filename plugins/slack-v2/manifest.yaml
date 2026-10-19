@@ -18,21 +18,55 @@ gleipnir:
     identity_provider:
       # Slack user IDs are mapped to Gleipnir users by an admin, per instance.
       link_methods: [admin_set]
+    event_source:
+      # The instance-level scope the host sends as events/listen params: which
+      # channels, DMs and mentions are watched. Mirrors eventScope in scope.go.
+      subscription_schema:
+        type: object
+        properties:
+          channels:
+            type: array
+            title: Channels
+            description: Slack channel IDs (e.g. C012ABCDEF) whose messages are delivered. Empty means every channel the bot is in. Find an ID in channel settings, About.
+            items:
+              type: string
+              pattern: ^[CG][A-Z0-9]+$
+          mention_only:
+            type: boolean
+            title: Mention-only
+            description: Deliver channel messages only when they mention the bot.
+          direct_messages:
+            type: boolean
+            title: Direct messages
+            description: Deliver 1:1 direct messages sent to the bot.
+          slash_commands:
+            type: boolean
+            title: Slash commands
+            description: Open the event stream so slash command invocations are delivered. Needed for slash_command policies on an instance that watches no channels; commands are never channel-scoped.
+          shortcuts:
+            type: boolean
+            title: Shortcuts
+            description: Open the event stream so message and global shortcut invocations are delivered. Needed for shortcut policies on an instance that watches no channels.
   auth:
     strategy: oauth2_authcode
     oauth_defaults:
       authorization_url: https://slack.com/oauth/v2/authorize
       token_url: https://slack.com/api/oauth.v2.access
-      # Union of the scopes in health.go (toolScopes and channelScopes).
+      # Union of the scopes in health.go (toolScopes), channel_notify.go
+      # (channelScopes) and events.go (eventScopes).
       scopes:
+        - app_mentions:read
         - channels:history
         - channels:manage
         - channels:read
         - chat:write
+        - commands
         - groups:history
         - groups:read
         - groups:write
+        - im:history
         - im:write
+        - mpim:history
         - reactions:write
         - users:read
   egress:
@@ -53,10 +87,200 @@ gleipnir:
     - name: delete_message
     - name: react
     - name: set_topic
+  # Served by events/discover from eventKinds in events.go; a test keeps them equal.
+  event_kinds:
+  - binding_schema:
+      additionalProperties: false
+      properties:
+          channel:
+              description: 'Exact match on the channel''s Slack ID (e.g. C012AB3CD). Channel names are not accepted: events carry only IDs.'
+              pattern: ^[CG][A-Z0-9]+$
+              title: Channel
+              type: string
+          channel_type:
+              description: 'Exact match on the Slack channel kind: channel (public), group (private), mpim (multi-party DM). Leave empty to match any.'
+              enum:
+                  - channel
+                  - group
+                  - mpim
+              title: Channel type
+              type: string
+          mentioned:
+              description: Fire only when the message @-mentions the bot (true), or only when it does not (false).
+              title: Mentioned
+              type: boolean
+          text:
+              description: Case-sensitive substring; matches anywhere in the text (not anchored to the start).
+              format: contains
+              title: Text contains
+              type: string
+          text_pattern:
+              description: Regular expression (RE2) matched against the text. Use text for a plain substring.
+              format: regex
+              title: Text matches
+              type: string
+          user:
+              description: Exact match (case-sensitive) on the sender's Slack user ID (e.g. U012AB3CD). Leave empty to match all users.
+              title: User
+              type: string
+      type: object
+    description: A message was posted to a Slack channel the bot can see.
+    guidance: A human posts a message in a channel the bot can see, or @-mentions the bot in one. The bot's own posts and threaded replies are dropped. Which channels are watched is the instance's subscription scope; bind on channel, text, mentioned or user to narrow it per policy.
+    kind: channel_message
+    operators:
+      channel:
+          - equals
+      channel_type:
+          - equals
+      mentioned:
+          - equals
+      text:
+          - contains
+      text_pattern:
+          - regex
+      user:
+          - equals
+  - binding_schema:
+      additionalProperties: false
+      properties:
+          channel:
+              description: Exact match on the DM conversation's Slack ID (e.g. D012AB3CD).
+              pattern: ^D[A-Z0-9]+$
+              title: Channel
+              type: string
+          text:
+              description: Case-sensitive substring; matches anywhere in the text (not anchored to the start).
+              format: contains
+              title: Text contains
+              type: string
+          text_pattern:
+              description: Regular expression (RE2) matched against the text. Use text for a plain substring.
+              format: regex
+              title: Text matches
+              type: string
+          user:
+              description: Exact match (case-sensitive) on the sender's Slack user ID (e.g. U012AB3CD). Leave empty to match all users.
+              title: User
+              type: string
+      type: object
+    description: A user sent the bot a direct message.
+    guidance: A human sends the bot a 1:1 direct message. Delivered only when the instance's subscription scope enables direct messages. The bot's own messages are dropped.
+    kind: direct_message
+    operators:
+      channel:
+          - equals
+      text:
+          - contains
+      text_pattern:
+          - regex
+      user:
+          - equals
+  - binding_schema:
+      additionalProperties: false
+      properties:
+          channel:
+              description: Exact match on the channel the command was typed in (e.g. C012AB3CD).
+              pattern: ^[CDG][A-Z0-9]+$
+              title: Channel
+              type: string
+          command:
+              description: Exact match on the slash command name (e.g. /deploy). Leave empty to match any command.
+              title: Command
+              type: string
+          text:
+              description: Case-sensitive substring; matches anywhere in the text (not anchored to the start).
+              format: contains
+              title: Text contains
+              type: string
+          text_pattern:
+              description: Regular expression (RE2) matched against the text. Use text for a plain substring.
+              format: regex
+              title: Text matches
+              type: string
+          user:
+              description: Exact match (case-sensitive) on the sender's Slack user ID (e.g. U012AB3CD). Leave empty to match all users.
+              title: User
+              type: string
+      type: object
+    description: A user ran a slash command registered in the Slack app.
+    guidance: 'A user runs a /command registered in the Slack app. Not channel-scoped: it is delivered whatever the subscription scope''s channel list says. Bind on command (e.g. /deploy) and/or text.'
+    kind: slash_command
+    operators:
+      channel:
+          - equals
+      command:
+          - equals
+      text:
+          - contains
+      text_pattern:
+          - regex
+      user:
+          - equals
+  - binding_schema:
+      additionalProperties: false
+      properties:
+          callback_id:
+              description: Exact match on the shortcut's callback_id as registered in the Slack app. Leave empty to match any message shortcut.
+              title: Callback ID
+              type: string
+          channel:
+              description: Exact match on the channel holding the target message (e.g. C012AB3CD).
+              pattern: ^[CDG][A-Z0-9]+$
+              title: Channel
+              type: string
+          text:
+              description: Case-sensitive substring; matches anywhere in the text (not anchored to the start).
+              format: contains
+              title: Text contains
+              type: string
+          text_pattern:
+              description: Regular expression (RE2) matched against the text. Use text for a plain substring.
+              format: regex
+              title: Text matches
+              type: string
+          user:
+              description: Exact match (case-sensitive) on the sender's Slack user ID (e.g. U012AB3CD). Leave empty to match all users.
+              title: User
+              type: string
+      type: object
+    description: A user ran a message shortcut registered in the Slack app.
+    guidance: A user opens a message's More actions menu and picks this app's shortcut. Carries the target message's text. Bind on callback_id, the shortcut's configured callback ID.
+    kind: message_shortcut
+    operators:
+      callback_id:
+          - equals
+      channel:
+          - equals
+      text:
+          - contains
+      text_pattern:
+          - regex
+      user:
+          - equals
+  - binding_schema:
+      additionalProperties: false
+      properties:
+          callback_id:
+              description: Exact match on the shortcut's callback_id as registered in the Slack app. Leave empty to match any global shortcut.
+              title: Callback ID
+              type: string
+          user:
+              description: Exact match (case-sensitive) on the sender's Slack user ID (e.g. U012AB3CD). Leave empty to match all users.
+              title: User
+              type: string
+      type: object
+    description: A user ran a global shortcut registered in the Slack app.
+    guidance: A user invokes the app's global shortcut from the composer's lightning menu, not tied to a message. Bind on callback_id, the shortcut's configured callback ID.
+    kind: global_shortcut
+    operators:
+      callback_id:
+          - equals
+      user:
+          - equals
   config_schema:
     type: object
     properties:
       app_token:
         type: string
-        description: Slack app-level token (xapp-…) for Socket Mode. Declared now, read by the event and channel work that follows.
+        description: Slack app-level token (xapp-…) for Socket Mode. Opens the single Socket Mode connection that carries events and button clicks.
         x-gleipnir-secret: true
