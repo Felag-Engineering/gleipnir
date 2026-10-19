@@ -91,6 +91,7 @@ run_frontend=0
 run_sdk=0
 run_substrate=0
 run_dood=0
+run_slack_v2_e2e=0
 plugin_dirs=""
 root_go_changed=""
 
@@ -149,9 +150,20 @@ internal/plugin/reconciler
 internal/plugin/loader
 internal/plugin/container
 plugin-sdk/examples/conformance-stub
+plugins/slack-v2
 "
 
+# The Slack v2 plugin is its own module, so a change to it reaches no root-module
+# package through the import graph — but internal/plugin/e2e builds the binary
+# and drives it (issue #997), and the DooD smoke installs its bundle. Without
+# this the plugin's own lane would run and the two suites that prove it against
+# the host would not.
+slack_v2_e2e_pkg="internal/plugin/e2e"
+
 while IFS= read -r f; do
+	case "$f" in
+	plugins/slack-v2/*) run_slack_v2_e2e=1 ;;
+	esac
 	while IFS= read -r d; do
 		[ -z "$d" ] && continue
 		case "$f" in
@@ -284,6 +296,13 @@ if [ -n "$changed_pkgs" ]; then
 			for (k in aff) print k
 		}
 	' <(printf '%s\n' "$changed_pkgs") <(printf '%s\n' "$pkg_graph") | sort | tr '\n' ' ')
+fi
+
+if [ "$run_slack_v2_e2e" = "1" ]; then
+	case " $go_pkgs " in
+	*" $module_path/$slack_v2_e2e_pkg "*) ;;
+	*) go_pkgs="$go_pkgs$module_path/$slack_v2_e2e_pkg " ;;
+	esac
 fi
 
 echo "CI_LOCAL_SCOPE=scoped"

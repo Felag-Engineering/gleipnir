@@ -138,6 +138,20 @@ out=$(scope "internal/schemanorm/normalize.go")
 [ "$(field "$out" CI_LOCAL_RUN_DOOD)" = "0" ]
 check "an unrelated package change does not select the dood lane" $?
 
+# plugins/slack-v2 (issue #997) is a separate module, so the import graph never
+# links it to the root-module e2e test that builds and runs its binary. The
+# scoper has to name that package itself, alongside the plugin's own lane and
+# the dood lane its smoke runs in.
+out=$(scope "plugins/slack-v2/channel_click.go")
+printf '%s' "$(field "$out" CI_LOCAL_GO_PKGS)" | grep -q "$mod/internal/plugin/e2e"
+check "a change under plugins/slack-v2 races internal/plugin/e2e" $?
+[ "$(field "$out" CI_LOCAL_RUN_DOOD)" = "1" ] && [ "$(field "$out" CI_LOCAL_PLUGIN_DIRS)" = "plugins/slack-v2" ]
+check "a change under plugins/slack-v2 selects the dood lane as well as its own plugin lane" $?
+out=$(scope "plugins/ntfy/main.go")
+printf '%s' "$(field "$out" CI_LOCAL_GO_PKGS)" | grep -q "internal/plugin/e2e"
+[ $? -ne 0 ]
+check "a change under another plugin does not race internal/plugin/e2e" $?
+
 # internal/db/migrations is a real, verified dependency: the suite stands up a
 # real on-disk, migrated DB (`go list -tags substrate -deps -test` confirms it).
 out=$(scope "internal/db/migrations/0099_synthetic.sql")

@@ -271,12 +271,20 @@ func (h *harness) post(path, body string) *httptest.ResponseRecorder {
 // no-op that returns the same ID.
 func (h *harness) InstallBundle(mode string) string {
 	h.t.Helper()
+	return h.InstallBundleFile("conformance-stub-" + mode)
+}
+
+// InstallBundleFile is InstallBundle for any signed bundle in the bundle
+// directory, named without its .tgz extension (slack-v2, for example, which
+// make slack-v2-bundle produces).
+func (h *harness) InstallBundleFile(name string) string {
+	h.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), convergeBudget)
 	defer cancel()
 
-	path := filepath.Join(bundleDir(), "conformance-stub-"+mode+".tgz")
+	path := filepath.Join(bundleDir(), name+".tgz")
 	if _, err := os.Stat(path); err != nil {
-		h.t.Fatalf("bundle missing: %v\nbuild it with `make conformance-stub-bundle` (see scripts/run-dood-suite.sh)", err)
+		h.t.Fatalf("bundle missing: %v\nbuild it with `make conformance-stub-bundle` or `make slack-v2-bundle` (see scripts/run-dood-suite.sh)", err)
 	}
 	pluginID, err := h.asm.AdminDeps().Installer.Install(ctx, path)
 	if err != nil {
@@ -604,6 +612,10 @@ func (h *harness) cleanup() {
 	h.mu.Lock()
 	instances := slices.Clone(h.instances)
 	h.mu.Unlock()
+
+	// Detach before any plugin container goes: see detachSelf.
+	h.detachSelf(ctx)
+
 	containers := probes
 	for _, id := range instances {
 		list, err := h.rt.ListByLabel(ctx, reconciler.LabelInstance, id)
@@ -626,40 +638,59 @@ func (h *harness) cleanup() {
 	}
 }
 
-// removeNetworks removes the instance networks in this run's pool. Selecting by
-// pool rather than by a list of IDs also catches a network whose instance never
-// got far enough to be recorded. The self container is detached first: a
-// network with an active endpoint cannot be removed.
-func (h *harness) removeNetworks(ctx context.Context) {
+// detachSelf disconnects this process's own container from every network in
+// this run's pool. It runs before any plugin container is removed, while the
+// networks still have their other endpoints: rootless podman tears down its
+// shared network namespace once the last plugin container leaves it, and a
+// disconnect after that fails with the namespace missing. The network is then
+// removed anyway, which leaves the runner container referring to a network
+// that no longer exists, and the next test in the same runner can no longer
+// resolve its own container. Failing here, rather than logging, puts that at
+// the test that caused it instead of the one after.
+func (h *harness) detachSelf(ctx context.Context) {
 	t := h.t
-	nets, err := h.rt.ListNetworksByLabel(ctx, reconciler.LabelManaged, reconciler.ManagedValue)
-	if err != nil {
-		t.Errorf("cleanup: listing networks: %v", err)
+	if h.selfID == "" {
 		return
 	}
-	var self container.ContainerInfo
-	if h.selfID != "" {
-		self, err = h.rt.Inspect(ctx, h.selfID)
-		if err != nil {
-			t.Errorf("cleanup: inspecting the self container: %v", err)
-		}
+	self, err := h.rt.Inspect(ctx, h.selfID)
+	if err != nil {
+		t.Errorf("cleanup: inspecting the self container: %v", err)
+		return
 	}
-	for _, n := range nets {
-		subnet, err := netip.ParsePrefix(n.Subnet)
-		if err != nil || !h.pool.Contains(subnet.Addr()) {
+	for _, n := range h.poolNetworks(ctx) {
+		if !slices.Contains(self.Networks, n.ID) && !slices.Contains(self.NetworkNames, n.Name) {
 			continue
 		}
-		if slices.Contains(self.Networks, n.ID) || slices.Contains(self.NetworkNames, n.Name) {
-			// Logged, not failed: what matters is that the network is gone,
-			// which the removal below and the leftover check after the loop
-			// assert. Rootless podman can tear down its shared network
-			// namespace once the last plugin container leaves it, after which
-			// a disconnect reports the namespace missing even though nothing
-			// is left attached.
-			if err := h.rt.DisconnectNetwork(ctx, n.ID, h.selfID); err != nil {
-				t.Logf("cleanup: detaching from network %s: %v", n.Name, err)
-			}
+		if err := h.rt.DisconnectNetwork(ctx, n.ID, h.selfID); err != nil {
+			t.Errorf("cleanup: detaching from network %s: %v", n.Name, err)
 		}
+	}
+}
+
+// poolNetworks lists the managed networks whose subnet is in this run's pool.
+// Selecting by pool rather than by a list of IDs also catches a network whose
+// instance never got far enough to be recorded.
+func (h *harness) poolNetworks(ctx context.Context) []container.NetworkInfo {
+	nets, err := h.rt.ListNetworksByLabel(ctx, reconciler.LabelManaged, reconciler.ManagedValue)
+	if err != nil {
+		h.t.Errorf("cleanup: listing networks: %v", err)
+		return nil
+	}
+	var inPool []container.NetworkInfo
+	for _, n := range nets {
+		if subnet, err := netip.ParsePrefix(n.Subnet); err == nil && h.pool.Contains(subnet.Addr()) {
+			inPool = append(inPool, n)
+		}
+	}
+	return inPool
+}
+
+// removeNetworks removes the instance networks in this run's pool. The self
+// container was detached by detachSelf; a network with an active endpoint
+// cannot be removed.
+func (h *harness) removeNetworks(ctx context.Context) {
+	t := h.t
+	for _, n := range h.poolNetworks(ctx) {
 		if err := h.rt.RemoveNetwork(ctx, n.ID); err != nil {
 			t.Errorf("cleanup: removing network %s: %v", n.Name, err)
 		}

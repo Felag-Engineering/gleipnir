@@ -768,6 +768,11 @@ jobs:
       - name: Build the conformance stub bundles
         run: make conformance-stub-bundle
 
+      - name: Build the slack-v2 bundle
+        # The Slack smoke (internal/plugin/dood/slack_smoke_test.go, #997)
+        # installs it. Built by Podman for the same reason as the stub bundles.
+        run: make slack-v2-bundle
+
       # TODO(#983, #987): add `make -C plugins/ntfy image archive bundle`
       # (ephemeral key) once plugins/ntfy is a v2 container with those targets.
       # It has no Makefile today, so there is nothing to build.

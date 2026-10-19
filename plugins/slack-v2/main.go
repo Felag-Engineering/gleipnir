@@ -19,8 +19,14 @@ import (
 )
 
 const (
-	listenAddr      = ":8080"
-	shutdownTimeout = 10 * time.Second
+	defaultListenAddr = ":8080"
+	shutdownTimeout   = 10 * time.Second
+
+	// listenAddrEnvVar overrides the address the MCP endpoint listens on. In
+	// the container the manifest's transport port (8080) is what the host
+	// dials, so the default stays put; the override exists for the in-process
+	// e2e, which runs the binary beside other listeners on one host.
+	listenAddrEnvVar = "LISTEN_ADDR"
 
 	// slackAPIURLEnvVar overrides the Slack Web API base URL, so the plugin
 	// can be pointed at a fake Slack. Unset means the real API.
@@ -134,6 +140,10 @@ func run() error {
 		runSocketHub(ctx, hub, host)
 	}()
 
+	listenAddr := os.Getenv(listenAddrEnvVar)
+	if listenAddr == "" {
+		listenAddr = defaultListenAddr
+	}
 	httpSrv := &http.Server{Addr: listenAddr, Handler: srv, ReadHeaderTimeout: 10 * time.Second}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- httpSrv.ListenAndServe() }()

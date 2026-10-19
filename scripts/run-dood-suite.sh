@@ -18,7 +18,7 @@ set -euo pipefail
 # time: the bundles carry their own image archives (make conformance-stub-bundle)
 # and the isolation probes reuse the runner image.
 #
-# Prerequisite: make conformance-stub-bundle
+# Prerequisites: make conformance-stub-bundle slack-v2-bundle
 #
 # Environment:
 #   CONTAINER_ENGINE        docker or podman. Default: docker if its daemon
@@ -95,6 +95,11 @@ for bundle in all dood-events dood-request; do
         exit 1
     fi
 done
+
+if [ ! -f "$dist_dir/slack-v2.tgz" ]; then
+    echo "error: $dist_dir/slack-v2.tgz is missing; run: make slack-v2-bundle" >&2
+    exit 1
+fi
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/dood-suite.XXXXXX")
 mkdir "$work/stage"

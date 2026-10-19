@@ -2,8 +2,13 @@
 // together every host-side plugin-substrate package
 // (internal/plugin/trigger, internal/plugin/dedup, internal/plugin/binding,
 // internal/plugin/dispatch plus internal/execution/run) and proves they compose
-// correctly using a generic in-process stub plugin. Slack-specific behavior is
-// validated separately by the Playwright spec under tests/playwright/.
+// correctly using a generic in-process stub plugin. Slack-specific behavior of
+// the v1 plugin is validated separately by the Playwright spec under
+// tests/playwright/.
+//
+// slack_v2_e2e_test.go is the exception: it builds and runs the real slack-v2
+// binary against a fake Slack and walks event -> run -> approval in Slack ->
+// decision record (issue #997).
 //
 // All test files use the external test package name "e2e_test" so no
 // production code can import this package. It runs in CI on every PR as the
