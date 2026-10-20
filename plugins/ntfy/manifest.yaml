@@ -1,33 +1,35 @@
-auth:
-  mode: instance_credentials
-  strategy: static_api_key
-channels:
-  - config_schema:
-      properties:
-        topic:
-          description: "ntfy topic to publish to (overrides default_topic)"
-          type: string
-      type: object
-    implements_notify: true
-config_schema:
-  properties:
-    auth_header_name:
-      default: Authorization
-      description: "HTTP header name for the API key (default: Authorization)"
-      type: string
-    default_topic:
-      description: "Default ntfy topic when none is set on the audience entry"
-      type: string
-    server_url:
-      description: "Base URL of the ntfy server (e.g. https://ntfy.sh)"
-      format: uri
-      type: string
-  required:
-    - server_url
-  type: object
-description: Sends notifications to an ntfy server via HTTP POST.
+description: Publishes Gleipnir notifications to an ntfy topic. Notify-only.
+gleipnir:
+  config_schema:
+    properties:
+      api_token:
+        description: Access token for a protected ntfy server or topic. Leave empty for open topics.
+        type: string
+        x-gleipnir-secret: true
+      default_topic:
+        description: Topic to publish to when a notification's address is empty.
+        type: string
+      server_url:
+        default: https://ntfy.sh
+        description: Base URL of the ntfy server.
+        format: uri
+        type: string
+    type: object
+  egress:
+    - domain: ntfy.sh
+      reason: Publishes notifications to the ntfy service.
+  profiles:
+    human_channel:
+      assurance: weak
+  resources:
+    cpu_millicores: 100
+    memory_mb: 64
 name: ntfy
-schema_version: v1
-services:
-  channel: v1
-version: 0.1.0
+package:
+  identifier: ghcr.io/felag-engineering/gleipnir-ntfy@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  registry_type: oci
+  transport:
+    port: 8080
+    type: streamable-http
+schema_version: "2"
+version: 0.2.0
