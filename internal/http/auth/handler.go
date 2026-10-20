@@ -50,7 +50,6 @@ type AuthQuerier interface {
 	UpdateUserPassword(ctx context.Context, arg db.UpdateUserPasswordParams) error
 	ListSessionsByUser(ctx context.Context, arg db.ListSessionsByUserParams) ([]db.ListSessionsByUserRow, error)
 	DeleteSessionByID(ctx context.Context, arg db.DeleteSessionByIDParams) error
-	SetUserSlackUserID(ctx context.Context, arg db.SetUserSlackUserIDParams) error
 	// Plugin user identities (ADR-058): per-instance actor id mappings.
 	GetPluginInstanceByID(ctx context.Context, id string) (db.PluginInstance, error)
 	SetAdminIdentity(ctx context.Context, arg db.SetAdminIdentityParams) error

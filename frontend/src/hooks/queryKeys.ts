@@ -32,6 +32,7 @@ export const queryKeys = {
   },
   users: {
     all: ['users'] as const,
+    identities: (userId: string) => ['users', userId, 'identities'] as const,
   },
   currentUser: {
     all: ['currentUser'] as const,

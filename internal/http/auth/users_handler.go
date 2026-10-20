@@ -24,7 +24,6 @@ type userResponse struct {
 	Roles         []string `json:"roles"`
 	CreatedAt     string   `json:"created_at"`
 	DeactivatedAt *string  `json:"deactivated_at,omitempty"`
-	SlackUserID   *string  `json:"slack_user_id"`
 }
 
 type createUserRequest struct {
@@ -36,11 +35,6 @@ type createUserRequest struct {
 type updateUserRequest struct {
 	Deactivated *bool     `json:"deactivated"`
 	Roles       *[]string `json:"roles"`
-	// SlackUserID controls the Slack identity mapping:
-	//   nil     = unchanged (field absent in the JSON body)
-	//   ""      = clear / set to NULL
-	//   non-"" = set to the trimmed value (must be ≤ 64 chars)
-	SlackUserID *string `json:"slack_user_id"`
 }
 
 // errLastAdmin is returned when an operation would remove the last active admin.
@@ -84,7 +78,6 @@ func (h *Handler) ListUsersHandler(w http.ResponseWriter, r *http.Request) {
 			Roles:         roles,
 			CreatedAt:     u.CreatedAt,
 			DeactivatedAt: u.DeactivatedAt,
-			SlackUserID:   u.SlackUserID,
 		})
 	}
 
@@ -297,32 +290,6 @@ func (h *Handler) UpdateUserHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if req.SlackUserID != nil {
-		trimmed := strings.TrimSpace(*req.SlackUserID)
-		if len(trimmed) > 64 {
-			httputil.WriteError(w, http.StatusBadRequest, "slack_user_id must be at most 64 characters", "")
-			return
-		}
-		var normalized *string
-		if trimmed != "" {
-			normalized = &trimmed
-		}
-		if err := q.SetUserSlackUserID(ctx, db.SetUserSlackUserIDParams{
-			SlackUserID: normalized,
-			ID:          targetID,
-		}); err != nil {
-			if isUniqueConstraintError(err) {
-				httputil.WriteError(w, http.StatusConflict, "slack user id already mapped to another user", "")
-				return
-			}
-			slog.Error("update user: set slack_user_id failed", "id", targetID, "err", err)
-			httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-			return
-		}
-		// Update in-memory so the response reflects the committed value (B3).
-		target.SlackUserID = normalized
-	}
-
 	if err := tx.Commit(); err != nil {
 		slog.Error("update user: commit failed", "err", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
@@ -346,7 +313,6 @@ func (h *Handler) UpdateUserHandler(w http.ResponseWriter, r *http.Request) {
 		Roles:         finalRoles,
 		CreatedAt:     target.CreatedAt,
 		DeactivatedAt: target.DeactivatedAt,
-		SlackUserID:   target.SlackUserID,
 	})
 }
 

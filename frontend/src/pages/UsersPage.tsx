@@ -52,10 +52,10 @@ export default function UsersPage() {
     createMutation.reset()
   }
 
-  function handleEditSubmit(roles: string[], slackUserId: string | null) {
+  function handleEditSubmit(roles: string[]) {
     if (!editingUser) return
     updateMutation.mutate(
-      { id: editingUser.id, roles, slack_user_id: slackUserId },
+      { id: editingUser.id, roles },
       {
         onSuccess: () => {
           setEditingUser(null)
@@ -195,7 +195,7 @@ export default function UsersPage() {
         <CreateUserModal
           mode="edit"
           initialRole={highestRoleFromArray(editingUser.roles)}
-          initialSlackUserId={editingUser.slack_user_id}
+          userId={editingUser.id}
           onClose={handleEditClose}
           onSubmit={handleEditSubmit}
           isPending={updateMutation.isPending}

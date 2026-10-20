@@ -370,7 +370,17 @@ export interface ApiUser {
   roles: string[]
   created_at: string
   deactivated_at: string | null
-  slack_user_id: string | null
+}
+
+// Matches auth/identities_handler.go → identityResponse
+// (GET /api/v1/users/:id/identities). One actor id per plugin instance.
+export interface ApiUserIdentity {
+  instance_id: string
+  instance_name: string
+  external_user_id: string
+  link_method: string
+  verified_at: string | null
+  created_at: string
 }
 
 // Matches mcp_handler.go → mcpToolResponse (GET /api/v1/mcp/servers/:id/tools)
@@ -534,7 +544,6 @@ export interface UpdateUserRequest {
   id: string
   deactivated?: boolean
   roles?: string[]
-  slack_user_id?: string | null
 }
 
 // --- Admin ---
@@ -809,6 +818,10 @@ export interface ApiPluginInstanceForAudience {
   // plugins only). Each entry has name and description. Absent when the
   // plugin declares no tools.
   tools?: { name: string; description: string }[]
+  // identity_link_methods is identity_provider.link_methods from the consented
+  // v2 manifest (e.g. "admin_set"). Empty for v1 plugins. The
+  // Users modal shows an actor-id field for instances that include "admin_set".
+  identity_link_methods?: string[]
 }
 
 // ApiPluginInstanceDetail matches internal/admin/plugin_handler.go → instanceResponse.
