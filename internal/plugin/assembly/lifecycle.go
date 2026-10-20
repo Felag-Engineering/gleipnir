@@ -14,7 +14,9 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/infra/netguard"
 	"github.com/felag-engineering/gleipnir/internal/plugin/caphealth"
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
+	"github.com/felag-engineering/gleipnir/internal/plugin/egress"
 	"github.com/felag-engineering/gleipnir/internal/plugin/hitl"
+	"github.com/felag-engineering/gleipnir/internal/plugin/hostendpoint"
 	"github.com/felag-engineering/gleipnir/internal/plugin/loader"
 	"github.com/felag-engineering/gleipnir/internal/plugin/reconciler"
 	plugintrigger "github.com/felag-engineering/gleipnir/internal/plugin/trigger"
@@ -131,9 +133,15 @@ type Assembly struct {
 	collector     loop
 	hostListeners listenerSet
 	egressProxy   listenerSet
-	events        eventStreams
-	poller        taskPoller
-	runtime       io.Closer
+
+	// The concrete handles behind the two sets and the proxy, kept for the
+	// read-only accessors in observe.go.
+	hostSet   *hostendpoint.ListenerSet
+	egressSet *hostendpoint.ListenerSet
+	proxy     *egress.Proxy
+	events    eventStreams
+	poller    taskPoller
+	runtime   io.Closer
 
 	// backgrounds are the composed scanners OperatorListenerReady starts on bg.
 	backgrounds []backgroundLoop

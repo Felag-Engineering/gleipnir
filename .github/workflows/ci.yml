@@ -773,8 +773,11 @@ jobs:
         # installs it. Built by Podman for the same reason as the stub bundles.
         run: make slack-v2-bundle
 
-      # TODO(#987): add `make -C plugins/ntfy image archive bundle`
-      # (ephemeral key) now that plugins/ntfy is a v2 container with those targets.
+      - name: Build the ntfy bundle
+        # The ntfy case of the DooD suite (#987) installs the real plugin. The
+        # bundle is signed with an ephemeral key and carries its own image
+        # archive; the Dockerfile's go modules come from the network here.
+        run: make ntfy-bundle
 
       - name: DooD suite
         run: scripts/run-dood-suite.sh

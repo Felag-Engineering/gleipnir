@@ -237,3 +237,61 @@ owner can make — it is not something this workflow file can express. As of
 this writing that setting has not been made; until it is, a PR can merge
 without the substrate lane having run, and the schedule/push/tag triggers above
 are what keep the lane exercised in the meantime.
+
+## The DooD suite and its ntfy case
+
+`internal/plugin/dood` (build tags `dood substratev2`) boots the real v2
+assembly inside a runner container that has the runtime socket mounted, then
+drives signed bundles through install, convergence, calls and teardown. Where
+the suite above proves the runtime primitives, this proves the composed system.
+`scripts/run-dood-suite.sh` is the one way CI and developers run it, and CI's
+`dood` job runs it on PRs that reach it (the same scoper, `dood` output), on
+pushes and tags, and nightly.
+
+`TestDooD_NtfyNotifyEndToEnd` (`dood_ntfy_test.go`, #987) installs the real
+`plugins/ntfy` bundle and sends it a notification through `hitl.Notifier`:
+
+- the bundle is built by `make ntfy-bundle` (`scripts/build-ntfy-bundle.sh`),
+  signed with an ephemeral key and written to `dist/ntfy.tgz`; the harness
+  installs it through the production installer (TOFU pin, image digest check)
+  and approves it through the admin Approve handler;
+- two instances are created; the live one has `server_url: https://ntfy.sh`.
+  `server/discover` must declare `io.gleipnir/channel`. The second instance is
+  then deactivated, so its entry fails deterministically (a killed container
+  would be restarted by the reconciler mid-assertion);
+- `Notifier.Notify` fans out to both entries. The test asserts that the
+  stopped instance's entry is reported and recorded as a `notify_failed` audit
+  event, that the live entry fails for no host-side reason, and that the plugin
+  handled the call: `host/get_instance_config` and `host/log` reached the host
+  endpoint authenticated as generation 1 of the live instance. That identity
+  comes from the assembly's `WithHostCallObserver` option, which reports each
+  authenticated host request after token resolution;
+- egress: `Proxy.Counters()` must show an allowed tunnel (to `ntfy.sh`, the
+  only grant), and a `CONNECT undeclared.example:443` sent from a probe
+  container on the instance's own network must get a 403, count as a
+  `not_granted` denial and leave a `plugin_egress_denied` audit event. The
+  proxy identifies the caller by the address the connection arrived on, so the
+  probe holds exactly the live instance's grants. The ntfy image is
+  distroless, with no shell to issue the CONNECT from;
+- teardown deletes both instances and waits for the managed rows, both
+  listeners (host endpoint and egress proxy) and the containers to be gone.
+  The harness's label cleanup then has nothing to remove.
+
+Whether ntfy.sh accepted the message is deliberately **not** asserted. The
+egress proxy refuses private-range targets, so a local stand-in is impossible
+without a test-only dial override, which would be a security regression; the
+public service is not ours to depend on. The case does need DNS and outbound
+HTTPS to `ntfy.sh` from the runner, because the allow is only counted once the
+proxy has dialled the upstream. A sandbox without name resolution fails that
+one assertion (`egress allowed = 0`) and nothing else.
+
+### Running it locally
+
+```bash
+make conformance-stub-bundle ntfy-bundle   # dist/*.tgz; needs docker or podman
+scripts/run-dood-suite.sh                  # the whole suite
+DOOD_TEST_ARGS=-test.run=Ntfy scripts/run-dood-suite.sh   # just this case
+```
+
+`NTFY_DOCKERFILE`, `NTFY_BUILD_ARGS` and `NTFY_DIST_DIR` override the image
+build and output location (see the script header).

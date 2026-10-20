@@ -138,7 +138,8 @@ plugin-sdk/examples/conformance-stub
 
 # Packages and inputs the DooD suite (internal/plugin/dood, issue #986) runs
 # through: the suite itself, the assembly it boots, the reconciler / container
-# runtime / loader beneath that, and the stub bundle it installs. A prefix
+# runtime / loader beneath that, the stub bundle it installs, and the ntfy
+# plugin plus the hitl Notifier its ntfy case (#987) drives. A prefix
 # list for the same reason as substrate_dirs: the suite is behind a build tag,
 # so the default import graph does not see it. The runner and bundle scripts
 # live under scripts/ and the workflow/action files under .github/, which
@@ -149,7 +150,9 @@ internal/plugin/assembly
 internal/plugin/reconciler
 internal/plugin/loader
 internal/plugin/container
+internal/plugin/hitl
 plugin-sdk/examples/conformance-stub
+plugins/ntfy
 plugins/slack-v2
 "
 
