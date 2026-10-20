@@ -348,6 +348,10 @@ func (p *recordingProvisioner) ResyncForPlugin(context.Context, *db.Queries, str
 	return 0, nil
 }
 
+func (p *recordingProvisioner) SetResourceOverride(context.Context, *db.Queries, string, *int64, *int64, int64) error {
+	return nil
+}
+
 func (p *recordingProvisioner) SetDesired(_ context.Context, _ *db.Queries, instanceID, state string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()

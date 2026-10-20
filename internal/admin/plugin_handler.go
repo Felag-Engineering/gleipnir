@@ -66,6 +66,10 @@ const (
 	// config_json (bulk PUT or per-property PUT). Records key names only.
 	auditInstanceConfigUpdated = "plugin_instance_config_updated"
 
+	// auditInstanceResourcesUpdated is emitted when an admin sets or clears an
+	// instance's resource limit override (#1000).
+	auditInstanceResourcesUpdated = "plugin_instance_resources_updated"
+
 	// auditSubscriptionScopeUpdated is emitted when an admin changes an
 	// instance's subscription scope.
 	auditSubscriptionScopeUpdated = "plugin_subscription_scope_updated"
@@ -260,6 +264,12 @@ type InstanceProvisioner interface {
 	// accepted manifest change moves what the reconciler converges to. Run in
 	// the same transaction as the snapshot write.
 	ResyncForPlugin(ctx context.Context, q *db.Queries, pluginID string) (int, error)
+	// SetResourceOverride stores an admin override of one instance's resource
+	// limits (nil clears that field) and rewrites the instance's container
+	// row to match. Returns desiredstate.ErrInvalidLimits (400) for a value
+	// outside manifest bounds and desiredstate.ErrCASConflict (409) for a
+	// stale expectedVersion. Run in the caller's transaction.
+	SetResourceOverride(ctx context.Context, q *db.Queries, instanceID string, memoryMiB, cpuMillicores *int64, expectedVersion int64) error
 }
 
 // PluginHandlerDeps holds all constructor-injected dependencies for PluginHandler.
@@ -433,6 +443,10 @@ type instanceResponse struct {
 	// Only GetInstance fills it; it is absent when there is no such fault,
 	// and from every mutation response.
 	Startup *InstanceStartupFault `json:"startup,omitempty"`
+	// Resources is the container resource envelope: the admin override (null
+	// when none) and the resolved limits with their sources. Present for
+	// schema_version 2 plugins only, so v1 responses are unchanged.
+	Resources *instanceResources `json:"resources,omitempty"`
 }
 
 // GetInstance handles GET /api/v1/admin/plugins/{id}/instances/{iid}.
@@ -1334,6 +1348,16 @@ func (h *PluginHandler) writeInstanceResponseWithRedactionForPlugin(
 		}
 	}
 
+	var instResources *instanceResources
+	if m.Version == 2 {
+		var resErr error
+		instResources, resErr = buildInstanceResources(m, inst)
+		if resErr != nil {
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to resolve resource limits", resErr.Error())
+			return false
+		}
+	}
+
 	httputil.WriteJSON(w, http.StatusOK, instanceResponse{
 		ID:                    inst.ID,
 		PluginID:              inst.PluginID,
@@ -1348,6 +1372,7 @@ func (h *PluginHandler) writeInstanceResponseWithRedactionForPlugin(
 		HostEventRatePerSec:   inst.HostEventRatePerSec,
 		HostEventBurst:        inst.HostEventBurst,
 		Startup:               startup,
+		Resources:             instResources,
 	})
 	return true
 }

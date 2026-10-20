@@ -164,3 +164,14 @@ SELECT * FROM plugin_pending_manifests WHERE plugin_id = :plugin_id;
 
 -- name: DeletePluginPendingManifest :exec
 DELETE FROM plugin_pending_manifests WHERE plugin_id = :plugin_id;
+
+-- UpdatePluginInstanceResourceOverride writes the admin override of a v2
+-- instance's resource limits and bumps the CAS version. NULL clears that
+-- field's override. ADR-038 CAS (#1000).
+-- name: UpdatePluginInstanceResourceOverride :execrows
+UPDATE plugin_instances
+SET resource_memory_mb_override      = :resource_memory_mb_override,
+    resource_cpu_millicores_override = :resource_cpu_millicores_override,
+    version                          = version + 1,
+    updated_at                       = :updated_at
+WHERE id = :id AND version = :expected_version;

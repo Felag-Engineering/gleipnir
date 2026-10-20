@@ -1,5 +1,6 @@
 import { Button } from '@/components/Button'
 import type { ApiPluginDetail } from '@/api/types'
+import { AUTH_STRATEGY_LABEL } from './consentFormat'
 import { PluginV2Consent } from './PluginV2Consent'
 import styles from './PluginReviewCard.module.css'
 
@@ -23,17 +24,6 @@ const SERVICE_BADGE_CLASS: Record<string, string> = {
   tool: styles.serviceTool,
   trigger: styles.serviceTrigger,
   channel: styles.serviceChannel,
-}
-
-// AUTH_STRATEGY_LABEL gives human-readable names for the strategy strings
-// from the manifest (spec §9.1).
-const AUTH_STRATEGY_LABEL: Record<string, string> = {
-  none: 'None',
-  static_api_key: 'Static API key',
-  header_set: 'Custom headers',
-  basic_auth: 'Basic auth',
-  oauth2_authcode: 'OAuth 2.0 (authorization code)',
-  oauth2_clientcred: 'OAuth 2.0 (client credentials)',
 }
 
 export function PluginReviewCard({
@@ -78,7 +68,8 @@ export function PluginReviewCard({
           </div>
         )}
 
-        {plugin.tier2_capabilities && plugin.tier2_capabilities.length > 0 && (
+        {/* A v2 plugin's tier-2 capabilities and auth strategy are shown in its Capabilities section. */}
+        {!plugin.v2 && plugin.tier2_capabilities && plugin.tier2_capabilities.length > 0 && (
           <div className={styles.metaRow}>
             <dt className={styles.metaLabel}>Tier-2 capabilities</dt>
             <dd className={styles.metaValue}>
@@ -91,15 +82,17 @@ export function PluginReviewCard({
           </div>
         )}
 
-        <div className={styles.metaRow}>
-          <dt className={styles.metaLabel}>Auth strategy</dt>
-          <dd className={styles.metaValue}>
-            {AUTH_STRATEGY_LABEL[plugin.auth_strategy] ?? plugin.auth_strategy}
-            {plugin.has_oauth_defaults && (
-              <span className={styles.hint}> (OAuth defaults declared)</span>
-            )}
-          </dd>
-        </div>
+        {!plugin.v2 && (
+          <div className={styles.metaRow}>
+            <dt className={styles.metaLabel}>Auth strategy</dt>
+            <dd className={styles.metaValue}>
+              {AUTH_STRATEGY_LABEL[plugin.auth_strategy] ?? plugin.auth_strategy}
+              {plugin.has_oauth_defaults && (
+                <span className={styles.hint}> (OAuth defaults declared)</span>
+              )}
+            </dd>
+          </div>
+        )}
 
         {/* A v2 plugin's signing key is shown in the v2 section, which also flags an unsigned bundle. */}
         {plugin.pubkey_fingerprint && !plugin.v2 && (
@@ -143,7 +136,11 @@ export function PluginReviewCard({
       </dl>
 
       {plugin.v2 && (
-        <PluginV2Consent consent={plugin.v2} pubkeyFingerprint={plugin.pubkey_fingerprint} />
+        <PluginV2Consent
+          consent={plugin.v2}
+          pubkeyFingerprint={plugin.pubkey_fingerprint}
+          tier2Capabilities={plugin.tier2_capabilities}
+        />
       )}
 
       {/* Action footer */}

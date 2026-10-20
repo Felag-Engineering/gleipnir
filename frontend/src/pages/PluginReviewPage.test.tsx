@@ -265,6 +265,12 @@ describe('PluginReviewPage v2 consent', () => {
       },
       egress: [{ domain: 'api.acme.example', reason: 'calls the Acme API' }],
       resources: { memory_mb: 256, cpu_millicores: 500 },
+      effective_resources: {
+        memory_mb: 256,
+        cpu_millicores: 500,
+        memory_source: 'manifest',
+        cpu_source: 'manifest',
+      },
       profiles: {
         declared: ['tool_provider', 'human_channel'],
         human_channel_assurance: 'weak',
@@ -289,12 +295,17 @@ describe('PluginReviewPage v2 consent', () => {
     expect(screen.getByText('sha256:abc123')).toBeInTheDocument()
     expect(screen.getByText('api.acme.example')).toBeInTheDocument()
     expect(screen.getByText('calls the Acme API')).toBeInTheDocument()
-    expect(screen.getByText('256 MiB memory, 500 millicores CPU')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Network access' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Resource limits' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Capabilities' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Image' })).toBeInTheDocument()
+    expect(screen.getByText('256 MiB')).toBeInTheDocument()
+    expect(screen.getByText('500 millicores')).toBeInTheDocument()
     expect(screen.getByText('Tool provider')).toBeInTheDocument()
     expect(screen.getByText('Human channel')).toBeInTheDocument()
     expect(screen.getByText('Channel assurance: weak')).toBeInTheDocument()
     expect(screen.getByText('delete_all')).toBeInTheDocument()
-    expect(screen.getByText('asks for permission')).toBeInTheDocument()
+    expect(screen.getByText('May ask for your permission')).toBeInTheDocument()
     expect(screen.getByText('Header: X-Api-Key')).toBeInTheDocument()
     expect(screen.getByText(/"workspace"/)).toBeInTheDocument()
     // Tier-2 capabilities and the signing key are shown once, not duplicated.
@@ -305,12 +316,41 @@ describe('PluginReviewPage v2 consent', () => {
   it('says so when the plugin requests no egress and declares no resources', () => {
     mockPluginDetail({
       ...V2_PLUGIN,
-      v2: { ...V2_PLUGIN.v2!, egress: [], resources: null },
+      v2: {
+        ...V2_PLUGIN.v2!,
+        egress: [],
+        resources: null,
+        effective_resources: {
+          memory_mb: 256,
+          cpu_millicores: 500,
+          memory_source: 'default',
+          cpu_source: 'default',
+        },
+      },
     })
     renderPage()
 
-    expect(screen.getByText(/cannot reach any external host/)).toBeInTheDocument()
-    expect(screen.getByText(/host default applies/)).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'No internet access' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Network access' })).not.toBeInTheDocument()
+    expect(screen.getAllByText('(host default)')).toHaveLength(2)
+  })
+
+  it('shows tool permission asks without protocol terms', () => {
+    mockPluginDetail({
+      ...V2_PLUGIN,
+      v2: {
+        ...V2_PLUGIN.v2!,
+        tools: [
+          { name: 'ask_user', elicitation_kind: 'information' },
+          { name: 'plain_tool' },
+        ],
+      },
+    })
+    renderPage()
+
+    expect(screen.getByText('May ask you for information')).toBeInTheDocument()
+    expect(screen.queryByText(/elicitation/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/mcp/i)).not.toBeInTheDocument()
   })
 
   it('flags an unsigned v2 bundle', () => {

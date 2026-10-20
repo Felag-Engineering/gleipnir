@@ -32,6 +32,10 @@ const (
 // assume its own write applied.
 var ErrCASConflict = desiredstate.ErrCASConflict
 
+// ErrInvalidLimits is desiredstate.ErrInvalidLimits (see ErrCASConflict above
+// for why it is aliased rather than redeclared).
+var ErrInvalidLimits = desiredstate.ErrInvalidLimits
+
 // ErrPluginNotActive is desiredstate.ErrPluginNotActive, aliased for the same
 // reason as the DesiredState* constants above: the same variable, not a
 // look-alike copy, so errors.Is behaves identically regardless of which
@@ -96,7 +100,11 @@ func (d *DesiredState) CreateForInstance(ctx context.Context, q *db.Queries, ins
 	if err != nil {
 		return db.PluginContainer{}, fmt.Errorf("lifecycle: plugin %q: %w", plugin.Name, err)
 	}
-	limits := resources.Resolve(declaredLimits, resources.Limits{})
+	override, err := instanceOverride(instance)
+	if err != nil {
+		return db.PluginContainer{}, fmt.Errorf("lifecycle: instance %q: %w", instanceID, err)
+	}
+	limits := resources.Resolve(declaredLimits, override)
 
 	now := d.clock().UTC().Format(time.RFC3339Nano)
 	row, err := q.CreatePluginContainer(ctx, db.CreatePluginContainerParams{
@@ -239,7 +247,6 @@ func (d *DesiredState) ResyncForPlugin(ctx context.Context, q *db.Queries, plugi
 	if err != nil {
 		return 0, fmt.Errorf("lifecycle: plugin %q: %w", plugin.Name, err)
 	}
-	limits := resources.Resolve(declaredLimits, resources.Limits{})
 
 	instances, err := q.ListPluginInstancesByPlugin(ctx, pluginID)
 	if err != nil {
@@ -256,6 +263,11 @@ func (d *DesiredState) ResyncForPlugin(ctx context.Context, q *db.Queries, plugi
 		if err != nil {
 			return updated, fmt.Errorf("lifecycle: get plugin_containers row for instance %q: %w", instance.ID, err)
 		}
+		override, err := instanceOverride(instance)
+		if err != nil {
+			return updated, fmt.Errorf("lifecycle: instance %q: %w", instance.ID, err)
+		}
+		limits := resources.Resolve(declaredLimits, override)
 
 		n, err := q.UpdatePluginContainerDesiredState(ctx, db.UpdatePluginContainerDesiredStateParams{
 			ImageRef:           m.Package.Identifier,
@@ -278,6 +290,115 @@ func (d *DesiredState) ResyncForPlugin(ctx context.Context, q *db.Queries, plugi
 		updated++
 	}
 	return updated, nil
+}
+
+// SetResourceOverride stores an admin override of one instance's resource
+// limits and rewrites the instance's plugin_containers limits to match, so the
+// reconciler rotates to the new envelope. A nil argument clears that field's
+// override (the manifest value, then the host default, applies again). Both
+// nil clears the override entirely.
+//
+// Bounds are those of a manifest declaration (resources.FromManifestMiB); a
+// value outside them returns an error wrapping ErrInvalidLimits and writes
+// nothing. expectedVersion is the plugin_instances CAS counter (ADR-038); a
+// stale one returns ErrCASConflict. Only the limits are rewritten on the
+// container row: the image, config hash, network and desired_state carry over.
+// An instance with no container row (never provisioned) still records the
+// override, which CreateForInstance then honours.
+func (d *DesiredState) SetResourceOverride(ctx context.Context, q *db.Queries, instanceID string, memoryMiB, cpuMillicores *int64, expectedVersion int64) error {
+	if _, err := resources.FromManifestMiB(int(derefInt64(memoryMiB)), int(derefInt64(cpuMillicores))); err != nil {
+		return fmt.Errorf("%w: %v", desiredstate.ErrInvalidLimits, err)
+	}
+	// FromManifestMiB reads 0 as "unspecified", but a stored override of 0
+	// would be indistinguishable from a cleared one; reject it explicitly.
+	if (memoryMiB != nil && *memoryMiB == 0) || (cpuMillicores != nil && *cpuMillicores == 0) {
+		return fmt.Errorf("%w: a limit must be positive; omit it to clear the override", desiredstate.ErrInvalidLimits)
+	}
+
+	instance, err := q.GetPluginInstanceByID(ctx, instanceID)
+	if err != nil {
+		return fmt.Errorf("lifecycle: get plugin instance %q: %w", instanceID, err)
+	}
+	plugin, err := q.GetPluginByID(ctx, instance.PluginID)
+	if err != nil {
+		return fmt.Errorf("lifecycle: get plugin %q: %w", instance.PluginID, err)
+	}
+	m, err := manifestv2.Parse([]byte(plugin.ManifestSnapshot))
+	if err != nil {
+		return fmt.Errorf("lifecycle: parse v2 manifest for plugin %q: %w", plugin.Name, err)
+	}
+	declaredLimits, err := manifestLimits(m)
+	if err != nil {
+		return fmt.Errorf("lifecycle: plugin %q: %w", plugin.Name, err)
+	}
+
+	now := d.clock().UTC().Format(time.RFC3339Nano)
+	n, err := q.UpdatePluginInstanceResourceOverride(ctx, db.UpdatePluginInstanceResourceOverrideParams{
+		ResourceMemoryMbOverride:      memoryMiB,
+		ResourceCpuMillicoresOverride: cpuMillicores,
+		UpdatedAt:                     now,
+		ID:                            instanceID,
+		ExpectedVersion:               expectedVersion,
+	})
+	if err != nil {
+		return fmt.Errorf("lifecycle: write resource override for instance %q: %w", instanceID, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("lifecycle: write resource override for instance %q: %w", instanceID, ErrCASConflict)
+	}
+
+	row, err := q.GetPluginContainerByInstance(ctx, instanceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("lifecycle: get plugin_containers row for instance %q: %w", instanceID, err)
+	}
+	updatedInstance, err := q.GetPluginInstanceByID(ctx, instanceID)
+	if err != nil {
+		return fmt.Errorf("lifecycle: re-read plugin instance %q: %w", instanceID, err)
+	}
+	override, err := instanceOverride(updatedInstance)
+	if err != nil {
+		return fmt.Errorf("lifecycle: instance %q: %w", instanceID, err)
+	}
+	limits := resources.Resolve(declaredLimits, override)
+
+	n, err = q.UpdatePluginContainerDesiredState(ctx, db.UpdatePluginContainerDesiredStateParams{
+		ImageRef:           row.ImageRef,
+		ImageDigest:        row.ImageDigest,
+		ConfigHash:         row.ConfigHash,
+		NetworkName:        row.NetworkName,
+		MemoryLimitBytes:   int64Ptr(limits.MemoryBytes),
+		CpuLimitMillicores: int64Ptr(limits.CPUMillicores),
+		DesiredState:       row.DesiredState,
+		UpdatedAt:          now,
+		ID:                 row.ID,
+		ExpectedVersion:    row.Version,
+	})
+	if err != nil {
+		return fmt.Errorf("lifecycle: rewrite limits for instance %q: %w", instanceID, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("lifecycle: rewrite limits for instance %q: %w", instanceID, ErrCASConflict)
+	}
+	return nil
+}
+
+func derefInt64(v *int64) int64 {
+	if v == nil {
+		return 0
+	}
+	return *v
+}
+
+// instanceOverride converts an instance's stored override columns into
+// resources.Limits. A NULL column is "not overridden" (zero).
+func instanceOverride(instance db.PluginInstance) (resources.Limits, error) {
+	return resources.FromManifestMiB(
+		int(derefInt64(instance.ResourceMemoryMbOverride)),
+		int(derefInt64(instance.ResourceCpuMillicoresOverride)),
+	)
 }
 
 // Remove deletes the plugin_containers desired-state row for instanceID. A

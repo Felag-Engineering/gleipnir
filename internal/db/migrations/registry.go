@@ -55,5 +55,6 @@ func All() []Migration {
 		&AddOAuthNonceActor{},
 		&AddContainerImageLocalID{},
 		&AddPluginUserIdentities{},
+		&AddInstanceResourceOverride{},
 	}
 }

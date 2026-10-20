@@ -39,3 +39,7 @@ var ErrCASConflict = errors.New("lifecycle: CAS conflict")
 // create one or flip one back to running — a desired-state row (or a
 // re-activation) is itself the thing that would make an un-reviewed plugin run.
 var ErrPluginNotActive = errors.New("desiredstate: plugin is not active")
+
+// ErrInvalidLimits is returned when an admin resource override is outside the
+// bounds a manifest declaration is held to. internal/admin maps it to 400.
+var ErrInvalidLimits = errors.New("desiredstate: invalid resource limits")

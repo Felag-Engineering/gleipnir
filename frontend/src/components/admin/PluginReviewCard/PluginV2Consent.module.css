@@ -1,3 +1,20 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.note {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-second);
+}
+
+.digest {
+  display: block;
+  padding-right: var(--space-16);
+}
+
 .section {
   display: flex;
   flex-direction: column;
