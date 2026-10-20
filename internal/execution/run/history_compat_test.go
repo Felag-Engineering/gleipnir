@@ -19,6 +19,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/db/migrations"
 	"github.com/felag-engineering/gleipnir/internal/execution/run"
 	"github.com/felag-engineering/gleipnir/internal/testutil"
 	"github.com/felag-engineering/gleipnir/internal/testutil/fixtures"
@@ -43,9 +44,38 @@ func getJSON(t *testing.T, router http.Handler, path string, out any) {
 	}
 }
 
+// applyPurgeV1 runs the #1004 purge against store the way the flip will: in
+// one transaction, with the migration's own helper (it is not registered in
+// migrations.All() until #1005).
+func applyPurgeV1(t *testing.T, store *db.Store) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin purge tx: %v", err)
+	}
+	if err := migrations.ApplyPurgeV1(ctx, tx); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("ApplyPurgeV1: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit purge tx: %v", err)
+	}
+}
+
 func TestGrpcEraRunHistory_StillServes(t *testing.T) {
+	t.Run("before purge", func(t *testing.T) { checkGrpcEraRunHistory(t, false) })
+	// #1004: the v1 plugin rows the history was recorded against are deleted
+	// at the flip; the history itself must read back unchanged.
+	t.Run("after v1 purge", func(t *testing.T) { checkGrpcEraRunHistory(t, true) })
+}
+
+func checkGrpcEraRunHistory(t *testing.T, purge bool) {
 	store := testutil.NewTestStore(t)
 	seeded := fixtures.SeedGrpcEraRuns(t, store)
+	if purge {
+		applyPurgeV1(t, store)
+	}
 
 	// Nothing here launches a run, so there is no RunManager to drain.
 	h := run.NewRunsHandler(store, run.NewRunManager(), nil)
@@ -179,6 +209,49 @@ func TestGrpcEraAuditEvents_StillReadable(t *testing.T) {
 	}
 	if !sawOrphan {
 		t.Error("no audit row with NULL plugin_instance_id came back")
+	}
+	if runScoped != seeded.RunScopedAuditEventCount {
+		t.Errorf("run-scoped audit rows = %d, want %d", runScoped, seeded.RunScopedAuditEventCount)
+	}
+}
+
+// After the #1004 purge every pre-existing audit row still reads back, now
+// without its instance link, alongside the purge's own plugin_purged_v1 row;
+// the run-scoped rows the run detail page reads are untouched.
+func TestGrpcEraAuditEvents_ReadableAfterV1Purge(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	seeded := fixtures.SeedGrpcEraRuns(t, store)
+	applyPurgeV1(t, store)
+
+	rows, err := store.ListRecentPluginAuditEvents(context.Background(), db.ListRecentPluginAuditEventsParams{Severity: "", Limit: 100})
+	if err != nil {
+		t.Fatalf("ListRecentPluginAuditEvents: %v", err)
+	}
+
+	preExisting, runScoped, purged := 0, 0, 0
+	for _, row := range rows {
+		if !json.Valid([]byte(row.PayloadJson)) {
+			t.Errorf("%s payload is not valid JSON: %q", row.EventType, row.PayloadJson)
+		}
+		if row.PluginInstanceID != nil {
+			t.Errorf("%s still links instance %s after the v1 purge", row.EventType, *row.PluginInstanceID)
+		}
+		switch row.EventType {
+		case "plugin_purged_v1":
+			purged++
+		case "v1_purge_orphaned_policies":
+		default:
+			preExisting++
+		}
+		if row.RunID != nil {
+			runScoped++
+		}
+	}
+	if preExisting != seeded.AuditEventCount {
+		t.Errorf("pre-existing audit rows = %d, want all %d to survive the purge", preExisting, seeded.AuditEventCount)
+	}
+	if purged != 1 {
+		t.Errorf("plugin_purged_v1 rows = %d, want 1 (one v1 plugin seeded)", purged)
 	}
 	if runScoped != seeded.RunScopedAuditEventCount {
 		t.Errorf("run-scoped audit rows = %d, want %d", runScoped, seeded.RunScopedAuditEventCount)
